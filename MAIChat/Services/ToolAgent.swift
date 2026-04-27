@@ -1,28 +1,17 @@
 import Foundation
 
-struct ToolDefinition: Sendable {
-  let name: String
-  let description: String
-  let parameters: [ToolParameterDef]
-}
-
-struct ToolParameterDef: Sendable {
-  let name: String
-  let type: String
-  let description: String
-  let required: Bool
-}
-
-struct ParsedToolCall: Identifiable, Sendable {
-  let id = UUID()
-  let name: String
-  let arguments: [String: String]
-  let rawBlock: String
-  let argsJSON: String
-}
-
 @MainActor
 enum ToolAgentRegistry {
+  static func visibleDefinitions(
+    for conversation: Conversation,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+  ) -> [ToolDefinition] {
+    let fullDefinitions = definitions(for: conversation, settings: settings, mcpTools: mcpTools)
+    guard settings.toolCallingMode == .proxy else { return fullDefinitions }
+    return fullDefinitions.isEmpty ? [] : ToolProxy.definitions
+  }
+
   static func definitions(
     for conversation: Conversation,
     settings: AppSettings,
@@ -49,94 +38,80 @@ enum ToolAgentRegistry {
           description = baseDesc
         }
         defs.append(
-          ToolDefinition(name: tool.name, description: description, parameters: []))
+          ToolDefinition(
+            name: tool.name,
+            description: description,
+            parameters: AgentTooling.parameters(fromSchemaJSON: tool.parametersJSON),
+            inputSchemaJSON: tool.parametersJSON))
       }
     }
     return defs
   }
 
   static func promptDescription(for definitions: [ToolDefinition]) -> String {
-    guard !definitions.isEmpty else { return "" }
-    let toolDescriptions = definitions.map { def -> String in
-      let params: String
-      if def.parameters.isEmpty {
-        params = "no arguments"
-      } else {
-        params = def.parameters.map { p in
-          "\(p.name) (\(p.type)\(p.required ? "" : ", optional")): \(p.description)"
-        }.joined(separator: "; ")
-      }
-      return "- \(def.name): \(def.description) Arguments: \(params)."
-    }.joined(separator: "\n")
-
-    return """
-      ## Available Tools
-
-      \(toolDescriptions)
-
-      ### Tool-call protocol
-
-      To run a tool, emit a single line block (no surrounding text on the same line):
-      <tool_call>{"name":"tool_name","arguments":{"arg":"value"}}</tool_call>
-
-      ### Mandatory rules — read carefully
-
-      1. After the closing `</tool_call>`, STOP IMMEDIATELY. Do not write your final answer in the same response. The host executes the tool, replaces the block with `<tool_run>…result…</tool_run>`, and re-invokes you with the real result visible. Only THEN write the answer.
-      2. `<tool_run>` blocks are AUTHORITATIVE ground truth. Read the content character-by-character. Do not guess, paraphrase, or summarize from priors. If the result disagrees with your expectations, the result is right.
-      3. The final answer is the response that contains NO `<tool_call>` blocks. The loop stops as soon as you produce one.
-      4. Use only the listed tool names. Never invent arguments. JSON arguments must be valid JSON on a single line.
-      5. Do not re-call a tool whose `<tool_run>` is already in the conversation — read the existing result.
-      6. No filler narration between tool calls ("Let me…", "I'll now…"). Emit tool calls or the final answer; nothing else.
-      """
+    AgentTooling.promptDescription(for: definitions)
   }
 
-  static func parseCalls(in text: String) -> [ParsedToolCall] {
-    let pattern = "<tool_call>([\\s\\S]*?)</tool_call>"
-    guard
-      let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-    else { return [] }
-    let nsText = text as NSString
-    let matches = regex.matches(
-      in: text, options: [], range: NSRange(location: 0, length: nsText.length))
-    var calls: [ParsedToolCall] = []
-    for match in matches {
-      guard match.numberOfRanges == 2 else { continue }
-      let raw = nsText.substring(with: match.range(at: 0))
-      let json = nsText.substring(with: match.range(at: 1))
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      guard let data = json.data(using: .utf8),
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-      else { continue }
-      guard
-        let name = (object["name"] as? String)?
-          .trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
-      else { continue }
-      var args: [String: String] = [:]
-      if let argsDict = object["arguments"] as? [String: Any] {
-        for (k, v) in argsDict {
-          args[k] = stringify(v)
-        }
-      }
-      let argsJSON = compactJSON(args)
-      calls.append(ParsedToolCall(name: name, arguments: args, rawBlock: raw, argsJSON: argsJSON))
-    }
-    return calls
+  static func parseCalls(in text: String, definitions: [ToolDefinition]) -> [ParsedToolCall] {
+    AgentTooling.parseCalls(in: text, tools: definitions)
+  }
+
+  static func normalized(call: ParsedToolCall, definitions: [ToolDefinition]) -> ParsedToolCall {
+    let resolver = AgentToolNameResolver(tools: definitions)
+    let canonicalName = resolver.canonicalName(for: call.name) ?? call.name
+    let definitionByName = Dictionary(uniqueKeysWithValues: definitions.map { ($0.name, $0) })
+    let normalizedArguments = AgentTooling.normalizeArguments(
+      call.argumentValues, for: definitionByName[canonicalName])
+    return ParsedToolCall(
+      name: canonicalName,
+      arguments: [:],
+      argumentValues: normalizedArguments,
+      rawBlock: call.rawBlock,
+      toolCallID: call.toolCallID,
+      apiName: call.apiName)
   }
 
   static func execute(call: ParsedToolCall, store: AppStore) async -> String {
-    switch call.name {
+    let fullDefinitions =
+      store.currentConversation.map {
+        ToolAgentRegistry.definitions(for: $0, settings: store.settings, mcpTools: store.mcpTools)
+      } ?? []
+    if store.settings.toolCallingMode == .proxy {
+      let normalizedCall = normalized(call: call, definitions: ToolProxy.definitions)
+      switch normalizedCall.name {
+      case ToolProxy.listName:
+        return ToolProxy.listTools(
+          arguments: normalizedCall.argumentValues, definitions: fullDefinitions)
+      case ToolProxy.callName:
+        return await ToolProxy.callTool(
+          arguments: normalizedCall.argumentValues, definitions: fullDefinitions, store: store)
+      default:
+        return
+          "Error: proxy mode only exposes '\(ToolProxy.listName)' and '\(ToolProxy.callName)'. Use '\(ToolProxy.callName)' to call enabled tools."
+      }
+    }
+
+    let normalizedCall = normalized(call: call, definitions: fullDefinitions)
+    return await executeConcrete(call: normalizedCall, store: store, definitions: fullDefinitions)
+  }
+
+  fileprivate static func executeConcrete(
+    call: ParsedToolCall, store: AppStore, definitions: [ToolDefinition]
+  ) async -> String {
+    let normalizedCall = normalized(call: call, definitions: definitions)
+    switch normalizedCall.name {
     case TodoTool.listName:
       return TodoTool.list(store: store)
     case TodoTool.addName:
-      let title = call.arguments["title"] ?? ""
+      let title = normalizedCall.arguments["title"] ?? ""
       return TodoTool.add(title: title, store: store)
     case TodoTool.doneName:
       let query =
-        call.arguments["title_or_id"] ?? call.arguments["id"]
-        ?? call.arguments["title"] ?? ""
+        normalizedCall.arguments["title_or_id"] ?? normalizedCall.arguments["id"]
+        ?? normalizedCall.arguments["title"] ?? ""
       return TodoTool.markDone(query: query, store: store)
     default:
-      return await dispatchMCP(call: call, store: store)
+      return await dispatchMCP(call: normalizedCall, store: store)
     }
   }
 
@@ -152,7 +127,7 @@ enum ToolAgentRegistry {
       }
       do {
         return try await MCPHTTPClient.callTool(
-          server: server, name: call.name, arguments: call.arguments)
+          server: server, name: call.name, arguments: call.argumentValues)
       } catch {
         return "Error calling MCP tool '\(call.name)': \(error.localizedDescription)"
       }
@@ -161,29 +136,148 @@ enum ToolAgentRegistry {
   }
 
   static func makeRunBlock(call: ParsedToolCall, result: String) -> String {
-    let header = "\(call.name) tool (\(call.argsJSON)):"
-    let body = result.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "<tool_run>\n\(header)\n\(body)\n</tool_run>"
+    AgentTooling.makeRunBlock(toolName: call.name, argumentsJSON: call.argsJSON, result: result)
   }
+}
 
-  private static func stringify(_ value: Any) -> String {
-    if let s = value as? String { return s }
-    if let n = value as? NSNumber { return n.stringValue }
-    if let b = value as? Bool { return b ? "true" : "false" }
-    if let data = try? JSONSerialization.data(withJSONObject: value),
-      let s = String(data: data, encoding: .utf8)
-    {
-      return s
+@MainActor
+enum ToolProxy {
+  static let listName = "list-tools"
+  static let callName = "call-tool"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: listName,
+      description:
+        "List enabled tools whose name, description, or argument names match the provided keywords. Call this before call-tool unless the target tool was already listed in the conversation.",
+      parameters: [
+        ToolParameterDef(
+          name: "keywords", type: "string",
+          description:
+            "Space-separated search keywords for the task, tool name, capability, or argument names.",
+          required: true)
+      ]
+    ),
+    ToolDefinition(
+      name: callName,
+      description:
+        "Call one enabled tool by exact name after list-tools has returned it. Pass the selected tool's arguments as a JSON object.",
+      parameters: [
+        ToolParameterDef(
+          name: "name", type: "string",
+          description: "Exact tool name returned by list-tools.",
+          required: true),
+        ToolParameterDef(
+          name: "arguments", type: "object",
+          description: "JSON object with arguments for the selected tool. Use {} when none.",
+          required: true),
+      ]
+    ),
+  ]
+
+  static func listTools(
+    arguments: [String: AgentToolArgumentValue], definitions: [ToolDefinition]
+  ) -> String {
+    let keywords =
+      arguments["keywords"]?.stringValue ?? arguments["query"]?.stringValue
+      ?? arguments["filter"]?.stringValue ?? ""
+    let terms =
+      keywords
+      .lowercased()
+      .split { $0.isWhitespace || $0 == "," }
+      .map(String.init)
+
+    let matches = definitions.compactMap {
+      definition -> (definition: ToolDefinition, score: Int)? in
+      guard !terms.isEmpty else { return (definition, 0) }
+      let searchable = searchableText(for: definition)
+      let score = terms.reduce(0) { count, term in
+        searchable.contains(term) ? count + 1 : count
+      }
+      return score > 0 ? (definition, score) : nil
     }
-    return String(describing: value)
+    .sorted {
+      if $0.score != $1.score { return $0.score > $1.score }
+      return $0.definition.name < $1.definition.name
+    }
+
+    guard !matches.isEmpty else {
+      let suffix =
+        keywords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? "" : " matching '\(keywords)'"
+      return "No enabled tools\(suffix). Try broader keywords."
+    }
+
+    return matches.map { match in
+      toolSummary(match.definition)
+    }.joined(separator: "\n")
   }
 
-  private static func compactJSON(_ args: [String: String]) -> String {
-    guard !args.isEmpty,
-      let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
-      let s = String(data: data, encoding: .utf8)
-    else { return "{}" }
-    return s
+  static func callTool(
+    arguments: [String: AgentToolArgumentValue],
+    definitions: [ToolDefinition],
+    store: AppStore
+  ) async -> String {
+    let requestedName =
+      arguments["name"]?.stringValue ?? arguments["tool_name"]?.stringValue
+      ?? arguments["tool"]?.stringValue ?? ""
+    let resolver = AgentToolNameResolver(tools: definitions)
+    guard let canonicalName = resolver.canonicalName(for: requestedName) else {
+      return
+        "Error: unknown tool '\(requestedName)'. Call \(listName) first with relevant keywords."
+    }
+    guard let targetDefinition = definitions.first(where: { $0.name == canonicalName }) else {
+      return "Error: unknown tool '\(requestedName)'."
+    }
+    let toolArguments = argumentsObject(from: arguments["arguments"])
+    let normalizedArguments = AgentTooling.normalizeArguments(toolArguments, for: targetDefinition)
+    let targetCall = ParsedToolCall(
+      name: canonicalName,
+      arguments: [:],
+      argumentValues: normalizedArguments,
+      rawBlock: ""
+    )
+    return await ToolAgentRegistry.executeConcrete(
+      call: targetCall, store: store, definitions: definitions)
+  }
+
+  private static func searchableText(for definition: ToolDefinition) -> String {
+    ([definition.name, definition.description]
+      + definition.parameters.flatMap { [$0.name, $0.type, $0.description] })
+      .joined(separator: " ")
+      .lowercased()
+  }
+
+  private static func toolSummary(_ definition: ToolDefinition) -> String {
+    let arguments: String
+    if definition.parameters.isEmpty {
+      arguments = "no arguments"
+    } else {
+      arguments = definition.parameters.map { parameter in
+        let required = parameter.required ? "required" : "optional"
+        let description = parameter.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = description.isEmpty ? "" : " - \(description)"
+        return "\(parameter.name) (\(parameter.type), \(required))\(suffix)"
+      }.joined(separator: "; ")
+    }
+    return "- \(definition.name): \(definition.description) Arguments: \(arguments)."
+  }
+
+  private static func argumentsObject(
+    from value: AgentToolArgumentValue?
+  ) -> [String: AgentToolArgumentValue] {
+    guard let value else { return [:] }
+    switch value {
+    case .object(let object):
+      return object
+    case .string(let string):
+      guard let data = string.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else { return [:] }
+      return AgentTooling.argumentValues(object)
+    default:
+      return [:]
+    }
   }
 }
 

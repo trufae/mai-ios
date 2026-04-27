@@ -339,7 +339,7 @@ final class AppStore: ObservableObject {
     liveActivityManager.start(conversation: conversations[index])
 
     do {
-      let agentDefinitions = ToolAgentRegistry.definitions(
+      let agentDefinitions = ToolAgentRegistry.visibleDefinitions(
         for: conversations[index], settings: settings, mcpTools: mcpTools)
       let agentToolPrompt = ToolAgentRegistry.promptDescription(for: agentDefinitions)
       var augmentedToolContext = toolContext
@@ -352,20 +352,24 @@ final class AppStore: ObservableObject {
       }
 
       var assistantText = ""
-      let maxIterations = agentDefinitions.isEmpty ? 1 : 4
+      let maxIterations = agentDefinitions.isEmpty ? 1 : 8
       var didFinish = false
+      let toolNameResolver = AgentToolNameResolver(tools: agentDefinitions)
 
       let nativeTools: [OpenAITool]? = {
         guard
-          settings.toolCallingMode == .native,
+          settings.toolCallingMode == .native || settings.toolCallingMode == .proxy,
           conversations[index].provider == .openAICompatible,
           !agentDefinitions.isEmpty
         else { return nil }
         return agentDefinitions.map { def in
           OpenAITool(
             function: OpenAIFunctionSpec(
-              name: def.name,
-              description: def.description,
+              name: toolNameResolver.apiName(for: def.name),
+              description:
+                def.description
+                + (toolNameResolver.apiName(for: def.name) == def.name
+                  ? "" : " Original tool name: \(def.name)."),
               parameters: OpenAIFunctionSchema(
                 properties: Dictionary(
                   uniqueKeysWithValues: def.parameters.map { p in
@@ -401,8 +405,8 @@ final class AppStore: ObservableObject {
 
         try Task.checkCancellation()
 
-        let calls = ToolAgentRegistry.parseCalls(in: response)
-        if calls.isEmpty || iteration == maxIterations - 1 {
+        let calls = ToolAgentRegistry.parseCalls(in: response, definitions: agentDefinitions)
+        if calls.isEmpty {
           assistantText = assistantText.isEmpty ? response : "\(assistantText)\n\n\(response)"
           setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
           didFinish = true
@@ -413,8 +417,10 @@ final class AppStore: ObservableObject {
         var transformed = response
         for call in calls {
           try Task.checkCancellation()
-          let result = await ToolAgentRegistry.execute(call: call, store: self)
-          let runBlock = ToolAgentRegistry.makeRunBlock(call: call, result: result)
+          let normalizedCall = ToolAgentRegistry.normalized(
+            call: call, definitions: agentDefinitions)
+          let result = await ToolAgentRegistry.execute(call: normalizedCall, store: self)
+          let runBlock = ToolAgentRegistry.makeRunBlock(call: normalizedCall, result: result)
           if let range = transformed.range(of: call.rawBlock) {
             transformed.replaceSubrange(range, with: runBlock)
           } else {
@@ -427,7 +433,9 @@ final class AppStore: ObservableObject {
       }
 
       if !didFinish {
-        setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
+        let suffix =
+          "\n\nTool loop stopped after \(maxIterations) tool rounds before the model produced a final answer."
+        setAssistantMessage(id: assistantID, text: assistantText + suffix, role: .assistant)
         await liveActivityManager.end(finalText: assistantText)
       }
     } catch is CancellationError {

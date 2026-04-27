@@ -89,6 +89,7 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case text
   case native
+  case proxy
 
   var id: String { rawValue }
 
@@ -96,6 +97,7 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .text: "Text protocol"
     case .native: "Native (OpenAI tools)"
+    case .proxy: "Proxy (list/call)"
     }
   }
 
@@ -107,6 +109,9 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case .native:
       return
         "Adds OpenAI's structured tools array to each request so capable models can return tool_calls directly. Falls back to the text protocol on Apple Intelligence."
+    case .proxy:
+      return
+        "Exposes only list-tools and call-tool to the model. The model lists matching tools first, then calls the selected tool through the proxy to reduce prompt context."
     }
   }
 }

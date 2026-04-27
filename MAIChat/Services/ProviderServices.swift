@@ -130,8 +130,12 @@ enum PromptComposer {
         guard !content.isEmpty else { return nil }
         let role: String
         switch message.role {
-        case .user: role = "user"
-        case .assistant: role = "assistant"
+        case .user:
+          role = "user"
+        case .assistant:
+          role =
+            content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
+            ? "assistant" : "user"
         case .system: role = "system"
         case .tool, .error: role = "user"
         }

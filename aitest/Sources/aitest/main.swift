@@ -137,144 +137,9 @@ func vlog(_ msg: String) {
   if verbose { FileHandle.standardError.write(Data("    \(msg)\n".utf8)) }
 }
 
-// MARK: - Models
-
-struct MCPTool {
-  let name: String
-  let description: String
-  let inputSchema: [String: Any]?
-  let parametersJSON: String
-}
-
-struct ParsedToolCall {
-  let name: String
-  let arguments: [String: Any]
-  let rawBlock: String
-  let toolCallID: String?
-  let apiName: String?
-  var argsJSON: String {
-    (try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]))
-      .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-  }
-}
-
-struct NativeToolCall {
-  let id: String
-  let name: String
-  let arguments: [String: Any]
-  let rawArguments: String
-
-  var textBlock: String {
-    let payload: [String: Any] = ["name": name, "arguments": arguments]
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-      let json = String(data: data, encoding: .utf8)
-    else { return "" }
-    return "<tool_call>\(json)</tool_call>"
-  }
-}
-
 struct ChatCompletionResult {
   let text: String
-  let nativeToolCalls: [NativeToolCall]
-}
-
-struct ToolNameResolver {
-  private let canonicalByAlias: [String: String]
-  private let canonicalByShortAlias: [String: String]
-  private let apiByCanonical: [String: String]
-
-  init(tools: [MCPTool]) {
-    var aliases: [String: String] = [:]
-    var shortAliases: [String: String] = [:]
-    var ambiguousShortAliases = Set<String>()
-    var apiNames: [String: String] = [:]
-    var usedAPI = Set<String>()
-
-    for tool in tools {
-      let api = ToolNameResolver.uniqueAPIName(for: tool.name, used: &usedAPI)
-      apiNames[tool.name] = api
-      let candidates = [
-        tool.name,
-        api,
-        tool.name.replacingOccurrences(of: "::", with: "."),
-        tool.name.replacingOccurrences(of: "::", with: "_"),
-        tool.name.replacingOccurrences(of: "::", with: "__"),
-      ]
-      for candidate in candidates {
-        aliases[ToolNameResolver.key(candidate)] = tool.name
-      }
-      let shortKey = ToolNameResolver.shortKey(tool.name)
-      if let existing = shortAliases[shortKey], existing != tool.name {
-        ambiguousShortAliases.insert(shortKey)
-      } else {
-        shortAliases[shortKey] = tool.name
-      }
-    }
-    for key in ambiguousShortAliases {
-      shortAliases.removeValue(forKey: key)
-    }
-
-    canonicalByAlias = aliases
-    canonicalByShortAlias = shortAliases
-    apiByCanonical = apiNames
-  }
-
-  func canonicalName(for name: String) -> String? {
-    canonicalByAlias[ToolNameResolver.key(name)]
-      ?? canonicalByShortAlias[ToolNameResolver.shortKey(name)]
-  }
-
-  func apiName(for canonical: String) -> String {
-    apiByCanonical[canonical] ?? ToolNameResolver.sanitizeAPIName(canonical)
-  }
-
-  private static func key(_ name: String) -> String {
-    name
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-      .filter { $0.isLetter || $0.isNumber }
-  }
-
-  private static func shortKey(_ name: String) -> String {
-    let parts = name.split { !$0.isLetter && !$0.isNumber }
-    return key(String(parts.last ?? Substring(name)))
-  }
-
-  private static func uniqueAPIName(for name: String, used: inout Set<String>) -> String {
-    let base = sanitizeAPIName(name)
-    var candidate = base
-    var n = 2
-    while used.contains(candidate) {
-      candidate = "\(base)_\(n)"
-      n += 1
-    }
-    used.insert(candidate)
-    return candidate
-  }
-
-  private static func sanitizeAPIName(_ name: String) -> String {
-    var out = ""
-    var lastWasUnderscore = false
-    for scalar in name.unicodeScalars {
-      let isAllowed =
-        CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-"
-      if isAllowed {
-        out.unicodeScalars.append(scalar)
-        lastWasUnderscore = false
-      } else if !lastWasUnderscore {
-        out.append("_")
-        lastWasUnderscore = true
-      }
-    }
-    out = out.trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
-    if out.isEmpty { out = "tool" }
-    if out.first?.isNumber == true { out = "tool_\(out)" }
-    if out.count > 64 {
-      out = String(out.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
-    }
-    return out
-  }
+  let nativeToolCalls: [AgentNativeToolCall]
 }
 
 // MARK: - HTTP
@@ -336,17 +201,15 @@ struct MCPClient {
     return raw
   }
 
-  func listTools() async throws -> [MCPTool] {
+  func listTools() async throws -> [ToolDefinition] {
     let raw = try await jsonrpc(method: "tools/list", params: nil)
     let result = raw["result"] as? [String: Any] ?? [:]
     let toolList = result["tools"] as? [[String: Any]] ?? []
     return toolList.compactMap { d in
       guard let name = d["name"] as? String else { return nil }
       let desc = (d["description"] as? String) ?? ""
-      var schema: [String: Any]? = nil
       var schemaJSON = ""
       if let inputSchema = d["inputSchema"] as? [String: Any] {
-        schema = inputSchema
         if let pdata = try? JSONSerialization.data(
           withJSONObject: inputSchema, options: [.sortedKeys]),
           let s = String(data: pdata, encoding: .utf8)
@@ -354,8 +217,11 @@ struct MCPClient {
           schemaJSON = s
         }
       }
-      return MCPTool(
-        name: name, description: desc, inputSchema: schema, parametersJSON: schemaJSON)
+      return ToolDefinition(
+        name: name,
+        description: desc,
+        parameters: AgentTooling.parameters(fromSchemaJSON: schemaJSON),
+        inputSchemaJSON: schemaJSON)
     }
   }
 
@@ -371,165 +237,6 @@ struct MCPClient {
     }
     return text.isEmpty ? "(no output)" : text
   }
-}
-
-// MARK: - Tool-call parser (text protocol)
-
-func parseToolCalls(in text: String) -> [ParsedToolCall] {
-  let pattern = "<tool_call>([\\s\\S]*?)</tool_call>"
-  guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-  else { return [] }
-  let nsText = text as NSString
-  let matches = regex.matches(
-    in: text, options: [], range: NSRange(location: 0, length: nsText.length))
-  var calls: [ParsedToolCall] = []
-  for m in matches {
-    guard m.numberOfRanges == 2 else { continue }
-    let raw = nsText.substring(with: m.range(at: 0))
-    let json = nsText.substring(with: m.range(at: 1))
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    if let call = parseToolCallJSON(json, rawBlock: raw) {
-      calls.append(call)
-    }
-  }
-  if let trailing = trailingUnclosedToolCall(in: text),
-    let call = parseToolCallJSON(trailing.json, rawBlock: trailing.rawBlock)
-  {
-    calls.append(call)
-  }
-  return calls
-}
-
-func parseToolCallJSON(_ json: String, rawBlock: String) -> ParsedToolCall? {
-  guard let data = json.data(using: .utf8),
-    let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-    let obj = normalizeToolCallObject(parsed),
-    let name = (obj["name"] as? String)?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
-    !name.isEmpty
-  else { return nil }
-  let args = (obj["arguments"] as? [String: Any]) ?? [:]
-  return ParsedToolCall(
-    name: name, arguments: args, rawBlock: rawBlock, toolCallID: nil, apiName: nil)
-}
-
-func trailingUnclosedToolCall(in text: String) -> (rawBlock: String, json: String)? {
-  guard
-    let open = text.range(
-      of: "<tool_call>", options: [.caseInsensitive, .backwards]),
-    text.range(
-      of: "</tool_call>", options: [.caseInsensitive], range: open.upperBound..<text.endIndex)
-      == nil
-  else { return nil }
-  let raw = String(text[open.lowerBound..<text.endIndex])
-  let json = String(text[open.upperBound..<text.endIndex])
-    .trimmingCharacters(in: .whitespacesAndNewlines)
-  return json.isEmpty ? nil : (raw, json)
-}
-
-func normalizeToolCallObject(_ object: [String: Any]) -> [String: Any]? {
-  if let name = object["name"] as? String,
-    !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-  {
-    if let nested = object["arguments"] as? [String: Any],
-      let nestedName = nested["name"] as? String
-    {
-      return [
-        "name": nestedName,
-        "arguments": (nested["arguments"] as? [String: Any]) ?? [:],
-      ]
-    }
-    return object
-  }
-  if let name = (object["tool"] as? String) ?? (object["function"] as? String) {
-    return [
-      "name": name,
-      "arguments": (object["arguments"] as? [String: Any]) ?? object["args"] ?? [:],
-    ]
-  }
-  return nil
-}
-
-func inferBareToolCall(in text: String, tools: [MCPTool]) -> ParsedToolCall? {
-  let visible = stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
-  guard visible.hasPrefix("{"), visible.hasSuffix("}"),
-    let data = visible.data(using: .utf8),
-    let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-  else { return nil }
-
-  if let normalized = normalizeToolCallObject(object),
-    let name = normalized["name"] as? String
-  {
-    return ParsedToolCall(
-      name: name,
-      arguments: (normalized["arguments"] as? [String: Any]) ?? [:],
-      rawBlock: visible,
-      toolCallID: nil,
-      apiName: nil)
-  }
-
-  let objectKeys = Set(object.keys)
-  guard !objectKeys.isEmpty else { return nil }
-  let candidates = tools.compactMap { tool -> (tool: MCPTool, score: Int)? in
-    let properties = Set((tool.inputSchema?["properties"] as? [String: Any] ?? [:]).keys)
-    let required = Set(tool.inputSchema?["required"] as? [String] ?? [])
-    guard !properties.isEmpty, objectKeys.isSubset(of: properties) else { return nil }
-    guard required.isEmpty || required.isSubset(of: objectKeys) else { return nil }
-    return (tool, objectKeys.intersection(properties).count + required.count)
-  }
-  let sorted = candidates.sorted { $0.score > $1.score }
-  guard let first = sorted.first else { return nil }
-  if sorted.count > 1, sorted[1].score == first.score { return nil }
-  return ParsedToolCall(
-    name: first.tool.name,
-    arguments: object,
-    rawBlock: visible,
-    toolCallID: nil,
-    apiName: nil)
-}
-
-func stripThinkBlocks(from text: String) -> String {
-  let pattern = "<think>[\\s\\S]*?</think>"
-  guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-  else { return text }
-  let range = NSRange(location: 0, length: (text as NSString).length)
-  return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
-}
-
-// MARK: - Agent prompt
-
-func buildAgentPrompt(tools: [MCPTool], resolver: ToolNameResolver) -> String {
-  if tools.isEmpty { return "" }
-  let listing = tools.map { tool -> String in
-    let base =
-      tool.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? "MCP tool"
-      : tool.description
-    let api = resolver.apiName(for: tool.name)
-    let name = api == tool.name ? tool.name : "\(tool.name) (API/native alias: \(api))"
-    if !tool.parametersJSON.isEmpty {
-      return "- \(name): \(base) Input schema: \(tool.parametersJSON)"
-    }
-    return "- \(name): \(base)"
-  }.joined(separator: "\n")
-
-  return """
-    ## Available Tools
-
-    \(listing)
-
-    ### Tool-call protocol
-
-    Emit a single block per tool you want to run:
-    <tool_call>{"name":"tool_name","arguments":{"arg":"value"}}</tool_call>
-
-    Rules:
-    1. After </tool_call>, STOP. Do NOT write the final answer in the same response.
-    2. <tool_run> blocks contain authoritative tool results — read carefully.
-    3. The final answer is a response WITHOUT any <tool_call> blocks.
-    4. Use only listed tool names or their API/native aliases; arguments must be valid JSON on a single line.
-    5. Do not re-run a tool whose <tool_run> already exists in the conversation.
-    """
 }
 
 // MARK: - OpenAI client
@@ -736,53 +443,37 @@ struct OpenAIClient {
 
   private func nativeToolCalls(
     from acc: [Int: (id: String?, name: String?, args: String)]
-  ) -> [NativeToolCall] {
-    acc.sorted(by: { $0.key < $1.key }).compactMap {
-      _, e -> NativeToolCall? in
-      guard let name = e.name else { return nil }
-      return makeNativeToolCall(id: e.id, name: name, rawArguments: e.args)
-    }
+  ) -> [AgentNativeToolCall] {
+    AgentTooling.nativeToolCalls(from: acc)
   }
 
-  private func nativeToolCalls(from calls: [[String: Any]]) -> [NativeToolCall] {
-    calls.compactMap { tc -> NativeToolCall? in
+  private func nativeToolCalls(from calls: [[String: Any]]) -> [AgentNativeToolCall] {
+    calls.compactMap { tc -> AgentNativeToolCall? in
       let function = tc["function"] as? [String: Any] ?? [:]
       guard let name = function["name"] as? String else { return nil }
-      return makeNativeToolCall(
+      return AgentTooling.makeNativeToolCall(
         id: tc["id"] as? String,
         name: name,
         rawArguments: (function["arguments"] as? String) ?? "")
     }
   }
-
-  private func makeNativeToolCall(id: String?, name: String, rawArguments: String) -> NativeToolCall
-  {
-    var argsObj: Any = [:] as [String: Any]
-    if !rawArguments.isEmpty,
-      let d = rawArguments.data(using: .utf8),
-      let parsed = try? JSONSerialization.jsonObject(with: d)
-    {
-      argsObj = parsed
-    }
-    return NativeToolCall(
-      id: id ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
-      name: name,
-      arguments: (argsObj as? [String: Any]) ?? [:],
-      rawArguments: rawArguments.isEmpty ? "{}" : rawArguments)
-  }
 }
 
 // MARK: - Native tools schema
 
-func openAITools(from tools: [MCPTool], resolver: ToolNameResolver) -> [[String: Any]] {
+func openAITools(from tools: [ToolDefinition], resolver: AgentToolNameResolver) -> [[String: Any]] {
   tools.map { tool -> [String: Any] in
     var schema: [String: Any] = [
       "type": "object",
       "properties": [String: Any](),
       "required": [String](),
     ]
-    if let s = tool.inputSchema, !s.isEmpty {
-      schema = s
+    if !tool.inputSchemaJSON.isEmpty,
+      let data = tool.inputSchemaJSON.data(using: .utf8),
+      let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      !parsed.isEmpty
+    {
+      schema = parsed
     }
     return [
       "type": "function",
@@ -798,20 +489,21 @@ func openAITools(from tools: [MCPTool], resolver: ToolNameResolver) -> [[String:
   }
 }
 
-func parsedCalls(from completion: ChatCompletionResult, tools: [MCPTool]) -> [ParsedToolCall] {
+func parsedCalls(from completion: ChatCompletionResult, tools: [ToolDefinition]) -> [ParsedToolCall]
+{
   if !completion.nativeToolCalls.isEmpty {
     return completion.nativeToolCalls.map { call in
-      ParsedToolCall(
-        name: call.name,
-        arguments: call.arguments,
+      let normalized = AgentTooling.parseCalls(in: call.textBlock, tools: tools).first
+      return ParsedToolCall(
+        name: normalized?.name ?? call.name,
+        arguments: [:],
+        argumentValues: normalized?.argumentValues ?? call.argumentValues,
         rawBlock: call.textBlock,
         toolCallID: call.id,
         apiName: call.name)
     }
   }
-  let explicit = parseToolCalls(in: completion.text)
-  if !explicit.isEmpty { return explicit }
-  return inferBareToolCall(in: completion.text, tools: tools).map { [$0] } ?? []
+  return AgentTooling.parseCalls(in: completion.text, tools: tools)
 }
 
 func appendNextTurnMessages(
@@ -819,7 +511,7 @@ func appendNextTurnMessages(
   response: String,
   calls: [ParsedToolCall],
   toolResults: [(call: ParsedToolCall, canonical: String, result: String)],
-  resolver: ToolNameResolver,
+  resolver: AgentToolNameResolver,
   messages: inout [[String: Any]]
 ) {
   let nativeCalls = calls.filter { $0.toolCallID != nil }
@@ -827,8 +519,8 @@ func appendNextTurnMessages(
     var assistantContent = response
     var hostContent = "Tool results:\n"
     for item in toolResults {
-      let runBlock =
-        "<tool_run>\n\(item.canonical) tool (\(item.call.argsJSON)):\n\(item.result.trimmingCharacters(in: .whitespacesAndNewlines))\n</tool_run>"
+      let runBlock = AgentTooling.makeRunBlock(
+        toolName: item.canonical, argumentsJSON: item.call.argsJSON, result: item.result)
       hostContent += "\n\(runBlock)\n"
       if let range = assistantContent.range(of: item.call.rawBlock) {
         assistantContent.removeSubrange(range)
@@ -882,16 +574,11 @@ func appendNextTurnMessages(
   }
 }
 
-func normalizedArguments(_ arguments: [String: Any], for tool: MCPTool?) -> [String: Any] {
-  guard let tool,
-    let required = tool.inputSchema?["required"] as? [String],
-    required.count == 1,
-    let requiredName = required.first,
-    arguments[requiredName] == nil,
-    arguments.count == 1,
-    let value = arguments.values.first
-  else { return arguments }
-  return [requiredName: value]
+func jsonArguments(_ arguments: [String: AgentToolArgumentValue]) -> [String: Any] {
+  arguments.compactMapValues { value in
+    if case .null = value { return nil }
+    return value.jsonObject
+  }
 }
 
 // MARK: - Run
@@ -907,8 +594,8 @@ func runMain() async {
   info("MCPs     : \(cfg.mcpURLs.isEmpty ? "(none)" : cfg.mcpURLs.joined(separator: ", "))")
   print()
 
-  var allTools: [MCPTool] = []
-  var toolsByName: [String: MCPTool] = [:]
+  var allTools: [ToolDefinition] = []
+  var toolsByName: [String: ToolDefinition] = [:]
   var routing: [String: MCPClient] = [:]
   for urlStr in cfg.mcpURLs {
     guard let url = URL(string: urlStr) else {
@@ -930,8 +617,8 @@ func runMain() async {
   }
   print()
 
-  let resolver = ToolNameResolver(tools: allTools)
-  let agentPrompt = buildAgentPrompt(tools: allTools, resolver: resolver)
+  let resolver = AgentToolNameResolver(tools: allTools)
+  let agentPrompt = AgentTooling.promptDescription(for: allTools)
   let systemContent =
     agentPrompt.isEmpty
     ? cfg.systemPrompt
@@ -949,6 +636,7 @@ func runMain() async {
     ? openAITools(from: allTools, resolver: resolver) : nil
 
   var fullAssistant = ""
+  var didFinish = false
 
   for iteration in 1...cfg.maxIterations {
     info(ANSI("1;35", "=== iteration \(iteration) ==="))
@@ -972,10 +660,11 @@ func runMain() async {
     let calls = parsedCalls(from: completion, tools: allTools)
     info("parsed \(calls.count) tool call(s)")
 
-    if calls.isEmpty || iteration == cfg.maxIterations {
+    if calls.isEmpty {
       fullAssistant +=
         (fullAssistant.isEmpty ? "" : "\n\n") + response
-      ok("loop terminated (no more tool_calls or max iter reached)")
+      ok("loop terminated (no more tool_calls)")
+      didFinish = true
       break
     }
 
@@ -983,10 +672,12 @@ func runMain() async {
     var toolResults: [(call: ParsedToolCall, canonical: String, result: String)] = []
     for call in calls {
       let canonical = resolver.canonicalName(for: call.name) ?? call.name
-      let arguments = normalizedArguments(call.arguments, for: toolsByName[canonical])
+      let arguments = AgentTooling.normalizeArguments(
+        call.argumentValues, for: toolsByName[canonical])
       let normalizedCall = ParsedToolCall(
-        name: call.name,
-        arguments: arguments,
+        name: canonical,
+        arguments: [:],
+        argumentValues: arguments,
         rawBlock: call.rawBlock,
         toolCallID: call.toolCallID,
         apiName: call.apiName)
@@ -996,7 +687,7 @@ func runMain() async {
       if let server = routing[canonical] {
         do {
           result = try await server.callTool(
-            name: canonical, arguments: arguments)
+            name: canonical, arguments: jsonArguments(arguments))
         } catch {
           result = "Error: \(error.localizedDescription)"
         }
@@ -1010,8 +701,8 @@ func runMain() async {
       print(preview)
       print(ANSI("90", "────────────"))
 
-      let runBlock =
-        "<tool_run>\n\(canonical) tool (\(normalizedCall.argsJSON)):\n\(result.trimmingCharacters(in: .whitespacesAndNewlines))\n</tool_run>"
+      let runBlock = AgentTooling.makeRunBlock(
+        toolName: canonical, argumentsJSON: normalizedCall.argsJSON, result: result)
       if let range = transformed.range(of: call.rawBlock) {
         transformed.replaceSubrange(range, with: runBlock)
       } else {
@@ -1027,6 +718,10 @@ func runMain() async {
       toolResults: toolResults,
       resolver: resolver,
       messages: &messages)
+  }
+
+  if !didFinish {
+    warn("loop reached max iterations after executing pending tool calls")
   }
 
   print()

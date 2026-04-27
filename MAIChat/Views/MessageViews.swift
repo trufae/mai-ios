@@ -34,6 +34,7 @@ struct MessageBubble: View {
             systemImage: "brain",
             content: section.content,
             monospaced: false,
+            dimmedContent: true,
             initiallyExpanded: visibleEmpty
           )
         }
@@ -139,6 +140,7 @@ private struct FoldableMetaSection: View {
   let systemImage: String
   let content: String
   var monospaced: Bool
+  var dimmedContent: Bool = false
   var initiallyExpanded: Bool = false
 
   @State private var expanded: Bool = false
@@ -148,12 +150,14 @@ private struct FoldableMetaSection: View {
     systemImage: String,
     content: String,
     monospaced: Bool,
+    dimmedContent: Bool = false,
     initiallyExpanded: Bool = false
   ) {
     self.title = title
     self.systemImage = systemImage
     self.content = content
     self.monospaced = monospaced
+    self.dimmedContent = dimmedContent
     self.initiallyExpanded = initiallyExpanded
     self._expanded = State(initialValue: initiallyExpanded)
   }
@@ -185,7 +189,7 @@ private struct FoldableMetaSection: View {
         Divider().opacity(0.4)
         Text(content)
           .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
-          .foregroundStyle(.primary)
+          .foregroundStyle(dimmedContent ? Color.secondary : Color.primary)
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12)

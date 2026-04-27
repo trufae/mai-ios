@@ -521,9 +521,9 @@ enum MCPHTTPClient {
   }
 
   static func callTool(
-    server: MCPServer, name: String, arguments: [String: String]
+    server: MCPServer, name: String, arguments: [String: AgentToolArgumentValue]
   ) async throws -> String {
-    let argsCodable = arguments.mapValues { AnyCodable($0) }
+    let argsCodable = arguments.compactMapValues(anyCodable)
     let params: [String: AnyCodable] = [
       "name": AnyCodable(name),
       "arguments": AnyCodable(argsCodable),
@@ -542,6 +542,25 @@ enum MCPHTTPClient {
       return "Error: \(text.isEmpty ? "tool reported failure" : text)"
     }
     return text.isEmpty ? "(no output)" : text
+  }
+
+  private static func anyCodable(_ value: AgentToolArgumentValue) -> AnyCodable? {
+    switch value {
+    case .string(let value):
+      return AnyCodable(value)
+    case .bool(let value):
+      return AnyCodable(value)
+    case .int(let value):
+      return AnyCodable(value)
+    case .double(let value):
+      return AnyCodable(value)
+    case .object(let value):
+      return AnyCodable(value.compactMapValues(anyCodable))
+    case .array(let value):
+      return AnyCodable(value.compactMap(anyCodable))
+    case .null:
+      return nil
+    }
   }
 }
 
