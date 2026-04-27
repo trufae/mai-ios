@@ -352,7 +352,6 @@ final class AppStore: ObservableObject {
       }
 
       var assistantText = ""
-      let maxIterations = agentDefinitions.isEmpty ? 1 : 8
       var didFinish = false
       let toolNameResolver = AgentToolNameResolver(tools: agentDefinitions)
 
@@ -385,6 +384,26 @@ final class AppStore: ObservableObject {
         }
       }()
 
+      if agentDefinitions.isEmpty {
+        guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        let request = ChatCompletionRequest(
+          conversation: conversations[i],
+          settings: settings,
+          toolContext: augmentedToolContext,
+          assistantMessageID: assistantID
+        )
+        let response = try await ChatProviderRouter.complete(request: request) {
+          [weak self] streamed in
+          self?.setAssistantMessage(
+            id: assistantID, text: streamed, role: .assistant, touch: false)
+        }
+        try Task.checkCancellation()
+        setAssistantMessage(id: assistantID, text: response, role: .assistant)
+        await liveActivityManager.end(finalText: response)
+        return
+      }
+
+      let maxIterations = 8
       for iteration in 0..<maxIterations {
         try Task.checkCancellation()
         guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }

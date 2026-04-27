@@ -107,9 +107,11 @@ enum PromptComposer {
       hasToolResults
       ? """
       Continue from the latest Host tool results. Tool results are authoritative observations from calls you requested. If the latest tool result is an error, use that error to choose the next corrective tool call. Either emit exactly one next <tool_call> block or give the final answer if the tool results already answer the user.
+      Before calling any new tool, inspect the conversation, <tool_context>, and prior <tool_run> blocks. If they already contain enough information, answer directly with no <tool_call>.
       """
       : """
       Reply only to the latest user message. If a tool is needed, emit exactly one <tool_call> block and stop.
+      Before calling a tool, inspect the conversation and <tool_context>. If they already contain enough information, answer directly with no <tool_call>.
       """
     sections.append(
       """

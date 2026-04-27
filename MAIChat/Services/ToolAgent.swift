@@ -53,7 +53,8 @@ enum ToolAgentRegistry {
   }
 
   static func parseCalls(in text: String, definitions: [ToolDefinition]) -> [ParsedToolCall] {
-    AgentTooling.parseCalls(in: text, tools: definitions)
+    guard !definitions.isEmpty else { return [] }
+    return AgentTooling.parseCalls(in: text, tools: definitions)
   }
 
   static func normalized(call: ParsedToolCall, definitions: [ToolDefinition]) -> ParsedToolCall {

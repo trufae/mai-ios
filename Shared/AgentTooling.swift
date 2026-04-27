@@ -295,8 +295,9 @@ enum AgentTooling {
       5. Include required arguments. Omit optional arguments unless the user explicitly asks for filtering/pagination/limits or a previous tool result requires them.
       6. JSON arguments must preserve schema types: numbers as numbers, booleans as booleans, strings as strings. Never quote numbers or booleans.
       7. Tool errors are observations, not final failures. If a `<tool_run>` says a prerequisite is missing, call the prerequisite tool next with the information already provided by the user, then continue.
-      8. Do not re-call a tool whose `<tool_run>` is already in the conversation - read the existing result.
-      9. No filler narration between tool calls ("Let me...", "I'll now..."). Emit tool calls or the final answer; nothing else.
+      8. Before every tool call, inspect the latest user message, any `<tool_context>`, and all prior `<tool_run>` blocks. If they already contain enough information to answer, give the final answer instead of calling another tool.
+      9. Do not re-call a tool whose `<tool_run>` is already in the conversation - read the existing result.
+      10. No filler narration between tool calls ("Let me...", "I'll now..."). Emit tool calls or the final answer; nothing else.
       """
   }
 

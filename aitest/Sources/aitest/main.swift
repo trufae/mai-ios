@@ -491,6 +491,7 @@ func openAITools(from tools: [ToolDefinition], resolver: AgentToolNameResolver) 
 
 func parsedCalls(from completion: ChatCompletionResult, tools: [ToolDefinition]) -> [ParsedToolCall]
 {
+  guard !tools.isEmpty else { return [] }
   if !completion.nativeToolCalls.isEmpty {
     return completion.nativeToolCalls.map { call in
       let normalized = AgentTooling.parseCalls(in: call.textBlock, tools: tools).first
@@ -535,7 +536,7 @@ func appendNextTurnMessages(
     messages.append([
       "role": "user",
       "content":
-        "\(hostContent.trimmingCharacters(in: .whitespacesAndNewlines))\n\nContinue from these tool results. Either call the next needed tool or give the final answer.",
+        "\(hostContent.trimmingCharacters(in: .whitespacesAndNewlines))\n\nContinue from these tool results. Inspect the conversation and previous tool results before calling any new tool. If they already contain enough information, give the final answer.",
     ])
     return
   }
@@ -637,8 +638,9 @@ func runMain() async {
 
   var fullAssistant = ""
   var didFinish = false
+  let maxIterations = allTools.isEmpty ? 1 : cfg.maxIterations
 
-  for iteration in 1...cfg.maxIterations {
+  for iteration in 1...maxIterations {
     info(ANSI("1;35", "=== iteration \(iteration) ==="))
     let completion: ChatCompletionResult
     do {
@@ -657,7 +659,7 @@ func runMain() async {
     print(response)
     print(ANSI("90", "───────────────────"))
 
-    let calls = parsedCalls(from: completion, tools: allTools)
+    let calls = allTools.isEmpty ? [] : parsedCalls(from: completion, tools: allTools)
     info("parsed \(calls.count) tool call(s)")
 
     if calls.isEmpty {
