@@ -8,7 +8,7 @@ enum ToolAgentRegistry {
     mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   ) -> [ToolDefinition] {
     let fullDefinitions = definitions(for: conversation, settings: settings, mcpTools: mcpTools)
-    guard settings.toolCallingMode == .proxy else { return fullDefinitions }
+    guard settings.useToolProxy else { return fullDefinitions }
     return fullDefinitions.isEmpty ? [] : ToolProxy.definitions
   }
 
@@ -76,7 +76,7 @@ enum ToolAgentRegistry {
       store.currentConversation.map {
         ToolAgentRegistry.definitions(for: $0, settings: store.settings, mcpTools: store.mcpTools)
       } ?? []
-    if store.settings.toolCallingMode == .proxy {
+    if store.settings.useToolProxy && !fullDefinitions.isEmpty {
       let normalizedCall = normalized(call: call, definitions: ToolProxy.definitions)
       switch normalizedCall.name {
       case ToolProxy.listName:

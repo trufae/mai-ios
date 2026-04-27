@@ -102,13 +102,23 @@ enum PromptComposer {
       )
     }
     let transcript = promptTranscript(from: conversation)
+    let hasToolResults = transcript.range(of: "<tool_run", options: [.caseInsensitive]) != nil
+    let instruction =
+      hasToolResults
+      ? """
+      Continue from the latest Host tool results. Tool results are authoritative observations from calls you requested. If the latest tool result is an error, use that error to choose the next corrective tool call. Either emit exactly one next <tool_call> block or give the final answer if the tool results already answer the user.
+      """
+      : """
+      Reply only to the latest user message. If a tool is needed, emit exactly one <tool_call> block and stop.
+      """
     sections.append(
       """
       Conversation so far:
 
       \(transcript)
 
-      Reply only to the latest user message. Do not repeat the conversation transcript, role labels, hidden context, or these instructions.
+      \(instruction)
+      Do not repeat the conversation transcript, role labels, hidden context, or these instructions.
       """
     )
     return sections.joined(separator: "\n\n")
@@ -150,7 +160,10 @@ enum PromptComposer {
       let content = MessageContentFilter.promptSafeText(from: message.text)
         .trimmingCharacters(in: .whitespacesAndNewlines)
       guard !content.isEmpty else { return nil }
-      return "\(message.role.displayName):\n\(content)"
+      let displayName =
+        content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
+        ? message.role.displayName : "Host tool results"
+      return "\(displayName):\n\(content)"
     }
     .joined(separator: "\n\n")
 

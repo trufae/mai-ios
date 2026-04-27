@@ -669,6 +669,7 @@ func runMain() async {
     }
 
     var transformed = response
+    var runBlocks: [String] = []
     var toolResults: [(call: ParsedToolCall, canonical: String, result: String)] = []
     for call in calls {
       let canonical = resolver.canonicalName(for: call.name) ?? call.name
@@ -704,13 +705,17 @@ func runMain() async {
       let runBlock = AgentTooling.makeRunBlock(
         toolName: canonical, argumentsJSON: normalizedCall.argsJSON, result: result)
       if let range = transformed.range(of: call.rawBlock) {
-        transformed.replaceSubrange(range, with: runBlock)
+        transformed.removeSubrange(range)
       } else {
-        transformed += "\n\n" + runBlock
+        transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
       }
+      runBlocks.append(runBlock)
     }
 
-    fullAssistant += (fullAssistant.isEmpty ? "" : "\n\n") + transformed
+    let turnText = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      .joined(separator: "\n\n")
+    fullAssistant += (fullAssistant.isEmpty ? "" : "\n\n") + turnText
     appendNextTurnMessages(
       mode: cfg.mode,
       response: response,

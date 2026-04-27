@@ -89,7 +89,6 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case text
   case native
-  case proxy
 
   var id: String { rawValue }
 
@@ -97,7 +96,6 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .text: "Text protocol"
     case .native: "Native (OpenAI tools)"
-    case .proxy: "Proxy (list/call)"
     }
   }
 
@@ -109,9 +107,6 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case .native:
       return
         "Adds OpenAI's structured tools array to each request so capable models can return tool_calls directly. Falls back to the text protocol on Apple Intelligence."
-    case .proxy:
-      return
-        "Exposes only list-tools and call-tool to the model. The model lists matching tools first, then calls the selected tool through the proxy to reduce prompt context."
     }
   }
 }
@@ -404,6 +399,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var memory: String
   var embedMemory: Bool
   var toolCallingMode: ToolCallingMode
+  var useToolProxy: Bool
 
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
@@ -425,7 +421,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       mcpServers: [],
       memory: "",
       embedMemory: true,
-      toolCallingMode: .text
+      toolCallingMode: .text,
+      useToolProxy: false
     )
   }
 
@@ -447,7 +444,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     mcpServers: [MCPServer],
     memory: String,
     embedMemory: Bool,
-    toolCallingMode: ToolCallingMode
+    toolCallingMode: ToolCallingMode,
+    useToolProxy: Bool
   ) {
     self.defaultProvider = defaultProvider
     self.appleModelID = appleModelID
@@ -462,12 +460,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     self.memory = memory
     self.embedMemory = embedMemory
     self.toolCallingMode = toolCallingMode
+    self.useToolProxy = useToolProxy
   }
 
   enum CodingKeys: String, CodingKey {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
+    case useToolProxy
   }
 
   init(from decoder: Decoder) throws {
@@ -493,8 +493,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""
     embedMemory = (try? c.decode(Bool.self, forKey: .embedMemory)) ?? true
+    let storedMode = (try? c.decode(String.self, forKey: .toolCallingMode)) ?? "text"
+    let migratedFromLegacyProxy = (storedMode == "proxy")
     toolCallingMode =
-      (try? c.decode(ToolCallingMode.self, forKey: .toolCallingMode)) ?? .text
+      ToolCallingMode(rawValue: storedMode) ?? .text
+    useToolProxy =
+      (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
   }
 }
 

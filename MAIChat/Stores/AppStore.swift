@@ -358,7 +358,7 @@ final class AppStore: ObservableObject {
 
       let nativeTools: [OpenAITool]? = {
         guard
-          settings.toolCallingMode == .native || settings.toolCallingMode == .proxy,
+          settings.toolCallingMode == .native,
           conversations[index].provider == .openAICompatible,
           !agentDefinitions.isEmpty
         else { return nil }
@@ -415,6 +415,7 @@ final class AppStore: ObservableObject {
         }
 
         var transformed = response
+        var runBlocks: [String] = []
         for call in calls {
           try Task.checkCancellation()
           let normalizedCall = ToolAgentRegistry.normalized(
@@ -422,12 +423,16 @@ final class AppStore: ObservableObject {
           let result = await ToolAgentRegistry.execute(call: normalizedCall, store: self)
           let runBlock = ToolAgentRegistry.makeRunBlock(call: normalizedCall, result: result)
           if let range = transformed.range(of: call.rawBlock) {
-            transformed.replaceSubrange(range, with: runBlock)
+            transformed.removeSubrange(range)
           } else {
-            transformed += "\n\n" + runBlock
+            transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
           }
+          runBlocks.append(runBlock)
         }
-        assistantText = assistantText.isEmpty ? transformed : "\(assistantText)\n\n\(transformed)"
+        let turnText = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+          .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+          .joined(separator: "\n\n")
+        assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
         setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
         saveConversations()
       }

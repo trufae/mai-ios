@@ -75,6 +75,10 @@ struct SettingsView: View {
     }
   }
 
+  private var toolProxySummary: String {
+    "Off: every enabled tool is described in each request. On: only `list-tools` and `call-tool` wrappers go to the model — it lists matching tools by keyword, then calls the chosen one. Saves prompt context with many tools, adds one extra round-trip per call. Combines with both Text and Native modes."
+  }
+
   private var providerFooterText: String {
     if store.settings.openAIEndpoints.isEmpty {
       return
@@ -380,6 +384,10 @@ struct SettingsView: View {
       }
       .pickerStyle(.menu)
       Text(store.settings.toolCallingMode.summary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Toggle("Use tool proxy (list / call)", isOn: settingsBinding(\.useToolProxy))
+      Text(toolProxySummary)
         .font(.caption)
         .foregroundStyle(.secondary)
       ForEach($store.settings.mcpServers) { $server in
