@@ -388,19 +388,43 @@ func parseToolCalls(in text: String) -> [ParsedToolCall] {
     let raw = nsText.substring(with: m.range(at: 0))
     let json = nsText.substring(with: m.range(at: 1))
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let data = json.data(using: .utf8),
-      let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let obj = normalizeToolCallObject(parsed),
-      let name = (obj["name"] as? String)?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      !name.isEmpty
-    else { continue }
-    let args = (obj["arguments"] as? [String: Any]) ?? [:]
-    calls.append(
-      ParsedToolCall(
-        name: name, arguments: args, rawBlock: raw, toolCallID: nil, apiName: nil))
+    if let call = parseToolCallJSON(json, rawBlock: raw) {
+      calls.append(call)
+    }
+  }
+  if let trailing = trailingUnclosedToolCall(in: text),
+    let call = parseToolCallJSON(trailing.json, rawBlock: trailing.rawBlock)
+  {
+    calls.append(call)
   }
   return calls
+}
+
+func parseToolCallJSON(_ json: String, rawBlock: String) -> ParsedToolCall? {
+  guard let data = json.data(using: .utf8),
+    let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    let obj = normalizeToolCallObject(parsed),
+    let name = (obj["name"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+    !name.isEmpty
+  else { return nil }
+  let args = (obj["arguments"] as? [String: Any]) ?? [:]
+  return ParsedToolCall(
+    name: name, arguments: args, rawBlock: rawBlock, toolCallID: nil, apiName: nil)
+}
+
+func trailingUnclosedToolCall(in text: String) -> (rawBlock: String, json: String)? {
+  guard
+    let open = text.range(
+      of: "<tool_call>", options: [.caseInsensitive, .backwards]),
+    text.range(
+      of: "</tool_call>", options: [.caseInsensitive], range: open.upperBound..<text.endIndex)
+      == nil
+  else { return nil }
+  let raw = String(text[open.lowerBound..<text.endIndex])
+  let json = String(text[open.upperBound..<text.endIndex])
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  return json.isEmpty ? nil : (raw, json)
 }
 
 func normalizeToolCallObject(_ object: [String: Any]) -> [String: Any]? {
@@ -408,7 +432,6 @@ func normalizeToolCallObject(_ object: [String: Any]) -> [String: Any]? {
     !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   {
     if let nested = object["arguments"] as? [String: Any],
-      name == "tool_run" || name == "tool_call",
       let nestedName = nested["name"] as? String
     {
       return [
@@ -859,6 +882,18 @@ func appendNextTurnMessages(
   }
 }
 
+func normalizedArguments(_ arguments: [String: Any], for tool: MCPTool?) -> [String: Any] {
+  guard let tool,
+    let required = tool.inputSchema?["required"] as? [String],
+    required.count == 1,
+    let requiredName = required.first,
+    arguments[requiredName] == nil,
+    arguments.count == 1,
+    let value = arguments.values.first
+  else { return arguments }
+  return [requiredName: value]
+}
+
 // MARK: - Run
 
 func runMain() async {
@@ -873,6 +908,7 @@ func runMain() async {
   print()
 
   var allTools: [MCPTool] = []
+  var toolsByName: [String: MCPTool] = [:]
   var routing: [String: MCPClient] = [:]
   for urlStr in cfg.mcpURLs {
     guard let url = URL(string: urlStr) else {
@@ -886,6 +922,7 @@ func runMain() async {
       let tools = try await client.listTools()
       ok("→ \(tools.count) tools: \(tools.map(\.name).joined(separator: ", "))")
       for t in tools { routing[t.name] = client }
+      for t in tools { toolsByName[t.name] = t }
       allTools.append(contentsOf: tools)
     } catch {
       err("tools/list failed: \(error.localizedDescription)")
@@ -946,20 +983,27 @@ func runMain() async {
     var toolResults: [(call: ParsedToolCall, canonical: String, result: String)] = []
     for call in calls {
       let canonical = resolver.canonicalName(for: call.name) ?? call.name
+      let arguments = normalizedArguments(call.arguments, for: toolsByName[canonical])
+      let normalizedCall = ParsedToolCall(
+        name: call.name,
+        arguments: arguments,
+        rawBlock: call.rawBlock,
+        toolCallID: call.toolCallID,
+        apiName: call.apiName)
       let displayName = canonical == call.name ? call.name : "\(call.name) → \(canonical)"
-      info("dispatching \(ANSI("36", displayName))(\(call.argsJSON))")
+      info("dispatching \(ANSI("36", displayName))(\(normalizedCall.argsJSON))")
       let result: String
       if let server = routing[canonical] {
         do {
           result = try await server.callTool(
-            name: canonical, arguments: call.arguments)
+            name: canonical, arguments: arguments)
         } catch {
           result = "Error: \(error.localizedDescription)"
         }
       } else {
         result = "Error: unknown tool '\(call.name)' (not provided by any registered MCP)"
       }
-      toolResults.append((call, canonical, result))
+      toolResults.append((normalizedCall, canonical, result))
       let preview =
         result.count > 400 ? String(result.prefix(400)) + "…" : result
       print(ANSI("90", "── result ──"))
@@ -967,7 +1011,7 @@ func runMain() async {
       print(ANSI("90", "────────────"))
 
       let runBlock =
-        "<tool_run>\n\(canonical) tool (\(call.argsJSON)):\n\(result.trimmingCharacters(in: .whitespacesAndNewlines))\n</tool_run>"
+        "<tool_run>\n\(canonical) tool (\(normalizedCall.argsJSON)):\n\(result.trimmingCharacters(in: .whitespacesAndNewlines))\n</tool_run>"
       if let range = transformed.range(of: call.rawBlock) {
         transformed.replaceSubrange(range, with: runBlock)
       } else {
