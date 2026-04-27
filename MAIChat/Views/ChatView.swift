@@ -400,6 +400,42 @@ private struct ToolPickerPopover: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 4) {
+        Menu {
+          ForEach(ReasoningLevel.allCases) { level in
+            Button {
+              setReasoningLevel(level)
+            } label: {
+              if currentReasoningLevel == level {
+                Label(level.displayName, systemImage: "checkmark")
+              } else {
+                Text(level.displayName)
+              }
+            }
+          }
+        } label: {
+          HStack(spacing: 10) {
+            Image(systemName: currentReasoningLevel.systemImage)
+              .foregroundStyle(.secondary)
+              .frame(width: 18)
+            Text("Reasoning")
+              .foregroundStyle(.primary)
+            Spacer()
+            Text(currentReasoningLevel.displayName)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+              .imageScale(.small)
+              .foregroundStyle(.tertiary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 9)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        Divider().padding(.vertical, 4)
+
         ForEach(NativeToolID.allCases.filter { $0 != .memory }) { tool in
           Button {
             toggleNativeTool(tool)
@@ -542,6 +578,16 @@ private struct ToolPickerPopover: View {
   }
 
   // MARK: - Native tool helpers
+
+  private var currentReasoningLevel: ReasoningLevel {
+    store.currentConversation?.reasoningLevel ?? .automatic
+  }
+
+  private func setReasoningLevel(_ level: ReasoningLevel) {
+    store.updateCurrentConversation { conversation in
+      conversation.reasoningLevel = level
+    }
+  }
 
   private func isNativeEnabled(_ tool: NativeToolID) -> Bool {
     store.currentConversation?.enabledTools.contains(tool) ?? false

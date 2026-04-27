@@ -96,7 +96,7 @@ struct MessageBubble: View {
         Button {
           onTrimFromHere()
         } label: {
-          Label("Trim From Here", systemImage: "scissors")
+          Label("Restart From Here", systemImage: "arrow.clockwise")
         }
       }
       Button {

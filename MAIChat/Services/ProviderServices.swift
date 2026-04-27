@@ -126,9 +126,13 @@ enum PromptComposer {
     return sections.joined(separator: "\n\n")
   }
 
-  static func openAIMessages(conversation: Conversation, settings: AppSettings, toolContext: String)
-    -> [OpenAIMessage]
-  {
+  static func openAIMessages(
+    conversation: Conversation,
+    settings: AppSettings,
+    toolContext: String,
+    model: String,
+    endpoint: OpenAIEndpoint
+  ) -> [OpenAIMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
     let systemContent =
       toolContext.isEmpty
@@ -154,6 +158,12 @@ enum PromptComposer {
         return OpenAIMessage(role: role, content: content)
       }
     )
+    if let directive = ReasoningCompatibility.promptDirective(
+      level: conversation.reasoningLevel, model: model, endpoint: endpoint),
+      let lastUserIndex = messages.lastIndex(where: { $0.role == "user" })
+    {
+      messages[lastUserIndex].content += "\n\n\(directive)"
+    }
     return messages
   }
 
@@ -258,6 +268,260 @@ private struct OpenAIChatRequest: Encodable {
   var messages: [OpenAIMessage]
   var stream: Bool
   var tools: [OpenAITool]?
+  var reasoningLevel: ReasoningLevel
+  var endpoint: OpenAIEndpoint
+
+  enum CodingKeys: String, CodingKey {
+    case model
+    case messages
+    case stream
+    case tools
+    case reasoningEffort = "reasoning_effort"
+    case reasoning
+    case thinking
+    case enableThinking = "enable_thinking"
+    case thinkingBudget = "thinking_budget"
+    case chatTemplateKwargs = "chat_template_kwargs"
+    case think
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(model, forKey: .model)
+    try container.encode(messages, forKey: .messages)
+    try container.encode(stream, forKey: .stream)
+    try container.encodeIfPresent(tools, forKey: .tools)
+
+    let payload = ReasoningCompatibility.payload(
+      level: reasoningLevel, model: model, endpoint: endpoint)
+    try container.encodeIfPresent(payload.reasoningEffort, forKey: .reasoningEffort)
+    try container.encodeIfPresent(payload.reasoning, forKey: .reasoning)
+    try container.encodeIfPresent(payload.thinking, forKey: .thinking)
+    try container.encodeIfPresent(payload.enableThinking, forKey: .enableThinking)
+    try container.encodeIfPresent(payload.thinkingBudget, forKey: .thinkingBudget)
+    try container.encodeIfPresent(payload.chatTemplateKwargs, forKey: .chatTemplateKwargs)
+    try container.encodeIfPresent(payload.think, forKey: .think)
+  }
+}
+
+private struct OpenAIReasoningConfig: Encodable {
+  var effort: String?
+  var enabled: Bool?
+  var exclude: Bool?
+}
+
+private struct OpenAIThinkingConfig: Encodable {
+  var type: String
+}
+
+private struct OpenAIChatTemplateKwargs: Encodable {
+  var enableThinking: Bool
+
+  enum CodingKeys: String, CodingKey {
+    case enableThinking = "enable_thinking"
+  }
+}
+
+private enum OpenAIThinkValue: Encodable {
+  case bool(Bool)
+  case string(String)
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .bool(let value):
+      try container.encode(value)
+    case .string(let value):
+      try container.encode(value)
+    }
+  }
+}
+
+private struct ReasoningRequestPayload {
+  var reasoningEffort: String? = nil
+  var reasoning: OpenAIReasoningConfig? = nil
+  var thinking: OpenAIThinkingConfig? = nil
+  var enableThinking: Bool? = nil
+  var thinkingBudget: Int? = nil
+  var chatTemplateKwargs: OpenAIChatTemplateKwargs? = nil
+  var think: OpenAIThinkValue? = nil
+}
+
+private enum ReasoningCompatibility {
+  static func payload(
+    level: ReasoningLevel, model: String, endpoint: OpenAIEndpoint
+  ) -> ReasoningRequestPayload {
+    guard level != .automatic else { return ReasoningRequestPayload() }
+
+    switch profile(model: model, endpoint: endpoint) {
+    case .openRouter:
+      return openRouterPayload(level)
+    case .deepSeek:
+      return deepSeekPayload(level)
+    case .qwen:
+      return qwenPayload(level)
+    case .ollama:
+      return ollamaPayload(level, model: model)
+    case .openAI:
+      return openAIPayload(level, model: model)
+    case .generic:
+      return genericPayload(level)
+    }
+  }
+
+  static func promptDirective(
+    level: ReasoningLevel, model: String, endpoint: OpenAIEndpoint
+  ) -> String? {
+    guard level == .disabled else { return nil }
+    let normalized = normalizedText(model, endpoint)
+    guard normalized.contains("qwen") else { return nil }
+    return "/no_think"
+  }
+
+  private enum Profile {
+    case openAI
+    case openRouter
+    case deepSeek
+    case qwen
+    case ollama
+    case generic
+  }
+
+  private static func profile(model: String, endpoint: OpenAIEndpoint) -> Profile {
+    let text = normalizedText(model, endpoint)
+    if text.contains("openrouter.ai") { return .openRouter }
+    if text.contains("ollama") || text.contains(":11434") { return .ollama }
+    if text.contains("dashscope") || text.contains("aliyuncs") || text.contains("qwen") {
+      return .qwen
+    }
+    if text.contains("deepseek") { return .deepSeek }
+    if text.contains("api.openai.com") || text.contains("openai.azure.com") {
+      return .openAI
+    }
+    return .generic
+  }
+
+  private static func normalizedText(_ model: String, _ endpoint: OpenAIEndpoint) -> String {
+    "\(model) \(endpoint.name) \(endpoint.baseURL)".lowercased()
+  }
+
+  private static func openAIPayload(
+    _ level: ReasoningLevel, model: String
+  ) -> ReasoningRequestPayload {
+    guard isKnownOpenAIReasoningModel(model) else { return ReasoningRequestPayload() }
+    if level == .disabled && !supportsOpenAINone(model) {
+      return ReasoningRequestPayload(reasoningEffort: "low")
+    }
+    return ReasoningRequestPayload(reasoningEffort: openAIEffort(for: level))
+  }
+
+  private static func genericPayload(_ level: ReasoningLevel) -> ReasoningRequestPayload {
+    ReasoningRequestPayload(reasoningEffort: openAIEffort(for: level))
+  }
+
+  private static func openRouterPayload(_ level: ReasoningLevel) -> ReasoningRequestPayload {
+    let disabled = level == .disabled
+    return ReasoningRequestPayload(
+      reasoning: OpenAIReasoningConfig(
+        effort: disabled ? "none" : openAIEffort(for: level),
+        enabled: disabled ? false : true,
+        exclude: disabled ? true : false
+      ))
+  }
+
+  private static func deepSeekPayload(_ level: ReasoningLevel) -> ReasoningRequestPayload {
+    let disabled = level == .disabled
+    return ReasoningRequestPayload(
+      reasoningEffort: disabled ? nil : deepSeekEffort(for: level),
+      thinking: OpenAIThinkingConfig(type: disabled ? "disabled" : "enabled")
+    )
+  }
+
+  private static func qwenPayload(_ level: ReasoningLevel) -> ReasoningRequestPayload {
+    let enabled = level != .disabled
+    return ReasoningRequestPayload(
+      enableThinking: enabled,
+      thinkingBudget: enabled ? thinkingBudget(for: level) : nil,
+      chatTemplateKwargs: OpenAIChatTemplateKwargs(enableThinking: enabled)
+    )
+  }
+
+  private static func ollamaPayload(
+    _ level: ReasoningLevel, model: String
+  ) -> ReasoningRequestPayload {
+    let text = model.lowercased()
+    if text.contains("gpt-oss") {
+      let effort = level == .disabled ? "low" : ollamaEffort(for: level)
+      return ReasoningRequestPayload(
+        reasoningEffort: effort,
+        think: .string(effort)
+      )
+    }
+    if level == .disabled {
+      return ReasoningRequestPayload(
+        reasoningEffort: "none",
+        chatTemplateKwargs: OpenAIChatTemplateKwargs(enableThinking: false),
+        think: .bool(false)
+      )
+    }
+    return ReasoningRequestPayload(
+      reasoningEffort: ollamaEffort(for: level),
+      chatTemplateKwargs: OpenAIChatTemplateKwargs(enableThinking: true),
+      think: .bool(true)
+    )
+  }
+
+  private static func openAIEffort(for level: ReasoningLevel) -> String? {
+    switch level {
+    case .automatic: nil
+    case .disabled: "none"
+    case .minimal: "minimal"
+    case .low: "low"
+    case .medium: "medium"
+    case .high: "high"
+    }
+  }
+
+  private static func isKnownOpenAIReasoningModel(_ model: String) -> Bool {
+    let text = model.lowercased()
+    return text.hasPrefix("o1") || text.hasPrefix("o3") || text.hasPrefix("o4")
+      || text.hasPrefix("gpt-5")
+  }
+
+  private static func supportsOpenAINone(_ model: String) -> Bool {
+    model.lowercased().hasPrefix("gpt-5.1")
+  }
+
+  private static func deepSeekEffort(for level: ReasoningLevel) -> String {
+    switch level {
+    case .automatic, .disabled: "high"
+    case .minimal, .low, .medium: "high"
+    case .high: "high"
+    }
+  }
+
+  private static func ollamaEffort(for level: ReasoningLevel) -> String {
+    switch level {
+    case .automatic, .medium: "medium"
+    case .disabled, .minimal, .low: "low"
+    case .high: "high"
+    }
+  }
+
+  private static func thinkingBudget(for level: ReasoningLevel) -> Int? {
+    switch level {
+    case .automatic, .disabled:
+      nil
+    case .minimal:
+      256
+    case .low:
+      1024
+    case .medium:
+      4096
+    case .high:
+      8192
+    }
+  }
 }
 
 struct OpenAITool: Encodable, Sendable {
@@ -489,10 +753,14 @@ enum OpenAICompatibleProvider {
         messages: PromptComposer.openAIMessages(
           conversation: request.conversation,
           settings: request.settings,
-          toolContext: request.toolContext
+          toolContext: request.toolContext,
+          model: model,
+          endpoint: endpoint
         ),
         stream: request.conversation.usesStreaming,
-        tools: request.nativeTools
+        tools: request.nativeTools,
+        reasoningLevel: request.conversation.reasoningLevel,
+        endpoint: endpoint
       )
     )
 

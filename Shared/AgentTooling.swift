@@ -561,17 +561,41 @@ enum AgentTooling {
       if let nested = object["arguments"] as? [String: Any],
         let nestedName = nested["name"] as? String
       {
-        return ["name": nestedName, "arguments": argumentsObject(from: nested["arguments"])]
+        return ["name": nestedName, "arguments": toolArguments(from: nested)]
       }
-      return object
+      return ["name": name, "arguments": toolArguments(from: object)]
     }
     if let name = (object["tool"] as? String) ?? (object["function"] as? String) {
       return [
         "name": name,
-        "arguments": argumentsObject(from: object["arguments"] ?? object["args"]),
+        "arguments": toolArguments(from: object),
       ]
     }
+    if let function = object["function"] as? [String: Any],
+      let name = function["name"] as? String,
+      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      return ["name": name, "arguments": toolArguments(from: function)]
+    }
     return nil
+  }
+
+  private static func toolArguments(from object: [String: Any]) -> [String: Any] {
+    for key in ["arguments", "args", "parameters", "params", "input"] {
+      let args = argumentsObject(from: object[key])
+      if !args.isEmpty { return args }
+    }
+    var args: [String: Any] = [:]
+    var reserved = Set([
+      "name", "tool", "function", "arguments", "args", "parameters", "params", "input",
+    ])
+    if (object["type"] as? String)?.lowercased() == "function" {
+      reserved.formUnion(["id", "type"])
+    }
+    for (key, value) in object where !reserved.contains(key) {
+      args[key] = value
+    }
+    return args
   }
 
   private static func trailingUnclosedToolCall(in text: String) -> (rawBlock: String, json: String)?

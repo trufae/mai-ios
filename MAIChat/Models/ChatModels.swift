@@ -111,6 +111,50 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum ReasoningLevel: String, Codable, CaseIterable, Identifiable, Sendable {
+  case automatic
+  case disabled
+  case minimal
+  case low
+  case medium
+  case high
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .automatic: "Auto"
+    case .disabled: "Off"
+    case .minimal: "Minimal"
+    case .low: "Low"
+    case .medium: "Medium"
+    case .high: "High"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .automatic: "brain"
+    case .disabled: "xmark.circle"
+    case .minimal: "tortoise"
+    case .low: "speedometer"
+    case .medium: "circle.lefthalf.filled"
+    case .high: "flame"
+    }
+  }
+
+  var reasoningEffortValue: String? {
+    switch self {
+    case .automatic: nil
+    case .disabled: "none"
+    case .minimal: "minimal"
+    case .low: "low"
+    case .medium: "medium"
+    case .high: "high"
+    }
+  }
+}
+
 enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   case duckDuckGo
   case wikipedia
@@ -158,6 +202,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var usesStreaming: Bool
   var isPinned: Bool
   var disabledMCPTools: Set<String>
+  var reasoningLevel: ReasoningLevel
 
   init(
     id: UUID = UUID(),
@@ -173,7 +218,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     enabledTools: Set<NativeToolID> = AppSettings.defaultTools,
     usesStreaming: Bool = true,
     isPinned: Bool = false,
-    disabledMCPTools: Set<String> = []
+    disabledMCPTools: Set<String> = [],
+    reasoningLevel: ReasoningLevel = .automatic
   ) {
     self.id = id
     self.title = title
@@ -189,6 +235,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     self.usesStreaming = usesStreaming
     self.isPinned = isPinned
     self.disabledMCPTools = disabledMCPTools
+    self.reasoningLevel = reasoningLevel
   }
 
   enum CodingKeys: String, CodingKey {
@@ -206,6 +253,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case usesStreaming
     case isPinned
     case disabledMCPTools
+    case reasoningLevel
   }
 
   init(from decoder: Decoder) throws {
@@ -225,6 +273,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
     disabledMCPTools =
       (try? container.decode(Set<String>.self, forKey: .disabledMCPTools)) ?? []
+    reasoningLevel =
+      (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
   }
 
   var displayTitle: String {

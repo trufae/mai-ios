@@ -195,7 +195,8 @@ final class AppStore: ObservableObject {
       enabledTools: conversation.enabledTools,
       usesStreaming: conversation.usesStreaming,
       isPinned: false,
-      disabledMCPTools: conversation.disabledMCPTools
+      disabledMCPTools: conversation.disabledMCPTools,
+      reasoningLevel: conversation.reasoningLevel
     )
     if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
       conversations.insert(cloned, at: index)
