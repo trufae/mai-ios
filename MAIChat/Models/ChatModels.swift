@@ -158,6 +158,37 @@ enum ReasoningLevel: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
+  case full
+  case last10
+  case last5
+  case lastMessage
+  case none
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .full: "Full"
+    case .last10: "Last 10 messages"
+    case .last5: "Last 5 messages"
+    case .lastMessage: "Last Message"
+    case .none: "None"
+    }
+  }
+
+  /// Max number of conversation messages to include. `nil` means unlimited.
+  var messageLimit: Int? {
+    switch self {
+    case .full: nil
+    case .last10: 10
+    case .last5: 5
+    case .lastMessage: 1
+    case .none: 0
+    }
+  }
+}
+
 enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   case duckDuckGo
   case wikipedia
@@ -528,6 +559,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var embedMemory: Bool
   var toolCallingMode: ToolCallingMode
   var useToolProxy: Bool
+  var contextWindowMode: ContextWindowMode
 
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
@@ -550,7 +582,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       memory: "",
       embedMemory: true,
       toolCallingMode: .text,
-      useToolProxy: false
+      useToolProxy: false,
+      contextWindowMode: .full
     )
   }
 
@@ -573,7 +606,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     memory: String,
     embedMemory: Bool,
     toolCallingMode: ToolCallingMode,
-    useToolProxy: Bool
+    useToolProxy: Bool,
+    contextWindowMode: ContextWindowMode
   ) {
     self.defaultProvider = defaultProvider
     self.appleModelID = appleModelID
@@ -589,13 +623,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     self.embedMemory = embedMemory
     self.toolCallingMode = toolCallingMode
     self.useToolProxy = useToolProxy
+    self.contextWindowMode = contextWindowMode
   }
 
   enum CodingKeys: String, CodingKey {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
-    case useToolProxy
+    case useToolProxy, contextWindowMode
   }
 
   init(from decoder: Decoder) throws {
@@ -627,6 +662,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       ToolCallingMode(rawValue: storedMode) ?? .text
     useToolProxy =
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
+    contextWindowMode =
+      (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
   }
 }
 

@@ -69,6 +69,12 @@ struct SettingsView: View {
       }
       .pickerStyle(.menu)
       Toggle("Stream Responses", isOn: settingsBinding(\.streamByDefault))
+      Picker("Context", selection: settingsBinding(\.contextWindowMode)) {
+        ForEach(ContextWindowMode.allCases) { mode in
+          Text(mode.displayName).tag(mode)
+        }
+      }
+      .pickerStyle(.menu)
     } header: {
       Text("Default Provider")
     } footer: {

@@ -101,7 +101,8 @@ enum PromptComposer {
         """
       )
     }
-    let transcript = promptTranscript(from: conversation)
+    let transcript = promptTranscript(
+      from: conversation, limit: settings.contextWindowMode.messageLimit)
     let hasToolResults = transcript.range(of: "<tool_run", options: [.caseInsensitive]) != nil
     let instruction =
       hasToolResults
@@ -139,9 +140,15 @@ enum PromptComposer {
       ? baseSystem
       : "\(baseSystem)\n\n## Context from enabled native tools\n\(toolContext)"
     var messages = [OpenAIMessage(role: "system", content: systemContent)]
+    let limited: [ChatMessage] = {
+      if let limit = settings.contextWindowMode.messageLimit {
+        return Array(conversation.messages.suffix(limit))
+      }
+      return conversation.messages
+    }()
     messages.append(
-      contentsOf: conversation.messages.compactMap { message in
-        let content = MessageContentFilter.promptSafeText(from: message.text)
+      contentsOf: limited.compactMap { message in
+        let content = MessageContentFilter.conversationContextText(from: message.text)
           .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else { return nil }
         let role: String
@@ -167,9 +174,15 @@ enum PromptComposer {
     return messages
   }
 
-  private static func promptTranscript(from conversation: Conversation) -> String {
-    let transcript = conversation.messages.compactMap { message -> String? in
-      let content = MessageContentFilter.promptSafeText(from: message.text)
+  private static func promptTranscript(from conversation: Conversation, limit: Int? = nil)
+    -> String
+  {
+    let limited: [ChatMessage] = {
+      if let limit { return Array(conversation.messages.suffix(limit)) }
+      return conversation.messages
+    }()
+    let transcript = limited.compactMap { message -> String? in
+      let content = MessageContentFilter.conversationContextText(from: message.text)
         .trimmingCharacters(in: .whitespacesAndNewlines)
       guard !content.isEmpty else { return nil }
       let displayName =

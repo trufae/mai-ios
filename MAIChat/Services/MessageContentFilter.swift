@@ -34,8 +34,12 @@ struct HiddenMessageSection: Identifiable {
 }
 
 enum MessageContentFilter {
-  private static let hiddenTags = ["tool_context", "tool_run", "think", "conversation"]
-  private static let promptStripTags: Set<String> = ["tool_context", "conversation", "think"]
+  private static let hiddenTags = [
+    "tool_context", "tool_run", "tool_call", "think", "conversation",
+  ]
+  private static let promptStripTags: Set<String> = [
+    "tool_context", "conversation", "think", "tool_call",
+  ]
 
   static func render(_ text: String) -> RenderedMessageContent {
     var cursor = text.startIndex
@@ -74,6 +78,10 @@ enum MessageContentFilter {
   }
 
   static func promptSafeText(from text: String) -> String {
+    conversationContextText(from: text)
+  }
+
+  static func conversationContextText(from text: String) -> String {
     var result = text
     for tag in promptStripTags {
       let pattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
