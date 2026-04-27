@@ -56,6 +56,7 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case weather
   case webSearch
   case todo
+  case textToSpeech
   case files
   case memory
 
@@ -68,6 +69,7 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather: "Weather"
     case .webSearch: "Web Search"
     case .todo: "Todo"
+    case .textToSpeech: "Text to Speech"
     case .files: "Files"
     case .memory: "Memory"
     }
@@ -80,6 +82,7 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather: "cloud.sun"
     case .webSearch: "magnifyingglass"
     case .todo: "checklist"
+    case .textToSpeech: "speaker.wave.2"
     case .files: "folder"
     case .memory: "brain"
     }
@@ -418,6 +421,10 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webSearchProvider: WebSearchProvider
   var todos: [TodoItem]
   var files: [ToolFile]
+  var textToSpeechLanguage: String
+  var textToSpeechVoiceIdentifier: String
+  var textToSpeechRate: Double
+  var textToSpeechPitch: Double
 
   static let defaults = NativeToolSettings(
     includeTimeZone: true,
@@ -428,8 +435,79 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     weatherLocation: "",
     webSearchProvider: .duckDuckGo,
     todos: [],
-    files: []
+    files: [],
+    textToSpeechLanguage: "",
+    textToSpeechVoiceIdentifier: "",
+    textToSpeechRate: 0.5,
+    textToSpeechPitch: 1.0
   )
+
+  init(
+    includeTimeZone: Bool,
+    includeCurrentTime: Bool,
+    includeYear: Bool,
+    useGPSLocation: Bool,
+    manualLocation: String,
+    weatherLocation: String,
+    webSearchProvider: WebSearchProvider,
+    todos: [TodoItem],
+    files: [ToolFile],
+    textToSpeechLanguage: String = "",
+    textToSpeechVoiceIdentifier: String = "",
+    textToSpeechRate: Double = 0.5,
+    textToSpeechPitch: Double = 1.0
+  ) {
+    self.includeTimeZone = includeTimeZone
+    self.includeCurrentTime = includeCurrentTime
+    self.includeYear = includeYear
+    self.useGPSLocation = useGPSLocation
+    self.manualLocation = manualLocation
+    self.weatherLocation = weatherLocation
+    self.webSearchProvider = webSearchProvider
+    self.todos = todos
+    self.files = files
+    self.textToSpeechLanguage = textToSpeechLanguage
+    self.textToSpeechVoiceIdentifier = textToSpeechVoiceIdentifier
+    self.textToSpeechRate = textToSpeechRate
+    self.textToSpeechPitch = textToSpeechPitch
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case includeTimeZone, includeCurrentTime, includeYear, useGPSLocation
+    case manualLocation, weatherLocation, webSearchProvider, todos, files
+    case textToSpeechLanguage, textToSpeechVoiceIdentifier
+    case textToSpeechRate, textToSpeechPitch
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let defaults = NativeToolSettings.defaults
+    includeTimeZone =
+      (try? c.decode(Bool.self, forKey: .includeTimeZone)) ?? defaults.includeTimeZone
+    includeCurrentTime =
+      (try? c.decode(Bool.self, forKey: .includeCurrentTime)) ?? defaults.includeCurrentTime
+    includeYear = (try? c.decode(Bool.self, forKey: .includeYear)) ?? defaults.includeYear
+    useGPSLocation = (try? c.decode(Bool.self, forKey: .useGPSLocation)) ?? defaults.useGPSLocation
+    manualLocation =
+      (try? c.decode(String.self, forKey: .manualLocation)) ?? defaults.manualLocation
+    weatherLocation =
+      (try? c.decode(String.self, forKey: .weatherLocation)) ?? defaults.weatherLocation
+    webSearchProvider =
+      (try? c.decode(WebSearchProvider.self, forKey: .webSearchProvider))
+      ?? defaults.webSearchProvider
+    todos = (try? c.decode([TodoItem].self, forKey: .todos)) ?? defaults.todos
+    files = (try? c.decode([ToolFile].self, forKey: .files)) ?? defaults.files
+    textToSpeechLanguage =
+      (try? c.decode(String.self, forKey: .textToSpeechLanguage))
+      ?? defaults.textToSpeechLanguage
+    textToSpeechVoiceIdentifier =
+      (try? c.decode(String.self, forKey: .textToSpeechVoiceIdentifier))
+      ?? defaults.textToSpeechVoiceIdentifier
+    textToSpeechRate =
+      (try? c.decode(Double.self, forKey: .textToSpeechRate)) ?? defaults.textToSpeechRate
+    textToSpeechPitch =
+      (try? c.decode(Double.self, forKey: .textToSpeechPitch)) ?? defaults.textToSpeechPitch
+  }
 }
 
 struct AppSettings: Codable, Equatable, Sendable {

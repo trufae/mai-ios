@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -18,8 +19,14 @@ enum ToolAgentRegistry {
     mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   ) -> [ToolDefinition] {
     var defs: [ToolDefinition] = []
+    if conversation.enabledTools.contains(.webSearch) {
+      defs.append(contentsOf: WebSearchTool.definitions)
+    }
     if conversation.enabledTools.contains(.todo) {
       defs.append(contentsOf: TodoTool.definitions)
+    }
+    if conversation.enabledTools.contains(.textToSpeech) {
+      defs.append(contentsOf: TextToSpeechTool.definitions)
     }
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidScheme {
@@ -111,6 +118,12 @@ enum ToolAgentRegistry {
         normalizedCall.arguments["title_or_id"] ?? normalizedCall.arguments["id"]
         ?? normalizedCall.arguments["title"] ?? ""
       return TodoTool.markDone(query: query, store: store)
+    case WebSearchTool.name:
+      return await WebSearchTool.search(
+        arguments: normalizedCall.argumentValues, settings: store.settings)
+    case TextToSpeechTool.name:
+      return TextToSpeechTool.speak(
+        arguments: normalizedCall.argumentValues, settings: store.settings.toolSettings)
     default:
       return await dispatchMCP(call: normalizedCall, store: store)
     }
@@ -283,6 +296,60 @@ enum ToolProxy {
 }
 
 @MainActor
+enum WebSearchTool {
+  static let name = "web_search"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Search the web only when current or external information is needed. Do not call this for ordinary conversation, writing, coding from provided context, or questions answerable without fresh lookup.",
+      parameters: [
+        ToolParameterDef(
+          name: "query", type: "string",
+          description:
+            "Focused search query. Use only the information needed for lookup; do not include unrelated chat history.",
+          required: true),
+        ToolParameterDef(
+          name: "provider", type: "string",
+          description:
+            "Optional provider override: duckDuckGo, wikipedia, ollama, or all. Omit to use the configured default.",
+          required: false),
+      ])
+  ]
+
+  static func search(arguments: [String: AgentToolArgumentValue], settings: AppSettings) async
+    -> String
+  {
+    let query = (arguments["query"]?.stringValue ?? arguments["q"]?.stringValue ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return "Error: query is required." }
+    let provider =
+      providerValue(arguments["provider"]?.stringValue)
+      ?? settings.toolSettings.webSearchProvider
+    guard
+      let result = await WebSearchService.searchContext(
+        query: query, provider: provider, settings: settings)
+    else {
+      return "No web results for '\(query)'."
+    }
+    return result
+  }
+
+  private static func providerValue(_ raw: String?) -> WebSearchProvider? {
+    let normalized = (raw ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+      .filter { $0.isLetter || $0.isNumber }
+    guard !normalized.isEmpty else { return nil }
+    return WebSearchProvider.allCases.first { provider in
+      provider.rawValue.lowercased().filter { $0.isLetter || $0.isNumber } == normalized
+        || provider.displayName.lowercased().filter { $0.isLetter || $0.isNumber } == normalized
+    }
+  }
+}
+
+@MainActor
 enum TodoTool {
   static let listName = "todo_list"
   static let addName = "todo_add"
@@ -356,5 +423,98 @@ enum TodoTool {
       return "Marked done: \(title)"
     }
     return "Error: no todo matched '\(q)'."
+  }
+}
+
+@MainActor
+enum TextToSpeechTool {
+  static let name = "text-to-speech"
+  private static let synthesizer = AVSpeechSynthesizer()
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Speak the provided text aloud on this iOS device using the system text-to-speech voice.",
+      parameters: [
+        ToolParameterDef(
+          name: "text", type: "string",
+          description:
+            "Text to speak aloud. Keep it concise unless the user asks for a long reading.",
+          required: true),
+        ToolParameterDef(
+          name: "language", type: "string",
+          description:
+            "Optional BCP-47 voice language, such as en-US or es-ES. Omit to use the configured default.",
+          required: false),
+        ToolParameterDef(
+          name: "voice", type: "string",
+          description:
+            "Optional AVSpeechSynthesisVoice identifier. Omit to use the configured default voice.",
+          required: false),
+        ToolParameterDef(
+          name: "rate", type: "number",
+          description:
+            "Optional speaking rate from 0.0 to 1.0. Omit to use the configured default.",
+          required: false),
+        ToolParameterDef(
+          name: "pitch", type: "number",
+          description:
+            "Optional pitch multiplier from 0.5 to 2.0. Omit to use the configured default.",
+          required: false),
+        ToolParameterDef(
+          name: "interrupt", type: "boolean",
+          description:
+            "Whether to stop current speech before speaking this text. Default: true.",
+          required: false),
+      ])
+  ]
+
+  static func speak(arguments: [String: AgentToolArgumentValue], settings: NativeToolSettings)
+    -> String
+  {
+    let text = (arguments["text"]?.stringValue ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return "Error: text is required." }
+
+    let interrupt = arguments["interrupt"]?.boolValue ?? true
+    if interrupt, synthesizer.isSpeaking {
+      synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    let utterance = AVSpeechUtterance(string: text)
+    let voiceIdentifier =
+      firstNonEmpty(
+        arguments["voice"]?.stringValue,
+        arguments["voice_identifier"]?.stringValue,
+        settings.textToSpeechVoiceIdentifier)
+    let language =
+      firstNonEmpty(arguments["language"]?.stringValue, settings.textToSpeechLanguage)
+    if let voiceIdentifier,
+      let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
+    {
+      utterance.voice = voice
+    } else if let language {
+      utterance.voice = AVSpeechSynthesisVoice(language: language)
+    }
+    let rate = arguments["rate"]?.numberValue ?? settings.textToSpeechRate
+    utterance.rate = clamped(Float(rate), min: 0, max: 1)
+    let pitch = arguments["pitch"]?.numberValue ?? settings.textToSpeechPitch
+    utterance.pitchMultiplier = clamped(Float(pitch), min: 0.5, max: 2)
+
+    synthesizer.speak(utterance)
+    return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
+  }
+
+  private static func firstNonEmpty(_ values: String?...) -> String? {
+    for value in values {
+      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
+  private static func clamped(_ value: Float, min: Float, max: Float) -> Float {
+    Swift.max(min, Swift.min(max, value))
   }
 }

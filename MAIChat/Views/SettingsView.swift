@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -349,6 +350,41 @@ struct SettingsView: View {
         store.settings.toolSettings.todos.remove(atOffsets: offsets)
         store.saveSettings()
       }
+    case .textToSpeech:
+      Picker("Language", selection: settingsBinding(\.toolSettings.textToSpeechLanguage)) {
+        Text("System Default").tag("")
+        ForEach(textToSpeechLanguages, id: \.self) { language in
+          Text(languageDisplayName(language)).tag(language)
+        }
+      }
+      .onChange(of: store.settings.toolSettings.textToSpeechLanguage) { _, language in
+        guard !language.isEmpty,
+          let voice = textToSpeechVoices.first(where: {
+            $0.identifier == store.settings.toolSettings.textToSpeechVoiceIdentifier
+          }),
+          voice.language != language
+        else { return }
+        store.settings.toolSettings.textToSpeechVoiceIdentifier = ""
+        store.saveSettings()
+      }
+
+      Picker("Voice", selection: settingsBinding(\.toolSettings.textToSpeechVoiceIdentifier)) {
+        Text("Default Voice").tag("")
+        ForEach(textToSpeechVoiceOptions, id: \.identifier) { voice in
+          Text("\(voice.name) (\(languageDisplayName(voice.language)))")
+            .tag(voice.identifier)
+        }
+      }
+
+      VStack(alignment: .leading) {
+        Text("Rate")
+        Slider(value: settingsBinding(\.toolSettings.textToSpeechRate), in: 0...1, step: 0.05)
+      }
+
+      VStack(alignment: .leading) {
+        Text("Pitch")
+        Slider(value: settingsBinding(\.toolSettings.textToSpeechPitch), in: 0.5...2, step: 0.05)
+      }
     case .files:
       Button {
         showingFileImporter = true
@@ -587,6 +623,30 @@ struct SettingsView: View {
     return WebSearchProvider.allCases.filter { provider in
       provider != .ollama || hasOllama
     }
+  }
+
+  private var textToSpeechVoices: [AVSpeechSynthesisVoice] {
+    AVSpeechSynthesisVoice.speechVoices().sorted {
+      if $0.language != $1.language { return $0.language < $1.language }
+      return $0.name < $1.name
+    }
+  }
+
+  private var textToSpeechLanguages: [String] {
+    Array(Set(textToSpeechVoices.map(\.language))).sorted {
+      languageDisplayName($0) < languageDisplayName($1)
+    }
+  }
+
+  private var textToSpeechVoiceOptions: [AVSpeechSynthesisVoice] {
+    let language = store.settings.toolSettings.textToSpeechLanguage
+    guard !language.isEmpty else { return textToSpeechVoices }
+    return textToSpeechVoices.filter { $0.language == language }
+  }
+
+  private func languageDisplayName(_ language: String) -> String {
+    let name = Locale.current.localizedString(forIdentifier: language) ?? language
+    return "\(name) (\(language))"
   }
 
   private func toggleTool(_ tool: NativeToolID) {

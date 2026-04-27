@@ -8,6 +8,9 @@ struct SidebarView: View {
   var body: some View {
     ZStack(alignment: .bottomTrailing) {
       conversationList
+        .safeAreaInset(edge: .bottom) {
+          Color.clear.frame(height: 80)
+        }
       floatingActions
         .padding(.trailing, 18)
         .padding(.bottom, 22)
@@ -46,6 +49,13 @@ struct SidebarView: View {
             store.deleteConversation(conversation)
           } label: {
             Label("Delete Conversation", systemImage: "trash")
+          }
+
+          Button(role: .destructive) {
+            let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
+            store.deleteConversations(others)
+          } label: {
+            Label("Delete all except this one", systemImage: "trash.slash")
           }
         }
       }

@@ -76,9 +76,12 @@ enum MessageContentFilter {
   static func promptSafeText(from text: String) -> String {
     var result = text
     for tag in promptStripTags {
-      let pattern = "<\(tag)>[\\s\\S]*?</\(tag)>"
+      let pattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
       result = result.replacingOccurrences(
         of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+      let unclosedPattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*$"
+      result = result.replacingOccurrences(
+        of: unclosedPattern, with: "", options: [.regularExpression, .caseInsensitive])
     }
     while result.contains("\n\n\n") {
       result = result.replacingOccurrences(of: "\n\n\n", with: "\n\n")

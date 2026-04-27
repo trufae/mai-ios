@@ -147,6 +147,24 @@ final class AppStore: ObservableObject {
     await send()
   }
 
+  func restartFromScratch(with message: ChatMessage) async {
+    guard !isResponding, let index = currentConversationIndex else { return }
+    let visible = MessageContentFilter.render(message.text).visibleText
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallback = MessageContentFilter.promptSafeText(from: message.text)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let prompt = visible.isEmpty ? fallback : visible
+    guard !prompt.isEmpty else { return }
+
+    conversations[index].messages.removeAll()
+    conversations[index].title = "New chat"
+    conversations[index].updatedAt = Date()
+    saveConversations()
+
+    draftText = prompt
+    await send()
+  }
+
   func deleteConversations(_ ids: Set<UUID>) {
     for id in ids {
       responseTasks[id]?.cancel()
@@ -427,6 +445,17 @@ final class AppStore: ObservableObject {
 
         let calls = ToolAgentRegistry.parseCalls(in: response, definitions: agentDefinitions)
         if calls.isEmpty {
+          if AgentTooling.containsToolCallMarker(in: response) {
+            let feedback = AgentTooling.malformedToolCallFeedback(from: response)
+            let turnText = [response, feedback]
+              .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+              .filter { !$0.isEmpty }
+              .joined(separator: "\n\n")
+            assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
+            setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
+            saveConversations()
+            continue
+          }
           assistantText = assistantText.isEmpty ? response : "\(assistantText)\n\n\(response)"
           setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
           didFinish = true
@@ -508,11 +537,13 @@ final class AppStore: ObservableObject {
     guard let index = currentConversationIndex else { return }
     let conversation = conversations[index]
     let conversationID = conversation.id
-    let substantive = conversation.messages.filter { msg in
-      msg.role != .error
-        && !msg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let transcriptEntries = conversation.messages.compactMap { msg -> String? in
+      guard msg.role != .error else { return nil }
+      let text = MessageContentFilter.promptSafeText(from: msg.text)
+      guard !text.isEmpty else { return nil }
+      return "\(msg.role.displayName):\n\(text)"
     }
-    guard substantive.count >= 2 else {
+    guard transcriptEntries.count >= 2 else {
       errorMessage = "Nothing to compact yet."
       return
     }
@@ -521,10 +552,7 @@ final class AppStore: ObservableObject {
     defer { isCompacting = false }
     errorMessage = nil
 
-    let transcript =
-      substantive
-      .map { "\($0.role.displayName): \($0.text)" }
-      .joined(separator: "\n\n")
+    let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
 
     let model: String = {
       let m = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -549,7 +577,18 @@ final class AppStore: ObservableObject {
       ChatMessage(
         role: .user,
         text: """
-          Summarize the following conversation into a concise, information-preserving brief that can serve as context for continuing the chat. Preserve names, decisions, code snippets, file paths, error messages, and any unresolved questions. Drop greetings and filler. Use short paragraphs or bullets. Do not address the user; write in third person.
+          Compact the transcript below into durable context for continuing the same chat.
+
+          Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
+
+          Preserve:
+          - User goals, preferences, constraints, and decisions
+          - Important names, projects, files, commands, code snippets, errors, and results
+          - Current state, unresolved questions, and next steps
+
+          Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+
+          Transcript:
 
           \(transcript)
           """
@@ -563,7 +602,7 @@ final class AppStore: ObservableObject {
     )
     do {
       let summary = try await ChatProviderRouter.complete(request: request) { _ in }
-      let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+      let trimmed = MessageContentFilter.promptSafeText(from: summary)
       guard !trimmed.isEmpty else {
         errorMessage = "Compact returned an empty summary."
         return
@@ -590,9 +629,14 @@ final class AppStore: ObservableObject {
       conversations
       .filter { !$0.isIncognito }
       .flatMap { conversation in
-        conversation.messages.map { "\($0.role.displayName): \($0.text)" }
+        conversation.messages.compactMap { message -> String? in
+          guard message.role != .error else { return nil }
+          let text = MessageContentFilter.promptSafeText(from: message.text)
+          guard !text.isEmpty else { return nil }
+          return "\(message.role.displayName):\n\(text)"
+        }
       }
-      .joined(separator: "\n")
+      .joined(separator: "\n\n")
     guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
     var memoryConversation = Conversation(
@@ -609,7 +653,11 @@ final class AppStore: ObservableObject {
         role: .user,
         text:
           """
-          Extract only durable, useful user memories from these conversations. Keep facts concise. Include preferences, names, age, cities, projects, and recurring instructions. Ignore one-off tasks and sensitive secrets.
+          Extract durable user memory from these conversations.
+
+          Output only concise memory notes. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about this task.
+
+          Keep stable facts and recurring preferences: names, locations, projects, technical preferences, workflow habits, and standing instructions. Ignore one-off tasks, transient chat state, assistant behavior, tool outputs unless they reveal a durable user preference, and sensitive secrets such as credentials or tokens.
 
           \(transcript)
           """
@@ -623,7 +671,7 @@ final class AppStore: ObservableObject {
     )
     do {
       let memory = try await ChatProviderRouter.complete(request: request) { _ in }
-      settings.memory = memory.trimmingCharacters(in: .whitespacesAndNewlines)
+      settings.memory = MessageContentFilter.promptSafeText(from: memory)
       saveSettings()
     } catch {
       errorMessage = error.localizedDescription

@@ -548,29 +548,7 @@ struct OpenAIPropertySpec: Encodable, Sendable {
 
 private struct OpenAIChatResponse: Decodable {
   struct Choice: Decodable {
-    struct Message: Decodable {
-      var content: OpenAIContent?
-      var reasoningContent: String?
-      var toolCalls: [OpenAIToolCall]?
-
-      enum CodingKeys: String, CodingKey {
-        case content
-        case reasoningContent = "reasoning_content"
-        case reasoning
-        case toolCalls = "tool_calls"
-      }
-
-      init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        content = try? c.decode(OpenAIContent.self, forKey: .content)
-        reasoningContent =
-          (try? c.decode(String.self, forKey: .reasoningContent))
-          ?? (try? c.decode(String.self, forKey: .reasoning))
-        toolCalls = try? c.decode([OpenAIToolCall].self, forKey: .toolCalls)
-      }
-    }
-
-    var message: Message?
+    var message: OpenAIChoicePayload?
     var text: String?
   }
 
@@ -617,30 +595,8 @@ private struct OpenAIStreamChunk: Decodable {
       }
     }
 
-    struct Message: Decodable {
-      var content: OpenAIContent?
-      var reasoningContent: String?
-      var toolCalls: [OpenAIToolCall]?
-
-      enum CodingKeys: String, CodingKey {
-        case content
-        case reasoningContent = "reasoning_content"
-        case reasoning
-        case toolCalls = "tool_calls"
-      }
-
-      init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        content = try? c.decode(OpenAIContent.self, forKey: .content)
-        reasoningContent =
-          (try? c.decode(String.self, forKey: .reasoningContent))
-          ?? (try? c.decode(String.self, forKey: .reasoning))
-        toolCalls = try? c.decode([OpenAIToolCall].self, forKey: .toolCalls)
-      }
-    }
-
     var delta: Delta?
-    var message: Message?
+    var message: OpenAIChoicePayload?
     var text: String?
   }
 
@@ -656,6 +612,28 @@ struct DeltaToolCall: Decodable, Sendable {
   var id: String?
   var type: String?
   var function: Function?
+}
+
+private struct OpenAIChoicePayload: Decodable {
+  var content: OpenAIContent?
+  var reasoningContent: String?
+  var toolCalls: [OpenAIToolCall]?
+
+  enum CodingKeys: String, CodingKey {
+    case content
+    case reasoningContent = "reasoning_content"
+    case reasoning
+    case toolCalls = "tool_calls"
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    content = try? c.decode(OpenAIContent.self, forKey: .content)
+    reasoningContent =
+      (try? c.decode(String.self, forKey: .reasoningContent))
+      ?? (try? c.decode(String.self, forKey: .reasoning))
+    toolCalls = try? c.decode([OpenAIToolCall].self, forKey: .toolCalls)
+  }
 }
 
 private struct OpenAIContent: Decodable {
@@ -929,15 +907,10 @@ enum OpenAICompatibleProvider {
         }
       }
     }
-    let assembledToolCalls: [OpenAIToolCall] = {
-      if !fullMessageToolCalls.isEmpty { return fullMessageToolCalls }
-      return toolCallAcc.sorted(by: { $0.key < $1.key }).map { _, e in
-        OpenAIToolCall(
-          id: e.id, type: "function",
-          function: OpenAIToolCall.Function(name: e.name, arguments: e.args))
-      }
-    }()
-    let toolCallText = synthesizeToolCallBlocks(from: assembledToolCalls)
+    let toolCallText =
+      fullMessageToolCalls.isEmpty
+      ? joinedToolCallBlocks(AgentTooling.nativeToolCalls(from: toolCallAcc).map(\.textBlock))
+      : synthesizeToolCallBlocks(from: fullMessageToolCalls)
     if !toolCallText.isEmpty {
       accumulated =
         accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1060,28 +1033,19 @@ enum OpenAICompatibleProvider {
 
   static func synthesizeToolCallBlocks(from calls: [OpenAIToolCall]?) -> String {
     guard let calls, !calls.isEmpty else { return "" }
-    let blocks = calls.compactMap { call -> String? in
-      guard let name = call.function?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !name.isEmpty
-      else { return nil }
-      var argsObject: Any = [:] as [String: Any]
-      if let raw = call.function?.arguments,
-        let data = raw.data(using: .utf8),
-        let parsed = try? JSONSerialization.jsonObject(with: data)
-      {
-        argsObject = parsed
-      }
-      let payload: [String: Any] = ["name": name, "arguments": argsObject]
-      guard
-        let data = try? JSONSerialization.data(
-          withJSONObject: payload, options: [.sortedKeys]),
-        let json = String(data: data, encoding: .utf8)
-      else {
-        return nil
-      }
-      return "<tool_call>\(json)</tool_call>"
-    }
-    return blocks.joined(separator: "\n")
+    return joinedToolCallBlocks(
+      calls.compactMap { call -> String? in
+        guard let name = call.function?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !name.isEmpty
+        else { return nil }
+        return AgentTooling.makeNativeToolCall(
+          id: call.id, name: name, rawArguments: call.function?.arguments ?? ""
+        ).textBlock
+      })
+  }
+
+  private static func joinedToolCallBlocks(_ blocks: [String]) -> String {
+    blocks.filter { !$0.isEmpty }.joined(separator: "\n")
   }
 
   private static func streamDeltaText(from chunk: OpenAIStreamChunk) -> String? {

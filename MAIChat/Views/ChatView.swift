@@ -281,7 +281,8 @@ struct ChatView: View {
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }
                   : nil,
-                onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } }
+                onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
+                onRestartFresh: { Task { await store.restartFromScratch(with: message) } }
               )
               .id(message.id)
             }
@@ -400,42 +401,6 @@ private struct ToolPickerPopover: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 4) {
-        Menu {
-          ForEach(ReasoningLevel.allCases) { level in
-            Button {
-              setReasoningLevel(level)
-            } label: {
-              if currentReasoningLevel == level {
-                Label(level.displayName, systemImage: "checkmark")
-              } else {
-                Text(level.displayName)
-              }
-            }
-          }
-        } label: {
-          HStack(spacing: 10) {
-            Image(systemName: currentReasoningLevel.systemImage)
-              .foregroundStyle(.secondary)
-              .frame(width: 18)
-            Text("Reasoning")
-              .foregroundStyle(.primary)
-            Spacer()
-            Text(currentReasoningLevel.displayName)
-              .font(.callout)
-              .foregroundStyle(.secondary)
-            Image(systemName: "chevron.right")
-              .imageScale(.small)
-              .foregroundStyle(.tertiary)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 9)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-
-        Divider().padding(.vertical, 4)
-
         ForEach(NativeToolID.allCases.filter { $0 != .memory }) { tool in
           Button {
             toggleNativeTool(tool)
@@ -579,16 +544,6 @@ private struct ToolPickerPopover: View {
 
   // MARK: - Native tool helpers
 
-  private var currentReasoningLevel: ReasoningLevel {
-    store.currentConversation?.reasoningLevel ?? .automatic
-  }
-
-  private func setReasoningLevel(_ level: ReasoningLevel) {
-    store.updateCurrentConversation { conversation in
-      conversation.reasoningLevel = level
-    }
-  }
-
   private func isNativeEnabled(_ tool: NativeToolID) -> Bool {
     store.currentConversation?.enabledTools.contains(tool) ?? false
   }
@@ -660,6 +615,7 @@ private struct ToolPickerPopover: View {
 private struct ConversationModelSettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
+  @State private var didSaveDefaults = false
 
   var body: some View {
     NavigationStack {
@@ -684,7 +640,39 @@ private struct ConversationModelSettingsView: View {
           }
 
           Section {
+            VStack(alignment: .leading, spacing: 6) {
+              HStack {
+                Label("Reasoning", systemImage: reasoningBinding.wrappedValue.systemImage)
+                  .contentTransition(.symbolEffect(.replace))
+                Spacer()
+                Text(reasoningBinding.wrappedValue.displayName)
+                  .foregroundStyle(.secondary)
+                  .contentTransition(.numericText())
+                  .animation(.snappy, value: reasoningBinding.wrappedValue)
+              }
+              Slider(
+                value: reasoningSliderBinding,
+                in: 0...Double(ReasoningLevel.allCases.count - 1),
+                step: 1
+              )
+            }
+          }
+
+          Section {
             Toggle("Stream responses", isOn: streamingBinding)
+          }
+
+          Section {
+            Button {
+              saveProviderModelAsDefault()
+            } label: {
+              Label("Save Provider & Model as Default", systemImage: "star")
+            }
+            .disabled(!canSaveProviderModelAsDefault)
+          } footer: {
+            if didSaveDefaults {
+              Text("Future chats will use this provider and model.")
+            }
           }
         }
       }
@@ -743,6 +731,37 @@ private struct ConversationModelSettingsView: View {
     return OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: store.settings)
   }
 
+  private var canSaveProviderModelAsDefault: Bool {
+    guard let conversation = store.currentConversation else { return false }
+    switch conversation.provider {
+    case .apple:
+      return true
+    case .openAICompatible:
+      return selectedEndpoint != nil
+    }
+  }
+
+  private func saveProviderModelAsDefault() {
+    guard let conversation = store.currentConversation else { return }
+    switch conversation.provider {
+    case .apple:
+      store.settings.defaultProvider = .apple
+      store.settings.appleModelID = conversation.modelID
+    case .openAICompatible:
+      guard let endpoint = selectedEndpoint,
+        let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id })
+      else { return }
+      let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+      store.settings.defaultProvider = .openAICompatible
+      store.settings.selectedEndpointID = endpoint.id
+      if !model.isEmpty {
+        store.settings.openAIEndpoints[index].defaultModel = model
+      }
+    }
+    store.saveSettings()
+    didSaveDefaults = true
+  }
+
   private var providerSelectionBinding: Binding<DefaultProviderSelection> {
     Binding(
       get: {
@@ -769,6 +788,7 @@ private struct ConversationModelSettingsView: View {
             conversation.provider = .apple
             conversation.endpointID = nil
             conversation.modelID = store.settings.appleModelID
+            didSaveDefaults = false
           case .endpoint(let id):
             conversation.provider = .openAICompatible
             conversation.endpointID = id
@@ -777,6 +797,7 @@ private struct ConversationModelSettingsView: View {
             {
               conversation.modelID = endpoint.defaultModel
             }
+            didSaveDefaults = false
           }
         }
       }
@@ -793,6 +814,7 @@ private struct ConversationModelSettingsView: View {
         store.updateCurrentConversation { conversation in
           conversation.modelID = model
         }
+        didSaveDefaults = false
       }
     )
   }
@@ -804,6 +826,30 @@ private struct ConversationModelSettingsView: View {
         store.updateCurrentConversation { conversation in
           conversation.usesStreaming = usesStreaming
         }
+      }
+    )
+  }
+
+  private var reasoningBinding: Binding<ReasoningLevel> {
+    Binding(
+      get: { store.currentConversation?.reasoningLevel ?? .automatic },
+      set: { level in
+        store.updateCurrentConversation { conversation in
+          conversation.reasoningLevel = level
+        }
+      }
+    )
+  }
+
+  private var reasoningSliderBinding: Binding<Double> {
+    Binding(
+      get: {
+        Double(ReasoningLevel.allCases.firstIndex(of: reasoningBinding.wrappedValue) ?? 0)
+      },
+      set: { value in
+        let cases = ReasoningLevel.allCases
+        let index = max(0, min(cases.count - 1, Int(value.rounded())))
+        reasoningBinding.wrappedValue = cases[index]
       }
     )
   }

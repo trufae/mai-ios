@@ -663,6 +663,20 @@ func runMain() async {
     info("parsed \(calls.count) tool call(s)")
 
     if calls.isEmpty {
+      if !allTools.isEmpty && AgentTooling.containsToolCallMarker(in: response) {
+        let feedback = AgentTooling.malformedToolCallFeedback(from: response)
+        let turnText = [response, feedback]
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+          .joined(separator: "\n\n")
+        fullAssistant += (fullAssistant.isEmpty ? "" : "\n\n") + turnText
+        warn("tool_call marker was present but no executable call parsed; asking model to repair it")
+        if !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          messages.append(["role": "assistant", "content": response])
+        }
+        messages.append(["role": "user", "content": feedback])
+        continue
+      }
       fullAssistant +=
         (fullAssistant.isEmpty ? "" : "\n\n") + response
       ok("loop terminated (no more tool_calls)")

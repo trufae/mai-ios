@@ -6,6 +6,7 @@ struct MessageBubble: View {
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
+  var onRestartFresh: (() -> Void)? = nil
 
   private var isUser: Bool { message.role == .user }
 
@@ -67,7 +68,7 @@ struct MessageBubble: View {
           .foregroundStyle(.secondary)
       }
       if visibleText.isEmpty {
-        Text("Internal context only")
+        Text("...")
           .font(.callout)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
@@ -97,6 +98,13 @@ struct MessageBubble: View {
           onTrimFromHere()
         } label: {
           Label("Restart From Here", systemImage: "arrow.clockwise")
+        }
+      }
+      if let onRestartFresh {
+        Button(role: .destructive) {
+          onRestartFresh()
+        } label: {
+          Label("Start Fresh With This Message", systemImage: "arrow.triangle.2.circlepath")
         }
       }
       Button {

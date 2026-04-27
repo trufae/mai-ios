@@ -78,6 +78,29 @@ enum AgentToolArgumentValue: Sendable {
     }
   }
 
+  var numberValue: Double? {
+    switch self {
+    case .int(let value): return Double(value)
+    case .double(let value): return value
+    case .string(let value): return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    default: return nil
+    }
+  }
+
+  var boolValue: Bool? {
+    switch self {
+    case .bool(let value): return value
+    case .int(let value) where value == 0 || value == 1: return value == 1
+    case .string(let value):
+      switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      case "true", "1", "yes": return true
+      case "false", "0", "no": return false
+      default: return nil
+      }
+    default: return nil
+    }
+  }
+
   var jsonObject: Any {
     switch self {
     case .string(let value): return value
@@ -281,28 +304,19 @@ enum AgentTooling {
 
       \(toolDescriptions)
 
-      ### Tool-call protocol
+      ## Tool Calling
 
-      To run a tool, emit a single line block (no surrounding text on the same line):
+      When a tool is needed, reply with exactly one block and no other text:
       <tool_call>{"name":"tool_name","arguments":{"required_arg":"value"}}</tool_call>
 
-      ### Mandatory rules - read carefully
+      Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, and keep JSON values typed correctly. After a tool call, stop.
 
-      1. After the closing `</tool_call>`, STOP IMMEDIATELY. Do not write your final answer in the same response. The host executes the tool and re-invokes you with the real result visible. Only THEN write the answer.
-      2. `<tool_run>` blocks are AUTHORITATIVE ground truth. Read the content character-by-character. Do not guess, paraphrase, or summarize from priors. If the result disagrees with your expectations, the result is right.
-      3. The final answer is the response that contains NO `<tool_call>` blocks. The loop stops as soon as you produce one.
-      4. Use only listed tool names or their API/native aliases. Never invent arguments.
-      5. Include required arguments. Omit optional arguments unless the user explicitly asks for filtering/pagination/limits or a previous tool result requires them.
-      6. JSON arguments must preserve schema types: numbers as numbers, booleans as booleans, strings as strings. Never quote numbers or booleans.
-      7. Tool errors are observations, not final failures. If a `<tool_run>` says a prerequisite is missing, call the prerequisite tool next with the information already provided by the user, then continue.
-      8. Before every tool call, inspect the latest user message, any `<tool_context>`, and all prior `<tool_run>` blocks. If they already contain enough information to answer, give the final answer instead of calling another tool.
-      9. Do not re-call a tool whose `<tool_run>` is already in the conversation - read the existing result.
-      10. No filler narration between tool calls ("Let me...", "I'll now..."). Emit tool calls or the final answer; nothing else.
+      When the host returns a `<tool_run>` result, use that result as ground truth. If more tool work is needed, emit the next single `<tool_call>` block; otherwise answer normally with no `<tool_call>`.
       """
   }
 
   static func parseCalls(in text: String, tools: [ToolDefinition]) -> [ParsedToolCall] {
-    let pattern = "<tool_call>([\\s\\S]*?)</tool_call>"
+    let pattern = "<tool_call\\b([^>]*)>([\\s\\S]*?)(?:</tool_call\\s*>|$)"
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     else { return [] }
     let nsText = text as NSString
@@ -310,33 +324,44 @@ enum AgentTooling {
       in: text, options: [], range: NSRange(location: 0, length: nsText.length))
     var calls: [ParsedToolCall] = []
     for match in matches {
-      guard match.numberOfRanges == 2 else { continue }
+      guard match.numberOfRanges == 3 else { continue }
       let raw = nsText.substring(with: match.range(at: 0))
-      let json = nsText.substring(with: match.range(at: 1))
+      let attributes = nsText.substring(with: match.range(at: 1))
+      let payload = nsText.substring(with: match.range(at: 2))
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      if let call = parseToolCallJSON(json, rawBlock: raw) {
+      if let call = parseToolCallPayload(payload, attributes: attributes, rawBlock: raw) {
         calls.append(call)
       }
-    }
-    if let trailing = trailingUnclosedToolCall(in: text),
-      let call = parseToolCallJSON(trailing.json, rawBlock: trailing.rawBlock)
-    {
-      calls.append(call)
     }
     if !calls.isEmpty { return calls }
     return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
   }
 
   static func parseToolCallJSON(_ json: String, rawBlock: String) -> ParsedToolCall? {
-    guard let data = json.data(using: .utf8),
-      let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let obj = normalizeToolCallObject(parsed),
-      let name = (obj["name"] as? String)?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      !name.isEmpty
-    else { return nil }
-    let args = argumentValues(argumentsObject(from: obj["arguments"]))
-    return ParsedToolCall(name: name, arguments: [:], argumentValues: args, rawBlock: rawBlock)
+    parseToolCallPayload(json, attributes: "", rawBlock: rawBlock)
+  }
+
+  static func containsToolCallMarker(in text: String) -> Bool {
+    text.range(
+      of: "<\\s*/?\\s*tool_call\\b",
+      options: [.regularExpression, .caseInsensitive]) != nil
+  }
+
+  static func malformedToolCallFeedback(from text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let preview = trimmed.count > 500 ? String(trimmed.prefix(500)) + "..." : trimmed
+    return """
+      <tool_run>
+      invalid_tool_call tool ({}):
+      Error: the assistant emitted a `<tool_call>` marker, but the host could not parse an executable tool call.
+
+      Received:
+      \(preview)
+
+      Emit exactly one valid block with real JSON, or answer normally without any `<tool_call>` marker:
+      <tool_call>{"name":"tool_name","arguments":{}}</tool_call>
+      </tool_run>
+      """
   }
 
   static func normalizeArguments(
@@ -453,52 +478,19 @@ enum AgentTooling {
     if case .null = value { return nil }
     switch parameter.type.lowercased() {
     case "integer", "int":
-      switch value {
-      case .int:
-        return value
-      case .double(let double) where double.rounded() == double:
-        return .int(Int(double))
-      case .string(let string):
-        return Int(string.trimmingCharacters(in: .whitespacesAndNewlines)).map {
-          AgentToolArgumentValue.int($0)
-        }
-      case .bool:
-        return parameter.required ? value : nil
-      default:
-        return parameter.required ? value : nil
+      if case .int = value { return value }
+      if let number = value.numberValue, number.rounded() == number {
+        return .int(Int(number))
       }
+      return parameter.required ? value : nil
     case "number":
-      switch value {
-      case .int, .double:
-        return value
-      case .string(let string):
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let int = Int(trimmed) { return .int(int) }
-        if let double = Double(trimmed) { return .double(double) }
-        return parameter.required ? value : nil
-      case .bool:
-        return parameter.required ? value : nil
-      default:
-        return parameter.required ? value : nil
+      if case .int = value { return value }
+      if let number = value.numberValue {
+        return number.rounded() == number ? .int(Int(number)) : .double(number)
       }
+      return parameter.required ? value : nil
     case "boolean", "bool":
-      switch value {
-      case .bool:
-        return value
-      case .string(let string):
-        switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "true", "1", "yes":
-          return .bool(true)
-        case "false", "0", "no":
-          return .bool(false)
-        default:
-          return parameter.required ? value : nil
-        }
-      case .int(let int) where int == 0 || int == 1:
-        return .bool(int == 1)
-      default:
-        return parameter.required ? value : nil
-      }
+      return value.boolValue.map(AgentToolArgumentValue.bool) ?? (parameter.required ? value : nil)
     case "string":
       if case .string = value { return value }
       return parameter.required ? .string(value.stringValue) : nil
@@ -554,6 +546,136 @@ enum AgentTooling {
       rawArguments: rawArguments.isEmpty ? "{}" : rawArguments)
   }
 
+  private static func parseToolCallPayload(
+    _ payload: String,
+    attributes: String,
+    rawBlock: String
+  ) -> ParsedToolCall? {
+    let attrs = toolCallAttributes(from: attributes)
+    let attrName = firstNonEmpty(attrs["name"], attrs["tool"], attrs["function"])
+    let attrArgs = firstNonEmpty(attrs["arguments"], attrs["args"], attrs["params"], attrs["input"])
+    let normalizedPayload = stripMarkdownFence(from: payload)
+    var candidates = [normalizedPayload]
+    if let object = firstJSONObject(in: normalizedPayload), object != normalizedPayload {
+      candidates.append(object)
+    }
+    if let attrArgs, !attrArgs.isEmpty {
+      candidates.append(stripMarkdownFence(from: attrArgs))
+    }
+
+    for candidate in candidates {
+      guard let object = jsonObject(from: candidate) else { continue }
+      if let normalized = normalizeToolCallObject(object),
+        let name = (normalized["name"] as? String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        !name.isEmpty
+      {
+        let args = argumentValues(argumentsObject(from: normalized["arguments"]))
+        return ParsedToolCall(name: name, arguments: [:], argumentValues: args, rawBlock: rawBlock)
+      }
+      if let attrName {
+        return ParsedToolCall(
+          name: attrName,
+          arguments: [:],
+          argumentValues: argumentValues(object),
+          rawBlock: rawBlock)
+      }
+    }
+
+    if let attrName {
+      return ParsedToolCall(name: attrName, arguments: [:], argumentValues: [:], rawBlock: rawBlock)
+    }
+    return nil
+  }
+
+  private static func firstNonEmpty(_ values: String?...) -> String? {
+    for value in values {
+      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
+  private static func jsonObject(from text: String) -> [String: Any]? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let data = trimmed.data(using: .utf8) else { return nil }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+  }
+
+  private static func stripMarkdownFence(from text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("```") else { return trimmed }
+    var lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    if lines.first?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```") == true {
+      lines.removeFirst()
+    }
+    if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```") == true {
+      lines.removeLast()
+    }
+    return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func firstJSONObject(in text: String) -> String? {
+    var start: String.Index?
+    var depth = 0
+    var inString = false
+    var escaped = false
+
+    for index in text.indices {
+      let char = text[index]
+      if start == nil {
+        guard char == "{" else { continue }
+        start = index
+        depth = 1
+        continue
+      }
+
+      if inString {
+        if escaped {
+          escaped = false
+        } else if char == "\\" {
+          escaped = true
+        } else if char == "\"" {
+          inString = false
+        }
+        continue
+      }
+
+      if char == "\"" {
+        inString = true
+      } else if char == "{" {
+        depth += 1
+      } else if char == "}" {
+        depth -= 1
+        if depth == 0, let start {
+          return String(text[start...index]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+      }
+    }
+    return nil
+  }
+
+  private static func toolCallAttributes(from text: String) -> [String: String] {
+    let pattern = #"([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*("[^"]*"|'[^']*'|[^\s"'>/]+)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return [:] }
+    let nsText = text as NSString
+    let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+    var attrs: [String: String] = [:]
+    for match in matches where match.numberOfRanges == 3 {
+      let key = nsText.substring(with: match.range(at: 1)).lowercased()
+      var value = nsText.substring(with: match.range(at: 2))
+      if value.count >= 2,
+        (value.hasPrefix("\"") && value.hasSuffix("\""))
+          || (value.hasPrefix("'") && value.hasSuffix("'"))
+      {
+        value.removeFirst()
+        value.removeLast()
+      }
+      attrs[key] = value
+    }
+    return attrs
+  }
+
   private static func normalizeToolCallObject(_ object: [String: Any]) -> [String: Any]? {
     if let name = object["name"] as? String,
       !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -596,21 +718,6 @@ enum AgentTooling {
       args[key] = value
     }
     return args
-  }
-
-  private static func trailingUnclosedToolCall(in text: String) -> (rawBlock: String, json: String)?
-  {
-    guard
-      let open = text.range(
-        of: "<tool_call>", options: [.caseInsensitive, .backwards]),
-      text.range(
-        of: "</tool_call>", options: [.caseInsensitive], range: open.upperBound..<text.endIndex)
-        == nil
-    else { return nil }
-    let raw = String(text[open.lowerBound..<text.endIndex])
-    let json = String(text[open.upperBound..<text.endIndex])
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return json.isEmpty ? nil : (raw, json)
   }
 
   private static func inferBareToolCall(in text: String, tools: [ToolDefinition]) -> ParsedToolCall?

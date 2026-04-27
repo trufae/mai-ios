@@ -25,15 +25,6 @@ enum ToolContextBuilder {
         sections.append(weather)
       }
     }
-    if enabled.contains(.webSearch) {
-      if let web = await WebSearchService.searchContext(
-        query: input,
-        provider: settings.toolSettings.webSearchProvider,
-        settings: settings)
-      {
-        sections.append(web)
-      }
-    }
     if enabled.contains(.files) {
       let files = filesContext(settings: settings.toolSettings)
       if !files.isEmpty {
