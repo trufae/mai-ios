@@ -457,7 +457,7 @@ final class AppStore: ObservableObject {
       }
 
       let maxIterations = 8
-      for iteration in 0..<maxIterations {
+        for _ in 0..<maxIterations {
         try Task.checkCancellation()
         guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         let request = ChatCompletionRequest(

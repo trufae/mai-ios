@@ -882,22 +882,6 @@ private struct JSONRPCRequest: Encodable {
   var params: [String: AnyCodable]?
 }
 
-private struct MCPToolsListResponse: Decodable {
-  struct Result: Decodable {
-    var tools: [RawTool]?
-  }
-  struct RawTool: Decodable {
-    var name: String
-    var description: String?
-  }
-  struct Err: Decodable {
-    var code: Int?
-    var message: String?
-  }
-  var result: Result?
-  var error: Err?
-}
-
 private struct MCPToolCallResponse: Decodable {
   struct Result: Decodable {
     var content: [ContentPart]?

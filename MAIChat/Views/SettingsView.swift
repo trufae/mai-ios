@@ -692,20 +692,6 @@ struct SettingsView: View {
     }
     store.saveSettings()
   }
-
-  private func toolBinding(_ tool: NativeToolID) -> Binding<Bool> {
-    Binding(
-      get: { store.settings.defaultEnabledTools.contains(tool) },
-      set: { isOn in
-        if isOn {
-          store.settings.defaultEnabledTools.insert(tool)
-        } else {
-          store.settings.defaultEnabledTools.remove(tool)
-        }
-        store.saveSettings()
-      }
-    )
-  }
 }
 
 private struct EndpointDetailView: View {

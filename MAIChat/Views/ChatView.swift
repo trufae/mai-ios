@@ -437,18 +437,6 @@ struct ChatView: View {
     .help("Tools")
   }
 
-  private func conversationBinding<Value>(
-    _ keyPath: WritableKeyPath<Conversation, Value>, default defaultValue: Value
-  ) -> Binding<Value> {
-    Binding(
-      get: { store.currentConversation?[keyPath: keyPath] ?? defaultValue },
-      set: { value in
-        store.updateCurrentConversation { conversation in
-          conversation[keyPath: keyPath] = value
-        }
-      }
-    )
-  }
 }
 
 private struct ToolPickerPopover: View {

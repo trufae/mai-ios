@@ -9,28 +9,6 @@ struct HiddenMessageSection: Identifiable {
   var id: Int
   var tag: String
   var content: String
-
-  var title: String {
-    switch tag {
-    case "think": "Reasoning"
-    case "tool_context": "Tool Context"
-    case "conversation": "Prompt Transcript"
-    default: tag
-    }
-  }
-
-  var systemImage: String {
-    switch tag {
-    case "think": "brain"
-    case "tool_context": "wrench.and.screwdriver"
-    case "conversation": "text.bubble"
-    default: "curlybraces"
-    }
-  }
-
-  var rawText: String {
-    "<\(tag)>\n\(content)\n</\(tag)>"
-  }
 }
 
 enum MessageContentFilter {

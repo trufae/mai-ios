@@ -424,10 +424,6 @@ enum AgentTooling {
     return s
   }
 
-  static func stringifyArguments(_ args: [String: Any]) -> [String: String] {
-    argumentValues(args).mapValues(\.stringValue)
-  }
-
   static func argumentValues(_ args: [String: Any]) -> [String: AgentToolArgumentValue] {
     args.mapValues { AgentToolArgumentValue(json: $0) }
   }
