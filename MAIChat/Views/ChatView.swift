@@ -139,6 +139,12 @@ struct ChatView: View {
           .font(.caption2)
           .foregroundStyle(.secondary)
           .lineLimit(1)
+        if let systemPromptName {
+          Text(systemPromptName)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
       }
       .frame(maxWidth: 240)
       .contentShape(Rectangle())
@@ -178,6 +184,14 @@ struct ChatView: View {
 
   private var currentSystemPromptID: UUID? {
     store.currentConversation?.systemPromptID ?? store.settings.defaultSystemPromptID
+  }
+
+  private var systemPromptName: String? {
+    guard let id = currentSystemPromptID,
+      let prompt = store.settings.systemPrompts.first(where: { $0.id == id })
+    else { return nil }
+    let name = prompt.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? "Untitled" : name
   }
 
   private var canCompactCurrentChat: Bool {

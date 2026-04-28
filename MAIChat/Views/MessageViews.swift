@@ -132,7 +132,7 @@ struct MessageBubble: View {
       return AnyShapeStyle(.red.opacity(0.14))
     }
     if isUser {
-      return AnyShapeStyle(.tint.opacity(0.16))
+      return AnyShapeStyle(Color.accentColor.opacity(0.22))
     }
     return AnyShapeStyle(.regularMaterial)
   }
@@ -357,22 +357,81 @@ struct MarkdownContentView: View {
       ForEach(MarkdownParser.blocks(from: text)) { block in
         switch block.kind {
         case .text(let value):
-          Text(attributedMarkdown(value))
+          Text(MarkdownInline.attributed(value))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let code):
           CodeBlockView(language: language, code: code)
+        case .table(let headers, let rows, let alignments):
+          MarkdownTableView(headers: headers, rows: rows, alignments: alignments)
         }
       }
     }
   }
+}
 
-  private func attributedMarkdown(_ value: String) -> AttributedString {
+enum MarkdownInline {
+  static func attributed(_ value: String) -> AttributedString {
     (try? AttributedString(
       markdown: value,
       options: AttributedString.MarkdownParsingOptions(
         interpretedSyntax: .inlineOnlyPreservingWhitespace)))
       ?? AttributedString(value)
+  }
+}
+
+struct MarkdownTableView: View {
+  let headers: [String]
+  let rows: [[String]]
+  let alignments: [TextAlignment]
+
+  var body: some View {
+    Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+      GridRow {
+        ForEach(Array(headers.enumerated()), id: \.offset) { idx, header in
+          cellView(header, columnIndex: idx, isHeader: true)
+        }
+      }
+      .background(Color.secondary.opacity(0.10))
+      Divider().opacity(0.5)
+      ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
+        GridRow {
+          ForEach(0..<headers.count, id: \.self) { idx in
+            let value = idx < row.count ? row[idx] : ""
+            cellView(value, columnIndex: idx, isHeader: false)
+          }
+        }
+        .background(rowIdx.isMultiple(of: 2) ? Color.clear : Color.secondary.opacity(0.05))
+        if rowIdx < rows.count - 1 {
+          Divider().opacity(0.25)
+        }
+      }
+    }
+    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(.secondary.opacity(0.25), lineWidth: 0.5)
+    )
+  }
+
+  @ViewBuilder
+  private func cellView(_ value: String, columnIndex: Int, isHeader: Bool) -> some View {
+    let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
+    Text(MarkdownInline.attributed(value))
+      .font(isHeader ? .callout.weight(.semibold) : .callout)
+      .multilineTextAlignment(alignment)
+      .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .textSelection(.enabled)
+  }
+
+  private func frameAlignment(_ alignment: TextAlignment) -> Alignment {
+    switch alignment {
+    case .leading: return .leading
+    case .center: return .center
+    case .trailing: return .trailing
+    }
   }
 }
 
@@ -418,6 +477,7 @@ struct MarkdownBlock: Identifiable {
   enum Kind {
     case text(String)
     case code(language: String, code: String)
+    case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
   }
 
   let id = UUID()
@@ -432,6 +492,7 @@ enum MarkdownParser {
     var codeBuffer: [String] = []
     var language = ""
     var inCode = false
+    var index = 0
 
     func flushText() {
       let value = textBuffer.joined(separator: "\n").trimmingCharacters(in: .newlines)
@@ -450,29 +511,101 @@ enum MarkdownParser {
       language = ""
     }
 
-    for line in lines {
-      if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+    while index < lines.count {
+      let line = lines[index]
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+      if trimmed.hasPrefix("```") {
         if inCode {
           flushCode()
           inCode = false
         } else {
           flushText()
-          language = String(line.trimmingCharacters(in: .whitespaces).dropFirst(3))
+          language = String(trimmed.dropFirst(3))
           inCode = true
         }
+        index += 1
         continue
       }
+
       if inCode {
         codeBuffer.append(line)
-      } else {
-        textBuffer.append(line)
+        index += 1
+        continue
       }
+
+      if trimmed.contains("|"),
+        index + 1 < lines.count,
+        let alignments = tableAlignments(
+          lines[index + 1].trimmingCharacters(in: .whitespaces)
+        )
+      {
+        let headers = splitTableRow(trimmed)
+        if headers.count == alignments.count, !headers.isEmpty {
+          flushText()
+          var rows: [[String]] = []
+          var cursor = index + 2
+          while cursor < lines.count {
+            let rowTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
+            guard rowTrimmed.contains("|"), tableAlignments(rowTrimmed) == nil else { break }
+            var cells = splitTableRow(rowTrimmed)
+            while cells.count < headers.count { cells.append("") }
+            if cells.count > headers.count { cells = Array(cells.prefix(headers.count)) }
+            rows.append(cells)
+            cursor += 1
+          }
+          blocks.append(
+            MarkdownBlock(
+              kind: .table(headers: headers, rows: rows, alignments: alignments)
+            )
+          )
+          index = cursor
+          continue
+        }
+      }
+
+      textBuffer.append(line)
+      index += 1
     }
     if inCode {
       flushCode()
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+  }
+
+  private static func splitTableRow(_ line: String) -> [String] {
+    var s = line
+    if s.hasPrefix("|") { s.removeFirst() }
+    if s.hasSuffix("|") { s.removeLast() }
+    let placeholder = "\u{1}"
+    s = s.replacingOccurrences(of: "\\|", with: placeholder)
+    return s.components(separatedBy: "|").map {
+      $0.replacingOccurrences(of: placeholder, with: "|")
+        .trimmingCharacters(in: .whitespaces)
+    }
+  }
+
+  private static func tableAlignments(_ line: String) -> [TextAlignment]? {
+    guard line.contains("|"), line.contains("-") else { return nil }
+    let cells = splitTableRow(line)
+    guard !cells.isEmpty else { return nil }
+    var alignments: [TextAlignment] = []
+    for cell in cells {
+      let trimmed = cell.trimmingCharacters(in: .whitespaces)
+      let leading = trimmed.hasPrefix(":")
+      let trailing = trimmed.hasSuffix(":")
+      let core = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+      guard !core.isEmpty, core.allSatisfy({ $0 == "-" }) else { return nil }
+      if leading && trailing {
+        alignments.append(.center)
+      } else if trailing {
+        alignments.append(.trailing)
+      } else {
+        alignments.append(.leading)
+      }
+    }
+    return alignments
   }
 }
 

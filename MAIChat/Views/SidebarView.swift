@@ -20,9 +20,10 @@ struct SidebarView: View {
   private var conversationList: some View {
     List {
       ForEach(store.conversations) { conversation in
+        let isSelected = store.selectedConversationID == conversation.id
         ConversationRow(
           conversation: conversation,
-          isSelected: store.selectedConversationID == conversation.id,
+          isSelected: isSelected,
           isResponding: store.isResponding(in: conversation.id)
         ) {
           store.select(conversation)
@@ -51,11 +52,13 @@ struct SidebarView: View {
             Label("Delete Conversation", systemImage: "trash")
           }
 
-          Button(role: .destructive) {
-            let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
-            store.deleteConversations(others)
-          } label: {
-            Label("Delete all except this one", systemImage: "trash.slash")
+          if isSelected {
+            Button(role: .destructive) {
+              let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
+              store.deleteConversations(others)
+            } label: {
+              Label("Delete all except this one", systemImage: "trash.slash")
+            }
           }
         }
       }
@@ -160,7 +163,7 @@ private struct ConversationRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+    .listRowBackground(isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
   }
 
   @ViewBuilder
