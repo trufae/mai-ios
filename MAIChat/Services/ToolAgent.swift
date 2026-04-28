@@ -416,9 +416,7 @@ enum TodoTool {
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Error: title cannot be empty." }
     let todo = TodoItem(title: trimmed)
-    var snapshot = store.settings
-    snapshot.toolSettings.todos.append(todo)
-    store.settings = snapshot
+    store.settings.toolSettings.todos.append(todo)
     store.saveSettings()
     return "Added: \(trimmed) (id=\(String(todo.id.uuidString.prefix(8))))"
   }
@@ -427,21 +425,19 @@ enum TodoTool {
     let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !q.isEmpty else { return "Error: title_or_id is required." }
     let lower = q.lowercased()
-    var snapshot = store.settings
-    if let index = snapshot.toolSettings.todos.firstIndex(where: { todo in
+    guard let index = store.settings.toolSettings.todos.firstIndex(where: { todo in
       todo.id.uuidString.lowercased().hasPrefix(lower)
         || todo.title.lowercased().contains(lower)
-    }) {
-      if snapshot.toolSettings.todos[index].isDone {
-        return "Already done: \(snapshot.toolSettings.todos[index].title)"
-      }
-      snapshot.toolSettings.todos[index].isDone = true
-      let title = snapshot.toolSettings.todos[index].title
-      store.settings = snapshot
-      store.saveSettings()
-      return "Marked done: \(title)"
+    }) else {
+      return "Error: no todo matched '\(q)'."
     }
-    return "Error: no todo matched '\(q)'."
+    if store.settings.toolSettings.todos[index].isDone {
+      return "Already done: \(store.settings.toolSettings.todos[index].title)"
+    }
+    store.settings.toolSettings.todos[index].isDone = true
+    let title = store.settings.toolSettings.todos[index].title
+    store.saveSettings()
+    return "Marked done: \(title)"
   }
 }
 

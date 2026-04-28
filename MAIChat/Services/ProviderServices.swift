@@ -423,7 +423,7 @@ private enum ReasoningCompatibility {
   ) -> ReasoningRequestPayload {
     guard isKnownOpenAIReasoningModel(model) else { return ReasoningRequestPayload() }
     if level == .disabled && !supportsOpenAINone(model) {
-      return ReasoningRequestPayload(reasoningEffort: "low")
+      return ReasoningRequestPayload(reasoningEffort: "minimal")
     }
     return ReasoningRequestPayload(reasoningEffort: openAIEffort(for: level))
   }
@@ -445,7 +445,7 @@ private enum ReasoningCompatibility {
   private static func deepSeekPayload(_ level: ReasoningLevel) -> ReasoningRequestPayload {
     let disabled = level == .disabled
     return ReasoningRequestPayload(
-      reasoningEffort: disabled ? nil : deepSeekEffort(for: level),
+      reasoningEffort: disabled ? nil : "high",
       thinking: OpenAIThinkingConfig(type: disabled ? "disabled" : "enabled")
     )
   }
@@ -491,48 +491,42 @@ private enum ReasoningCompatibility {
     case .minimal: "minimal"
     case .low: "low"
     case .medium: "medium"
-    case .high: "high"
+    case .high, .xhigh: "high"
     }
   }
 
+  /// Matches any `o<digit>` reasoning model (o1, o3, o4, o5…) and any `gpt-5*`
+  /// variant. Detection is heuristic so newer models pick up reasoning
+  /// payloads automatically; unknown models fall back to no payload.
   private static func isKnownOpenAIReasoningModel(_ model: String) -> Bool {
     let text = model.lowercased()
-    return text.hasPrefix("o1") || text.hasPrefix("o3") || text.hasPrefix("o4")
-      || text.hasPrefix("gpt-5")
+    if text.hasPrefix("gpt-5") { return true }
+    if text.count >= 2, text.first == "o", text.dropFirst().first?.isNumber == true {
+      return true
+    }
+    return false
   }
 
   private static func supportsOpenAINone(_ model: String) -> Bool {
     model.lowercased().hasPrefix("gpt-5.1")
   }
 
-  private static func deepSeekEffort(for level: ReasoningLevel) -> String {
-    switch level {
-    case .automatic, .disabled: "high"
-    case .minimal, .low, .medium: "high"
-    case .high: "high"
-    }
-  }
-
   private static func ollamaEffort(for level: ReasoningLevel) -> String {
     switch level {
     case .automatic, .medium: "medium"
     case .disabled, .minimal, .low: "low"
-    case .high: "high"
+    case .high, .xhigh: "high"
     }
   }
 
   private static func thinkingBudget(for level: ReasoningLevel) -> Int? {
     switch level {
-    case .automatic, .disabled:
-      nil
-    case .minimal:
-      256
-    case .low:
-      1024
-    case .medium:
-      4096
-    case .high:
-      8192
+    case .automatic, .disabled: nil
+    case .minimal: 256
+    case .low: 1024
+    case .medium: 4096
+    case .high: 8192
+    case .xhigh: 32768
     }
   }
 }

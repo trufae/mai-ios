@@ -501,11 +501,7 @@ final class AppStore: ObservableObject {
             call: call, definitions: agentDefinitions)
           let result = await ToolAgentRegistry.execute(call: normalizedCall, store: self)
           let runBlock = ToolAgentRegistry.makeRunBlock(call: normalizedCall, result: result)
-          if let range = transformed.range(of: call.rawBlock) {
-            transformed.removeSubrange(range)
-          } else {
-            transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
-          }
+          transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
           runBlocks.append(runBlock)
         }
         let turnText = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
@@ -522,30 +518,27 @@ final class AppStore: ObservableObject {
         setAssistantMessage(id: assistantID, text: assistantText + suffix, role: .assistant)
       }
     } catch is CancellationError {
-      let current = currentTextOfMessage(id: assistantID)
-      let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-      if trimmed.isEmpty {
-        setAssistantMessage(id: assistantID, text: "[stopped]", role: .error)
-      } else {
-        setAssistantMessage(
-          id: assistantID, text: "\(current)\n\n[stopped]", role: .assistant)
-      }
+      markAssistantStopped(id: assistantID)
     } catch {
       let nsError = error as NSError
       if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-        let current = currentTextOfMessage(id: assistantID)
-        let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-          setAssistantMessage(id: assistantID, text: "[stopped]", role: .error)
-        } else {
-          setAssistantMessage(
-            id: assistantID, text: "\(current)\n\n[stopped]", role: .assistant)
-        }
+        markAssistantStopped(id: assistantID)
       } else {
         let text = error.localizedDescription
         setAssistantMessage(id: assistantID, text: text, role: .error)
         errorMessage = text
       }
+    }
+  }
+
+  private func markAssistantStopped(id: UUID) {
+    let current = currentTextOfMessage(id: id)
+    let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      setAssistantMessage(id: id, text: "[stopped]", role: .error)
+    } else {
+      setAssistantMessage(
+        id: id, text: "\(current)\n\n[stopped]", role: .assistant)
     }
   }
 
