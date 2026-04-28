@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
+  @State private var showingArchive = false
   let onSelectConversation: () -> Void
 
   var body: some View {
@@ -17,9 +18,19 @@ struct SidebarView: View {
     }
   }
 
+  private var visibleConversations: [Conversation] {
+    store.conversations.filter { $0.isArchived == showingArchive }
+  }
+
   private var conversationList: some View {
     List {
-      ForEach(store.conversations) { conversation in
+      if showingArchive, visibleConversations.isEmpty {
+        Text("No archived conversations.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .padding(.vertical, 12)
+      }
+      ForEach(visibleConversations) { conversation in
         let isSelected = store.selectedConversationID == conversation.id
         ConversationRow(
           conversation: conversation,
@@ -36,6 +47,15 @@ struct SidebarView: View {
             Label(
               conversation.isPinned ? "Unpin Conversation" : "Pin Conversation",
               systemImage: conversation.isPinned ? "pin.slash" : "pin"
+            )
+          }
+
+          Button {
+            store.toggleArchive(conversation)
+          } label: {
+            Label(
+              conversation.isArchived ? "Unarchive Conversation" : "Archive Conversation",
+              systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
             )
           }
 
@@ -77,14 +97,56 @@ struct SidebarView: View {
         store.newConversation()
         onSelectConversation()
       }
-      FloatingActionPill(
-        title: "Settings",
+      FloatingActionIcon(
+        systemImage: showingArchive ? "tray.full.fill" : "archivebox",
+        accessibilityLabel: showingArchive ? "Show active conversations" : "Show archived conversations",
+        isActive: showingArchive
+      ) {
+        showingArchive.toggle()
+      }
+      FloatingActionIcon(
         systemImage: "gearshape",
-        prominent: false
+        accessibilityLabel: "Settings"
       ) {
         showingSettings = true
       }
     }
+  }
+}
+
+private struct FloatingActionIcon: View {
+  let systemImage: String
+  let accessibilityLabel: String
+  var isActive: Bool = false
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: systemImage)
+        .font(.body.weight(.semibold))
+        .foregroundStyle(isActive ? Color.white : Color.primary)
+        .frame(width: 22, height: 22)
+        .padding(12)
+        .background(
+          Circle()
+            .fill(
+              isActive
+                ? AnyShapeStyle(Color.accentColor)
+                : AnyShapeStyle(.regularMaterial))
+        )
+        .overlay(
+          Circle()
+            .strokeBorder(.secondary.opacity(isActive ? 0 : 0.18), lineWidth: 0.5)
+        )
+        .shadow(
+          color: isActive ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
+          radius: isActive ? 12 : 8,
+          x: 0,
+          y: 4
+        )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(accessibilityLabel)
   }
 }
 

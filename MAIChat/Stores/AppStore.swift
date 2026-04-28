@@ -122,15 +122,27 @@ final class AppStore: ObservableObject {
   }
 
   func clearAllConversations() {
-    for (_, task) in responseTasks { task.cancel() }
-    responseTasks.removeAll()
-    respondingConversationIDs.removeAll()
-    conversations.removeAll()
+    let archived = conversations.filter(\.isArchived)
+    let removedIDs = Set(conversations.filter { !$0.isArchived }.map(\.id))
+    for id in removedIDs {
+      responseTasks[id]?.cancel()
+      responseTasks[id] = nil
+      respondingConversationIDs.remove(id)
+    }
+    conversations = archived
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
     isIncognitoMode = false
     saveConversations()
     newConversation()
+  }
+
+  func toggleArchive(_ conversation: Conversation) {
+    guard let index = conversations.firstIndex(where: { $0.id == conversation.id }) else { return }
+    conversations[index].isArchived.toggle()
+    conversations[index].updatedAt = Date()
+    sortConversations()
+    saveConversations()
   }
 
   func clearCurrentConversation() {

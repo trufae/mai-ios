@@ -267,6 +267,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var disabledMCPTools: Set<String>
   var reasoningLevel: ReasoningLevel
   var lastToolContextSignature: String?
+  var isArchived: Bool
 
   init(
     id: UUID = UUID(),
@@ -284,7 +285,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     isPinned: Bool = false,
     disabledMCPTools: Set<String> = [],
     reasoningLevel: ReasoningLevel = .automatic,
-    lastToolContextSignature: String? = nil
+    lastToolContextSignature: String? = nil,
+    isArchived: Bool = false
   ) {
     self.id = id
     self.title = title
@@ -302,6 +304,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     self.disabledMCPTools = disabledMCPTools
     self.reasoningLevel = reasoningLevel
     self.lastToolContextSignature = lastToolContextSignature
+    self.isArchived = isArchived
   }
 
   enum CodingKeys: String, CodingKey {
@@ -321,6 +324,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case disabledMCPTools
     case reasoningLevel
     case lastToolContextSignature
+    case isArchived
   }
 
   init(from decoder: Decoder) throws {
@@ -344,6 +348,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
     lastToolContextSignature =
       try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature)
+    isArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
   }
 
   var displayTitle: String {
