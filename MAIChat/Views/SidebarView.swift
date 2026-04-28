@@ -158,6 +158,23 @@ private struct SidebarRowBackground: View {
   }
 }
 
+private struct FloatingChrome<Background: InsettableShape>: ViewModifier {
+  let prominent: Bool
+  let shape: Background
+
+  func body(content: Content) -> some View {
+    content
+      .foregroundStyle(prominent ? Color.white : Color.primary)
+      .background(
+        shape.fill(
+          prominent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.regularMaterial)))
+      .overlay(shape.strokeBorder(.secondary.opacity(prominent ? 0 : 0.18), lineWidth: 0.5))
+      .shadow(
+        color: prominent ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
+        radius: prominent ? 12 : 8, x: 0, y: 4)
+  }
+}
+
 private struct FloatingActionIcon: View {
   let systemImage: String
   let accessibilityLabel: String
@@ -168,26 +185,9 @@ private struct FloatingActionIcon: View {
     Button(action: action) {
       Image(systemName: systemImage)
         .font(.body.weight(.semibold))
-        .foregroundStyle(isActive ? Color.white : Color.primary)
         .frame(width: 22, height: 22)
         .padding(12)
-        .background(
-          Circle()
-            .fill(
-              isActive
-                ? AnyShapeStyle(Color.accentColor)
-                : AnyShapeStyle(.regularMaterial))
-        )
-        .overlay(
-          Circle()
-            .strokeBorder(.secondary.opacity(isActive ? 0 : 0.18), lineWidth: 0.5)
-        )
-        .shadow(
-          color: isActive ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
-          radius: isActive ? 12 : 8,
-          x: 0,
-          y: 4
-        )
+        .modifier(FloatingChrome(prominent: isActive, shape: Circle()))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
@@ -203,31 +203,12 @@ private struct FloatingActionPill: View {
   var body: some View {
     Button(action: action) {
       HStack(spacing: 8) {
-        Image(systemName: systemImage)
-          .font(.body.weight(.semibold))
-        Text(title)
-          .font(.body.weight(prominent ? .semibold : .medium))
+        Image(systemName: systemImage).font(.body.weight(.semibold))
+        Text(title).font(.body.weight(prominent ? .semibold : .medium))
       }
-      .foregroundStyle(prominent ? Color.white : Color.primary)
       .padding(.horizontal, 16)
       .padding(.vertical, 12)
-      .background(
-        Capsule()
-          .fill(
-            prominent
-              ? AnyShapeStyle(Color.accentColor)
-              : AnyShapeStyle(.regularMaterial))
-      )
-      .overlay(
-        Capsule()
-          .strokeBorder(.secondary.opacity(prominent ? 0 : 0.18), lineWidth: 0.5)
-      )
-      .shadow(
-        color: prominent ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
-        radius: prominent ? 12 : 8,
-        x: 0,
-        y: 4
-      )
+      .modifier(FloatingChrome(prominent: prominent, shape: Capsule()))
     }
     .buttonStyle(.plain)
   }

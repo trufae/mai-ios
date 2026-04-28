@@ -269,6 +269,14 @@ struct AgentToolNameResolver {
 }
 
 enum AgentTooling {
+  static func firstNonEmpty(_ values: String?...) -> String? {
+    for value in values {
+      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
   static func promptDescription(for definitions: [ToolDefinition]) -> String {
     guard !definitions.isEmpty else { return "" }
     let resolver = AgentToolNameResolver(tools: definitions)
@@ -580,14 +588,6 @@ enum AgentTooling {
 
     if let attrName {
       return ParsedToolCall(name: attrName, arguments: [:], argumentValues: [:], rawBlock: rawBlock)
-    }
-    return nil
-  }
-
-  private static func firstNonEmpty(_ values: String?...) -> String? {
-    for value in values {
-      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      if !trimmed.isEmpty { return trimmed }
     }
     return nil
   }

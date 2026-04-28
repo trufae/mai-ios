@@ -365,7 +365,7 @@ struct MarkdownContentView: View {
       ForEach(MarkdownParser.blocks(from: text)) { block in
         switch block.kind {
         case .text(let value):
-          Text(MarkdownInline.attributed(value))
+          Text(attributedInlineMarkdown(value))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let code):
@@ -378,14 +378,12 @@ struct MarkdownContentView: View {
   }
 }
 
-enum MarkdownInline {
-  static func attributed(_ value: String) -> AttributedString {
-    (try? AttributedString(
-      markdown: value,
-      options: AttributedString.MarkdownParsingOptions(
-        interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-      ?? AttributedString(value)
-  }
+private func attributedInlineMarkdown(_ value: String) -> AttributedString {
+  (try? AttributedString(
+    markdown: value,
+    options: AttributedString.MarkdownParsingOptions(
+      interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+    ?? AttributedString(value)
 }
 
 struct MarkdownTableView: View {
@@ -425,7 +423,7 @@ struct MarkdownTableView: View {
   @ViewBuilder
   private func cellView(_ value: String, columnIndex: Int, isHeader: Bool) -> some View {
     let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
-    Text(MarkdownInline.attributed(value))
+    Text(attributedInlineMarkdown(value))
       .font(isHeader ? .callout.weight(.semibold) : .callout)
       .multilineTextAlignment(alignment)
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))

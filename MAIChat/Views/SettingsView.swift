@@ -397,16 +397,8 @@ struct SettingsView: View {
       }
 
       Button {
-        let sample = [
-          "Hello, this is a voice test.",
-          "Hola, esto es una prueba de voz.",
-          "Hola, això és una prova de veu.",
-          "Bonjour, ceci est un test vocal.",
-          "Hallo, das ist ein Stimmtest.",
-          "Ciao, questa è una prova vocale.",
-          "こんにちは、これは音声テストです。",
-          "你好，这是一次语音测试。",
-        ].joined(separator: " ")
+        let sample =
+          "Hello, this is a voice test. Hola, esto es una prueba de voz. Hola, això és una prova de veu. Bonjour, ceci est un test vocal. Hallo, das ist ein Stimmtest. Ciao, questa è una prova vocale. こんにちは、これは音声テストです。 你好，这是一次语音测试。"
         _ = TextToSpeechTool.speak(
           arguments: ["text": .string(sample)],
           settings: store.settings.toolSettings)

@@ -499,12 +499,12 @@ enum TextToSpeechTool {
 
     let utterance = AVSpeechUtterance(string: text)
     let voiceIdentifier =
-      firstNonEmpty(
+      AgentTooling.firstNonEmpty(
         arguments["voice"]?.stringValue,
         arguments["voice_identifier"]?.stringValue,
         settings.textToSpeechVoiceIdentifier)
     let language =
-      firstNonEmpty(arguments["language"]?.stringValue, settings.textToSpeechLanguage)
+      AgentTooling.firstNonEmpty(arguments["language"]?.stringValue, settings.textToSpeechLanguage)
     if let voiceIdentifier,
       let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
     {
@@ -519,14 +519,6 @@ enum TextToSpeechTool {
 
     synthesizer.speak(utterance)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
-  }
-
-  private static func firstNonEmpty(_ values: String?...) -> String? {
-    for value in values {
-      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      if !trimmed.isEmpty { return trimmed }
-    }
-    return nil
   }
 
   private static func clamped(_ value: Float, min: Float, max: Float) -> Float {

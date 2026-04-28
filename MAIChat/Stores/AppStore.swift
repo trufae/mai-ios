@@ -92,15 +92,14 @@ final class AppStore: ObservableObject {
       ?? settings.openAIEndpoints.first
     let provider = settings.defaultProvider
     let model = provider == .apple ? settings.appleModelID : (endpoint?.defaultModel ?? "")
-    let conversation = Conversation(
-      isIncognito: incognito,
-      provider: provider,
-      modelID: model,
-      endpointID: endpoint?.id,
-      systemPromptID: settings.defaultSystemPromptID,
-      enabledTools: settings.defaultEnabledTools,
-      usesStreaming: settings.streamByDefault
-    )
+    var conversation = Conversation()
+    conversation.isIncognito = incognito
+    conversation.provider = provider
+    conversation.modelID = model
+    conversation.endpointID = endpoint?.id
+    conversation.systemPromptID = settings.defaultSystemPromptID
+    conversation.enabledTools = settings.defaultEnabledTools
+    conversation.usesStreaming = settings.streamByDefault
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
@@ -229,25 +228,17 @@ final class AppStore: ObservableObject {
       }
       return "\(trimmed) (Copy)"
     }()
-    let cloned = Conversation(
-      id: UUID(),
-      title: copyTitle,
-      messages: conversation.messages.map { msg in
-        ChatMessage(id: UUID(), role: msg.role, text: msg.text, createdAt: msg.createdAt)
-      },
-      createdAt: now,
-      updatedAt: now,
-      isIncognito: conversation.isIncognito,
-      provider: conversation.provider,
-      modelID: conversation.modelID,
-      endpointID: conversation.endpointID,
-      systemPromptID: conversation.systemPromptID,
-      enabledTools: conversation.enabledTools,
-      usesStreaming: conversation.usesStreaming,
-      isPinned: false,
-      disabledMCPTools: conversation.disabledMCPTools,
-      reasoningLevel: conversation.reasoningLevel
-    )
+    var cloned = conversation
+    cloned.id = UUID()
+    cloned.title = copyTitle
+    cloned.messages = conversation.messages.map {
+      ChatMessage(id: UUID(), role: $0.role, text: $0.text, createdAt: $0.createdAt)
+    }
+    cloned.createdAt = now
+    cloned.updatedAt = now
+    cloned.isPinned = false
+    cloned.lastToolContextSignature = nil
+    cloned.isArchived = false
     if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
       conversations.insert(cloned, at: index)
     } else {
@@ -592,54 +583,36 @@ final class AppStore: ObservableObject {
       return ""
     }()
 
-    var summaryConversation = Conversation(
-      title: "Compact",
-      provider: conversation.provider,
-      modelID: model,
-      endpointID: conversation.endpointID,
-      enabledTools: [],
-      usesStreaming: false
-    )
-    summaryConversation.messages = [
-      ChatMessage(
-        role: .user,
-        text: """
-          Compact the transcript below into durable context for continuing the same chat.
+    let prompt = """
+      Compact the transcript below into durable context for continuing the same chat.
 
-          Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
+      Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
 
-          Preserve:
-          - User goals, preferences, constraints, and decisions
-          - Important names, projects, files, commands, code snippets, errors, and results
-          - Current state, unresolved questions, and next steps
+      Preserve:
+      - User goals, preferences, constraints, and decisions
+      - Important names, projects, files, commands, code snippets, errors, and results
+      - Current state, unresolved questions, and next steps
 
-          Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+      Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
 
-          Transcript:
+      Transcript:
 
-          \(transcript)
-          """
-      )
-    ]
-    let request = ChatCompletionRequest(
-      conversation: summaryConversation,
-      settings: settings,
-      toolContext: "",
-      assistantMessageID: UUID()
-    )
+      \(transcript)
+      """
     do {
-      let summary = try await ChatProviderRouter.complete(request: request) { _ in }
+      let summary = try await runOneShotPrompt(
+        title: "Compact", prompt: prompt,
+        provider: conversation.provider, modelID: model,
+        endpointID: conversation.endpointID)
       let trimmed = MessageContentFilter.promptSafeText(from: summary)
       guard !trimmed.isEmpty else {
         errorMessage = "Compact returned an empty summary."
         return
       }
       guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-      let replacement = ChatMessage(
-        role: .system,
-        text: "Conversation summary (compacted):\n\n\(trimmed)"
-      )
-      conversations[idx].messages = [replacement]
+      conversations[idx].messages = [
+        ChatMessage(role: .system, text: "Conversation summary (compacted):\n\n\(trimmed)")
+      ]
       conversations[idx].updatedAt = Date()
       saveConversations()
     } catch {
@@ -666,43 +639,50 @@ final class AppStore: ObservableObject {
       .joined(separator: "\n\n")
     guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-    var memoryConversation = Conversation(
-      title: "Memory update",
-      provider: settings.defaultProvider,
-      modelID: settings.defaultProvider == .apple
-        ? settings.appleModelID : (settings.openAIEndpoints.first?.defaultModel ?? ""),
-      endpointID: settings.selectedEndpointID,
-      enabledTools: [],
-      usesStreaming: false
-    )
-    memoryConversation.messages = [
-      ChatMessage(
-        role: .user,
-        text:
-          """
-          Extract durable user memory from these conversations.
+    let prompt = """
+      Extract durable user memory from these conversations.
 
-          Output only concise memory notes. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about this task.
+      Output only concise memory notes. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about this task.
 
-          Keep stable facts and recurring preferences: names, locations, projects, technical preferences, workflow habits, and standing instructions. Ignore one-off tasks, transient chat state, assistant behavior, tool outputs unless they reveal a durable user preference, and sensitive secrets such as credentials or tokens.
+      Keep stable facts and recurring preferences: names, locations, projects, technical preferences, workflow habits, and standing instructions. Ignore one-off tasks, transient chat state, assistant behavior, tool outputs unless they reveal a durable user preference, and sensitive secrets such as credentials or tokens.
 
-          \(transcript)
-          """
-      )
-    ]
-    let request = ChatCompletionRequest(
-      conversation: memoryConversation,
-      settings: settings,
-      toolContext: "",
-      assistantMessageID: UUID()
-    )
+      \(transcript)
+      """
+    let provider = settings.defaultProvider
+    let model =
+      provider == .apple
+      ? settings.appleModelID : (settings.openAIEndpoints.first?.defaultModel ?? "")
     do {
-      let memory = try await ChatProviderRouter.complete(request: request) { _ in }
+      let memory = try await runOneShotPrompt(
+        title: "Memory update", prompt: prompt,
+        provider: provider, modelID: model,
+        endpointID: settings.selectedEndpointID)
       settings.memory = MessageContentFilter.promptSafeText(from: memory)
       saveSettings()
     } catch {
       errorMessage = error.localizedDescription
     }
+  }
+
+  private func runOneShotPrompt(
+    title: String, prompt: String,
+    provider: ProviderKind, modelID: String, endpointID: UUID?
+  ) async throws -> String {
+    var oneShot = Conversation()
+    oneShot.title = title
+    oneShot.provider = provider
+    oneShot.modelID = modelID
+    oneShot.endpointID = endpointID
+    oneShot.enabledTools = []
+    oneShot.usesStreaming = false
+    oneShot.messages = [ChatMessage(role: .user, text: prompt)]
+    let request = ChatCompletionRequest(
+      conversation: oneShot,
+      settings: settings,
+      toolContext: "",
+      assistantMessageID: UUID()
+    )
+    return try await ChatProviderRouter.complete(request: request) { _ in }
   }
 
   func importToolFile(from url: URL) {

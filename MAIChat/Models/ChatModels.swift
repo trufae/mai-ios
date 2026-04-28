@@ -236,75 +236,32 @@ enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
-  var id: UUID
+  var id: UUID = UUID()
   var role: ChatRole
   var text: String
-  var createdAt: Date
-
-  init(id: UUID = UUID(), role: ChatRole, text: String, createdAt: Date = Date()) {
-    self.id = id
-    self.role = role
-    self.text = text
-    self.createdAt = createdAt
-  }
+  var createdAt: Date = Date()
 }
 
 struct Conversation: Identifiable, Codable, Equatable, Sendable {
-  var id: UUID
-  var title: String
-  var messages: [ChatMessage]
-  var createdAt: Date
-  var updatedAt: Date
-  var isIncognito: Bool
-  var provider: ProviderKind
-  var modelID: String
-  var endpointID: UUID?
-  var systemPromptID: UUID?
-  var enabledTools: Set<NativeToolID>
-  var usesStreaming: Bool
-  var isPinned: Bool
-  var disabledMCPTools: Set<String>
-  var reasoningLevel: ReasoningLevel
-  var lastToolContextSignature: String?
-  var isArchived: Bool
+  var id: UUID = UUID()
+  var title: String = "New chat"
+  var messages: [ChatMessage] = []
+  var createdAt: Date = Date()
+  var updatedAt: Date = Date()
+  var isIncognito: Bool = false
+  var provider: ProviderKind = .apple
+  var modelID: String = AppSettings.appleDefaultModelID
+  var endpointID: UUID? = nil
+  var systemPromptID: UUID? = nil
+  var enabledTools: Set<NativeToolID> = AppSettings.defaultTools
+  var usesStreaming: Bool = true
+  var isPinned: Bool = false
+  var disabledMCPTools: Set<String> = []
+  var reasoningLevel: ReasoningLevel = .automatic
+  var lastToolContextSignature: String? = nil
+  var isArchived: Bool = false
 
-  init(
-    id: UUID = UUID(),
-    title: String = "New chat",
-    messages: [ChatMessage] = [],
-    createdAt: Date = Date(),
-    updatedAt: Date = Date(),
-    isIncognito: Bool = false,
-    provider: ProviderKind = .apple,
-    modelID: String = AppSettings.appleDefaultModelID,
-    endpointID: UUID? = nil,
-    systemPromptID: UUID? = nil,
-    enabledTools: Set<NativeToolID> = AppSettings.defaultTools,
-    usesStreaming: Bool = true,
-    isPinned: Bool = false,
-    disabledMCPTools: Set<String> = [],
-    reasoningLevel: ReasoningLevel = .automatic,
-    lastToolContextSignature: String? = nil,
-    isArchived: Bool = false
-  ) {
-    self.id = id
-    self.title = title
-    self.messages = messages
-    self.createdAt = createdAt
-    self.updatedAt = updatedAt
-    self.isIncognito = isIncognito
-    self.provider = provider
-    self.modelID = modelID
-    self.endpointID = endpointID
-    self.systemPromptID = systemPromptID
-    self.enabledTools = enabledTools
-    self.usesStreaming = usesStreaming
-    self.isPinned = isPinned
-    self.disabledMCPTools = disabledMCPTools
-    self.reasoningLevel = reasoningLevel
-    self.lastToolContextSignature = lastToolContextSignature
-    self.isArchived = isArchived
-  }
+  init() {}
 
   enum CodingKeys: String, CodingKey {
     case id

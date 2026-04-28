@@ -224,28 +224,22 @@ struct ChatView: View {
   private var providerSubtitle: String {
     if store.isCompacting { return "Compacting…" }
     guard let conversation = store.currentConversation else { return "No conversation" }
-    let providerName: String = {
-      switch conversation.provider {
-      case .apple:
-        return "Apple Intelligence"
-      case .openAICompatible:
-        if let id = conversation.endpointID,
-          let endpoint = store.settings.openAIEndpoints.first(where: { $0.id == id })
-        {
-          let name = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
-          if !name.isEmpty { return name }
-          if let host = URL(string: endpoint.baseURL)?.host, !host.isEmpty {
-            return host
-          }
-        }
-        return "Endpoint"
-      }
-    }()
+    let providerName = providerLabel(for: conversation)
     let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-    if model.isEmpty {
-      return providerName
+    return model.isEmpty ? providerName : "\(providerName) · \(model)"
+  }
+
+  private func providerLabel(for conversation: Conversation) -> String {
+    switch conversation.provider {
+    case .apple:
+      return "Apple Intelligence"
+    case .openAICompatible:
+      let endpoint = conversation.endpointID.flatMap { id in
+        store.settings.openAIEndpoints.first(where: { $0.id == id })
+      }
+      return AgentTooling.firstNonEmpty(endpoint?.name, URL(string: endpoint?.baseURL ?? "")?.host)
+        ?? "Endpoint"
     }
-    return "\(providerName) · \(model)"
   }
 
   private func providerStatusBanner(_ status: (message: String, systemImage: String, color: Color))
