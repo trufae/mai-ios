@@ -1,7 +1,7 @@
 # aitest — agentic-loop debugger
 
 Standalone macOS executable that mirrors the agentic-loop logic used inside
-the MAIChat iOS app, so you can iterate on tool-calling against any
+the PocketMai iOS app, so you can iterate on tool-calling against any
 OpenAI-compatible endpoint + MCP servers without rebuilding/running the iOS
 app.
 
