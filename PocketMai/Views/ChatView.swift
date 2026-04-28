@@ -305,26 +305,20 @@ struct ChatView: View {
       }
       .edgeFadeBlur()
       .scrollPosition(id: $visibleMessageID, anchor: .bottom)
-      .onChange(of: store.currentConversation?.messages.last?.text) { _, _ in
-        autoFollowLastMessage(proxy: proxy)
+      .onChange(of: lastMessageSnapshot) { old, new in
+        // Conversation switches are handled by the selectedConversationID observer below.
+        guard old.conversationID == new.conversationID else { return }
+        // New message → always scroll. Same message, only text changed (streaming) → follow if at bottom.
+        scrollToLast(proxy, force: old.messageID != new.messageID)
       }
-      // During streaming the assistant's text lives in `store.streamingTexts`
-      // (not in `messages`), so the message-text observer above stays quiet.
-      // Mirror auto-follow off the streaming buffer too.
-      .onChange(of: lastMessageStreamingText) { _, _ in
-        autoFollowLastMessage(proxy: proxy)
+      .onChange(of: composerFocused) { _, focused in
+        if focused { scrollToLast(proxy, force: true) }
       }
       .onChange(of: store.selectedConversationID) { oldID, newID in
         if let oldID, let pos = visibleMessageID {
           store.savedScrollPositions[oldID] = pos
         }
         restoreScroll(in: newID, proxy: proxy)
-      }
-      .onChange(of: composerFocused) { _, focused in
-        guard focused, let last = store.currentConversation?.messages.last else { return }
-        withAnimation(.snappy) {
-          proxy.scrollTo(last.id, anchor: .bottom)
-        }
       }
       .onAppear {
         if lastTrackedConversationID != store.selectedConversationID {
@@ -334,18 +328,26 @@ struct ChatView: View {
     }
   }
 
-  private var lastMessageStreamingText: String? {
-    guard let lastID = store.currentConversation?.messages.last?.id else { return nil }
-    return store.streamingTexts[lastID]
+  private struct LastMessageSnapshot: Equatable {
+    var conversationID: UUID?
+    var messageID: UUID?
+    var text: String?
   }
 
-  private func autoFollowLastMessage(proxy: ScrollViewProxy) {
+  // Streaming text lives in `store.streamingTexts`, not in the message itself, so
+  // the snapshot reads from both to capture every visible change in one signal.
+  private var lastMessageSnapshot: LastMessageSnapshot {
+    let convo = store.currentConversation
+    let last = convo?.messages.last
+    let text = last.flatMap { store.streamingTexts[$0.id] } ?? last?.text
+    return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: text)
+  }
+
+  private func scrollToLast(_ proxy: ScrollViewProxy, force: Bool) {
     guard let last = store.currentConversation?.messages.last else { return }
-    // Only auto-follow when the user is anchored near the bottom.
-    if visibleMessageID == nil || visibleMessageID == last.id {
-      withAnimation(.snappy) {
-        proxy.scrollTo(last.id, anchor: .bottom)
-      }
+    if !force, visibleMessageID != nil, visibleMessageID != last.id { return }
+    withAnimation(.snappy) {
+      proxy.scrollTo(last.id, anchor: .bottom)
     }
   }
 
@@ -360,7 +362,9 @@ struct ChatView: View {
       return
     }
     // Defer one runloop so lazy rows mount before scrollTo seeks them.
+    // If another conversation switch lands first, bail to avoid stomping its scroll.
     DispatchQueue.main.async {
+      guard lastTrackedConversationID == conversationID else { return }
       visibleMessageID = target
       proxy.scrollTo(target, anchor: .bottom)
     }
