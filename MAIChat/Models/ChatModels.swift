@@ -482,65 +482,23 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct NativeToolSettings: Codable, Equatable, Sendable {
-  var includeTimeZone: Bool
-  var includeCurrentTime: Bool
-  var includeYear: Bool
-  var useGPSLocation: Bool
-  var manualLocation: String
-  var weatherLocation: String
-  var webSearchProvider: WebSearchProvider
-  var todos: [TodoItem]
-  var files: [ToolFile]
-  var textToSpeechLanguage: String
-  var textToSpeechVoiceIdentifier: String
-  var textToSpeechRate: Double
-  var textToSpeechPitch: Double
+  var includeTimeZone: Bool = true
+  var includeCurrentTime: Bool = true
+  var includeYear: Bool = true
+  var useGPSLocation: Bool = false
+  var manualLocation: String = ""
+  var weatherLocation: String = ""
+  var webSearchProvider: WebSearchProvider = .duckDuckGo
+  var todos: [TodoItem] = []
+  var files: [ToolFile] = []
+  var textToSpeechLanguage: String = ""
+  var textToSpeechVoiceIdentifier: String = ""
+  var textToSpeechRate: Double = 0.5
+  var textToSpeechPitch: Double = 1.0
 
-  static let defaults = NativeToolSettings(
-    includeTimeZone: true,
-    includeCurrentTime: true,
-    includeYear: true,
-    useGPSLocation: false,
-    manualLocation: "",
-    weatherLocation: "",
-    webSearchProvider: .duckDuckGo,
-    todos: [],
-    files: [],
-    textToSpeechLanguage: "",
-    textToSpeechVoiceIdentifier: "",
-    textToSpeechRate: 0.5,
-    textToSpeechPitch: 1.0
-  )
+  static let defaults = NativeToolSettings()
 
-  init(
-    includeTimeZone: Bool,
-    includeCurrentTime: Bool,
-    includeYear: Bool,
-    useGPSLocation: Bool,
-    manualLocation: String,
-    weatherLocation: String,
-    webSearchProvider: WebSearchProvider,
-    todos: [TodoItem],
-    files: [ToolFile],
-    textToSpeechLanguage: String = "",
-    textToSpeechVoiceIdentifier: String = "",
-    textToSpeechRate: Double = 0.5,
-    textToSpeechPitch: Double = 1.0
-  ) {
-    self.includeTimeZone = includeTimeZone
-    self.includeCurrentTime = includeCurrentTime
-    self.includeYear = includeYear
-    self.useGPSLocation = useGPSLocation
-    self.manualLocation = manualLocation
-    self.weatherLocation = weatherLocation
-    self.webSearchProvider = webSearchProvider
-    self.todos = todos
-    self.files = files
-    self.textToSpeechLanguage = textToSpeechLanguage
-    self.textToSpeechVoiceIdentifier = textToSpeechVoiceIdentifier
-    self.textToSpeechRate = textToSpeechRate
-    self.textToSpeechPitch = textToSpeechPitch
-  }
+  init() {}
 
   enum CodingKeys: String, CodingKey {
     case includeTimeZone, includeCurrentTime, includeYear, useGPSLocation
@@ -583,90 +541,36 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 struct AppSettings: Codable, Equatable, Sendable {
   static let appleDefaultModelID = ""
   static let defaultTools: Set<NativeToolID> = [.datetime, .webSearch]
-
-  var defaultProvider: ProviderKind
-  var appleModelID: String
-  var selectedEndpointID: UUID?
-  var streamByDefault: Bool
-  var openAIEndpoints: [OpenAIEndpoint]
-  var systemPrompts: [SystemPrompt]
-  var defaultSystemPromptID: UUID
-  var defaultEnabledTools: Set<NativeToolID>
-  var toolSettings: NativeToolSettings
-  var mcpServers: [MCPServer]
-  var memory: String
-  var embedMemory: Bool
-  var toolCallingMode: ToolCallingMode
-  var useToolProxy: Bool
-  var contextWindowMode: ContextWindowMode
-  var nativeToolMode: NativeToolMode
-
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
     text:
       "You are a helpful, concise assistant for a private text-only chat app. Prefer clear answers and preserve useful formatting."
   )
 
-  static var defaults: AppSettings {
-    AppSettings(
-      defaultProvider: .apple,
-      appleModelID: appleDefaultModelID,
-      selectedEndpointID: nil,
-      streamByDefault: true,
-      openAIEndpoints: [],
-      systemPrompts: [defaultSystemPrompt],
-      defaultSystemPromptID: defaultSystemPrompt.id,
-      defaultEnabledTools: defaultTools,
-      toolSettings: .defaults,
-      mcpServers: [],
-      memory: "",
-      embedMemory: true,
-      toolCallingMode: .text,
-      useToolProxy: false,
-      contextWindowMode: .full,
-      nativeToolMode: .context
-    )
-  }
+  var defaultProvider: ProviderKind = .apple
+  var appleModelID: String = AppSettings.appleDefaultModelID
+  var selectedEndpointID: UUID? = nil
+  var streamByDefault: Bool = true
+  var openAIEndpoints: [OpenAIEndpoint] = []
+  var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
+  var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
+  var defaultEnabledTools: Set<NativeToolID> = AppSettings.defaultTools
+  var toolSettings: NativeToolSettings = .defaults
+  var mcpServers: [MCPServer] = []
+  var memory: String = ""
+  var embedMemory: Bool = true
+  var toolCallingMode: ToolCallingMode = .text
+  var useToolProxy: Bool = false
+  var contextWindowMode: ContextWindowMode = .full
+  var nativeToolMode: NativeToolMode = .context
+
+  static let defaults = AppSettings()
+
+  init() {}
 
   func defaultPrompt() -> SystemPrompt {
     systemPrompts.first(where: { $0.id == defaultSystemPromptID }) ?? systemPrompts.first
       ?? AppSettings.defaultSystemPrompt
-  }
-
-  init(
-    defaultProvider: ProviderKind,
-    appleModelID: String,
-    selectedEndpointID: UUID?,
-    streamByDefault: Bool,
-    openAIEndpoints: [OpenAIEndpoint],
-    systemPrompts: [SystemPrompt],
-    defaultSystemPromptID: UUID,
-    defaultEnabledTools: Set<NativeToolID>,
-    toolSettings: NativeToolSettings,
-    mcpServers: [MCPServer],
-    memory: String,
-    embedMemory: Bool,
-    toolCallingMode: ToolCallingMode,
-    useToolProxy: Bool,
-    contextWindowMode: ContextWindowMode,
-    nativeToolMode: NativeToolMode
-  ) {
-    self.defaultProvider = defaultProvider
-    self.appleModelID = appleModelID
-    self.selectedEndpointID = selectedEndpointID
-    self.streamByDefault = streamByDefault
-    self.openAIEndpoints = openAIEndpoints
-    self.systemPrompts = systemPrompts
-    self.defaultSystemPromptID = defaultSystemPromptID
-    self.defaultEnabledTools = defaultEnabledTools
-    self.toolSettings = toolSettings
-    self.mcpServers = mcpServers
-    self.memory = memory
-    self.embedMemory = embedMemory
-    self.toolCallingMode = toolCallingMode
-    self.useToolProxy = useToolProxy
-    self.contextWindowMode = contextWindowMode
-    self.nativeToolMode = nativeToolMode
   }
 
   enum CodingKeys: String, CodingKey {
@@ -757,7 +661,7 @@ struct AnyCodable: Codable, Sendable {
     case let dictionary as [String: AnyCodable]:
       try container.encode(dictionary)
     default:
-      try container.encode(String(describing: value))
+      preconditionFailure("AnyCodable cannot encode value of type \(type(of: value))")
     }
   }
 }
