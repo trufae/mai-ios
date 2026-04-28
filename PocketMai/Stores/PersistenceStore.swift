@@ -9,6 +9,10 @@ final class PersistenceStore: @unchecked Sendable {
   private let baseURL: URL
   private let writeQueue = DispatchQueue(
     label: "dev.mai.chat.persistence", qos: .userInitiated)
+  private let debounce: TimeInterval = 0.4
+  // Touched only from writeQueue; serial access guarantees thread-safety.
+  private var pendingSettings: DispatchWorkItem?
+  private var pendingConversations: DispatchWorkItem?
 
   init(fileManager: FileManager = .default) {
     self.fileManager = fileManager
@@ -40,8 +44,13 @@ final class PersistenceStore: @unchecked Sendable {
     let envelope = PersistedConversations(conversations: visible)
     let url = conversationsURL
     let dir = baseURL
-    writeQueue.async {
-      Self.persist(envelope, to: url, dir: dir)
+    let delay = debounce
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.pendingConversations?.cancel()
+      let item = DispatchWorkItem { Self.persist(envelope, to: url, dir: dir) }
+      self.pendingConversations = item
+      self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
     }
   }
 
@@ -58,8 +67,13 @@ final class PersistenceStore: @unchecked Sendable {
     let snapshot = settings
     let url = settingsURL
     let dir = baseURL
-    writeQueue.async {
-      Self.persist(snapshot, to: url, dir: dir)
+    let delay = debounce
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.pendingSettings?.cancel()
+      let item = DispatchWorkItem { Self.persist(snapshot, to: url, dir: dir) }
+      self.pendingSettings = item
+      self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
     }
   }
 
@@ -68,7 +82,6 @@ final class PersistenceStore: @unchecked Sendable {
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
       let encoder = JSONEncoder()
       encoder.dateEncodingStrategy = .iso8601
-      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
       let data = try encoder.encode(value)
       try data.write(to: url, options: [.atomic])
     } catch {

@@ -58,6 +58,9 @@ final class AppStore: ObservableObject {
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   /// [conversationID: last visible messageID]; missing entries restore to bottom.
   @Published var savedScrollPositions: [UUID: UUID] = [:]
+  /// Cached Apple Intelligence availability message; nil means available.
+  /// Refreshed on app launch and on scene activation, not per-render.
+  @Published var appleAvailabilityMessage: String?
 
   let locationService = LocationService()
   private let persistence: PersistenceStore
@@ -66,6 +69,7 @@ final class AppStore: ObservableObject {
     self.persistence = persistence
     settings = persistence.loadSettings()
     conversations = []
+    appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
     Task.detached { [persistence, weak self] in
       let loaded = persistence.loadConversations()
       let sorted = Self.sortedConversations(loaded)
@@ -710,6 +714,10 @@ final class AppStore: ObservableObject {
 
   func saveSettings() {
     persistence.saveSettings(settings)
+  }
+
+  func refreshAppleAvailability() {
+    appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
   }
 
   func resetEndpointStatus(_ id: UUID) {

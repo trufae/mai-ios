@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-struct MessageBubble: View {
+struct MessageBubble: View, Equatable {
   @EnvironmentObject private var store: AppStore
   let message: ChatMessage
   let onDelete: () -> Void
@@ -10,6 +10,13 @@ struct MessageBubble: View {
   var onRestartFresh: (() -> Void)? = nil
 
   private var isUser: Bool { message.role == .user }
+
+  /// Identity for SwiftUI's EquatableView: skip body re-evaluation when the
+  /// message itself is unchanged. Closure equality is irrelevant here — they
+  /// always recapture fresh state via `store` and `message`.
+  nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
+    lhs.message == rhs.message
+  }
 
   var body: some View {
     let rendered = MessageContentFilter.render(message.text)

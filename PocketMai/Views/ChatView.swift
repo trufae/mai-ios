@@ -270,7 +270,7 @@ struct ChatView: View {
 
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     guard store.currentConversation?.provider == .apple,
-      let message = AppleFoundationProvider.unavailableMessage
+      let message = store.appleAvailabilityMessage
     else {
       return nil
     }
@@ -294,6 +294,7 @@ struct ChatView: View {
                 onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
                 onRestartFresh: { Task { await store.restartFromScratch(with: message) } }
               )
+              .equatable()
               .id(message.id)
             }
           }

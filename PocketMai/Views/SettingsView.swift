@@ -7,6 +7,27 @@ enum DefaultProviderSelection: Hashable {
   case endpoint(UUID)
 }
 
+private enum TTSVoiceCache {
+  static let voices: [AVSpeechSynthesisVoice] = AVSpeechSynthesisVoice.speechVoices().sorted {
+    if $0.language != $1.language { return $0.language < $1.language }
+    return $0.name < $1.name
+  }
+
+  static let languages: [String] = Array(Set(voices.map(\.language))).sorted {
+    languageDisplayName($0) < languageDisplayName($1)
+  }
+
+  static func voiceOptions(for language: String) -> [AVSpeechSynthesisVoice] {
+    guard !language.isEmpty else { return voices }
+    return voices.filter { $0.language == language }
+  }
+
+  static func languageDisplayName(_ language: String) -> String {
+    let name = Locale.current.localizedString(forIdentifier: language) ?? language
+    return "\(name) (\(language))"
+  }
+}
+
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
@@ -128,7 +149,6 @@ struct SettingsView: View {
     } footer: {
       Text("Tap an endpoint to edit credentials and pick a default model.")
     }
-    .onChange(of: store.settings.openAIEndpoints) { _, _ in store.saveSettings() }
   }
 
   private func endpointRow(_ endpoint: OpenAIEndpoint) -> some View {
@@ -216,7 +236,6 @@ struct SettingsView: View {
     } footer: {
       Text("Tap a prompt to edit. The default is sent to the model at the start of every chat.")
     }
-    .onChange(of: store.settings.systemPrompts) { _, _ in store.saveSettings() }
   }
 
   private func promptRow(_ prompt: SystemPrompt) -> some View {
@@ -262,8 +281,6 @@ struct SettingsView: View {
         "Tap the checkbox to enable. Tap the row to expand options where available. Usage applies to Date & Time, Location, and Weather."
       )
     }
-    .onChange(of: store.settings.defaultEnabledTools) { _, _ in store.saveSettings() }
-    .onChange(of: store.settings.toolSettings) { _, _ in store.saveSettings() }
   }
 
   @ViewBuilder
@@ -363,13 +380,13 @@ struct SettingsView: View {
     case .textToSpeech:
       Picker("Language", selection: settingsBinding(\.toolSettings.textToSpeechLanguage)) {
         Text("System Default").tag("")
-        ForEach(textToSpeechLanguages, id: \.self) { language in
-          Text(languageDisplayName(language)).tag(language)
+        ForEach(TTSVoiceCache.languages, id: \.self) { language in
+          Text(TTSVoiceCache.languageDisplayName(language)).tag(language)
         }
       }
       .onChange(of: store.settings.toolSettings.textToSpeechLanguage) { _, language in
         guard !language.isEmpty,
-          let voice = textToSpeechVoices.first(where: {
+          let voice = TTSVoiceCache.voices.first(where: {
             $0.identifier == store.settings.toolSettings.textToSpeechVoiceIdentifier
           }),
           voice.language != language
@@ -380,8 +397,11 @@ struct SettingsView: View {
 
       Picker("Voice", selection: settingsBinding(\.toolSettings.textToSpeechVoiceIdentifier)) {
         Text("Default Voice").tag("")
-        ForEach(textToSpeechVoiceOptions, id: \.identifier) { voice in
-          Text("\(voice.name) (\(languageDisplayName(voice.language)))")
+        ForEach(
+          TTSVoiceCache.voiceOptions(for: store.settings.toolSettings.textToSpeechLanguage),
+          id: \.identifier
+        ) { voice in
+          Text("\(voice.name) (\(TTSVoiceCache.languageDisplayName(voice.language)))")
             .tag(voice.identifier)
         }
       }
@@ -468,7 +488,6 @@ struct SettingsView: View {
     } footer: {
       Text("HTTP and HTTPS endpoints are accepted. Tap a server to edit its details.")
     }
-    .onChange(of: store.settings.mcpServers) { _, _ in store.saveSettings() }
   }
 
   private func mcpRow(_ server: MCPServer) -> some View {
