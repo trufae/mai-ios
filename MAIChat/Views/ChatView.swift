@@ -290,6 +290,7 @@ struct ChatView: View {
         }
         .padding()
       }
+      .edgeFadeBlur()
       .onChange(of: store.currentConversation?.messages.last?.text) { _, _ in
         if let id = store.currentConversation?.messages.last?.id {
           withAnimation(.snappy) {

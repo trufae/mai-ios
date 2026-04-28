@@ -61,6 +61,7 @@ struct SidebarView: View {
       }
     }
     .listStyle(.sidebar)
+    .edgeFadeBlur()
   }
 
   private var floatingActions: some View {
