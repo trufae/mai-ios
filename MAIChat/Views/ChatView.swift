@@ -325,6 +325,12 @@ struct ChatView: View {
         }
         restoreScroll(in: newID, proxy: proxy)
       }
+      .onChange(of: composerFocused) { _, focused in
+        guard focused, let last = store.currentConversation?.messages.last else { return }
+        withAnimation(.snappy) {
+          proxy.scrollTo(last.id, anchor: .bottom)
+        }
+      }
       .onAppear {
         if lastTrackedConversationID != store.selectedConversationID {
           restoreScroll(in: store.selectedConversationID, proxy: proxy)
