@@ -22,8 +22,6 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>MAI can include your current location in prompts when the Location tool is enabled.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

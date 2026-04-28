@@ -43,7 +43,6 @@ final class AppStore: ObservableObject {
 
   let locationService = LocationService()
   private let persistence: PersistenceStore
-  private let liveActivityManager = LiveActivityManager()
 
   init(persistence: PersistenceStore = PersistenceStore()) {
     self.persistence = persistence
@@ -389,7 +388,6 @@ final class AppStore: ObservableObject {
     conversations[index].updatedAt = Date()
     let assistantID = assistantMessage.id
     saveConversations()
-    liveActivityManager.start(conversation: conversations[index])
 
     do {
       let agentDefinitions = ToolAgentRegistry.visibleDefinitions(
@@ -452,7 +450,6 @@ final class AppStore: ObservableObject {
         }
         try Task.checkCancellation()
         setAssistantMessage(id: assistantID, text: response, role: .assistant)
-        await liveActivityManager.end(finalText: response)
         return
       }
 
@@ -493,7 +490,6 @@ final class AppStore: ObservableObject {
           assistantText = assistantText.isEmpty ? response : "\(assistantText)\n\n\(response)"
           setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
           didFinish = true
-          await liveActivityManager.end(finalText: assistantText)
           break
         }
 
@@ -524,7 +520,6 @@ final class AppStore: ObservableObject {
         let suffix =
           "\n\nTool loop stopped after \(maxIterations) tool rounds before the model produced a final answer."
         setAssistantMessage(id: assistantID, text: assistantText + suffix, role: .assistant)
-        await liveActivityManager.end(finalText: assistantText)
       }
     } catch is CancellationError {
       let current = currentTextOfMessage(id: assistantID)
@@ -535,7 +530,6 @@ final class AppStore: ObservableObject {
         setAssistantMessage(
           id: assistantID, text: "\(current)\n\n[stopped]", role: .assistant)
       }
-      await liveActivityManager.end(finalText: "[stopped]")
     } catch {
       let nsError = error as NSError
       if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
@@ -547,12 +541,10 @@ final class AppStore: ObservableObject {
           setAssistantMessage(
             id: assistantID, text: "\(current)\n\n[stopped]", role: .assistant)
         }
-        await liveActivityManager.end(finalText: "[stopped]")
       } else {
         let text = error.localizedDescription
         setAssistantMessage(id: assistantID, text: text, role: .error)
         errorMessage = text
-        await liveActivityManager.end(finalText: text)
       }
     }
   }
