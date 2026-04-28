@@ -69,10 +69,7 @@ enum MessageContentFilter {
       result = result.replacingOccurrences(
         of: unclosedPattern, with: "", options: [.regularExpression, .caseInsensitive])
     }
-    while result.contains("\n\n\n") {
-      result = result.replacingOccurrences(of: "\n\n\n", with: "\n\n")
-    }
-    return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    return collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private static func nextOpening(in text: String, from start: String.Index) -> (
@@ -101,7 +98,11 @@ enum MessageContentFilter {
   }
 
   private static func normalizedVisibleText(_ text: String) -> String {
-    var output = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    collapseBlankLines(text.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  private static func collapseBlankLines(_ text: String) -> String {
+    var output = text
     while output.contains("\n\n\n") {
       output = output.replacingOccurrences(of: "\n\n\n", with: "\n\n")
     }

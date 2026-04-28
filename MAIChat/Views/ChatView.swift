@@ -900,20 +900,9 @@ private struct ConversationModelSettingsView: View {
   }
 
   private func endpointStatusLabel(_ status: EndpointConnectionState) -> some View {
-    switch status {
-    case .unknown:
-      return Label("Not checked", systemImage: "circle.fill")
-        .foregroundStyle(Color.secondary)
-    case .checking:
-      return Label("Checking", systemImage: "arrow.triangle.2.circlepath")
-        .foregroundStyle(Color.orange)
-    case .available:
-      return Label("Connected", systemImage: "circle.fill")
-        .foregroundStyle(Color.green)
-    case .failed:
-      return Label("Failed", systemImage: "circle.fill")
-        .foregroundStyle(Color.red)
-    }
+    let icon = status == .checking ? "arrow.triangle.2.circlepath" : "circle.fill"
+    return Label(status.statusText, systemImage: icon)
+      .foregroundStyle(status.statusColor)
   }
 
   private func isChecking(_ endpoint: OpenAIEndpoint) -> Bool {

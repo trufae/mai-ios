@@ -133,7 +133,6 @@ struct SettingsView: View {
 
   private func endpointRow(_ endpoint: OpenAIEndpoint) -> some View {
     let status = store.endpointStatuses[endpoint.id] ?? .unknown
-    let summary = endpointStatusSummary(status)
     let subtitle: String = {
       let trimmedModel = endpoint.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
       if !trimmedModel.isEmpty {
@@ -143,9 +142,9 @@ struct SettingsView: View {
       return host.isEmpty ? "No model selected" : host
     }()
     return HStack(spacing: 12) {
-      Image(systemName: summary.systemImage)
+      Image(systemName: endpointStatusIcon(status))
         .imageScale(.medium)
-        .foregroundStyle(summary.color)
+        .foregroundStyle(status.statusColor)
         .frame(width: 18)
       VStack(alignment: .leading, spacing: 2) {
         Text(endpoint.name.isEmpty ? "Untitled Endpoint" : endpoint.name)
@@ -166,18 +165,12 @@ struct SettingsView: View {
     .padding(.vertical, 2)
   }
 
-  private func endpointStatusSummary(_ status: EndpointConnectionState) -> (
-    text: String, systemImage: String, color: Color
-  ) {
+  private func endpointStatusIcon(_ status: EndpointConnectionState) -> String {
     switch status {
-    case .unknown:
-      return ("Not checked", "circle", .secondary)
-    case .checking:
-      return ("Checking", "arrow.triangle.2.circlepath", .orange)
-    case .available:
-      return ("Connected", "checkmark.circle.fill", .green)
-    case .failed:
-      return ("Failed", "exclamationmark.circle.fill", .red)
+    case .unknown: "circle"
+    case .checking: "arrow.triangle.2.circlepath"
+    case .available: "checkmark.circle.fill"
+    case .failed: "exclamationmark.circle.fill"
     }
   }
 

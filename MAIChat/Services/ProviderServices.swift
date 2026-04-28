@@ -285,17 +285,7 @@ private struct OpenAIChatRequest: Encodable {
   var endpoint: OpenAIEndpoint
 
   enum CodingKeys: String, CodingKey {
-    case model
-    case messages
-    case stream
-    case tools
-    case reasoningEffort = "reasoning_effort"
-    case reasoning
-    case thinking
-    case enableThinking = "enable_thinking"
-    case thinkingBudget = "thinking_budget"
-    case chatTemplateKwargs = "chat_template_kwargs"
-    case think
+    case model, messages, stream, tools
   }
 
   func encode(to encoder: Encoder) throws {
@@ -307,13 +297,7 @@ private struct OpenAIChatRequest: Encodable {
 
     let payload = ReasoningCompatibility.payload(
       level: reasoningLevel, model: model, endpoint: endpoint)
-    try container.encodeIfPresent(payload.reasoningEffort, forKey: .reasoningEffort)
-    try container.encodeIfPresent(payload.reasoning, forKey: .reasoning)
-    try container.encodeIfPresent(payload.thinking, forKey: .thinking)
-    try container.encodeIfPresent(payload.enableThinking, forKey: .enableThinking)
-    try container.encodeIfPresent(payload.thinkingBudget, forKey: .thinkingBudget)
-    try container.encodeIfPresent(payload.chatTemplateKwargs, forKey: .chatTemplateKwargs)
-    try container.encodeIfPresent(payload.think, forKey: .think)
+    try payload.encode(to: encoder)
   }
 }
 
@@ -350,7 +334,7 @@ private enum OpenAIThinkValue: Encodable {
   }
 }
 
-private struct ReasoningRequestPayload {
+private struct ReasoningRequestPayload: Encodable {
   var reasoningEffort: String? = nil
   var reasoning: OpenAIReasoningConfig? = nil
   var thinking: OpenAIThinkingConfig? = nil
@@ -358,6 +342,16 @@ private struct ReasoningRequestPayload {
   var thinkingBudget: Int? = nil
   var chatTemplateKwargs: OpenAIChatTemplateKwargs? = nil
   var think: OpenAIThinkValue? = nil
+
+  enum CodingKeys: String, CodingKey {
+    case reasoningEffort = "reasoning_effort"
+    case reasoning
+    case thinking
+    case enableThinking = "enable_thinking"
+    case thinkingBudget = "thinking_budget"
+    case chatTemplateKwargs = "chat_template_kwargs"
+    case think
+  }
 }
 
 private enum ReasoningCompatibility {
@@ -578,31 +572,34 @@ struct OpenAIToolCall: Decodable, Sendable {
   var function: Function?
 }
 
+private struct OpenAIDecodedChoice<ToolCall: Decodable>: Decodable {
+  var content: OpenAIContent?
+  var reasoningContent: String?
+  var toolCalls: [ToolCall]?
+
+  enum CodingKeys: String, CodingKey {
+    case content
+    case reasoningContent = "reasoning_content"
+    case reasoning
+    case toolCalls = "tool_calls"
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    content = try? c.decode(OpenAIContent.self, forKey: .content)
+    reasoningContent =
+      (try? c.decode(String.self, forKey: .reasoningContent))
+      ?? (try? c.decode(String.self, forKey: .reasoning))
+    toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
+  }
+}
+
+private typealias OpenAIChoicePayload = OpenAIDecodedChoice<OpenAIToolCall>
+private typealias OpenAIStreamDelta = OpenAIDecodedChoice<DeltaToolCall>
+
 private struct OpenAIStreamChunk: Decodable {
   struct Choice: Decodable {
-    struct Delta: Decodable {
-      var content: OpenAIContent?
-      var reasoningContent: String?
-      var toolCalls: [DeltaToolCall]?
-
-      enum CodingKeys: String, CodingKey {
-        case content
-        case reasoningContent = "reasoning_content"
-        case reasoning
-        case toolCalls = "tool_calls"
-      }
-
-      init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        content = try? c.decode(OpenAIContent.self, forKey: .content)
-        reasoningContent =
-          (try? c.decode(String.self, forKey: .reasoningContent))
-          ?? (try? c.decode(String.self, forKey: .reasoning))
-        toolCalls = try? c.decode([DeltaToolCall].self, forKey: .toolCalls)
-      }
-    }
-
-    var delta: Delta?
+    var delta: OpenAIStreamDelta?
     var message: OpenAIChoicePayload?
     var text: String?
   }
@@ -619,28 +616,6 @@ struct DeltaToolCall: Decodable, Sendable {
   var id: String?
   var type: String?
   var function: Function?
-}
-
-private struct OpenAIChoicePayload: Decodable {
-  var content: OpenAIContent?
-  var reasoningContent: String?
-  var toolCalls: [OpenAIToolCall]?
-
-  enum CodingKeys: String, CodingKey {
-    case content
-    case reasoningContent = "reasoning_content"
-    case reasoning
-    case toolCalls = "tool_calls"
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    content = try? c.decode(OpenAIContent.self, forKey: .content)
-    reasoningContent =
-      (try? c.decode(String.self, forKey: .reasoningContent))
-      ?? (try? c.decode(String.self, forKey: .reasoning))
-    toolCalls = try? c.decode([OpenAIToolCall].self, forKey: .toolCalls)
-  }
 }
 
 private struct OpenAIContent: Decodable {

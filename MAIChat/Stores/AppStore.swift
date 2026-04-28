@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SwiftUI
 import UIKit
 
 enum EndpointConnectionState: Equatable {
@@ -7,6 +8,24 @@ enum EndpointConnectionState: Equatable {
   case checking
   case available
   case failed(String)
+
+  var statusText: String {
+    switch self {
+    case .unknown: "Not checked"
+    case .checking: "Checking"
+    case .available: "Connected"
+    case .failed: "Failed"
+    }
+  }
+
+  var statusColor: Color {
+    switch self {
+    case .unknown: .secondary
+    case .checking: .orange
+    case .available: .green
+    case .failed: .red
+    }
+  }
 }
 
 @MainActor
@@ -267,43 +286,7 @@ final class AppStore: ObservableObject {
 
     draftText = ""
     errorMessage = nil
-
-    let toolContext = await ToolContextBuilder.build(
-      input: prompt,
-      conversation: conversations[index],
-      settings: settings,
-      locationService: locationService
-    )
-    let embedContext = shouldEmbedToolContext(
-      conversation: conversations[index], output: toolContext)
-    let trimmedText = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    let userText: String =
-      (embedContext && !trimmedText.isEmpty)
-      ? "\(prompt)\n\n<tool_context>\n\(trimmedText)\n</tool_context>"
-      : prompt
-
-    guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-    let userMessage = ChatMessage(role: .user, text: userText)
-    conversations[i].messages.append(userMessage)
-    conversations[i].refreshTitle(from: prompt)
-    conversations[i].lastToolContextSignature = toolContext.signature
-    conversations[i].updatedAt = Date()
-    saveConversations()
-
-    dispatchAssistantTurn(
-      conversationID: conversationID, prompt: prompt,
-      toolContext: embedContext ? toolContext.text : "")
-  }
-
-  /// Decide whether to embed `<tool_context>` in the next user message. We
-  /// embed on the first turn (no stored signature), or when the signature
-  /// changed since the last embedded context. In `.onDemand` mode signatures
-  /// are empty for context-capable tools so this naturally short-circuits.
-  private func shouldEmbedToolContext(
-    conversation: Conversation, output: ToolContextBuilder.Output
-  ) -> Bool {
-    if output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
-    return conversation.lastToolContextSignature != output.signature
+    await composeUserTurn(prompt: prompt, conversationID: conversationID, mode: .append)
   }
 
   func trimAndResubmit(from message: ChatMessage) async {
@@ -333,31 +316,61 @@ final class AppStore: ObservableObject {
     }
 
     errorMessage = nil
+    await composeUserTurn(
+      prompt: prompt, conversationID: conversationID, mode: .replaceLastUser)
+  }
 
+  private enum UserTurnMode {
+    /// Append a fresh user message; only embed `<tool_context>` when the
+    /// signature has changed since the last embed.
+    case append
+    /// Replace the trailing user message and always re-embed any non-empty
+    /// tool context. Updates the signature so future appends can short-circuit.
+    case replaceLastUser
+  }
+
+  private func composeUserTurn(
+    prompt: String, conversationID: UUID, mode: UserTurnMode
+  ) async {
+    guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
     let toolContext = await ToolContextBuilder.build(
       input: prompt,
-      conversation: conversations[convIndex],
+      conversation: conversations[index],
       settings: settings,
       locationService: locationService
     )
-    // For trim & resubmit we replace the trailing user message, so we always
-    // re-embed if there is any context output. The signature is updated either
-    // way so future turns can short-circuit again.
     let trimmedTC = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    let refreshedUserText =
-      trimmedTC.isEmpty
-      ? prompt
-      : "\(prompt)\n\n<tool_context>\n\(trimmedTC)\n</tool_context>"
-    if let i = conversations.firstIndex(where: { $0.id == conversationID }),
-      let lastIndex = conversations[i].messages.indices.last
-    {
-      conversations[i].messages[lastIndex].text = refreshedUserText
-      conversations[i].lastToolContextSignature = toolContext.signature
-      saveConversations()
+    let embed: Bool = {
+      guard !trimmedTC.isEmpty else { return false }
+      switch mode {
+      case .append:
+        return conversations[index].lastToolContextSignature != toolContext.signature
+      case .replaceLastUser:
+        return true
+      }
+    }()
+    let userText =
+      embed
+      ? "\(prompt)\n\n<tool_context>\n\(trimmedTC)\n</tool_context>"
+      : prompt
+
+    guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+    switch mode {
+    case .append:
+      conversations[i].messages.append(ChatMessage(role: .user, text: userText))
+      conversations[i].refreshTitle(from: prompt)
+    case .replaceLastUser:
+      if let lastIndex = conversations[i].messages.indices.last {
+        conversations[i].messages[lastIndex].text = userText
+      }
     }
+    conversations[i].lastToolContextSignature = toolContext.signature
+    conversations[i].updatedAt = Date()
+    saveConversations()
 
     dispatchAssistantTurn(
-      conversationID: conversationID, prompt: prompt, toolContext: toolContext.text)
+      conversationID: conversationID, prompt: prompt,
+      toolContext: embed ? toolContext.text : "")
   }
 
   private func dispatchAssistantTurn(
