@@ -86,31 +86,26 @@ struct MessageBubble: View {
       } label: {
         Label("Copy Message", systemImage: "doc.on.doc")
       }
-      if isUser, let onResubmit {
-        Button {
-          onResubmit()
-        } label: {
-          Label("Resubmit Message", systemImage: "arrow.clockwise")
-        }
-      }
-      if let onTrimFromHere {
-        Button {
-          onTrimFromHere()
-        } label: {
-          Label("Restart From Here", systemImage: "arrow.clockwise")
-        }
-      }
-      if let onRestartFresh {
-        Button(role: .destructive) {
-          onRestartFresh()
-        } label: {
-          Label("Start Fresh With This Message", systemImage: "arrow.triangle.2.circlepath")
-        }
-      }
       Button {
         UIPasteboard.general.string = rawText
       } label: {
         Label("Copy Raw Message", systemImage: "doc.text")
+      }
+      if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
+        Divider()
+        Button {
+          resend()
+        } label: {
+          Label("Resend From Here", systemImage: "arrow.clockwise")
+        }
+      }
+      if let onRestartFresh {
+        Divider()
+        Button {
+          onRestartFresh()
+        } label: {
+          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+        }
       }
       Button(role: .destructive, action: onDelete) {
         Label("Delete Message", systemImage: "trash")
