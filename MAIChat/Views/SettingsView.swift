@@ -402,6 +402,24 @@ struct SettingsView: View {
         Text("Pitch")
         Slider(value: settingsBinding(\.toolSettings.textToSpeechPitch), in: 0.5...2, step: 0.05)
       }
+
+      Button {
+        let sample = [
+          "Hello, this is a voice test.",
+          "Hola, esto es una prueba de voz.",
+          "Hola, això és una prova de veu.",
+          "Bonjour, ceci est un test vocal.",
+          "Hallo, das ist ein Stimmtest.",
+          "Ciao, questa è una prova vocale.",
+          "こんにちは、これは音声テストです。",
+          "你好，这是一次语音测试。",
+        ].joined(separator: " ")
+        _ = TextToSpeechTool.speak(
+          arguments: ["text": .string(sample)],
+          settings: store.settings.toolSettings)
+      } label: {
+        Label("Test Voice", systemImage: "play.circle")
+      }
     case .files:
       Button {
         showingFileImporter = true

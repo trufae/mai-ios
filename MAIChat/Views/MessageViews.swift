@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct MessageBubble: View {
+  @EnvironmentObject private var store: AppStore
   let message: ChatMessage
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
@@ -90,6 +91,13 @@ struct MessageBubble: View {
         UIPasteboard.general.string = rawText
       } label: {
         Label("Copy Raw Message", systemImage: "doc.text")
+      }
+      Button {
+        _ = TextToSpeechTool.speak(
+          arguments: ["text": .string(visibleText)],
+          settings: store.settings.toolSettings)
+      } label: {
+        Label("Speak Message", systemImage: "speaker.wave.2")
       }
       if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
         Divider()
