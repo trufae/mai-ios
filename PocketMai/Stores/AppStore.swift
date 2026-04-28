@@ -81,10 +81,7 @@ final class AppStore: ObservableObject {
       await MainActor.run {
         guard let self else { return }
         self.conversations = sorted
-        self.selectedConversationID = sorted.first?.id
-        if sorted.isEmpty {
-          self.newConversation()
-        }
+        self.startFreshConversationForLaunch()
       }
     }
   }
@@ -96,6 +93,25 @@ final class AppStore: ObservableObject {
 
   func newConversation(incognito: Bool = false) {
     discardSelectedIncognitoConversation()
+    let conversation = makeNewConversation(incognito: incognito)
+    conversations.insert(conversation, at: 0)
+    sortConversations()
+    selectedConversationID = conversation.id
+    isIncognitoMode = incognito
+    selectedConversationIDs.removeAll()
+    saveConversations()
+  }
+
+  private func startFreshConversationForLaunch() {
+    let conversation = makeNewConversation()
+    conversations.insert(conversation, at: 0)
+    sortConversations()
+    selectedConversationID = conversation.id
+    isIncognitoMode = false
+    selectedConversationIDs.removeAll()
+  }
+
+  private func makeNewConversation(incognito: Bool = false) -> Conversation {
     let endpoint =
       settings.openAIEndpoints.first(where: { $0.id == settings.selectedEndpointID })
       ?? settings.openAIEndpoints.first
@@ -109,12 +125,7 @@ final class AppStore: ObservableObject {
     conversation.systemPromptID = settings.defaultSystemPromptID
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.usesStreaming = settings.streamByDefault
-    conversations.insert(conversation, at: 0)
-    sortConversations()
-    selectedConversationID = conversation.id
-    isIncognitoMode = incognito
-    selectedConversationIDs.removeAll()
-    saveConversations()
+    return conversation
   }
 
   func select(_ conversation: Conversation) {
