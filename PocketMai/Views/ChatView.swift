@@ -287,6 +287,7 @@ struct ChatView: View {
             ForEach(store.currentConversation?.messages ?? []) { message in
               MessageBubble(
                 message: message,
+                streamingOverride: store.streamingTexts[message.id],
                 onDelete: { store.deleteMessage(message) },
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }
@@ -305,13 +306,13 @@ struct ChatView: View {
       .edgeFadeBlur()
       .scrollPosition(id: $visibleMessageID, anchor: .bottom)
       .onChange(of: store.currentConversation?.messages.last?.text) { _, _ in
-        guard let last = store.currentConversation?.messages.last else { return }
-        // Only auto-follow when the user is anchored near the bottom.
-        if visibleMessageID == nil || visibleMessageID == last.id {
-          withAnimation(.snappy) {
-            proxy.scrollTo(last.id, anchor: .bottom)
-          }
-        }
+        autoFollowLastMessage(proxy: proxy)
+      }
+      // During streaming the assistant's text lives in `store.streamingTexts`
+      // (not in `messages`), so the message-text observer above stays quiet.
+      // Mirror auto-follow off the streaming buffer too.
+      .onChange(of: lastMessageStreamingText) { _, _ in
+        autoFollowLastMessage(proxy: proxy)
       }
       .onChange(of: store.selectedConversationID) { oldID, newID in
         if let oldID, let pos = visibleMessageID {
@@ -329,6 +330,21 @@ struct ChatView: View {
         if lastTrackedConversationID != store.selectedConversationID {
           restoreScroll(in: store.selectedConversationID, proxy: proxy)
         }
+      }
+    }
+  }
+
+  private var lastMessageStreamingText: String? {
+    guard let lastID = store.currentConversation?.messages.last?.id else { return nil }
+    return store.streamingTexts[lastID]
+  }
+
+  private func autoFollowLastMessage(proxy: ScrollViewProxy) {
+    guard let last = store.currentConversation?.messages.last else { return }
+    // Only auto-follow when the user is anchored near the bottom.
+    if visibleMessageID == nil || visibleMessageID == last.id {
+      withAnimation(.snappy) {
+        proxy.scrollTo(last.id, anchor: .bottom)
       }
     }
   }

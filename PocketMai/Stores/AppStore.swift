@@ -61,6 +61,11 @@ final class AppStore: ObservableObject {
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityMessage: String?
+  /// In-flight streamed text per assistant message ID. Bubbles read this when
+  /// present instead of `message.text`, so token updates do not republish the
+  /// whole `conversations` array. Cleared once the message is committed to
+  /// `conversations` via `setAssistantMessage` without `streaming: true`.
+  @Published var streamingTexts: [UUID: String] = [:]
 
   let locationService = LocationService()
   private let persistence: PersistenceStore
@@ -149,6 +154,7 @@ final class AppStore: ObservableObject {
       responseTasks[id] = nil
       respondingConversationIDs.remove(id)
     }
+    streamingTexts.removeAll()
     conversations = archived
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
@@ -449,7 +455,7 @@ final class AppStore: ObservableObject {
         let response = try await ChatProviderRouter.complete(request: request) {
           [weak self] streamed in
           self?.setAssistantMessage(
-            id: assistantID, text: streamed, role: .assistant, touch: false)
+            id: assistantID, text: streamed, role: .assistant, touch: false, streaming: true)
         }
         try Task.checkCancellation()
         setAssistantMessage(id: assistantID, text: response, role: .assistant)
@@ -472,7 +478,7 @@ final class AppStore: ObservableObject {
           [weak self] streamed in
           let combined = baseline.isEmpty ? streamed : "\(baseline)\n\n\(streamed)"
           self?.setAssistantMessage(
-            id: assistantID, text: combined, role: .assistant, touch: false)
+            id: assistantID, text: combined, role: .assistant, touch: false, streaming: true)
         }
 
         try Task.checkCancellation()
@@ -546,6 +552,7 @@ final class AppStore: ObservableObject {
   }
 
   private func currentTextOfMessage(id: UUID) -> String {
+    if let streaming = streamingTexts[id] { return streaming }
     for conversation in conversations {
       if let message = conversation.messages.first(where: { $0.id == id }) {
         return message.text
@@ -806,8 +813,17 @@ final class AppStore: ObservableObject {
   }
 
   private func setAssistantMessage(
-    id: UUID, text: String, role: ChatRole, touch: Bool = true
+    id: UUID, text: String, role: ChatRole, touch: Bool = true, streaming: Bool = false
   ) {
+    if streaming {
+      // Token-rate updates land in a side buffer so `conversations` is not
+      // republished per token. Bubbles read from this buffer when present.
+      streamingTexts[id] = text
+      return
+    }
+    // Final / discrete update: commit to `conversations` and clear any
+    // streaming buffer so bubbles fall back to the canonical message text.
+    streamingTexts.removeValue(forKey: id)
     guard
       let conversationIndex = conversations.firstIndex(where: { conversation in
         conversation.messages.contains(where: { $0.id == id })

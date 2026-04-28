@@ -4,22 +4,28 @@ import UIKit
 struct MessageBubble: View, Equatable {
   @EnvironmentObject private var store: AppStore
   let message: ChatMessage
+  /// Live partial text from `AppStore.streamingTexts`, set only while the
+  /// message is being generated. When non-nil it overrides `message.text`.
+  /// Including it in `==` is what lets the streaming bubble re-render while
+  /// every other (untouched) bubble is skipped.
+  var streamingOverride: String? = nil
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
 
   private var isUser: Bool { message.role == .user }
+  private var displayText: String { streamingOverride ?? message.text }
 
-  /// Identity for SwiftUI's EquatableView: skip body re-evaluation when the
-  /// message itself is unchanged. Closure equality is irrelevant here — they
-  /// always recapture fresh state via `store` and `message`.
+  /// Identity for SwiftUI's EquatableView: skip body re-evaluation when neither
+  /// the canonical message nor the streaming override has changed. Closure
+  /// equality is irrelevant — closures recapture fresh state via `store`.
   nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
-    lhs.message == rhs.message
+    lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
   }
 
   var body: some View {
-    let rendered = MessageContentFilter.render(message.text)
+    let rendered = MessageContentFilter.render(displayText)
     let toolEntries: [ToolEntry] = rendered.hiddenSections
       .filter { $0.tag == "tool_context" || $0.tag == "tool_run" }
       .flatMap { ToolCallParser.parse($0.content) }
@@ -57,7 +63,7 @@ struct MessageBubble: View, Equatable {
           )
         }
         if !hideBubble {
-          bubble(visibleText: rendered.visibleText, rawText: message.text)
+          bubble(visibleText: rendered.visibleText, rawText: displayText)
         }
       }
       if !isUser { Spacer(minLength: 36) }
