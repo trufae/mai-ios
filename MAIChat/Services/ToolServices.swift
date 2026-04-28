@@ -1,40 +1,77 @@
+import CoreLocation
 import Foundation
 
+/// Builds the tool-context block injected into user messages. Tools that can
+/// also be exposed as callable tools (DateTime, Location, Weather) are skipped
+/// here when `settings.nativeToolMode == .onDemand`.
 enum ToolContextBuilder {
+  struct Output {
+    let text: String
+    /// Hash of the inputs that produced `text`. Equal signatures mean the
+    /// embedded context is unchanged and need not be re-sent.
+    let signature: String
+  }
+
   @MainActor
   static func build(
     input: String,
     conversation: Conversation,
     settings: AppSettings,
     locationService: LocationService
-  ) async -> String {
+  ) async -> Output {
     var sections: [String] = []
+    var signatureParts: [String] = []
     let enabled = conversation.enabledTools
+    let asContext = settings.nativeToolMode == .context
 
-    if enabled.contains(.datetime) {
-      sections.append(datetimeContext(settings: settings.toolSettings))
+    if asContext, enabled.contains(.datetime) {
+      sections.append(DateTimeRenderer.render(settings: settings.toolSettings))
+      signatureParts.append("datetime:\(DateTimeRenderer.signature(settings: settings.toolSettings))")
     }
-    if enabled.contains(.location) {
+    if asContext, enabled.contains(.location) {
       sections.append(
-        await locationContext(settings: settings.toolSettings, locationService: locationService))
+        await LocationRenderer.render(
+          settings: settings.toolSettings, locationService: locationService))
+      signatureParts.append("location:\(LocationRenderer.signature(settings: settings.toolSettings))")
     }
-    if enabled.contains(.weather) {
-      if let weather = await WeatherService.weatherContext(
+    if asContext, enabled.contains(.weather) {
+      if let weather = await WeatherService.report(
         settings: settings.toolSettings, locationService: locationService)
       {
-        sections.append(weather)
+        sections.append("Weather tool:\n\(weather)")
       }
+      signatureParts.append("weather:\(WeatherService.signature(settings: settings.toolSettings))")
     }
     if enabled.contains(.files) {
       let files = filesContext(settings: settings.toolSettings)
       if !files.isEmpty {
         sections.append(files)
+        signatureParts.append("files:\(filesSignature(settings: settings.toolSettings))")
       }
     }
-    return sections.joined(separator: "\n\n")
+    return Output(
+      text: sections.joined(separator: "\n\n"),
+      signature: signatureParts.joined(separator: "|"))
   }
 
-  private static func datetimeContext(settings: NativeToolSettings) -> String {
+  private static func filesContext(settings: NativeToolSettings) -> String {
+    let files = settings.files.map { file in
+      """
+      File: \(file.name)
+      \(file.excerpt)
+      """
+    }
+    return files.isEmpty ? "" : "Files tool:\n" + files.joined(separator: "\n\n")
+  }
+
+  private static func filesSignature(settings: NativeToolSettings) -> String {
+    settings.files.map { "\($0.id.uuidString)\($0.name)\($0.excerpt.count)" }
+      .joined(separator: ",")
+  }
+}
+
+enum DateTimeRenderer {
+  static func render(settings: NativeToolSettings) -> String {
     var values: [String] = []
     let now = Date()
     if settings.includeCurrentTime {
@@ -52,10 +89,16 @@ enum ToolContextBuilder {
     return "Date & Time tool:\n" + values.joined(separator: "\n")
   }
 
+  static func signature(settings: NativeToolSettings) -> String {
+    "\(settings.includeCurrentTime ? 1 : 0)\(settings.includeTimeZone ? 1 : 0)\(settings.includeYear ? 1 : 0)"
+  }
+}
+
+enum LocationRenderer {
   @MainActor
-  private static func locationContext(
-    settings: NativeToolSettings, locationService: LocationService
-  ) async -> String {
+  static func render(settings: NativeToolSettings, locationService: LocationService) async
+    -> String
+  {
     if settings.useGPSLocation {
       return "Location tool:\n\(await locationService.currentLocationText())"
     }
@@ -63,44 +106,316 @@ enum ToolContextBuilder {
     return manual.isEmpty ? "Location tool:\nNo location configured" : "Location tool:\n\(manual)"
   }
 
-  private static func todoContext(settings: NativeToolSettings) -> String {
-    let todos = settings.todos
-      .filter { !$0.isDone }
-      .map { "- \($0.title)" }
-      .joined(separator: "\n")
-    return todos.isEmpty ? "" : "Todo tool:\n\(todos)"
-  }
-
-  private static func filesContext(settings: NativeToolSettings) -> String {
-    let files = settings.files.map { file in
-      """
-      File: \(file.name)
-      \(file.excerpt)
-      """
-    }
-    return files.isEmpty ? "" : "Files tool:\n" + files.joined(separator: "\n\n")
+  static func signature(settings: NativeToolSettings) -> String {
+    "\(settings.useGPSLocation ? "gps" : "manual"):\(settings.manualLocation)"
   }
 }
 
 enum WeatherService {
+  /// Resolves a usable weather query (text or coordinates), then tries wttr.in
+  /// first and falls back to Open-Meteo. Adds local moon-phase computation.
   @MainActor
-  static func weatherContext(settings: NativeToolSettings, locationService: LocationService) async
+  static func report(settings: NativeToolSettings, locationService: LocationService) async
     -> String?
   {
-    var query = settings.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines)
-    if query.isEmpty, settings.useGPSLocation {
-      query = await locationService.currentLocationText()
+    let manual = settings.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+    var coordinate: CLLocationCoordinate2D? = nil
+    if manual.isEmpty, settings.useGPSLocation {
+      coordinate = await locationService.currentCoordinate()
     }
-    let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
-    let urlString =
-      encoded.isEmpty ? "https://wttr.in/?format=3" : "https://wttr.in/\(encoded)?format=3"
-    guard let url = URL(string: urlString),
-      let (data, _) = try? await URLSession.shared.data(from: url),
-      let text = String(data: data, encoding: .utf8)
-    else {
+
+    if let body = await wttrInReport(manual: manual, coordinate: coordinate) {
+      return body + "\n\n" + moonPhaseLine(for: Date())
+    }
+    if let body = await openMeteoReport(manual: manual, coordinate: coordinate) {
+      return body + "\n\n" + moonPhaseLine(for: Date())
+    }
+    return nil
+  }
+
+  static func signature(settings: NativeToolSettings) -> String {
+    "\(settings.weatherLocation)|\(settings.useGPSLocation ? "gps" : "off")"
+  }
+
+  // MARK: - wttr.in (rich JSON)
+
+  private static func wttrInReport(
+    manual: String, coordinate: CLLocationCoordinate2D?
+  ) async -> String? {
+    let path: String
+    if !manual.isEmpty {
+      let encoded = manual.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
+      path = encoded
+    } else if let coordinate {
+      path = String(format: "%.4f,%.4f", coordinate.latitude, coordinate.longitude)
+    } else {
+      path = ""
+    }
+    guard let url = URL(string: "https://wttr.in/\(path)?format=j1") else { return nil }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 6
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    guard
+      let (data, response) = try? await URLSession.shared.data(for: request),
+      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return formatWttrIn(object)
+  }
+
+  private static func formatWttrIn(_ object: [String: Any]) -> String? {
+    let area = ((object["nearest_area"] as? [[String: Any]])?.first) ?? [:]
+    let areaName = areaDisplayName(area)
+
+    var lines: [String] = []
+    if !areaName.isEmpty {
+      lines.append("Location: \(areaName)")
+    }
+
+    if let current = (object["current_condition"] as? [[String: Any]])?.first {
+      let temp = firstString(current["temp_C"]) ?? "?"
+      let feels = firstString(current["FeelsLikeC"]) ?? "?"
+      let desc = firstDescription(current["weatherDesc"]) ?? ""
+      let humidity = firstString(current["humidity"]) ?? "?"
+      let wind = firstString(current["windspeedKmph"]) ?? "?"
+      let windDir = firstString(current["winddir16Point"]) ?? ""
+      let precip = firstString(current["precipMM"]) ?? "0"
+      lines.append("Now: \(desc), \(temp)°C (feels \(feels)°C), humidity \(humidity)%")
+      lines.append("Wind: \(wind) km/h \(windDir)")
+      lines.append("Precipitation: \(precip) mm")
+    }
+
+    if let weather = object["weather"] as? [[String: Any]], !weather.isEmpty {
+      lines.append("")
+      lines.append("Forecast:")
+      for day in weather.prefix(7) {
+        let date = (day["date"] as? String) ?? ""
+        let minT = (day["mintempC"] as? String) ?? "?"
+        let maxT = (day["maxtempC"] as? String) ?? "?"
+        let mid = (day["hourly"] as? [[String: Any]])?.dropFirst(4).first
+        let desc = firstDescription(mid?["weatherDesc"]) ?? ""
+        let wind = (mid?["windspeedKmph"] as? String) ?? "?"
+        let chanceRain = (mid?["chanceofrain"] as? String) ?? "0"
+        lines.append(
+          "- \(date): \(minT)–\(maxT)°C, \(desc); wind \(wind) km/h; rain \(chanceRain)%")
+      }
+    }
+
+    let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return body.isEmpty ? nil : body
+  }
+
+  private static func areaDisplayName(_ area: [String: Any]) -> String {
+    let name = firstString(area["areaName"]) ?? ""
+    let country = firstString(area["country"]) ?? ""
+    let region = firstString(area["region"]) ?? ""
+    let parts = [name, region, country].filter { !$0.isEmpty }
+    return parts.joined(separator: ", ")
+  }
+
+  private static func firstString(_ raw: Any?) -> String? {
+    if let s = raw as? String, !s.isEmpty { return s }
+    if let array = raw as? [[String: Any]],
+      let value = array.first?["value"] as? String, !value.isEmpty
+    {
+      return value
+    }
+    return nil
+  }
+
+  private static func firstDescription(_ raw: Any?) -> String? {
+    if let array = raw as? [[String: Any]],
+      let value = array.first?["value"] as? String, !value.isEmpty
+    {
+      return value
+    }
+    return nil
+  }
+
+  // MARK: - Open-Meteo fallback
+
+  private static func openMeteoReport(
+    manual: String, coordinate: CLLocationCoordinate2D?
+  ) async -> String? {
+    let resolved = await resolveCoordinate(manual: manual, coordinate: coordinate)
+    guard let resolved else { return nil }
+    var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
+    components?.queryItems = [
+      URLQueryItem(name: "latitude", value: String(format: "%.4f", resolved.latitude)),
+      URLQueryItem(name: "longitude", value: String(format: "%.4f", resolved.longitude)),
+      URLQueryItem(
+        name: "current",
+        value: "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m"
+      ),
+      URLQueryItem(
+        name: "daily",
+        value: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max"
+      ),
+      URLQueryItem(name: "timezone", value: "auto"),
+      URLQueryItem(name: "forecast_days", value: "7"),
+    ]
+    guard let url = components?.url else { return nil }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 6
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    guard
+      let (data, response) = try? await URLSession.shared.data(for: request),
+      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return formatOpenMeteo(object, label: resolved.label)
+  }
+
+  private static func resolveCoordinate(
+    manual: String, coordinate: CLLocationCoordinate2D?
+  ) async -> (latitude: Double, longitude: Double, label: String)? {
+    if !manual.isEmpty {
+      if let parsed = parseLatLon(manual) {
+        return (parsed.0, parsed.1, manual)
+      }
+      if let geocoded = await openMeteoGeocode(name: manual) { return geocoded }
       return nil
     }
-    return "Weather tool:\n\(text.trimmingCharacters(in: .whitespacesAndNewlines))"
+    if let coordinate {
+      return (coordinate.latitude, coordinate.longitude, "current location")
+    }
+    return nil
+  }
+
+  private static func parseLatLon(_ raw: String) -> (Double, Double)? {
+    let parts = raw.split(whereSeparator: { ",;".contains($0) || $0.isWhitespace })
+      .map { Double(String($0).trimmingCharacters(in: .whitespaces)) }
+    guard parts.count == 2, let lat = parts[0], let lon = parts[1] else { return nil }
+    return (lat, lon)
+  }
+
+  private static func openMeteoGeocode(name: String) async
+    -> (latitude: Double, longitude: Double, label: String)?
+  {
+    var components = URLComponents(string: "https://geocoding-api.open-meteo.com/v1/search")
+    components?.queryItems = [
+      URLQueryItem(name: "name", value: name),
+      URLQueryItem(name: "count", value: "1"),
+    ]
+    guard let url = components?.url else { return nil }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 4
+    guard
+      let (data, _) = try? await URLSession.shared.data(for: request),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let results = object["results"] as? [[String: Any]],
+      let first = results.first,
+      let lat = first["latitude"] as? Double,
+      let lon = first["longitude"] as? Double
+    else { return nil }
+    let label = [first["name"] as? String, first["country"] as? String]
+      .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    return (lat, lon, label.isEmpty ? name : label)
+  }
+
+  private static func formatOpenMeteo(_ object: [String: Any], label: String) -> String? {
+    var lines: [String] = ["Location: \(label)"]
+    if let current = object["current"] as? [String: Any] {
+      let temp = numberString(current["temperature_2m"]) ?? "?"
+      let feels = numberString(current["apparent_temperature"]) ?? "?"
+      let humidity = numberString(current["relative_humidity_2m"]) ?? "?"
+      let precip = numberString(current["precipitation"]) ?? "0"
+      let wind = numberString(current["wind_speed_10m"]) ?? "?"
+      let windDir = numberString(current["wind_direction_10m"]) ?? "?"
+      let desc = weatherCodeDescription(current["weather_code"] as? Int)
+      lines.append("Now: \(desc), \(temp)°C (feels \(feels)°C), humidity \(humidity)%")
+      lines.append("Wind: \(wind) km/h @ \(windDir)°")
+      lines.append("Precipitation: \(precip) mm")
+    }
+    if let daily = object["daily"] as? [String: Any],
+      let times = daily["time"] as? [String]
+    {
+      let codes = daily["weather_code"] as? [Int] ?? []
+      let mins = (daily["temperature_2m_min"] as? [Double]) ?? []
+      let maxs = (daily["temperature_2m_max"] as? [Double]) ?? []
+      let precip = (daily["precipitation_sum"] as? [Double]) ?? []
+      let chance = (daily["precipitation_probability_max"] as? [Int]) ?? []
+      let wind = (daily["wind_speed_10m_max"] as? [Double]) ?? []
+      lines.append("")
+      lines.append("Forecast:")
+      for index in 0..<min(times.count, 7) {
+        let date = times[index]
+        let minT = index < mins.count ? String(format: "%.0f", mins[index]) : "?"
+        let maxT = index < maxs.count ? String(format: "%.0f", maxs[index]) : "?"
+        let desc = weatherCodeDescription(index < codes.count ? codes[index] : nil)
+        let rain = index < precip.count ? String(format: "%.1f", precip[index]) : "0"
+        let prob = index < chance.count ? "\(chance[index])" : "0"
+        let windMax = index < wind.count ? String(format: "%.0f", wind[index]) : "?"
+        lines.append(
+          "- \(date): \(minT)–\(maxT)°C, \(desc); wind ≤\(windMax) km/h; rain \(rain) mm (\(prob)%)")
+      }
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func numberString(_ raw: Any?) -> String? {
+    if let int = raw as? Int { return "\(int)" }
+    if let double = raw as? Double {
+      return double.truncatingRemainder(dividingBy: 1) == 0
+        ? String(format: "%.0f", double)
+        : String(format: "%.1f", double)
+    }
+    if let s = raw as? String, !s.isEmpty { return s }
+    return nil
+  }
+
+  /// WMO weather code descriptions (https://open-meteo.com/en/docs).
+  private static func weatherCodeDescription(_ code: Int?) -> String {
+    guard let code else { return "—" }
+    switch code {
+    case 0: return "Clear"
+    case 1: return "Mostly clear"
+    case 2: return "Partly cloudy"
+    case 3: return "Overcast"
+    case 45, 48: return "Fog"
+    case 51, 53, 55: return "Drizzle"
+    case 56, 57: return "Freezing drizzle"
+    case 61, 63, 65: return "Rain"
+    case 66, 67: return "Freezing rain"
+    case 71, 73, 75: return "Snow"
+    case 77: return "Snow grains"
+    case 80, 81, 82: return "Rain showers"
+    case 85, 86: return "Snow showers"
+    case 95: return "Thunderstorm"
+    case 96, 99: return "Thunderstorm with hail"
+    default: return "Code \(code)"
+    }
+  }
+
+  // MARK: - Moon phase (locally computed)
+
+  static func moonPhaseLine(for date: Date) -> String {
+    let phase = moonPhase(for: date)
+    return "Moon: \(phase.name) (illumination \(Int(phase.illumination * 100))%)"
+  }
+
+  /// Returns moon phase name and illumination fraction (0…1) using a simple
+  /// synodic-month approximation. Accurate to ~1 day for chat purposes.
+  static func moonPhase(for date: Date) -> (name: String, illumination: Double) {
+    let synodicMonth = 29.530588853
+    let reference = Date(timeIntervalSince1970: 947_182_440)  // Jan 6, 2000 18:14 UTC new moon
+    let elapsed = date.timeIntervalSince(reference) / 86_400
+    var age = elapsed.truncatingRemainder(dividingBy: synodicMonth)
+    if age < 0 { age += synodicMonth }
+    let illumination = (1 - cos(2 * .pi * age / synodicMonth)) / 2
+    let name: String
+    switch age {
+    case ..<1.84566: name = "New Moon"
+    case ..<5.53699: name = "Waxing Crescent"
+    case ..<9.22831: name = "First Quarter"
+    case ..<12.91963: name = "Waxing Gibbous"
+    case ..<16.61096: name = "Full Moon"
+    case ..<20.30228: name = "Waning Gibbous"
+    case ..<23.99361: name = "Last Quarter"
+    case ..<27.68493: name = "Waning Crescent"
+    default: name = "New Moon"
+    }
+    return (name, illumination)
   }
 }
 

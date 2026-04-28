@@ -87,6 +87,35 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .memory: "brain"
     }
   }
+
+  /// Tools whose output can be injected as context at the start of a chat,
+  /// or exposed as callable tools depending on `NativeToolMode`.
+  static let contextCapable: Set<NativeToolID> = [.datetime, .location, .weather]
+}
+
+enum NativeToolMode: String, Codable, CaseIterable, Identifiable, Sendable {
+  case context
+  case onDemand
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .context: "Context"
+    case .onDemand: "On-demand"
+    }
+  }
+
+  var summary: String {
+    switch self {
+    case .context:
+      return
+        "Date & Time, Location, and Weather are rendered once and added to the system context. They re-render only when their parameters change."
+    case .onDemand:
+      return
+        "Date & Time, Location, and Weather are exposed as callable tools the model invokes when needed."
+    }
+  }
 }
 
 enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -237,6 +266,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var isPinned: Bool
   var disabledMCPTools: Set<String>
   var reasoningLevel: ReasoningLevel
+  var lastToolContextSignature: String?
 
   init(
     id: UUID = UUID(),
@@ -253,7 +283,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     usesStreaming: Bool = true,
     isPinned: Bool = false,
     disabledMCPTools: Set<String> = [],
-    reasoningLevel: ReasoningLevel = .automatic
+    reasoningLevel: ReasoningLevel = .automatic,
+    lastToolContextSignature: String? = nil
   ) {
     self.id = id
     self.title = title
@@ -270,6 +301,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     self.isPinned = isPinned
     self.disabledMCPTools = disabledMCPTools
     self.reasoningLevel = reasoningLevel
+    self.lastToolContextSignature = lastToolContextSignature
   }
 
   enum CodingKeys: String, CodingKey {
@@ -288,6 +320,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case isPinned
     case disabledMCPTools
     case reasoningLevel
+    case lastToolContextSignature
   }
 
   init(from decoder: Decoder) throws {
@@ -309,6 +342,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
       (try? container.decode(Set<String>.self, forKey: .disabledMCPTools)) ?? []
     reasoningLevel =
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
+    lastToolContextSignature =
+      try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature)
   }
 
   var displayTitle: String {
@@ -560,6 +595,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var toolCallingMode: ToolCallingMode
   var useToolProxy: Bool
   var contextWindowMode: ContextWindowMode
+  var nativeToolMode: NativeToolMode
 
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
@@ -583,7 +619,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       embedMemory: true,
       toolCallingMode: .text,
       useToolProxy: false,
-      contextWindowMode: .full
+      contextWindowMode: .full,
+      nativeToolMode: .context
     )
   }
 
@@ -607,7 +644,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     embedMemory: Bool,
     toolCallingMode: ToolCallingMode,
     useToolProxy: Bool,
-    contextWindowMode: ContextWindowMode
+    contextWindowMode: ContextWindowMode,
+    nativeToolMode: NativeToolMode
   ) {
     self.defaultProvider = defaultProvider
     self.appleModelID = appleModelID
@@ -624,13 +662,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     self.toolCallingMode = toolCallingMode
     self.useToolProxy = useToolProxy
     self.contextWindowMode = contextWindowMode
+    self.nativeToolMode = nativeToolMode
   }
 
   enum CodingKeys: String, CodingKey {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
-    case useToolProxy, contextWindowMode
+    case useToolProxy, contextWindowMode, nativeToolMode
   }
 
   init(from decoder: Decoder) throws {
@@ -664,6 +703,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
     contextWindowMode =
       (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
+    nativeToolMode =
+      (try? c.decode(NativeToolMode.self, forKey: .nativeToolMode)) ?? .context
   }
 }
 

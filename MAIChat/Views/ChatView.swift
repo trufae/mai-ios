@@ -9,6 +9,8 @@ struct ChatView: View {
   @State private var showingCompactConfirmation = false
   @State private var showingClearConfirmation = false
   @State private var renameDraft = ""
+  @State private var visibleMessageID: UUID?
+  @State private var lastTrackedConversationID: UUID?
   let onShowHistory: () -> Void
 
   var body: some View {
@@ -303,15 +305,49 @@ struct ChatView: View {
           }
         }
         .padding()
+        .scrollTargetLayout()
       }
       .edgeFadeBlur()
+      .scrollPosition(id: $visibleMessageID, anchor: .bottom)
       .onChange(of: store.currentConversation?.messages.last?.text) { _, _ in
-        if let id = store.currentConversation?.messages.last?.id {
+        guard let last = store.currentConversation?.messages.last else { return }
+        // Auto-follow streaming and new turns only when the user is anchored
+        // near the bottom; otherwise leave their scroll position alone.
+        if visibleMessageID == nil || visibleMessageID == last.id {
           withAnimation(.snappy) {
-            proxy.scrollTo(id, anchor: .bottom)
+            proxy.scrollTo(last.id, anchor: .bottom)
           }
         }
       }
+      .onChange(of: store.selectedConversationID) { oldID, newID in
+        if let oldID, let pos = visibleMessageID {
+          store.savedScrollPositions[oldID] = pos
+        }
+        restoreScroll(in: newID, proxy: proxy)
+      }
+      .onAppear {
+        if lastTrackedConversationID != store.selectedConversationID {
+          restoreScroll(in: store.selectedConversationID, proxy: proxy)
+        }
+      }
+    }
+  }
+
+  private func restoreScroll(in conversationID: UUID?, proxy: ScrollViewProxy) {
+    lastTrackedConversationID = conversationID
+    guard let conversationID,
+      let conversation = store.conversations.first(where: { $0.id == conversationID })
+    else { return }
+    let target = store.savedScrollPositions[conversationID] ?? conversation.messages.last?.id
+    guard let target else {
+      visibleMessageID = nil
+      return
+    }
+    // Defer one runloop so the new conversation's lazy items are mounted
+    // before we ask the scroll view to seek to a specific id.
+    DispatchQueue.main.async {
+      visibleMessageID = target
+      proxy.scrollTo(target, anchor: .bottom)
     }
   }
 

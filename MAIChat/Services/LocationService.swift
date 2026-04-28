@@ -25,6 +25,11 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     return text
   }
 
+  func currentCoordinate() async -> CLLocationCoordinate2D? {
+    guard let location = await requestLocation() else { return nil }
+    return location.coordinate
+  }
+
   private func requestLocation() async -> CLLocation? {
     let status = manager.authorizationStatus
     if status == .notDetermined {

@@ -37,6 +37,9 @@ final class AppStore: ObservableObject {
   @Published var endpointModels: [UUID: [String]] = [:]
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+  /// Last visible message id per conversation, used to restore scroll on
+  /// re-entry. Conversations not in this map default to the bottom.
+  @Published var savedScrollPositions: [UUID: UUID] = [:]
 
   let locationService = LocationService()
   private let persistence: PersistenceStore
@@ -260,21 +263,36 @@ final class AppStore: ObservableObject {
       settings: settings,
       locationService: locationService
     )
-    let userText: String = {
-      let trimmed = toolContext.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmed.isEmpty else { return prompt }
-      return "\(prompt)\n\n<tool_context>\n\(trimmed)\n</tool_context>"
-    }()
+    let embedContext = shouldEmbedToolContext(
+      conversation: conversations[index], output: toolContext)
+    let trimmedText = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let userText: String =
+      (embedContext && !trimmedText.isEmpty)
+      ? "\(prompt)\n\n<tool_context>\n\(trimmedText)\n</tool_context>"
+      : prompt
 
     guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
     let userMessage = ChatMessage(role: .user, text: userText)
     conversations[i].messages.append(userMessage)
     conversations[i].refreshTitle(from: prompt)
+    conversations[i].lastToolContextSignature = toolContext.signature
     conversations[i].updatedAt = Date()
     saveConversations()
 
     dispatchAssistantTurn(
-      conversationID: conversationID, prompt: prompt, toolContext: toolContext)
+      conversationID: conversationID, prompt: prompt,
+      toolContext: embedContext ? toolContext.text : "")
+  }
+
+  /// Decide whether to embed `<tool_context>` in the next user message. We
+  /// embed on the first turn (no stored signature), or when the signature
+  /// changed since the last embedded context. In `.onDemand` mode signatures
+  /// are empty for context-capable tools so this naturally short-circuits.
+  private func shouldEmbedToolContext(
+    conversation: Conversation, output: ToolContextBuilder.Output
+  ) -> Bool {
+    if output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+    return conversation.lastToolContextSignature != output.signature
   }
 
   func trimAndResubmit(from message: ChatMessage) async {
@@ -311,7 +329,10 @@ final class AppStore: ObservableObject {
       settings: settings,
       locationService: locationService
     )
-    let trimmedTC = toolContext.trimmingCharacters(in: .whitespacesAndNewlines)
+    // For trim & resubmit we replace the trailing user message, so we always
+    // re-embed if there is any context output. The signature is updated either
+    // way so future turns can short-circuit again.
+    let trimmedTC = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
     let refreshedUserText =
       trimmedTC.isEmpty
       ? prompt
@@ -320,11 +341,12 @@ final class AppStore: ObservableObject {
       let lastIndex = conversations[i].messages.indices.last
     {
       conversations[i].messages[lastIndex].text = refreshedUserText
+      conversations[i].lastToolContextSignature = toolContext.signature
       saveConversations()
     }
 
     dispatchAssistantTurn(
-      conversationID: conversationID, prompt: prompt, toolContext: toolContext)
+      conversationID: conversationID, prompt: prompt, toolContext: toolContext.text)
   }
 
   private func dispatchAssistantTurn(

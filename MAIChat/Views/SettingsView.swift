@@ -250,13 +250,24 @@ struct SettingsView: View {
 
   private var toolsSection: some View {
     Section {
+      Picker("Usage", selection: settingsBinding(\.nativeToolMode)) {
+        ForEach(NativeToolMode.allCases) { mode in
+          Text(mode.displayName).tag(mode)
+        }
+      }
+      .pickerStyle(.menu)
+      Text(store.settings.nativeToolMode.summary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
       ForEach(NativeToolID.allCases.filter { $0 != .memory }) { tool in
         toolRow(tool)
       }
     } header: {
       Text("Native Tools")
     } footer: {
-      Text("Tap the checkbox to enable. Tap the row to expand options where available.")
+      Text(
+        "Tap the checkbox to enable. Tap the row to expand options where available. Usage applies to Date & Time, Location, and Weather."
+      )
     }
     .onChange(of: store.settings.defaultEnabledTools) { _, _ in store.saveSettings() }
     .onChange(of: store.settings.toolSettings) { _, _ in store.saveSettings() }

@@ -28,6 +28,17 @@ enum ToolAgentRegistry {
     if conversation.enabledTools.contains(.textToSpeech) {
       defs.append(contentsOf: TextToSpeechTool.definitions)
     }
+    if settings.nativeToolMode == .onDemand {
+      if conversation.enabledTools.contains(.datetime) {
+        defs.append(contentsOf: DateTimeTool.definitions)
+      }
+      if conversation.enabledTools.contains(.location) {
+        defs.append(contentsOf: LocationTool.definitions)
+      }
+      if conversation.enabledTools.contains(.weather) {
+        defs.append(contentsOf: WeatherTool.definitions)
+      }
+    }
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidScheme {
       let tools = mcpTools[server.id] ?? []
@@ -124,6 +135,14 @@ enum ToolAgentRegistry {
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
         arguments: normalizedCall.argumentValues, settings: store.settings.toolSettings)
+    case DateTimeTool.name:
+      return DateTimeTool.run(settings: store.settings.toolSettings)
+    case LocationTool.name:
+      return await LocationTool.run(
+        settings: store.settings.toolSettings, locationService: store.locationService)
+    case WeatherTool.name:
+      return await WeatherTool.run(
+        settings: store.settings.toolSettings, locationService: store.locationService)
     default:
       return await dispatchMCP(call: normalizedCall, store: store)
     }
@@ -516,5 +535,64 @@ enum TextToSpeechTool {
 
   private static func clamped(_ value: Float, min: Float, max: Float) -> Float {
     Swift.max(min, Swift.min(max, value))
+  }
+}
+
+@MainActor
+enum DateTimeTool {
+  static let name = "datetime"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Return the current date, time, time zone, and year using the user's configured Date & Time options.",
+      parameters: []
+    )
+  ]
+
+  static func run(settings: NativeToolSettings) -> String {
+    DateTimeRenderer.render(settings: settings)
+  }
+}
+
+@MainActor
+enum LocationTool {
+  static let name = "location"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Return the user's current location using GPS or the manually configured location, depending on settings.",
+      parameters: []
+    )
+  ]
+
+  static func run(settings: NativeToolSettings, locationService: LocationService) async -> String {
+    await LocationRenderer.render(settings: settings, locationService: locationService)
+  }
+}
+
+@MainActor
+enum WeatherTool {
+  static let name = "weather"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Get current weather, a 7-day forecast (temperatures, wind, precipitation, chance of rain), and the moon phase for the configured location. Falls back to a secondary provider if the first one fails.",
+      parameters: []
+    )
+  ]
+
+  static func run(settings: NativeToolSettings, locationService: LocationService) async -> String {
+    if let report = await WeatherService.report(
+      settings: settings, locationService: locationService)
+    {
+      return report
+    }
+    return "Weather unavailable."
   }
 }
