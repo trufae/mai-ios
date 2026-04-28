@@ -39,21 +39,19 @@ struct ContentView: View {
           x: -8 * revealProgress,
           y: 0
         )
+        .allowsHitTesting(panelOffset == 0)
+        .overlay {
+          if panelOffset > 0 {
+            Color.black.opacity(0.001)
+              .contentShape(Rectangle())
+              .onTapGesture {
+                closeHistoryPanel()
+              }
+          }
+        }
         .offset(x: panelOffset)
         .scaleEffect(x: 1 - (revealProgress * 0.03), y: 1, anchor: .trailing)
-        .allowsHitTesting(panelOffset == 0)
         .zIndex(1)
-
-        if panelOffset > 0 {
-          Color.black.opacity(0.001)
-            .frame(width: max(proxy.size.width - panelOffset, 0), height: proxy.size.height)
-            .offset(x: panelOffset)
-            .contentShape(Rectangle())
-            .onTapGesture {
-              closeHistoryPanel()
-            }
-            .zIndex(2)
-        }
       }
       .background(Color(uiColor: .systemGroupedBackground))
       .contentShape(Rectangle())
