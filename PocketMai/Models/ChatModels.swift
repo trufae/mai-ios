@@ -497,7 +497,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let appleDefaultModelID = ""
-  static let defaultTools: Set<NativeToolID> = [.datetime, .webSearch]
+  static let defaultTools: Set<NativeToolID> = []
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
     text:
