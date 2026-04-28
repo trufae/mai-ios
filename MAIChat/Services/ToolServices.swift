@@ -1,14 +1,10 @@
 import CoreLocation
 import Foundation
 
-/// Builds the tool-context block injected into user messages. Tools that can
-/// also be exposed as callable tools (DateTime, Location, Weather) are skipped
-/// here when `settings.nativeToolMode == .onDemand`.
 enum ToolContextBuilder {
   struct Output {
     let text: String
-    /// Hash of the inputs that produced `text`. Equal signatures mean the
-    /// embedded context is unchanged and need not be re-sent.
+    /// Equal signatures mean the embedded context hasn't changed.
     let signature: String
   }
 
@@ -114,8 +110,6 @@ enum LocationRenderer {
 }
 
 enum WeatherService {
-  /// Resolves a usable weather query (text or coordinates), then tries wttr.in
-  /// first and falls back to Open-Meteo. Adds local moon-phase computation.
   @MainActor
   static func report(settings: NativeToolSettings, locationService: LocationService) async
     -> String?
@@ -399,8 +393,7 @@ enum WeatherService {
     return "Moon: \(phase.name) (illumination \(Int(phase.illumination * 100))%)"
   }
 
-  /// Returns moon phase name and illumination fraction (0…1) using a simple
-  /// synodic-month approximation. Accurate to ~1 day for chat purposes.
+  /// Synodic-month approximation; illumination 0…1, accurate to ~1 day.
   static func moonPhase(for date: Date) -> (name: String, illumination: Double) {
     let synodicMonth = 29.530588853
     let reference = Date(timeIntervalSince1970: 947_182_440)  // Jan 6, 2000 18:14 UTC new moon

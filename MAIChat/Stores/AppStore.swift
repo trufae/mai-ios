@@ -56,8 +56,7 @@ final class AppStore: ObservableObject {
   @Published var endpointModels: [UUID: [String]] = [:]
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
-  /// Last visible message id per conversation, used to restore scroll on
-  /// re-entry. Conversations not in this map default to the bottom.
+  /// [conversationID: last visible messageID]; missing entries restore to bottom.
   @Published var savedScrollPositions: [UUID: UUID] = [:]
 
   let locationService = LocationService()
@@ -321,11 +320,7 @@ final class AppStore: ObservableObject {
   }
 
   private enum UserTurnMode {
-    /// Append a fresh user message; only embed `<tool_context>` when the
-    /// signature has changed since the last embed.
     case append
-    /// Replace the trailing user message and always re-embed any non-empty
-    /// tool context. Updates the signature so future appends can short-circuit.
     case replaceLastUser
   }
 

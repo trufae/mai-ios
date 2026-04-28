@@ -311,8 +311,7 @@ struct ChatView: View {
       .scrollPosition(id: $visibleMessageID, anchor: .bottom)
       .onChange(of: store.currentConversation?.messages.last?.text) { _, _ in
         guard let last = store.currentConversation?.messages.last else { return }
-        // Auto-follow streaming and new turns only when the user is anchored
-        // near the bottom; otherwise leave their scroll position alone.
+        // Only auto-follow when the user is anchored near the bottom.
         if visibleMessageID == nil || visibleMessageID == last.id {
           withAnimation(.snappy) {
             proxy.scrollTo(last.id, anchor: .bottom)
@@ -349,8 +348,7 @@ struct ChatView: View {
       visibleMessageID = nil
       return
     }
-    // Defer one runloop so the new conversation's lazy items are mounted
-    // before we ask the scroll view to seek to a specific id.
+    // Defer one runloop so lazy rows mount before scrollTo seeks them.
     DispatchQueue.main.async {
       visibleMessageID = target
       proxy.scrollTo(target, anchor: .bottom)

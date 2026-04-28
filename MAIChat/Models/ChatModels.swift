@@ -88,9 +88,6 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  /// Tools whose output can be injected as context at the start of a chat,
-  /// or exposed as callable tools depending on `NativeToolMode`.
-  static let contextCapable: Set<NativeToolID> = [.datetime, .location, .weather]
 }
 
 enum NativeToolMode: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -209,7 +206,6 @@ enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  /// Max number of conversation messages to include. `nil` means unlimited.
   var messageLimit: Int? {
     switch self {
     case .full: nil

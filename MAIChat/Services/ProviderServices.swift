@@ -489,9 +489,6 @@ private enum ReasoningCompatibility {
     }
   }
 
-  /// Matches any `o<digit>` reasoning model (o1, o3, o4, o5…) and any `gpt-5*`
-  /// variant. Detection is heuristic so newer models pick up reasoning
-  /// payloads automatically; unknown models fall back to no payload.
   private static func isKnownOpenAIReasoningModel(_ model: String) -> Bool {
     let text = model.lowercased()
     if text.hasPrefix("gpt-5") { return true }

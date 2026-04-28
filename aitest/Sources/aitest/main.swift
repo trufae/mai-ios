@@ -1,17 +1,6 @@
 import Foundation
 import Synchronization
 
-// =====================================================================
-// aitest — standalone agentic-loop debugger for OpenAI-compatible
-// endpoints with optional MCP servers. Mirrors the same protocol used
-// by the MAIChat iOS app:
-//   • Text mode: <tool_call>/<tool_run> XML blocks injected into the
-//     conversation.
-//   • Native mode: OpenAI tools[] in the request, tool_calls parsed
-//     from the response and converted into <tool_call> blocks for the
-//     same downstream loop.
-// =====================================================================
-
 // MARK: - CLI
 
 struct CLIConfig {
