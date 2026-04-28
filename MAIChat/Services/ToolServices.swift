@@ -26,13 +26,15 @@ enum ToolContextBuilder {
 
     if asContext, enabled.contains(.datetime) {
       sections.append(DateTimeRenderer.render(settings: settings.toolSettings))
-      signatureParts.append("datetime:\(DateTimeRenderer.signature(settings: settings.toolSettings))")
+      signatureParts.append(
+        "datetime:\(DateTimeRenderer.signature(settings: settings.toolSettings))")
     }
     if asContext, enabled.contains(.location) {
       sections.append(
         await LocationRenderer.render(
           settings: settings.toolSettings, locationService: locationService))
-      signatureParts.append("location:\(LocationRenderer.signature(settings: settings.toolSettings))")
+      signatureParts.append(
+        "location:\(LocationRenderer.signature(settings: settings.toolSettings))")
     }
     if asContext, enabled.contains(.weather) {
       if let weather = await WeatherService.report(
@@ -245,11 +247,13 @@ enum WeatherService {
       URLQueryItem(name: "longitude", value: String(format: "%.4f", resolved.longitude)),
       URLQueryItem(
         name: "current",
-        value: "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m"
+        value:
+          "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m"
       ),
       URLQueryItem(
         name: "daily",
-        value: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max"
+        value:
+          "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max"
       ),
       URLQueryItem(name: "timezone", value: "auto"),
       URLQueryItem(name: "forecast_days", value: "7"),
@@ -347,7 +351,8 @@ enum WeatherService {
         let prob = index < chance.count ? "\(chance[index])" : "0"
         let windMax = index < wind.count ? String(format: "%.0f", wind[index]) : "?"
         lines.append(
-          "- \(date): \(minT)–\(maxT)°C, \(desc); wind ≤\(windMax) km/h; rain \(rain) mm (\(prob)%)")
+          "- \(date): \(minT)–\(maxT)°C, \(desc); wind ≤\(windMax) km/h; rain \(rain) mm (\(prob)%)"
+        )
       }
     }
     return lines.joined(separator: "\n")
