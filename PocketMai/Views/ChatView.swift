@@ -294,49 +294,60 @@ struct ChatView: View {
 
   private var messages: some View {
     ScrollViewReader { proxy in
-      ScrollView {
-        LazyVStack(spacing: 14) {
-          if let conversation = store.currentConversation, conversation.messages.isEmpty {
-            emptyState
-          } else {
-            ForEach(store.currentConversation?.messages ?? []) { message in
-              MessageBubble(
-                message: message,
-                streamingOverride: store.streamingTexts[message.id],
-                onDelete: { store.deleteMessage(message) },
-                onResubmit: message.role == .user
-                  ? { Task { await store.resubmit(message) } }
-                  : nil,
-                onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
-                onRestartFresh: { Task { await store.restartFromScratch(with: message) } }
-              )
-              .equatable()
-              .id(message.id)
+      GeometryReader { geometry in
+        ScrollView {
+          LazyVStack(spacing: 14) {
+            if currentConversationIsEmpty {
+              emptyState
+            } else {
+              ForEach(store.currentConversation?.messages ?? []) { message in
+                MessageBubble(
+                  message: message,
+                  streamingOverride: store.streamingTexts[message.id],
+                  onDelete: { store.deleteMessage(message) },
+                  onResubmit: message.role == .user
+                    ? { Task { await store.resubmit(message) } }
+                    : nil,
+                  onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
+                  onRestartFresh: { Task { await store.restartFromScratch(with: message) } }
+                )
+                .equatable()
+                .id(message.id)
+              }
             }
+            Color.clear
+              .frame(height: 1)
+              .id(messageListBottomID)
           }
-          Color.clear
-            .frame(height: 1)
-            .id(messageListBottomID)
+          .padding()
+          .frame(
+            maxWidth: .infinity,
+            minHeight: currentConversationIsEmpty ? geometry.size.height : nil,
+            alignment: .center
+          )
+          .scrollTargetLayout()
         }
-        .padding()
-        .scrollTargetLayout()
-      }
-      .id(store.selectedConversationID)
-      .defaultScrollAnchor(.bottom)
-      .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
-      .onChange(of: lastMessageSnapshot) { old, new in
-        guard old.conversationID == new.conversationID else { return }
-        if old.messageID != new.messageID {
-          scrollToBottom(proxy, animated: true)
-          return
+        .id(store.selectedConversationID)
+        .defaultScrollAnchor(.bottom)
+        .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
+        .onChange(of: lastMessageSnapshot) { old, new in
+          guard old.conversationID == new.conversationID else { return }
+          if old.messageID != new.messageID {
+            scrollToBottom(proxy, animated: true)
+            return
+          }
+          guard old.text != new.text else { return }
+          let now = Date()
+          guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
+          lastStreamingScrollAt = now
+          scrollToBottom(proxy, animated: false)
         }
-        guard old.text != new.text else { return }
-        let now = Date()
-        guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
-        lastStreamingScrollAt = now
-        scrollToBottom(proxy, animated: false)
       }
     }
+  }
+
+  private var currentConversationIsEmpty: Bool {
+    store.currentConversation?.messages.isEmpty ?? true
   }
 
   private struct LastMessageSnapshot: Equatable {
