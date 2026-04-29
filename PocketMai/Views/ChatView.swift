@@ -12,6 +12,7 @@ struct ChatView: View {
   @State private var exportedEPUB: ExportedEPUB?
   @State private var renameDraft = ""
   @State private var lastStreamingScrollAt = Date.distantPast
+  @State private var userScrolledAfterLastMessage = false
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
 
@@ -309,7 +310,8 @@ struct ChatView: View {
                     ? { Task { await store.resubmit(message) } }
                     : nil,
                   onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
-                  onRestartFresh: { Task { await store.restartFromScratch(with: message) } }
+                  onRestartFresh: { Task { await store.restartFromScratch(with: message) } },
+                  showThinking: store.currentConversation?.showThinking ?? false
                 )
                 .equatable()
                 .id(message.id)
@@ -330,13 +332,19 @@ struct ChatView: View {
         .id(store.selectedConversationID)
         .defaultScrollAnchor(.bottom)
         .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
+        .simultaneousGesture(messageListScrollGesture)
         .onChange(of: lastMessageSnapshot) { old, new in
-          guard old.conversationID == new.conversationID else { return }
+          guard old.conversationID == new.conversationID else {
+            userScrolledAfterLastMessage = false
+            return
+          }
           if old.messageID != new.messageID {
+            userScrolledAfterLastMessage = false
             scrollToBottom(proxy, animated: true)
             return
           }
           guard old.text != new.text else { return }
+          guard !userScrolledAfterLastMessage else { return }
           let now = Date()
           guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
           lastStreamingScrollAt = now
@@ -373,6 +381,14 @@ struct ChatView: View {
     } else {
       proxy.scrollTo(messageListBottomID, anchor: .bottom)
     }
+  }
+
+  private var messageListScrollGesture: some Gesture {
+    DragGesture(minimumDistance: 8, coordinateSpace: .local)
+      .onChanged { value in
+        guard abs(value.translation.height) > abs(value.translation.width) else { return }
+        userScrolledAfterLastMessage = true
+      }
   }
 
   private var emptyState: some View {
@@ -738,6 +754,7 @@ private struct ConversationModelSettingsView: View {
           }
 
           Section {
+            Toggle("Show thinking", isOn: showThinkingBinding)
             Toggle("Stream responses", isOn: streamingBinding)
           }
 
@@ -900,6 +917,17 @@ private struct ConversationModelSettingsView: View {
       set: { usesStreaming in
         store.updateCurrentConversation { conversation in
           conversation.usesStreaming = usesStreaming
+        }
+      }
+    )
+  }
+
+  private var showThinkingBinding: Binding<Bool> {
+    Binding(
+      get: { store.currentConversation?.showThinking ?? false },
+      set: { showThinking in
+        store.updateCurrentConversation { conversation in
+          conversation.showThinking = showThinking
         }
       }
     )

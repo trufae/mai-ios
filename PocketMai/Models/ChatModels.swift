@@ -258,6 +258,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var isPinned: Bool = false
   var disabledMCPTools: Set<String> = []
   var reasoningLevel: ReasoningLevel = .automatic
+  var showThinking: Bool = false
   var lastToolContextSignature: String? = nil
   var isArchived: Bool = false
 
@@ -279,6 +280,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case isPinned
     case disabledMCPTools
     case reasoningLevel
+    case showThinking
     case lastToolContextSignature
     case isArchived
   }
@@ -302,6 +304,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
       (try? container.decode(Set<String>.self, forKey: .disabledMCPTools)) ?? []
     reasoningLevel =
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
+    showThinking = (try? container.decode(Bool.self, forKey: .showThinking)) ?? false
     lastToolContextSignature =
       try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature)
     isArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false

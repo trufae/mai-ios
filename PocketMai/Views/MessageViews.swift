@@ -13,6 +13,7 @@ struct MessageBubble: View, Equatable {
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
+  var showThinking: Bool = false
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
@@ -23,6 +24,7 @@ struct MessageBubble: View, Equatable {
   /// equality is irrelevant — closures recapture fresh state via `store`.
   nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
     lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
+      && lhs.showThinking == rhs.showThinking
   }
 
   var body: some View {
@@ -51,7 +53,7 @@ struct MessageBubble: View, Equatable {
             content: section.content,
             monospaced: false,
             dimmedContent: true,
-            initiallyExpanded: visibleEmpty
+            initiallyExpanded: showThinking
           )
         }
         ForEach(transcriptSections) { section in
@@ -231,6 +233,9 @@ private struct FoldableMetaSection: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(.secondary.opacity(0.18), lineWidth: 0.5)
     )
+    .onChange(of: initiallyExpanded) { _, expandedByDefault in
+      expanded = expandedByDefault
+    }
   }
 }
 
