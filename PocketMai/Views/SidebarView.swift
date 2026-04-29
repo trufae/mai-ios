@@ -6,6 +6,8 @@ struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
   @State private var showingArchive = false
+  @State private var isSelectionMode = false
+  @State private var selectedIDs: Set<UUID> = []
   let onSelectConversation: () -> Void
 
   var body: some View {
@@ -36,54 +38,25 @@ struct SidebarView: View {
         }
         ForEach(visibleConversations) { conversation in
           let isSelected = store.selectedConversationID == conversation.id
+          let isMultiSelected = selectedIDs.contains(conversation.id)
           ConversationRow(
             conversation: conversation,
             isSelected: isSelected,
             isResponding: store.isResponding(in: conversation.id),
-            containerHeight: proxy.size.height
+            containerHeight: proxy.size.height,
+            isSelectionMode: isSelectionMode,
+            isMultiSelected: isMultiSelected
           ) {
-            store.select(conversation)
-            onSelectConversation()
+            if isSelectionMode {
+              toggleSelection(of: conversation.id)
+            } else {
+              store.select(conversation)
+              onSelectConversation()
+            }
           }
           .contextMenu {
-            Button {
-              store.togglePin(conversation)
-            } label: {
-              Label(
-                conversation.isPinned ? "Unpin Conversation" : "Pin Conversation",
-                systemImage: conversation.isPinned ? "pin.slash" : "pin"
-              )
-            }
-
-            Button {
-              store.toggleArchive(conversation)
-            } label: {
-              Label(
-                conversation.isArchived ? "Unarchive Conversation" : "Archive Conversation",
-                systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
-              )
-            }
-
-            Button {
-              store.cloneConversation(conversation)
-              onSelectConversation()
-            } label: {
-              Label("Clone Conversation", systemImage: "doc.on.doc")
-            }
-
-            Button(role: .destructive) {
-              store.deleteConversation(conversation)
-            } label: {
-              Label("Delete Conversation", systemImage: "trash")
-            }
-
-            if isSelected {
-              Button(role: .destructive) {
-                let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
-                store.deleteConversations(others)
-              } label: {
-                Label("Delete all except this one", systemImage: "trash.slash")
-              }
+            if !isSelectionMode {
+              conversationContextMenu(for: conversation, isCurrent: isSelected)
             }
           }
           .modifier(SidebarEdgeContentBlur(containerHeight: proxy.size.height))
@@ -94,29 +67,146 @@ struct SidebarView: View {
     }
   }
 
+  @ViewBuilder
+  private func conversationContextMenu(for conversation: Conversation, isCurrent: Bool) -> some View {
+    Button {
+      withAnimation {
+        isSelectionMode = true
+        selectedIDs = [conversation.id]
+      }
+    } label: {
+      Label("Select", systemImage: "checkmark.circle")
+    }
+
+    Button {
+      store.togglePin(conversation)
+    } label: {
+      Label(
+        conversation.isPinned ? "Unpin Conversation" : "Pin Conversation",
+        systemImage: conversation.isPinned ? "pin.slash" : "pin"
+      )
+    }
+
+    Button {
+      store.toggleArchive(conversation)
+    } label: {
+      Label(
+        conversation.isArchived ? "Unarchive Conversation" : "Archive Conversation",
+        systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
+      )
+    }
+
+    Button {
+      store.cloneConversation(conversation)
+      onSelectConversation()
+    } label: {
+      Label("Clone Conversation", systemImage: "doc.on.doc")
+    }
+
+    Button(role: .destructive) {
+      store.deleteConversation(conversation)
+    } label: {
+      Label("Delete Conversation", systemImage: "trash")
+    }
+
+    if isCurrent {
+      Button(role: .destructive) {
+        let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
+        store.deleteConversations(others)
+      } label: {
+        Label("Delete all except this one", systemImage: "trash.slash")
+      }
+    }
+  }
+
   private var floatingActions: some View {
     HStack(spacing: 10) {
-      FloatingActionPill(
-        title: "New Chat",
-        systemImage: "square.and.pencil",
-        prominent: true
-      ) {
-        store.newConversation()
-        onSelectConversation()
+      if isSelectionMode {
+        selectionFloatingActions
+      } else {
+        defaultFloatingActions
       }
-      FloatingActionIcon(
-        systemImage: showingArchive ? "tray.full.fill" : "archivebox",
-        accessibilityLabel: showingArchive ? "Show active conversations" : "Show archived conversations",
-        isActive: showingArchive
-      ) {
-        showingArchive.toggle()
+    }
+  }
+
+  @ViewBuilder
+  private var defaultFloatingActions: some View {
+    FloatingActionPill(
+      title: "New Chat",
+      systemImage: "square.and.pencil",
+      prominent: true
+    ) {
+      store.newConversation()
+      onSelectConversation()
+    }
+    FloatingActionIcon(
+      systemImage: showingArchive ? "tray.full.fill" : "archivebox",
+      accessibilityLabel: showingArchive ? "Show active conversations" : "Show archived conversations",
+      isActive: showingArchive
+    ) {
+      showingArchive.toggle()
+    }
+    FloatingActionIcon(
+      systemImage: "gearshape",
+      accessibilityLabel: "Settings"
+    ) {
+      showingSettings = true
+    }
+  }
+
+  @ViewBuilder
+  private var selectionFloatingActions: some View {
+    let hasSelection = !selectedIDs.isEmpty
+    FloatingActionPill(title: "Cancel", prominent: true) {
+      withAnimation {
+        isSelectionMode = false
+        selectedIDs.removeAll()
       }
-      FloatingActionIcon(
-        systemImage: "gearshape",
-        accessibilityLabel: "Settings"
-      ) {
-        showingSettings = true
-      }
+    }
+    FloatingActionIcon(
+      systemImage: showingArchive ? "tray.and.arrow.up" : "archivebox",
+      accessibilityLabel: showingArchive ? "Unarchive selected" : "Archive selected"
+    ) {
+      archiveSelected()
+    }
+    .disabled(!hasSelection)
+    .opacity(hasSelection ? 1 : 0.5)
+    FloatingActionIcon(
+      systemImage: "trash",
+      accessibilityLabel: "Delete selected",
+      destructive: true
+    ) {
+      deleteSelected()
+    }
+    .disabled(!hasSelection)
+    .opacity(hasSelection ? 1 : 0.5)
+  }
+
+  private func toggleSelection(of id: UUID) {
+    if selectedIDs.contains(id) {
+      selectedIDs.remove(id)
+    } else {
+      selectedIDs.insert(id)
+    }
+  }
+
+  private func archiveSelected() {
+    let ids = selectedIDs
+    for id in ids {
+      guard let conversation = store.conversations.first(where: { $0.id == id }) else { continue }
+      store.toggleArchive(conversation)
+    }
+    withAnimation {
+      isSelectionMode = false
+      selectedIDs.removeAll()
+    }
+  }
+
+  private func deleteSelected() {
+    store.deleteConversations(selectedIDs)
+    withAnimation {
+      isSelectionMode = false
+      selectedIDs.removeAll()
     }
   }
 }
@@ -161,10 +251,11 @@ private struct SidebarRowBackground: View {
 private struct FloatingChrome<Background: InsettableShape>: ViewModifier {
   let prominent: Bool
   let shape: Background
+  var tint: Color? = nil
 
   func body(content: Content) -> some View {
     content
-      .foregroundStyle(prominent ? Color.white : Color.primary)
+      .foregroundStyle(tint ?? (prominent ? Color.white : Color.primary))
       .background(
         shape.fill(
           prominent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.regularMaterial)))
@@ -179,6 +270,7 @@ private struct FloatingActionIcon: View {
   let systemImage: String
   let accessibilityLabel: String
   var isActive: Bool = false
+  var destructive: Bool = false
   let action: () -> Void
 
   var body: some View {
@@ -187,7 +279,11 @@ private struct FloatingActionIcon: View {
         .font(.body.weight(.semibold))
         .frame(width: 22, height: 22)
         .padding(12)
-        .modifier(FloatingChrome(prominent: isActive, shape: Circle()))
+        .modifier(FloatingChrome(
+          prominent: isActive,
+          shape: Circle(),
+          tint: destructive ? .red : nil
+        ))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
@@ -196,14 +292,16 @@ private struct FloatingActionIcon: View {
 
 private struct FloatingActionPill: View {
   let title: String
-  let systemImage: String
+  var systemImage: String? = nil
   let prominent: Bool
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 8) {
-        Image(systemName: systemImage).font(.body.weight(.semibold))
+        if let systemImage {
+          Image(systemName: systemImage).font(.body.weight(.semibold))
+        }
         Text(title).font(.body.weight(prominent ? .semibold : .medium))
       }
       .padding(.horizontal, 16)
@@ -219,11 +317,19 @@ private struct ConversationRow: View {
   let isSelected: Bool
   let isResponding: Bool
   let containerHeight: CGFloat
+  var isSelectionMode: Bool = false
+  var isMultiSelected: Bool = false
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 10) {
+        if isSelectionMode {
+          Image(systemName: isMultiSelected ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(isMultiSelected ? Color.accentColor : Color.secondary)
+            .transition(.opacity.combined(with: .move(edge: .leading)))
+        }
         VStack(alignment: .leading, spacing: 4) {
           HStack {
             Text(conversation.displayTitle)
@@ -252,7 +358,10 @@ private struct ConversationRow: View {
     }
     .buttonStyle(.plain)
     .listRowBackground(
-      SidebarRowBackground(isSelected: isSelected, containerHeight: containerHeight)
+      SidebarRowBackground(
+        isSelected: isSelected && !isSelectionMode,
+        containerHeight: containerHeight
+      )
     )
   }
 
