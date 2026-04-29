@@ -13,7 +13,7 @@ struct FilteredModelPicker: View {
   }
 
   var body: some View {
-    HStack(spacing: 8) {
+    VStack(alignment: .leading, spacing: 8) {
       Picker("Model", selection: $selection) {
         if !selection.isEmpty && !filteredModels.contains(selection) {
           Text(selection).tag(selection)
@@ -35,7 +35,6 @@ struct FilteredModelPicker: View {
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .textFieldStyle(.roundedBorder)
-        .frame(minWidth: 110)
     }
   }
 }
