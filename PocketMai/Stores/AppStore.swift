@@ -56,8 +56,6 @@ final class AppStore: ObservableObject {
   @Published var endpointModels: [UUID: [String]] = [:]
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
-  /// [conversationID: last visible messageID]; missing entries restore to bottom.
-  @Published var savedScrollPositions: [UUID: UUID] = [:]
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityMessage: String?
@@ -69,6 +67,10 @@ final class AppStore: ObservableObject {
 
   let locationService = LocationService()
   private let persistence: PersistenceStore
+  private var pendingStreamingTexts: [UUID: String] = [:]
+  private var streamingPublishTasks: [UUID: Task<Void, Never>] = [:]
+  private var lastStreamingPublishAt: [UUID: Date] = [:]
+  private static let streamingPublishInterval: TimeInterval = 0.12
 
   init(persistence: PersistenceStore = PersistenceStore()) {
     self.persistence = persistence
@@ -474,7 +476,7 @@ final class AppStore: ObservableObject {
       }
 
       let maxIterations = 8
-        for _ in 0..<maxIterations {
+      for _ in 0..<maxIterations {
         try Task.checkCancellation()
         guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         let request = ChatCompletionRequest(
@@ -563,6 +565,7 @@ final class AppStore: ObservableObject {
   }
 
   private func currentTextOfMessage(id: UUID) -> String {
+    if let pending = pendingStreamingTexts[id] { return pending }
     if let streaming = streamingTexts[id] { return streaming }
     for conversation in conversations {
       if let message = conversation.messages.first(where: { $0.id == id }) {
@@ -829,11 +832,15 @@ final class AppStore: ObservableObject {
     if streaming {
       // Token-rate updates land in a side buffer so `conversations` is not
       // republished per token. Bubbles read from this buffer when present.
-      streamingTexts[id] = text
+      enqueueStreamingText(text, for: id)
       return
     }
     // Final / discrete update: commit to `conversations` and clear any
     // streaming buffer so bubbles fall back to the canonical message text.
+    pendingStreamingTexts.removeValue(forKey: id)
+    lastStreamingPublishAt.removeValue(forKey: id)
+    streamingPublishTasks[id]?.cancel()
+    streamingPublishTasks.removeValue(forKey: id)
     streamingTexts.removeValue(forKey: id)
     guard
       let conversationIndex = conversations.firstIndex(where: { conversation in
@@ -851,6 +858,37 @@ final class AppStore: ObservableObject {
       conversation.updatedAt = Date()
     }
     conversations[conversationIndex] = conversation
+  }
+
+  private func enqueueStreamingText(_ text: String, for id: UUID) {
+    guard streamingTexts[id] != text else { return }
+
+    let now = Date()
+    let lastPublish = lastStreamingPublishAt[id] ?? .distantPast
+    let elapsed = now.timeIntervalSince(lastPublish)
+
+    if elapsed >= Self.streamingPublishInterval {
+      lastStreamingPublishAt[id] = now
+      streamingTexts[id] = text
+      return
+    }
+
+    pendingStreamingTexts[id] = text
+    guard streamingPublishTasks[id] == nil else { return }
+
+    let delay = max(0, Self.streamingPublishInterval - elapsed)
+    streamingPublishTasks[id] = Task { @MainActor [weak self] in
+      let nanoseconds = UInt64(delay * 1_000_000_000)
+      try? await Task.sleep(nanoseconds: nanoseconds)
+      guard !Task.isCancelled else { return }
+      guard let self else { return }
+      self.streamingPublishTasks[id] = nil
+      guard let pending = self.pendingStreamingTexts.removeValue(forKey: id) else { return }
+      self.lastStreamingPublishAt[id] = Date()
+      if self.streamingTexts[id] != pending {
+        self.streamingTexts[id] = pending
+      }
+    }
   }
 
   private func export(conversation: Conversation, format: ConversationExportFormat) -> String {

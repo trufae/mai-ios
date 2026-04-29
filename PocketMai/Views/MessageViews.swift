@@ -16,6 +16,7 @@ struct MessageBubble: View, Equatable {
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
+  private var isStreaming: Bool { streamingOverride != nil }
 
   /// Identity for SwiftUI's EquatableView: skip body re-evaluation when neither
   /// the canonical message nor the streaming override has changed. Closure
@@ -86,6 +87,10 @@ struct MessageBubble: View, Equatable {
           .font(.callout)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
+      } else if isStreaming {
+        Text(visibleText)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
       } else {
         MarkdownContentView(text: visibleText)
       }

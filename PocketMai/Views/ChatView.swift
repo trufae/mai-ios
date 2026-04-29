@@ -9,8 +9,8 @@ struct ChatView: View {
   @State private var showingCompactConfirmation = false
   @State private var showingClearConfirmation = false
   @State private var renameDraft = ""
-  @State private var visibleMessageID: UUID?
-  @State private var lastTrackedConversationID: UUID?
+  @State private var lastStreamingScrollAt = Date.distantPast
+  private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
 
   var body: some View {
@@ -299,31 +299,27 @@ struct ChatView: View {
               .id(message.id)
             }
           }
+          Color.clear
+            .frame(height: 1)
+            .id(messageListBottomID)
         }
         .padding()
         .scrollTargetLayout()
       }
+      .id(store.selectedConversationID)
+      .defaultScrollAnchor(.bottom)
       .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
-      .scrollPosition(id: $visibleMessageID, anchor: .bottom)
       .onChange(of: lastMessageSnapshot) { old, new in
-        // Conversation switches are handled by the selectedConversationID observer below.
         guard old.conversationID == new.conversationID else { return }
-        // New message → always scroll. Same message, only text changed (streaming) → follow if at bottom.
-        scrollToLast(proxy, force: old.messageID != new.messageID)
-      }
-      .onChange(of: composerFocused) { _, focused in
-        if focused { scrollToLast(proxy, force: true) }
-      }
-      .onChange(of: store.selectedConversationID) { oldID, newID in
-        if let oldID, let pos = visibleMessageID {
-          store.savedScrollPositions[oldID] = pos
+        if old.messageID != new.messageID {
+          scrollToBottom(proxy, animated: true)
+          return
         }
-        restoreScroll(in: newID, proxy: proxy)
-      }
-      .onAppear {
-        if lastTrackedConversationID != store.selectedConversationID {
-          restoreScroll(in: store.selectedConversationID, proxy: proxy)
-        }
+        guard old.text != new.text else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
+        lastStreamingScrollAt = now
+        scrollToBottom(proxy, animated: false)
       }
     }
   }
@@ -343,30 +339,13 @@ struct ChatView: View {
     return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: text)
   }
 
-  private func scrollToLast(_ proxy: ScrollViewProxy, force: Bool) {
-    guard let last = store.currentConversation?.messages.last else { return }
-    if !force, visibleMessageID != nil, visibleMessageID != last.id { return }
-    withAnimation(.snappy) {
-      proxy.scrollTo(last.id, anchor: .bottom)
-    }
-  }
-
-  private func restoreScroll(in conversationID: UUID?, proxy: ScrollViewProxy) {
-    lastTrackedConversationID = conversationID
-    guard let conversationID,
-      let conversation = store.conversations.first(where: { $0.id == conversationID })
-    else { return }
-    let target = store.savedScrollPositions[conversationID] ?? conversation.messages.last?.id
-    guard let target else {
-      visibleMessageID = nil
-      return
-    }
-    // Defer one runloop so lazy rows mount before scrollTo seeks them.
-    // If another conversation switch lands first, bail to avoid stomping its scroll.
-    DispatchQueue.main.async {
-      guard lastTrackedConversationID == conversationID else { return }
-      visibleMessageID = target
-      proxy.scrollTo(target, anchor: .bottom)
+  private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+    if animated {
+      withAnimation(.snappy) {
+        proxy.scrollTo(messageListBottomID, anchor: .bottom)
+      }
+    } else {
+      proxy.scrollTo(messageListBottomID, anchor: .bottom)
     }
   }
 
