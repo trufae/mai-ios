@@ -674,6 +674,7 @@ private struct ConversationModelSettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
   @State private var didSaveDefaults = false
+  @State private var modelFilter = ""
 
   var body: some View {
     NavigationStack {
@@ -757,15 +758,11 @@ private struct ConversationModelSettingsView: View {
         TextField("Model", text: modelBinding(default: endpoint.defaultModel))
           .textInputAutocapitalization(.never)
       } else {
-        Picker("Model", selection: modelBinding(default: endpoint.defaultModel)) {
-          let selectedModel = store.currentConversation?.modelID ?? ""
-          if !selectedModel.isEmpty && !models.contains(selectedModel) {
-            Text(selectedModel).tag(selectedModel)
-          }
-          ForEach(models, id: \.self) { model in
-            Text(model).tag(model)
-          }
-        }
+        FilteredModelPicker(
+          selection: modelBinding(default: endpoint.defaultModel),
+          filter: $modelFilter,
+          models: models
+        )
       }
 
       HStack {

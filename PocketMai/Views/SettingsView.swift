@@ -728,6 +728,7 @@ struct SettingsView: View {
 private struct EndpointDetailView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var endpoint: OpenAIEndpoint
+  @State private var modelFilter = ""
 
   var body: some View {
     Form {
@@ -805,19 +806,12 @@ private struct EndpointDetailView: View {
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
     } else {
-      Picker("Model", selection: $endpoint.defaultModel) {
-        let selected = endpoint.defaultModel
-        if !selected.isEmpty && !models.contains(selected) {
-          Text(selected).tag(selected)
-        }
-        if selected.isEmpty {
-          Text("Select a model").tag("")
-        }
-        ForEach(models, id: \.self) { model in
-          Text(model).tag(model)
-        }
-      }
-      .pickerStyle(.menu)
+      FilteredModelPicker(
+        selection: $endpoint.defaultModel,
+        filter: $modelFilter,
+        models: models,
+        emptySelectionTitle: "Select a model"
+      )
     }
   }
 
