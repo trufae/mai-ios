@@ -390,6 +390,8 @@ struct MarkdownContentView: View {
           CodeBlockView(language: language, code: code)
         case .table(let headers, let rows, let alignments):
           MarkdownTableView(headers: headers, rows: rows, alignments: alignments)
+        case .taskList(let items):
+          TaskListView(items: items)
         }
       }
     }
@@ -497,11 +499,40 @@ struct CodeBlockView: View {
   }
 }
 
+struct TaskListItem: Identifiable {
+  let id = UUID()
+  let text: String
+  let checked: Bool
+}
+
+struct TaskListView: View {
+  let items: [TaskListItem]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(items) { item in
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Image(systemName: item.checked ? "checkmark.square.fill" : "square")
+            .foregroundStyle(item.checked ? Color.accentColor : Color.secondary)
+            .imageScale(.medium)
+            .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
+          Text(attributedInlineMarkdown(item.text))
+            .textSelection(.enabled)
+            .strikethrough(item.checked, color: .secondary)
+            .foregroundStyle(item.checked ? Color.secondary : Color.primary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+  }
+}
+
 struct MarkdownBlock: Identifiable {
   enum Kind {
     case text(String)
     case code(language: String, code: String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
+    case taskList(items: [TaskListItem])
   }
 
   let id = UUID()
@@ -558,6 +589,21 @@ enum MarkdownParser {
         continue
       }
 
+      if let firstItem = taskListItem(trimmed) {
+        flushText()
+        var items: [TaskListItem] = [firstItem]
+        var cursor = index + 1
+        while cursor < lines.count {
+          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
+          guard let nextItem = taskListItem(nextTrimmed) else { break }
+          items.append(nextItem)
+          cursor += 1
+        }
+        blocks.append(MarkdownBlock(kind: .taskList(items: items)))
+        index = cursor
+        continue
+      }
+
       if trimmed.contains("|"),
         index + 1 < lines.count,
         let alignments = tableAlignments(
@@ -596,6 +642,28 @@ enum MarkdownParser {
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+  }
+
+  private static func taskListItem(_ trimmed: String) -> TaskListItem? {
+    let bulletMarkers: [Character] = ["-", "*", "+"]
+    guard let first = trimmed.first, bulletMarkers.contains(first) else { return nil }
+    var rest = trimmed.dropFirst()
+    guard rest.first == " " else { return nil }
+    rest = rest.drop(while: { $0 == " " })
+    guard rest.first == "[", rest.count >= 3 else { return nil }
+    let mark = rest[rest.index(after: rest.startIndex)]
+    let closeIndex = rest.index(rest.startIndex, offsetBy: 2)
+    guard rest[closeIndex] == "]" else { return nil }
+    let checked: Bool
+    switch mark {
+    case " ": checked = false
+    case "x", "X": checked = true
+    default: return nil
+    }
+    var text = rest.dropFirst(3)
+    if let space = text.first, space != " " && !text.isEmpty { return nil }
+    text = text.drop(while: { $0 == " " })
+    return TaskListItem(text: String(text), checked: checked)
   }
 
   private static func splitTableRow(_ line: String) -> [String] {
