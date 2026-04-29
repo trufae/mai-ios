@@ -34,7 +34,6 @@ final class AppStore: ObservableObject {
   @Published var selectedConversationID: UUID?
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
-  @Published var draftText = ""
   @Published var respondingConversationIDs: Set<UUID> = []
   @Published var isIncognitoMode = false
 
@@ -197,8 +196,7 @@ final class AppStore: ObservableObject {
     let cleaned = MessageContentFilter.promptSafeText(from: message.text)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !cleaned.isEmpty else { return }
-    draftText = cleaned
-    await send()
+    _ = await send(prompt: cleaned)
   }
 
   func restartFromScratch(with message: ChatMessage) async {
@@ -215,8 +213,7 @@ final class AppStore: ObservableObject {
     conversations[index].updatedAt = Date()
     saveConversations()
 
-    draftText = prompt
-    await send()
+    _ = await send(prompt: prompt)
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
@@ -281,25 +278,25 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
-  func send() async {
-    let prompt = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty else { return }
+  func send(prompt rawPrompt: String) async -> Bool {
+    let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !prompt.isEmpty else { return false }
     if currentConversation == nil {
       newConversation()
     }
-    guard let index = currentConversationIndex else { return }
+    guard let index = currentConversationIndex else { return false }
     let conversationID = conversations[index].id
-    guard !respondingConversationIDs.contains(conversationID) else { return }
+    guard !respondingConversationIDs.contains(conversationID) else { return false }
     if let message = ChatProviderRouter.preflightMessage(
       conversation: conversations[index], settings: settings)
     {
       errorMessage = message
-      return
+      return false
     }
 
-    draftText = ""
     errorMessage = nil
     await composeUserTurn(prompt: prompt, conversationID: conversationID, mode: .append)
+    return true
   }
 
   func trimAndResubmit(from message: ChatMessage) async {

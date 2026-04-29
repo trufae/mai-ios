@@ -3,10 +3,8 @@ import UIKit
 
 struct ChatView: View {
   @EnvironmentObject private var store: AppStore
-  @FocusState private var composerFocused: Bool
   @State private var showingRenameAlert = false
   @State private var showingProviderModelSheet = false
-  @State private var showingToolPicker = false
   @State private var showingCompactConfirmation = false
   @State private var showingClearConfirmation = false
   @State private var exportedEPUB: ExportedEPUB?
@@ -227,11 +225,6 @@ struct ChatView: View {
     (store.currentConversation?.isIncognito ?? false) ? "Incognito message" : "Message"
   }
 
-  private var currentChatIsResponding: Bool {
-    guard let id = store.currentConversation?.id else { return false }
-    return store.isResponding(in: id)
-  }
-
   private var providerSubtitle: String {
     if store.isCompacting { return "Compacting…" }
     guard let conversation = store.currentConversation else { return "No conversation" }
@@ -409,23 +402,41 @@ struct ChatView: View {
   }
 
   private var composer: some View {
+    ChatComposer(placeholder: composerPlaceholder)
+      .environmentObject(store)
+  }
+}
+
+private struct ChatComposer: View {
+  @EnvironmentObject private var store: AppStore
+  @FocusState private var composerFocused: Bool
+  @State private var showingToolPicker = false
+  @State private var draftText = ""
+  let placeholder: String
+
+  private var currentChatIsResponding: Bool {
+    guard let id = store.currentConversation?.id else { return false }
+    return store.isResponding(in: id)
+  }
+
+  var body: some View {
     HStack(alignment: .bottom, spacing: 10) {
       toolMenu
 
-      TextField(composerPlaceholder, text: $store.draftText, axis: .vertical)
+      TextField(placeholder, text: $draftText, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(1...8)
         .focused($composerFocused)
         .padding(.vertical, 8)
         .onSubmit {
-          Task { await store.send() }
+          submitDraft()
         }
 
       Button {
         if let id = store.currentConversation?.id, store.isResponding(in: id) {
           store.cancelResponse(in: id)
         } else {
-          Task { await store.send() }
+          submitDraft()
         }
       } label: {
         Image(systemName: currentChatIsResponding ? "stop.circle" : "arrow.up.circle.fill")
@@ -434,11 +445,23 @@ struct ChatView: View {
       .buttonStyle(.glassProminent)
       .disabled(
         !currentChatIsResponding
-          && store.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          && draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
     .simultaneousGesture(composerKeyboardDismissGesture)
+  }
+
+  private func submitDraft() {
+    guard !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let submitted = draftText
+    draftText = ""
+    Task {
+      let sent = await store.send(prompt: submitted)
+      if !sent {
+        draftText = submitted
+      }
+    }
   }
 
   private var composerKeyboardDismissGesture: some Gesture {
@@ -470,7 +493,6 @@ struct ChatView: View {
     }
     .help("Tools")
   }
-
 }
 
 private struct ExportedEPUB: Identifiable {
