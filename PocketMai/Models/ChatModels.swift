@@ -511,6 +511,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var appleModelID: String = AppSettings.appleDefaultModelID
   var selectedEndpointID: UUID? = nil
   var streamByDefault: Bool = true
+  var showThinkingByDefault: Bool = false
   var openAIEndpoints: [OpenAIEndpoint] = []
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
@@ -534,7 +535,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case defaultProvider, appleModelID, selectedEndpointID, streamByDefault
+    case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
     case useToolProxy, contextWindowMode, nativeToolMode
@@ -547,6 +548,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     appleModelID = (try? c.decode(String.self, forKey: .appleModelID)) ?? ""
     selectedEndpointID = try? c.decode(UUID.self, forKey: .selectedEndpointID)
     streamByDefault = (try? c.decode(Bool.self, forKey: .streamByDefault)) ?? true
+    showThinkingByDefault = (try? c.decode(Bool.self, forKey: .showThinkingByDefault)) ?? false
     openAIEndpoints =
       (try? c.decode([OpenAIEndpoint].self, forKey: .openAIEndpoints)) ?? []
     systemPrompts =

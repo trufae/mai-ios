@@ -119,6 +119,7 @@ final class AppStore: ObservableObject {
     conversation.systemPromptID = settings.defaultSystemPromptID
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.usesStreaming = settings.streamByDefault
+    conversation.showThinking = settings.showThinkingByDefault
     return conversation
   }
 

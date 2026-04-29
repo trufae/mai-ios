@@ -12,6 +12,59 @@ struct EndpointProviderPreset {
   let url: String
 }
 
+private struct PendingSettingsDeletion: Identifiable {
+  let id = UUID()
+  let kind: SettingsDeletionKind
+  let offsets: IndexSet
+}
+
+private enum SettingsDeletionKind {
+  case endpoint
+  case systemPrompt
+  case todo
+  case file
+  case mcpServer
+
+  var title: String {
+    switch self {
+    case .endpoint: "Delete endpoint?"
+    case .systemPrompt: "Delete system prompt?"
+    case .todo: "Delete todo?"
+    case .file: "Delete file?"
+    case .mcpServer: "Delete MCP server?"
+    }
+  }
+
+  func buttonTitle(count: Int) -> String {
+    switch self {
+    case .endpoint: "Delete \(itemName("Endpoint", count: count))"
+    case .systemPrompt: "Delete \(itemName("Prompt", count: count))"
+    case .todo: "Delete \(itemName("Todo", count: count))"
+    case .file: "Delete \(itemName("File", count: count))"
+    case .mcpServer: "Delete \(itemName("Server", count: count))"
+    }
+  }
+
+  func message(count: Int) -> String {
+    switch self {
+    case .endpoint:
+      "\(count) endpoint\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    case .systemPrompt:
+      "\(count) system prompt\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    case .todo:
+      "\(count) todo\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    case .file:
+      "\(count) imported file\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    case .mcpServer:
+      "\(count) MCP server\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    }
+  }
+
+  private func itemName(_ singular: String, count: Int) -> String {
+    count == 1 ? singular : "\(count) \(singular)s"
+  }
+}
+
 let endpointProviderPresets: [EndpointProviderPreset] = [
   EndpointProviderPreset(name: "OpenAI", url: "https://api.openai.com/v1"),
   EndpointProviderPreset(name: "Ollama Cloud", url: "https://ollama.com/v1"),
@@ -55,6 +108,8 @@ struct SettingsView: View {
   @State private var showingFileImporter = false
   @State private var newTodoTitle = ""
   @State private var showingClearAllConfirmation = false
+  @State private var showingClearMemoryConfirmation = false
+  @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
 
   var body: some View {
@@ -84,6 +139,32 @@ struct SettingsView: View {
         }
       } message: {
         Text("Every chat and its messages will be deleted. This cannot be undone.")
+      }
+      .alert(
+        pendingDeletion?.kind.title ?? "Delete item?",
+        isPresented: settingsDeletionConfirmationBinding,
+        presenting: pendingDeletion
+      ) { deletion in
+        Button("Cancel", role: .cancel) {
+          pendingDeletion = nil
+        }
+        Button(deletion.kind.buttonTitle(count: deletion.offsets.count), role: .destructive) {
+          performSettingsDeletion(deletion)
+        }
+      } message: { deletion in
+        Text(deletion.kind.message(count: deletion.offsets.count))
+      }
+      .alert(
+        "Clear memory?",
+        isPresented: $showingClearMemoryConfirmation
+      ) {
+        Button("Cancel", role: .cancel) {}
+        Button("Clear Memory", role: .destructive) {
+          store.settings.memory = ""
+          store.saveSettings()
+        }
+      } message: {
+        Text("Saved memory will be removed from this device. This cannot be undone.")
       }
       .navigationTitle("Settings")
       .toolbar {
@@ -116,6 +197,7 @@ struct SettingsView: View {
         }
       }
       .pickerStyle(.menu)
+      Toggle("Show thinking", isOn: settingsBinding(\.showThinkingByDefault))
       Toggle("Stream Responses", isOn: settingsBinding(\.streamByDefault))
       Picker("Context", selection: settingsBinding(\.contextWindowMode)) {
         ForEach(ContextWindowMode.allCases) { mode in
@@ -150,16 +232,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        let removedIDs = offsets.map { store.settings.openAIEndpoints[$0].id }
-        store.settings.openAIEndpoints.remove(atOffsets: offsets)
-        if let selected = store.settings.selectedEndpointID, removedIDs.contains(selected) {
-          store.settings.selectedEndpointID = store.settings.openAIEndpoints.first?.id
-          if store.settings.selectedEndpointID == nil {
-            store.settings.defaultProvider = .apple
-          }
-        }
-        endpointPath.removeAll { removedIDs.contains($0) }
-        store.saveSettings()
+        pendingDeletion = PendingSettingsDeletion(kind: .endpoint, offsets: offsets)
       }
       Button {
         let endpoint = OpenAIEndpoint()
@@ -237,18 +310,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        store.settings.systemPrompts.remove(atOffsets: offsets)
-        if !store.settings.systemPrompts.contains(where: {
-          $0.id == store.settings.defaultSystemPromptID
-        }) {
-          store.settings.defaultSystemPromptID =
-            store.settings.systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id
-        }
-        if store.settings.systemPrompts.isEmpty {
-          store.settings.systemPrompts = [AppSettings.defaultSystemPrompt]
-          store.settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
-        }
-        store.saveSettings()
+        pendingDeletion = PendingSettingsDeletion(kind: .systemPrompt, offsets: offsets)
       }
       Button {
         let prompt = SystemPrompt(name: "Custom prompt", text: "You are a helpful assistant.")
@@ -401,8 +463,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        store.settings.toolSettings.todos.remove(atOffsets: offsets)
-        store.saveSettings()
+        pendingDeletion = PendingSettingsDeletion(kind: .todo, offsets: offsets)
       }
     case .textToSpeech:
       Picker("Language", selection: settingsBinding(\.toolSettings.textToSpeechLanguage)) {
@@ -470,8 +531,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        store.settings.toolSettings.files.remove(atOffsets: offsets)
-        store.saveSettings()
+        pendingDeletion = PendingSettingsDeletion(kind: .file, offsets: offsets)
       }
     case .memory:
       EmptyView()
@@ -501,8 +561,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        store.settings.mcpServers.remove(atOffsets: offsets)
-        store.saveSettings()
+        pendingDeletion = PendingSettingsDeletion(kind: .mcpServer, offsets: offsets)
       }
       Button {
         store.settings.mcpServers.append(MCPServer())
@@ -603,6 +662,66 @@ struct SettingsView: View {
     store.conversations.contains { !$0.messages.isEmpty }
   }
 
+  private var settingsDeletionConfirmationBinding: Binding<Bool> {
+    Binding {
+      pendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        pendingDeletion = nil
+      }
+    }
+  }
+
+  private func performSettingsDeletion(_ deletion: PendingSettingsDeletion) {
+    defer { pendingDeletion = nil }
+
+    switch deletion.kind {
+    case .endpoint:
+      guard deletion.offsets.allSatisfy({ store.settings.openAIEndpoints.indices.contains($0) })
+      else { return }
+      let removedIDs = deletion.offsets.map { store.settings.openAIEndpoints[$0].id }
+      store.settings.openAIEndpoints.remove(atOffsets: deletion.offsets)
+      if let selected = store.settings.selectedEndpointID, removedIDs.contains(selected) {
+        store.settings.selectedEndpointID = store.settings.openAIEndpoints.first?.id
+        if store.settings.selectedEndpointID == nil {
+          store.settings.defaultProvider = .apple
+        }
+      }
+      endpointPath.removeAll { removedIDs.contains($0) }
+      store.saveSettings()
+    case .systemPrompt:
+      guard deletion.offsets.allSatisfy({ store.settings.systemPrompts.indices.contains($0) })
+      else { return }
+      store.settings.systemPrompts.remove(atOffsets: deletion.offsets)
+      if !store.settings.systemPrompts.contains(where: {
+        $0.id == store.settings.defaultSystemPromptID
+      }) {
+        store.settings.defaultSystemPromptID =
+          store.settings.systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id
+      }
+      if store.settings.systemPrompts.isEmpty {
+        store.settings.systemPrompts = [AppSettings.defaultSystemPrompt]
+        store.settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
+      }
+      store.saveSettings()
+    case .todo:
+      guard deletion.offsets.allSatisfy({ store.settings.toolSettings.todos.indices.contains($0) })
+      else { return }
+      store.settings.toolSettings.todos.remove(atOffsets: deletion.offsets)
+      store.saveSettings()
+    case .file:
+      guard deletion.offsets.allSatisfy({ store.settings.toolSettings.files.indices.contains($0) })
+      else { return }
+      store.settings.toolSettings.files.remove(atOffsets: deletion.offsets)
+      store.saveSettings()
+    case .mcpServer:
+      guard deletion.offsets.allSatisfy({ store.settings.mcpServers.indices.contains($0) })
+      else { return }
+      store.settings.mcpServers.remove(atOffsets: deletion.offsets)
+      store.saveSettings()
+    }
+  }
+
   private var memorySection: some View {
     Section {
       Toggle("Embed memory in conversations", isOn: settingsBinding(\.embedMemory))
@@ -620,8 +739,7 @@ struct SettingsView: View {
       }
       .disabled(store.isUpdatingMemory || !hasConversationContent)
       Button {
-        store.settings.memory = ""
-        store.saveSettings()
+        showingClearMemoryConfirmation = true
       } label: {
         let memoryEmpty =
           store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -7,6 +7,9 @@ struct ChatView: View {
   @State private var showingProviderModelSheet = false
   @State private var showingCompactConfirmation = false
   @State private var showingClearConfirmation = false
+  @State private var messagePendingDeletion: ChatMessage?
+  @State private var messagePendingTrimAndResubmit: ChatMessage?
+  @State private var messagePendingRestartFresh: ChatMessage?
   @State private var exportedEPUB: ExportedEPUB?
   @State private var renameDraft = ""
   @State private var lastStreamingScrollAt = Date.distantPast
@@ -95,6 +98,51 @@ struct ChatView: View {
     }
     .sheet(item: $exportedEPUB) { file in
       ActivityShareSheet(activityItems: [file.url])
+    }
+    .alert(
+      "Delete this message?",
+      isPresented: deleteMessageConfirmationBinding,
+      presenting: messagePendingDeletion
+    ) { message in
+      Button("Cancel", role: .cancel) {
+        messagePendingDeletion = nil
+      }
+      Button("Delete Message", role: .destructive) {
+        store.deleteMessage(message)
+        messagePendingDeletion = nil
+      }
+    } message: { _ in
+      Text("This message will be removed from the chat. This cannot be undone.")
+    }
+    .alert(
+      "Resend from here?",
+      isPresented: trimAndResubmitConfirmationBinding,
+      presenting: messagePendingTrimAndResubmit
+    ) { message in
+      Button("Cancel", role: .cancel) {
+        messagePendingTrimAndResubmit = nil
+      }
+      Button("Resend From Here", role: .destructive) {
+        Task { await store.trimAndResubmit(from: message) }
+        messagePendingTrimAndResubmit = nil
+      }
+    } message: { _ in
+      Text("Messages after this point will be removed before the response is regenerated.")
+    }
+    .alert(
+      "Restart from here?",
+      isPresented: restartFreshConfirmationBinding,
+      presenting: messagePendingRestartFresh
+    ) { message in
+      Button("Cancel", role: .cancel) {
+        messagePendingRestartFresh = nil
+      }
+      Button("Restart From Here", role: .destructive) {
+        Task { await store.restartFromScratch(with: message) }
+        messagePendingRestartFresh = nil
+      }
+    } message: { _ in
+      Text("All current messages will be removed before starting again from this message.")
     }
   }
 
@@ -303,12 +351,12 @@ struct ChatView: View {
                 MessageBubble(
                   message: message,
                   streamingOverride: store.streamingTexts[message.id],
-                  onDelete: { store.deleteMessage(message) },
+                  onDelete: { messagePendingDeletion = message },
                   onResubmit: message.role == .user
                     ? { Task { await store.resubmit(message) } }
                     : nil,
-                  onTrimFromHere: { Task { await store.trimAndResubmit(from: message) } },
-                  onRestartFresh: { Task { await store.restartFromScratch(with: message) } },
+                  onTrimFromHere: { messagePendingTrimAndResubmit = message },
+                  onRestartFresh: { messagePendingRestartFresh = message },
                   showThinking: store.currentConversation?.showThinking ?? false
                 )
                 .equatable()
@@ -348,6 +396,36 @@ struct ChatView: View {
           lastStreamingScrollAt = now
           scrollToBottom(proxy, animated: false)
         }
+      }
+    }
+  }
+
+  private var deleteMessageConfirmationBinding: Binding<Bool> {
+    Binding {
+      messagePendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        messagePendingDeletion = nil
+      }
+    }
+  }
+
+  private var trimAndResubmitConfirmationBinding: Binding<Bool> {
+    Binding {
+      messagePendingTrimAndResubmit != nil
+    } set: { isPresented in
+      if !isPresented {
+        messagePendingTrimAndResubmit = nil
+      }
+    }
+  }
+
+  private var restartFreshConfirmationBinding: Binding<Bool> {
+    Binding {
+      messagePendingRestartFresh != nil
+    } set: { isPresented in
+      if !isPresented {
+        messagePendingRestartFresh = nil
       }
     }
   }

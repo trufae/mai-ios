@@ -8,6 +8,7 @@ struct SidebarView: View {
   @State private var showingArchive = false
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
+  @State private var pendingDeletion: PendingConversationDeletion?
   let onSelectConversation: () -> Void
 
   var body: some View {
@@ -19,6 +20,20 @@ struct SidebarView: View {
       floatingActions
         .padding(.trailing, 18)
         .padding(.bottom, 22)
+    }
+    .alert(
+      pendingDeletion?.title ?? "Delete conversations?",
+      isPresented: deletionConfirmationBinding,
+      presenting: pendingDeletion
+    ) { deletion in
+      Button("Cancel", role: .cancel) {
+        pendingDeletion = nil
+      }
+      Button(deletion.buttonTitle, role: .destructive) {
+        confirmDeletion(deletion)
+      }
+    } message: { deletion in
+      Text(deletion.message)
     }
   }
 
@@ -104,7 +119,7 @@ struct SidebarView: View {
     }
 
     Button(role: .destructive) {
-      store.deleteConversation(conversation)
+      pendingDeletion = .single(conversation)
     } label: {
       Label("Delete Conversation", systemImage: "trash")
     }
@@ -112,7 +127,8 @@ struct SidebarView: View {
     if isCurrent {
       Button(role: .destructive) {
         let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
-        store.deleteConversations(others)
+        guard !others.isEmpty else { return }
+        pendingDeletion = .allExceptCurrent(others)
       } label: {
         Label("Delete all except this one", systemImage: "trash.slash")
       }
@@ -203,11 +219,68 @@ struct SidebarView: View {
   }
 
   private func deleteSelected() {
-    store.deleteConversations(selectedIDs)
+    guard !selectedIDs.isEmpty else { return }
+    pendingDeletion = .selected(selectedIDs)
+  }
+
+  private func confirmDeletion(_ deletion: PendingConversationDeletion) {
+    guard !deletion.ids.isEmpty else {
+      pendingDeletion = nil
+      return
+    }
+    store.deleteConversations(deletion.ids)
     withAnimation {
       isSelectionMode = false
       selectedIDs.removeAll()
     }
+    pendingDeletion = nil
+  }
+
+  private var deletionConfirmationBinding: Binding<Bool> {
+    Binding {
+      pendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        pendingDeletion = nil
+      }
+    }
+  }
+}
+
+private struct PendingConversationDeletion: Identifiable {
+  let id = UUID()
+  let ids: Set<UUID>
+  let title: String
+  let buttonTitle: String
+  let message: String
+
+  static func single(_ conversation: Conversation) -> PendingConversationDeletion {
+    PendingConversationDeletion(
+      ids: [conversation.id],
+      title: "Delete this conversation?",
+      buttonTitle: "Delete Conversation",
+      message: "This conversation and all of its messages will be deleted. This cannot be undone."
+    )
+  }
+
+  static func selected(_ ids: Set<UUID>) -> PendingConversationDeletion {
+    PendingConversationDeletion(
+      ids: ids,
+      title: "Delete selected conversations?",
+      buttonTitle: "Delete \(ids.count) Conversation\(ids.count == 1 ? "" : "s")",
+      message:
+        "\(ids.count) selected conversation\(ids.count == 1 ? "" : "s") and their messages will be deleted. This cannot be undone."
+    )
+  }
+
+  static func allExceptCurrent(_ ids: Set<UUID>) -> PendingConversationDeletion {
+    PendingConversationDeletion(
+      ids: ids,
+      title: "Delete other conversations?",
+      buttonTitle: "Delete \(ids.count) Conversation\(ids.count == 1 ? "" : "s")",
+      message:
+        "\(ids.count) other conversation\(ids.count == 1 ? "" : "s") and their messages will be deleted. This cannot be undone."
+    )
   }
 }
 
