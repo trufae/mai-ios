@@ -7,6 +7,27 @@ enum DefaultProviderSelection: Hashable {
   case endpoint(UUID)
 }
 
+struct EndpointProviderPreset {
+  let name: String
+  let url: String
+}
+
+let endpointProviderPresets: [EndpointProviderPreset] = [
+  EndpointProviderPreset(name: "OpenAI", url: "https://api.openai.com/v1"),
+  EndpointProviderPreset(name: "Ollama Cloud", url: "https://ollama.com/v1"),
+  EndpointProviderPreset(name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
+  EndpointProviderPreset(name: "OpenCode Zen", url: "https://opencode.ai/zen/v1"),
+  EndpointProviderPreset(name: "Hugging Face", url: "https://router.huggingface.co/v1"),
+  EndpointProviderPreset(name: "Mistral", url: "https://api.mistral.ai/v1"),
+  EndpointProviderPreset(name: "xAI", url: "https://api.x.ai/v1"),
+  EndpointProviderPreset(name: "DeepSeek", url: "https://api.deepseek.com/v1"),
+  EndpointProviderPreset(name: "Groq", url: "https://api.groq.com/openai/v1"),
+  EndpointProviderPreset(name: "Cerebras", url: "https://api.cerebras.ai/v1"),
+  EndpointProviderPreset(name: "NVIDIA", url: "https://integrate.api.nvidia.com/v1"),
+]
+
+private let customProviderTag = "__custom__"
+
 private enum TTSVoiceCache {
   static let voices: [AVSpeechSynthesisVoice] = AVSpeechSynthesisVoice.speechVoices().sorted {
     if $0.language != $1.language { return $0.language < $1.language }
@@ -34,9 +55,10 @@ struct SettingsView: View {
   @State private var showingFileImporter = false
   @State private var newTodoTitle = ""
   @State private var showingClearAllConfirmation = false
+  @State private var endpointPath: [UUID] = []
 
   var body: some View {
-    NavigationStack {
+    NavigationStack(path: $endpointPath) {
       Form {
         providerSection
         endpointSection
@@ -46,6 +68,11 @@ struct SettingsView: View {
         memorySection
         aboutSection
         dangerSection
+      }
+      .navigationDestination(for: UUID.self) { id in
+        if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
+          EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
+        }
       }
       .alert(
         "Clear all conversations?",
@@ -117,10 +144,8 @@ struct SettingsView: View {
 
   private var endpointSection: some View {
     Section {
-      ForEach($store.settings.openAIEndpoints) { $endpoint in
-        NavigationLink {
-          EndpointDetailView(endpoint: $endpoint)
-        } label: {
+      ForEach(store.settings.openAIEndpoints) { endpoint in
+        NavigationLink(value: endpoint.id) {
           endpointRow(endpoint)
         }
       }
@@ -133,6 +158,7 @@ struct SettingsView: View {
             store.settings.defaultProvider = .apple
           }
         }
+        endpointPath.removeAll { removedIDs.contains($0) }
         store.saveSettings()
       }
       Button {
@@ -141,6 +167,7 @@ struct SettingsView: View {
         store.settings.selectedEndpointID = endpoint.id
         store.saveSettings()
         Task { await store.refreshEndpoint(endpoint) }
+        endpointPath.append(endpoint.id)
       } label: {
         Label("Add Endpoint", systemImage: "plus")
       }
@@ -712,6 +739,13 @@ private struct EndpointDetailView: View {
       }
 
       Section {
+        Picker("Provider", selection: providerPresetBinding) {
+          ForEach(endpointProviderPresets, id: \.url) { preset in
+            Text(preset.name).tag(preset.url)
+          }
+          Text("Custom").tag(customProviderTag)
+        }
+        .pickerStyle(.menu)
         TextField("https://api.example.com/v1", text: $endpoint.baseURL)
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
@@ -728,7 +762,8 @@ private struct EndpointDetailView: View {
         Text("Connection")
       } footer: {
         Text(
-          "Use any OpenAI-compatible API: OpenAI, OpenRouter, Ollama, llama.cpp, LM Studio, etc.")
+          "Pick a provider to autofill the base URL, or choose Custom to enter your own. Any OpenAI-compatible API works (Ollama, llama.cpp, LM Studio, etc.)."
+        )
       }
 
       Section {
@@ -811,6 +846,25 @@ private struct EndpointDetailView: View {
       return true
     }
     return false
+  }
+
+  private var providerPresetBinding: Binding<String> {
+    Binding(
+      get: {
+        let trimmed = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preset = endpointProviderPresets.first(where: { $0.url == trimmed }) {
+          return preset.url
+        }
+        return customProviderTag
+      },
+      set: { newValue in
+        if newValue == customProviderTag {
+          endpoint.baseURL = ""
+        } else {
+          endpoint.baseURL = newValue
+        }
+      }
+    )
   }
 }
 
