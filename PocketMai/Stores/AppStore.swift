@@ -733,6 +733,25 @@ final class AppStore: ObservableObject {
     UIPasteboard.general.string = export(conversation: conversation, format: format)
   }
 
+  func exportCurrentConversationEPUB() -> URL? {
+    guard let conversation = currentConversation else { return nil }
+    let data = EPUBExporter.makeEPUB(conversation: conversation)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "PocketMaiExports",
+      isDirectory: true
+    )
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let filename = exportFilename(for: conversation)
+      let url = directory.appendingPathComponent(filename).appendingPathExtension("epub")
+      try data.write(to: url, options: .atomic)
+      return url
+    } catch {
+      errorMessage = "Could not export ePUB: \(error.localizedDescription)"
+      return nil
+    }
+  }
+
   func saveSettings() {
     persistence.saveSettings(settings)
   }
@@ -912,5 +931,17 @@ final class AppStore: ObservableObject {
       }
       return json
     }
+  }
+
+  private func exportFilename(for conversation: Conversation) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+      .union(.newlines)
+      .union(.controlCharacters)
+    let title = conversation.displayTitle
+      .components(separatedBy: invalid)
+      .joined(separator: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = title.isEmpty ? "Chat" : title
+    return String(base.prefix(80))
   }
 }

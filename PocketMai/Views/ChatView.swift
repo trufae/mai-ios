@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatView: View {
   @EnvironmentObject private var store: AppStore
@@ -8,6 +9,7 @@ struct ChatView: View {
   @State private var showingToolPicker = false
   @State private var showingCompactConfirmation = false
   @State private var showingClearConfirmation = false
+  @State private var exportedEPUB: ExportedEPUB?
   @State private var renameDraft = ""
   @State private var lastStreamingScrollAt = Date.distantPast
   private let messageListBottomID = "MessageListBottom"
@@ -69,6 +71,11 @@ struct ChatView: View {
                 store.copyConversation(format: format)
               }
             }
+            Button {
+              exportEPUB()
+            } label: {
+              Label("Export in ePUB", systemImage: "book")
+            }
           }
         } label: {
           Image(systemName: "square.and.pencil")
@@ -86,6 +93,9 @@ struct ChatView: View {
     .sheet(isPresented: $showingProviderModelSheet) {
       ConversationModelSettingsView()
         .environmentObject(store)
+    }
+    .sheet(item: $exportedEPUB) { file in
+      ActivityShareSheet(activityItems: [file.url])
     }
   }
 
@@ -268,6 +278,11 @@ struct ChatView: View {
     }
   }
 
+  private func exportEPUB() {
+    guard let url = store.exportCurrentConversationEPUB() else { return }
+    exportedEPUB = ExportedEPUB(url: url)
+  }
+
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     guard store.currentConversation?.provider == .apple,
       let message = store.appleAvailabilityMessage
@@ -429,6 +444,21 @@ struct ChatView: View {
     .help("Tools")
   }
 
+}
+
+private struct ExportedEPUB: Identifiable {
+  let id = UUID()
+  let url: URL
+}
+
+private struct ActivityShareSheet: UIViewControllerRepresentable {
+  let activityItems: [Any]
+
+  func makeUIViewController(context: Context) -> UIActivityViewController {
+    UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+  }
+
+  func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 private struct ToolPickerPopover: View {
