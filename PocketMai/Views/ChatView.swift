@@ -303,7 +303,7 @@ struct ChatView: View {
         .padding()
         .scrollTargetLayout()
       }
-      .edgeFadeBlur()
+      .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
       .scrollPosition(id: $visibleMessageID, anchor: .bottom)
       .onChange(of: lastMessageSnapshot) { old, new in
         // Conversation switches are handled by the selectedConversationID observer below.
