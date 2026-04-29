@@ -69,22 +69,15 @@ final class AppStore: ObservableObject {
   private var pendingStreamingTexts: [UUID: String] = [:]
   private var streamingPublishTasks: [UUID: Task<Void, Never>] = [:]
   private var lastStreamingPublishAt: [UUID: Date] = [:]
+  private var conversationDrafts: [UUID: String] = [:]
   private static let streamingPublishInterval: TimeInterval = 0.12
 
   init(persistence: PersistenceStore = PersistenceStore()) {
     self.persistence = persistence
     settings = persistence.loadSettings()
-    conversations = []
+    conversations = Self.sortedConversations(persistence.loadConversations())
     appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
-    Task.detached { [persistence, weak self] in
-      let loaded = persistence.loadConversations()
-      let sorted = Self.sortedConversations(loaded)
-      await MainActor.run {
-        guard let self else { return }
-        self.conversations = sorted
-        self.startFreshConversationForLaunch()
-      }
-    }
+    startFreshConversationForLaunch()
   }
 
   var currentConversation: Conversation? {
@@ -134,6 +127,20 @@ final class AppStore: ObservableObject {
     isIncognitoMode = conversation.isIncognito
   }
 
+  func draftText(for conversationID: UUID?) -> String {
+    guard let conversationID else { return "" }
+    return conversationDrafts[conversationID] ?? ""
+  }
+
+  func setDraftText(_ text: String, for conversationID: UUID?) {
+    guard let conversationID else { return }
+    if text.isEmpty {
+      conversationDrafts.removeValue(forKey: conversationID)
+    } else {
+      conversationDrafts[conversationID] = text
+    }
+  }
+
   func toggleIncognitoMode() {
     guard let index = currentConversationIndex else {
       isIncognitoMode.toggle()
@@ -166,6 +173,8 @@ final class AppStore: ObservableObject {
       responseTasks[id] = nil
       respondingConversationIDs.remove(id)
     }
+    let archivedIDs = Set(archived.map(\.id))
+    conversationDrafts = conversationDrafts.filter { archivedIDs.contains($0.key) }
     streamingTexts.removeAll()
     conversations = archived
     selectedConversationID = nil
@@ -221,6 +230,7 @@ final class AppStore: ObservableObject {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
       respondingConversationIDs.remove(id)
+      conversationDrafts.removeValue(forKey: id)
     }
     conversations.removeAll { ids.contains($0.id) }
     selectedConversationIDs.removeAll()

@@ -225,6 +225,11 @@ struct ChatView: View {
     (store.currentConversation?.isIncognito ?? false) ? "Incognito message" : "Message"
   }
 
+  private var currentChatIsResponding: Bool {
+    guard let id = store.currentConversation?.id else { return false }
+    return store.isResponding(in: id)
+  }
+
   private var providerSubtitle: String {
     if store.isCompacting { return "Compacting…" }
     guard let conversation = store.currentConversation else { return "No conversation" }
@@ -402,64 +407,90 @@ struct ChatView: View {
   }
 
   private var composer: some View {
-    ChatComposer(placeholder: composerPlaceholder)
-      .environmentObject(store)
+    ChatComposer(
+      store: store,
+      placeholder: composerPlaceholder,
+      conversationID: store.currentConversation?.id,
+      isResponding: currentChatIsResponding
+    )
+    .equatable()
   }
 }
 
-private struct ChatComposer: View {
-  @EnvironmentObject private var store: AppStore
+private struct ChatComposer: View, Equatable {
+  let store: AppStore
+  let placeholder: String
+  let conversationID: UUID?
+  let isResponding: Bool
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
-  let placeholder: String
 
-  private var currentChatIsResponding: Bool {
-    guard let id = store.currentConversation?.id else { return false }
-    return store.isResponding(in: id)
+  nonisolated static func == (lhs: ChatComposer, rhs: ChatComposer) -> Bool {
+    lhs.placeholder == rhs.placeholder
+      && lhs.conversationID == rhs.conversationID
+      && lhs.isResponding == rhs.isResponding
   }
 
   var body: some View {
-    HStack(alignment: .bottom, spacing: 10) {
+    HStack(alignment: .center, spacing: 10) {
       toolMenu
 
-      TextField(placeholder, text: $draftText, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...8)
-        .focused($composerFocused)
-        .padding(.vertical, 8)
-        .onSubmit {
-          submitDraft()
-        }
+      ComposerTextView(
+        text: draftBinding,
+        placeholder: placeholder,
+        isFocused: $composerFocused
+      )
+      .frame(height: 36)
 
       Button {
-        if let id = store.currentConversation?.id, store.isResponding(in: id) {
+        if let id = conversationID, isResponding {
           store.cancelResponse(in: id)
         } else {
           submitDraft()
         }
       } label: {
-        Image(systemName: currentChatIsResponding ? "stop.circle" : "arrow.up.circle.fill")
+        Image(systemName: isResponding ? "stop.circle" : "arrow.up.circle.fill")
           .font(.title2)
       }
       .buttonStyle(.glassProminent)
       .disabled(
-        !currentChatIsResponding
+        !isResponding
           && draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
     .simultaneousGesture(composerKeyboardDismissGesture)
+    .onAppear {
+      draftText = store.draftText(for: conversationID)
+    }
+    .onChange(of: conversationID) { oldID, newID in
+      store.setDraftText(draftText, for: oldID)
+      draftText = store.draftText(for: newID)
+    }
+  }
+
+  private var draftBinding: Binding<String> {
+    Binding(
+      get: { draftText },
+      set: { newText in
+        draftText = newText
+        store.setDraftText(newText, for: conversationID)
+      }
+    )
   }
 
   private func submitDraft() {
     guard !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     let submitted = draftText
+    let submittedConversationID = conversationID
     draftText = ""
+    store.setDraftText("", for: submittedConversationID)
     Task {
       let sent = await store.send(prompt: submitted)
       if !sent {
         draftText = submitted
+        store.setDraftText(submitted, for: submittedConversationID)
       }
     }
   }
@@ -492,6 +523,82 @@ private struct ChatComposer: View {
         .presentationCompactAdaptation(.popover)
     }
     .help("Tools")
+  }
+}
+
+private struct ComposerTextView: UIViewRepresentable {
+  @Binding var text: String
+  var placeholder: String
+  var isFocused: FocusState<Bool>.Binding
+
+  func makeUIView(context: Context) -> UITextView {
+    let textView = UITextView()
+    textView.delegate = context.coordinator
+    textView.backgroundColor = .clear
+    textView.font = .preferredFont(forTextStyle: .body)
+    textView.adjustsFontForContentSizeCategory = true
+    textView.isScrollEnabled = true
+    textView.textContainerInset = UIEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
+    textView.textContainer.lineFragmentPadding = 0
+    textView.returnKeyType = .default
+    textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    context.coordinator.configurePlaceholder(in: textView, text: placeholder)
+    return textView
+  }
+
+  func updateUIView(_ textView: UITextView, context: Context) {
+    context.coordinator.parent = self
+    if textView.text != text {
+      textView.text = text
+    }
+    context.coordinator.configurePlaceholder(in: textView, text: placeholder)
+    context.coordinator.updatePlaceholderVisibility(for: textView)
+    if isFocused.wrappedValue && !textView.isFirstResponder {
+      textView.becomeFirstResponder()
+    }
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(parent: self)
+  }
+
+  final class Coordinator: NSObject, UITextViewDelegate {
+    var parent: ComposerTextView
+    private let placeholderLabel = UILabel()
+
+    init(parent: ComposerTextView) {
+      self.parent = parent
+      super.init()
+    }
+
+    func configurePlaceholder(in textView: UITextView, text: String) {
+      if placeholderLabel.superview == nil {
+        placeholderLabel.font = textView.font
+        placeholderLabel.textColor = .placeholderText
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        textView.addSubview(placeholderLabel)
+        NSLayoutConstraint.activate([
+          placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+          placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
+          placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: 7),
+        ])
+      }
+      placeholderLabel.text = text
+      updatePlaceholderVisibility(for: textView)
+    }
+
+    func updatePlaceholderVisibility(for textView: UITextView) {
+      placeholderLabel.isHidden = !textView.text.isEmpty
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+      parent.text = textView.text
+      updatePlaceholderVisibility(for: textView)
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+      parent.isFocused.wrappedValue = true
+    }
   }
 }
 
