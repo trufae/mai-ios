@@ -112,7 +112,7 @@ private struct MessageBubbleContent: View, Equatable {
   private func bubble(visibleText: String, rawText: String, markdownBlocks: [MarkdownBlock])
     -> some View
   {
-    VStack(alignment: .leading, spacing: 8) {
+    let bubbleView = VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
         Image(systemName: iconName)
           .foregroundStyle(iconColor)
@@ -137,43 +137,53 @@ private struct MessageBubbleContent: View, Equatable {
     .frame(maxWidth: 720, alignment: .leading)
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-    .contextMenu {
+
+    if isStreaming {
+      bubbleView
+    } else {
+      bubbleView.contextMenu {
+        messageContextMenu(visibleText: visibleText, rawText: rawText)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func messageContextMenu(visibleText: String, rawText: String) -> some View {
+    Button {
+      UIPasteboard.general.string = visibleText
+    } label: {
+      Label("Copy Message", systemImage: "doc.on.doc")
+    }
+    Button {
+      UIPasteboard.general.string = rawText
+    } label: {
+      Label("Copy Raw Message", systemImage: "doc.text")
+    }
+    Button {
+      _ = TextToSpeechTool.speak(
+        arguments: ["text": .string(visibleText)],
+        settings: toolSettings)
+    } label: {
+      Label("Speak Message", systemImage: "speaker.wave.2")
+    }
+    if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
+      Divider()
       Button {
-        UIPasteboard.general.string = visibleText
+        resend()
       } label: {
-        Label("Copy Message", systemImage: "doc.on.doc")
+        Label("Resend From Here", systemImage: "arrow.clockwise")
       }
+    }
+    if let onRestartFresh {
+      Divider()
       Button {
-        UIPasteboard.general.string = rawText
+        onRestartFresh()
       } label: {
-        Label("Copy Raw Message", systemImage: "doc.text")
+        Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
       }
-      Button {
-        _ = TextToSpeechTool.speak(
-          arguments: ["text": .string(visibleText)],
-          settings: toolSettings)
-      } label: {
-        Label("Speak Message", systemImage: "speaker.wave.2")
-      }
-      if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
-        Divider()
-        Button {
-          resend()
-        } label: {
-          Label("Resend From Here", systemImage: "arrow.clockwise")
-        }
-      }
-      if let onRestartFresh {
-        Divider()
-        Button {
-          onRestartFresh()
-        } label: {
-          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
-        }
-      }
-      Button(role: .destructive, action: onDelete) {
-        Label("Delete Message", systemImage: "trash")
-      }
+    }
+    Button(role: .destructive, action: onDelete) {
+      Label("Delete Message", systemImage: "trash")
     }
   }
 
