@@ -643,8 +643,14 @@ private struct ComposerTextView: UIViewRepresentable {
       top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
     textView.textContainer.lineFragmentPadding = 0
     textView.returnKeyType = .default
+    textView.autocorrectionType = .yes
+    textView.smartQuotesType = .no
+    textView.smartDashesType = .no
+    textView.smartInsertDeleteType = .no
+    textView.spellCheckingType = .yes
+    textView.keyboardAppearance = .default
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    context.coordinator.configurePlaceholder(in: textView, text: placeholder)
+    context.coordinator.installPlaceholder(in: textView, text: placeholder)
     return textView
   }
 
@@ -652,9 +658,9 @@ private struct ComposerTextView: UIViewRepresentable {
     context.coordinator.parent = self
     if textView.text != text {
       textView.text = text
+      context.coordinator.updatePlaceholderVisibility(for: textView)
     }
-    context.coordinator.configurePlaceholder(in: textView, text: placeholder)
-    context.coordinator.updatePlaceholderVisibility(for: textView)
+    context.coordinator.updatePlaceholderText(placeholder)
     recalculateHeight(textView)
     if isFocused.wrappedValue && !textView.isFirstResponder {
       textView.becomeFirstResponder()
@@ -696,20 +702,24 @@ private struct ComposerTextView: UIViewRepresentable {
       super.init()
     }
 
-    func configurePlaceholder(in textView: UITextView, text: String) {
-      if placeholderLabel.superview == nil {
-        placeholderLabel.font = textView.font
-        placeholderLabel.textColor = .placeholderText
-        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        textView.addSubview(placeholderLabel)
-        NSLayoutConstraint.activate([
-          placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
-          placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
-          placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: 7),
-        ])
-      }
+    func installPlaceholder(in textView: UITextView, text: String) {
+      placeholderLabel.font = textView.font
+      placeholderLabel.textColor = .placeholderText
+      placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
       placeholderLabel.text = text
+      textView.addSubview(placeholderLabel)
+      NSLayoutConstraint.activate([
+        placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+        placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
+        placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: 7),
+      ])
       updatePlaceholderVisibility(for: textView)
+    }
+
+    func updatePlaceholderText(_ text: String) {
+      if placeholderLabel.text != text {
+        placeholderLabel.text = text
+      }
     }
 
     func updatePlaceholderVisibility(for textView: UITextView) {
