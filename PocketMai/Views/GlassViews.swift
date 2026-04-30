@@ -30,4 +30,3 @@ struct EdgeFadeBlur: View {
       .allowsHitTesting(false)
   }
 }
-

@@ -425,10 +425,12 @@ enum TodoTool {
     let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !q.isEmpty else { return "Error: title_or_id is required." }
     let lower = q.lowercased()
-    guard let index = store.settings.toolSettings.todos.firstIndex(where: { todo in
-      todo.id.uuidString.lowercased().hasPrefix(lower)
-        || todo.title.lowercased().contains(lower)
-    }) else {
+    guard
+      let index = store.settings.toolSettings.todos.firstIndex(where: { todo in
+        todo.id.uuidString.lowercased().hasPrefix(lower)
+          || todo.title.lowercased().contains(lower)
+      })
+    else {
       return "Error: no todo matched '\(q)'."
     }
     if store.settings.toolSettings.todos[index].isDone {

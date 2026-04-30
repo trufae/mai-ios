@@ -8,6 +8,7 @@ struct ChatCompletionRequest: Sendable {
   var assistantMessageID: UUID
   var nativeTools: [OpenAITool]? = nil
   var hasToolCalling: Bool = false
+  var messageLimitOverride: Int? = nil
 }
 
 enum ChatProviderError: LocalizedError {
@@ -43,12 +44,60 @@ enum ChatProviderRouter {
     request: ChatCompletionRequest,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
+    var current = request
+    var attempts = 0
+    while true {
+      do {
+        return try await dispatch(request: current, onUpdate: onUpdate)
+      } catch {
+        attempts += 1
+        guard attempts <= 3, isContextOverflowError(error) else { throw error }
+        let messageCount = current.conversation.messages.count
+        let baseLimit =
+          current.messageLimitOverride
+          ?? current.settings.contextWindowMode.messageLimit
+          ?? messageCount
+        let bounded = max(1, min(baseLimit, messageCount))
+        let nextLimit = max(1, bounded / 2)
+        if current.messageLimitOverride != nil, nextLimit >= bounded { throw error }
+        current.messageLimitOverride = nextLimit
+      }
+    }
+  }
+
+  private static func dispatch(
+    request: ChatCompletionRequest,
+    onUpdate: @escaping @MainActor (String) -> Void
+  ) async throws -> String {
     switch request.conversation.provider {
     case .apple:
       return try await AppleFoundationProvider.complete(request: request, onUpdate: onUpdate)
     case .openAICompatible:
       return try await OpenAICompatibleProvider.complete(request: request, onUpdate: onUpdate)
     }
+  }
+
+  private static func isContextOverflowError(_ error: Error) -> Bool {
+    if let generation = error as? LanguageModelSession.GenerationError {
+      if case .exceededContextWindowSize = generation { return true }
+    }
+    let candidates: [String] = {
+      if let chatError = error as? ChatProviderError,
+        case .providerRequestFailed(let message) = chatError
+      {
+        return [message, error.localizedDescription]
+      }
+      return [error.localizedDescription]
+    }()
+    let needles = [
+      "context length", "context window", "context_length_exceeded",
+      "too many tokens", "maximum context", "exceededcontextwindowsize",
+    ]
+    for haystack in candidates {
+      let lower = haystack.lowercased()
+      if needles.contains(where: { lower.contains($0) }) { return true }
+    }
+    return false
   }
 }
 
@@ -94,7 +143,8 @@ enum PromptComposer {
     conversation: Conversation,
     settings: AppSettings,
     toolContext: String,
-    hasTools: Bool = false
+    hasTools: Bool = false,
+    messageLimitOverride: Int? = nil
   ) -> String {
     var sections: [String] = []
     if !toolContext.isEmpty {
@@ -105,8 +155,8 @@ enum PromptComposer {
         """
       )
     }
-    let transcript = promptTranscript(
-      from: conversation, limit: settings.contextWindowMode.messageLimit)
+    let limit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
+    let transcript = promptTranscript(from: conversation, limit: limit)
     let instruction: String
     if !hasTools {
       instruction = "Reply to the latest user message. Plain text only; no XML tags."
@@ -134,7 +184,8 @@ enum PromptComposer {
     settings: AppSettings,
     toolContext: String,
     model: String,
-    endpoint: OpenAIEndpoint
+    endpoint: OpenAIEndpoint,
+    messageLimitOverride: Int? = nil
   ) -> [OpenAIMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
     let systemContent =
@@ -142,8 +193,9 @@ enum PromptComposer {
       ? baseSystem
       : "\(baseSystem)\n\n## Context from enabled native tools\n\(toolContext)"
     var messages = [OpenAIMessage(role: "system", content: systemContent)]
+    let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
     let limited: [ChatMessage] = {
-      if let limit = settings.contextWindowMode.messageLimit {
+      if let limit = effectiveLimit {
         return Array(conversation.messages.suffix(limit))
       }
       return conversation.messages
@@ -228,7 +280,8 @@ enum AppleFoundationProvider {
       conversation: request.conversation,
       settings: request.settings,
       toolContext: request.toolContext,
-      hasTools: request.hasToolCalling
+      hasTools: request.hasToolCalling,
+      messageLimitOverride: request.messageLimitOverride
     )
     let options = GenerationOptions(maximumResponseTokens: 1_200)
 
@@ -715,7 +768,8 @@ enum OpenAICompatibleProvider {
           settings: request.settings,
           toolContext: request.toolContext,
           model: model,
-          endpoint: endpoint
+          endpoint: endpoint,
+          messageLimitOverride: request.messageLimitOverride
         ),
         stream: request.conversation.usesStreaming,
         tools: request.nativeTools,

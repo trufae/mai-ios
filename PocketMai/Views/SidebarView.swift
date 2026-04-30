@@ -83,7 +83,8 @@ struct SidebarView: View {
   }
 
   @ViewBuilder
-  private func conversationContextMenu(for conversation: Conversation, isCurrent: Bool) -> some View {
+  private func conversationContextMenu(for conversation: Conversation, isCurrent: Bool) -> some View
+  {
     Button {
       withAnimation {
         isSelectionMode = true
@@ -157,7 +158,8 @@ struct SidebarView: View {
     }
     FloatingActionIcon(
       systemImage: showingArchive ? "tray.full.fill" : "archivebox",
-      accessibilityLabel: showingArchive ? "Show active conversations" : "Show archived conversations",
+      accessibilityLabel: showingArchive
+        ? "Show active conversations" : "Show archived conversations",
       isActive: showingArchive
     ) {
       showingArchive.toggle()
@@ -287,7 +289,7 @@ private struct PendingConversationDeletion: Identifiable {
 private struct SidebarEdgeContentBlur: ViewModifier {
   let containerHeight: CGFloat
   private let topFadeLength: CGFloat = 110
-  private let bottomFadeLength: CGFloat = 210 
+  private let bottomFadeLength: CGFloat = 210
   private let maxBlurRadius: CGFloat = 4
 
   func body(content: Content) -> some View {
@@ -331,7 +333,8 @@ private struct FloatingChrome<Background: InsettableShape>: ViewModifier {
       .foregroundStyle(tint ?? (prominent ? Color.white : Color.primary))
       .background(
         shape.fill(
-          prominent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.regularMaterial)))
+          prominent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.regularMaterial))
+      )
       .overlay(shape.strokeBorder(.secondary.opacity(prominent ? 0 : 0.18), lineWidth: 0.5))
       .shadow(
         color: prominent ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
@@ -352,11 +355,12 @@ private struct FloatingActionIcon: View {
         .font(.body.weight(.semibold))
         .frame(width: 22, height: 22)
         .padding(12)
-        .modifier(FloatingChrome(
-          prominent: isActive,
-          shape: Circle(),
-          tint: destructive ? .red : nil
-        ))
+        .modifier(
+          FloatingChrome(
+            prominent: isActive,
+            shape: Circle(),
+            tint: destructive ? .red : nil
+          ))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
