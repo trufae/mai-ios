@@ -776,10 +776,6 @@ final class AppStore: ObservableObject {
     persistence.saveSettings(settings)
   }
 
-  func refreshAppleAvailability() {
-    appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
-  }
-
   func resetEndpointStatus(_ id: UUID) {
     endpointStatuses[id] = .unknown
     endpointModels[id] = nil

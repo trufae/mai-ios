@@ -251,14 +251,17 @@ enum PromptComposer {
 }
 
 enum AppleFoundationProvider {
-  static var unavailableMessage: String? {
+  // SystemLanguageModel.default.availability reads system prefs on every call.
+  // The result is effectively static for the app's lifetime, so resolve it
+  // once and let Swift's static-let lazy init memoize it for the session.
+  static let unavailableMessage: String? = {
     switch SystemLanguageModel.default.availability {
     case .available:
       return nil
     case .unavailable(let reason):
       return "Apple Foundation Models are unavailable: \(message(for: reason))"
     }
-  }
+  }()
 
   static var availabilitySummary: String {
     unavailableMessage ?? "Apple Foundation Models are ready."
