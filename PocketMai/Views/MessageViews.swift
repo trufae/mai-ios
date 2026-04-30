@@ -216,14 +216,22 @@ private struct MessageBubbleContent: View, Equatable {
       } label: {
         Label("Resend From Here", systemImage: "arrow.clockwise")
       }
-    }
-    if let onRestartFresh {
+      if let onRestartFresh {
+        Button {
+          onRestartFresh()
+        } label: {
+          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+        }
+      }
+      Divider()
+    } else if let onRestartFresh {
       Divider()
       Button {
         onRestartFresh()
       } label: {
         Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
       }
+      Divider()
     }
     Button(role: .destructive, action: onDelete) {
       Label("Delete Message", systemImage: "trash")
@@ -570,6 +578,11 @@ struct MarkdownContentView: View {
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
         switch block.kind {
+        case .heading(let level, let value):
+          Text(attributedInlineMarkdown(value))
+            .font(headingFont(level: level))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
           Text(attributedInlineMarkdown(value))
             .font(appearance.swiftUIFont)
@@ -587,6 +600,18 @@ struct MarkdownContentView: View {
         }
       }
     }
+  }
+
+  private func headingFont(level: Int) -> Font {
+    let clampedLevel = min(max(level, 1), 3)
+    let scale: Double =
+      switch clampedLevel {
+      case 1: 1.55
+      case 2: 1.32
+      default: 1.16
+      }
+    return appearance.fontFamily.swiftUIFont(size: appearance.fontSize * scale)
+      .weight(clampedLevel == 1 ? .bold : .semibold)
   }
 }
 
@@ -749,6 +774,7 @@ struct BulletListView: View {
 
 struct MarkdownBlock: Identifiable {
   enum Kind {
+    case heading(level: Int, text: String)
     case text(String)
     case code(language: String, code: String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
@@ -812,6 +838,13 @@ enum MarkdownParser {
 
       if inCode {
         codeBuffer.append(line)
+        index += 1
+        continue
+      }
+
+      if let heading = heading(trimmed) {
+        flushText()
+        blocks.append(MarkdownBlock(kind: .heading(level: heading.level, text: heading.text)))
         index += 1
         continue
       }
@@ -884,6 +917,17 @@ enum MarkdownParser {
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+  }
+
+  private static func heading(_ trimmed: String) -> (level: Int, text: String)? {
+    guard trimmed.hasPrefix("#") else { return nil }
+    let level = trimmed.prefix(while: { $0 == "#" }).count
+    guard (1...3).contains(level), trimmed.count > level else { return nil }
+    let separatorIndex = trimmed.index(trimmed.startIndex, offsetBy: level)
+    guard trimmed[separatorIndex] == " " else { return nil }
+    let text = trimmed[trimmed.index(after: separatorIndex)...]
+      .trimmingCharacters(in: .whitespaces)
+    return text.isEmpty ? nil : (level, text)
   }
 
   private static func taskListItem(_ trimmed: String) -> TaskListItem? {
