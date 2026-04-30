@@ -507,6 +507,7 @@ private struct ChatComposer: View, Equatable {
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
+  @State private var composerHeight: CGFloat = ComposerTextView.singleLineHeight
 
   nonisolated static func == (lhs: ChatComposer, rhs: ChatComposer) -> Bool {
     lhs.placeholder == rhs.placeholder
@@ -515,15 +516,16 @@ private struct ChatComposer: View, Equatable {
   }
 
   var body: some View {
-    HStack(alignment: .center, spacing: 10) {
+    HStack(alignment: .bottom, spacing: 10) {
       toolMenu
 
       ComposerTextView(
         text: draftBinding,
+        height: $composerHeight,
         placeholder: placeholder,
         isFocused: $composerFocused
       )
-      .frame(height: 36)
+      .frame(height: composerHeight)
 
       Button {
         if let id = conversationID, isResponding {
@@ -610,8 +612,25 @@ private struct ChatComposer: View, Equatable {
 
 private struct ComposerTextView: UIViewRepresentable {
   @Binding var text: String
+  @Binding var height: CGFloat
   var placeholder: String
   var isFocused: FocusState<Bool>.Binding
+
+  static let maxLines: Int = 3
+  private static let verticalInset: CGFloat = 7
+
+  static var singleLineHeight: CGFloat {
+    lineHeight(for: 1)
+  }
+
+  static var maxComposerHeight: CGFloat {
+    lineHeight(for: maxLines)
+  }
+
+  private static func lineHeight(for lines: Int) -> CGFloat {
+    let font = UIFont.preferredFont(forTextStyle: .body)
+    return ceil(font.lineHeight * CGFloat(lines)) + verticalInset * 2
+  }
 
   func makeUIView(context: Context) -> UITextView {
     let textView = UITextView()
@@ -619,8 +638,9 @@ private struct ComposerTextView: UIViewRepresentable {
     textView.backgroundColor = .clear
     textView.font = .preferredFont(forTextStyle: .body)
     textView.adjustsFontForContentSizeCategory = true
-    textView.isScrollEnabled = true
-    textView.textContainerInset = UIEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
+    textView.isScrollEnabled = false
+    textView.textContainerInset = UIEdgeInsets(
+      top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
     textView.textContainer.lineFragmentPadding = 0
     textView.returnKeyType = .default
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -635,8 +655,31 @@ private struct ComposerTextView: UIViewRepresentable {
     }
     context.coordinator.configurePlaceholder(in: textView, text: placeholder)
     context.coordinator.updatePlaceholderVisibility(for: textView)
+    recalculateHeight(textView)
     if isFocused.wrappedValue && !textView.isFirstResponder {
       textView.becomeFirstResponder()
+    }
+  }
+
+  fileprivate func recalculateHeight(_ textView: UITextView) {
+    let width =
+      textView.bounds.width > 0
+      ? textView.bounds.width
+      : textView.textContainer.size.width
+    guard width > 0 else { return }
+    let fitted = textView.sizeThatFits(
+      CGSize(width: width, height: .greatestFiniteMagnitude))
+    let minHeight = Self.singleLineHeight
+    let maxHeight = Self.maxComposerHeight
+    let clamped = min(maxHeight, max(minHeight, ceil(fitted.height)))
+    let shouldScroll = fitted.height > maxHeight + 0.5
+    if textView.isScrollEnabled != shouldScroll {
+      textView.isScrollEnabled = shouldScroll
+    }
+    if abs(clamped - height) > 0.5 {
+      DispatchQueue.main.async {
+        height = clamped
+      }
     }
   }
 
@@ -676,6 +719,7 @@ private struct ComposerTextView: UIViewRepresentable {
     func textViewDidChange(_ textView: UITextView) {
       parent.text = textView.text
       updatePlaceholderVisibility(for: textView)
+      parent.recalculateHeight(textView)
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) {
