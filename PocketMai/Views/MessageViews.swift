@@ -28,25 +28,25 @@ struct MessageBubble: View, Equatable {
   }
 
   var body: some View {
-    let rendered = MessageContentFilter.render(displayText)
-    let toolEntries: [ToolEntry] = rendered.hiddenSections
-      .filter { $0.tag == "tool_context" || $0.tag == "tool_run" }
-      .flatMap { ToolCallParser.parse($0.content) }
-    let reasoningSections = rendered.hiddenSections.filter { $0.tag == "think" }
-    let transcriptSections = rendered.hiddenSections.filter { $0.tag == "conversation" }
-    let visibleEmpty =
-      rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    let hasMeta =
-      !toolEntries.isEmpty || !reasoningSections.isEmpty || !transcriptSections.isEmpty
-    let hideBubble = visibleEmpty && hasMeta
+    let prepared = MessageRenderCache.preparedContent(
+      messageID: message.id,
+      text: displayText
+    )
+    let markdownBlocks =
+      isStreaming || prepared.visibleText.isEmpty
+      ? []
+      : MessageRenderCache.markdownBlocks(
+        messageID: message.id,
+        text: prepared.visibleText
+      )
 
     HStack(alignment: .top, spacing: 0) {
       if isUser { Spacer(minLength: 36) }
       VStack(alignment: .leading, spacing: 6) {
-        ForEach(toolEntries) { entry in
+        ForEach(prepared.toolEntries) { entry in
           ToolCallRow(entry: entry)
         }
-        ForEach(reasoningSections) { section in
+        ForEach(prepared.reasoningSections) { section in
           FoldableMetaSection(
             title: "Reasoning",
             systemImage: "brain",
@@ -56,7 +56,7 @@ struct MessageBubble: View, Equatable {
             initiallyExpanded: showThinking
           )
         }
-        ForEach(transcriptSections) { section in
+        ForEach(prepared.transcriptSections) { section in
           FoldableMetaSection(
             title: "Prompt Transcript",
             systemImage: "text.bubble",
@@ -65,8 +65,12 @@ struct MessageBubble: View, Equatable {
             initiallyExpanded: false
           )
         }
-        if !hideBubble {
-          bubble(visibleText: rendered.visibleText, rawText: displayText)
+        if !prepared.hideBubble {
+          bubble(
+            visibleText: prepared.visibleText,
+            rawText: displayText,
+            markdownBlocks: markdownBlocks
+          )
         }
       }
       if !isUser { Spacer(minLength: 36) }
@@ -75,7 +79,9 @@ struct MessageBubble: View, Equatable {
   }
 
   @ViewBuilder
-  private func bubble(visibleText: String, rawText: String) -> some View {
+  private func bubble(visibleText: String, rawText: String, markdownBlocks: [MarkdownBlock])
+    -> some View
+  {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
         Image(systemName: iconName)
@@ -94,7 +100,7 @@ struct MessageBubble: View, Equatable {
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       } else {
-        MarkdownContentView(text: visibleText)
+        MarkdownContentView(blocks: markdownBlocks)
       }
     }
     .padding(14)
@@ -163,6 +169,89 @@ struct MessageBubble: View, Equatable {
       return AnyShapeStyle(Color.accentColor.opacity(0.22))
     }
     return AnyShapeStyle(.regularMaterial)
+  }
+}
+
+private struct PreparedMessageContent {
+  let visibleText: String
+  let toolEntries: [ToolEntry]
+  let reasoningSections: [HiddenMessageSection]
+  let transcriptSections: [HiddenMessageSection]
+  let hideBubble: Bool
+}
+
+private enum MessageRenderCache {
+  private struct PreparedEntry {
+    let text: String
+    let content: PreparedMessageContent
+  }
+
+  private struct MarkdownEntry {
+    let text: String
+    let blocks: [MarkdownBlock]
+  }
+
+  private static let maxEntries = 160
+  @MainActor private static var preparedEntries: [UUID: PreparedEntry] = [:]
+  @MainActor private static var markdownEntries: [UUID: MarkdownEntry] = [:]
+  @MainActor private static var accessOrder: [UUID] = []
+
+  @MainActor
+  static func preparedContent(messageID: UUID, text: String) -> PreparedMessageContent {
+    if let entry = preparedEntries[messageID], entry.text == text {
+      markAccessed(messageID)
+      return entry.content
+    }
+
+    let rendered = MessageContentFilter.render(text)
+    let toolEntries = rendered.hiddenSections
+      .filter { $0.tag == "tool_context" || $0.tag == "tool_run" }
+      .flatMap { ToolCallParser.parse($0.content) }
+    let reasoningSections = rendered.hiddenSections.filter { $0.tag == "think" }
+    let transcriptSections = rendered.hiddenSections.filter { $0.tag == "conversation" }
+    let visibleEmpty = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let hasMeta = !toolEntries.isEmpty || !reasoningSections.isEmpty || !transcriptSections.isEmpty
+    let content = PreparedMessageContent(
+      visibleText: rendered.visibleText,
+      toolEntries: toolEntries,
+      reasoningSections: reasoningSections,
+      transcriptSections: transcriptSections,
+      hideBubble: visibleEmpty && hasMeta
+    )
+
+    preparedEntries[messageID] = PreparedEntry(text: text, content: content)
+    markAccessed(messageID)
+    pruneIfNeeded()
+    return content
+  }
+
+  @MainActor
+  static func markdownBlocks(messageID: UUID, text: String) -> [MarkdownBlock] {
+    if let entry = markdownEntries[messageID], entry.text == text {
+      markAccessed(messageID)
+      return entry.blocks
+    }
+
+    let blocks = MarkdownParser.blocks(from: text)
+    markdownEntries[messageID] = MarkdownEntry(text: text, blocks: blocks)
+    markAccessed(messageID)
+    pruneIfNeeded()
+    return blocks
+  }
+
+  @MainActor
+  private static func markAccessed(_ id: UUID) {
+    accessOrder.removeAll { $0 == id }
+    accessOrder.append(id)
+  }
+
+  @MainActor
+  private static func pruneIfNeeded() {
+    while accessOrder.count > maxEntries, let oldest = accessOrder.first {
+      accessOrder.removeFirst()
+      preparedEntries.removeValue(forKey: oldest)
+      markdownEntries.removeValue(forKey: oldest)
+    }
   }
 }
 
@@ -381,11 +470,19 @@ enum ToolCallParser {
 }
 
 struct MarkdownContentView: View {
-  let text: String
+  let blocks: [MarkdownBlock]
+
+  init(text: String) {
+    self.blocks = MarkdownParser.blocks(from: text)
+  }
+
+  init(blocks: [MarkdownBlock]) {
+    self.blocks = blocks
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      ForEach(MarkdownParser.blocks(from: text)) { block in
+      ForEach(blocks) { block in
         switch block.kind {
         case .text(let value):
           Text(attributedInlineMarkdown(value))
