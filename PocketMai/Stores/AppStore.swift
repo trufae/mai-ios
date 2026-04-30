@@ -86,6 +86,14 @@ final class AppStore: ObservableObject {
   }
 
   func newConversation(incognito: Bool = false) {
+    if let current = currentConversation,
+      current.messages.isEmpty,
+      current.isIncognito == incognito
+    {
+      isIncognitoMode = incognito
+      selectedConversationIDs.removeAll()
+      return
+    }
     discardSelectedIncognitoConversation()
     let conversation = makeNewConversation(incognito: incognito)
     conversations.insert(conversation, at: 0)
