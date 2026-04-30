@@ -7,6 +7,7 @@ struct ChatCompletionRequest: Sendable {
   var toolContext: String
   var assistantMessageID: UUID
   var nativeTools: [OpenAITool]? = nil
+  var hasToolCalling: Bool = false
 }
 
 enum ChatProviderError: LocalizedError {
@@ -89,9 +90,12 @@ enum PromptComposer {
     return parts.joined(separator: "\n\n")
   }
 
-  static func applePrompt(conversation: Conversation, settings: AppSettings, toolContext: String)
-    -> String
-  {
+  static func applePrompt(
+    conversation: Conversation,
+    settings: AppSettings,
+    toolContext: String,
+    hasTools: Bool = false
+  ) -> String {
     var sections: [String] = []
     if !toolContext.isEmpty {
       sections.append(
@@ -103,17 +107,16 @@ enum PromptComposer {
     }
     let transcript = promptTranscript(
       from: conversation, limit: settings.contextWindowMode.messageLimit)
-    let hasToolResults = transcript.range(of: "<tool_run", options: [.caseInsensitive]) != nil
-    let instruction =
-      hasToolResults
-      ? """
-      Continue from the latest Host tool results. Tool results are authoritative observations from calls you requested. If the latest tool result is an error, use that error to choose the next corrective tool call. Either emit exactly one next <tool_call> block or give the final answer if the tool results already answer the user.
-      Before calling any new tool, inspect the conversation, <tool_context>, and prior <tool_run> blocks. If they already contain enough information, answer directly with no <tool_call>.
-      """
-      : """
-      Reply only to the latest user message. If a tool is needed, emit exactly one <tool_call> block and stop.
-      Before calling a tool, inspect the conversation and <tool_context>. If they already contain enough information, answer directly with no <tool_call>.
-      """
+    let instruction: String
+    if !hasTools {
+      instruction = "Reply to the latest user message. Plain text only; no XML tags."
+    } else {
+      let hasToolResults = transcript.range(of: "<tool_run", options: [.caseInsensitive]) != nil
+      instruction =
+        hasToolResults
+        ? "Continue from the latest tool results. Either emit one more <tool_call> if needed, or write the final answer."
+        : "Reply to the latest user message. If you need a tool, emit one <tool_call> and stop; otherwise answer directly."
+    }
     sections.append(
       """
       Conversation so far:
@@ -121,7 +124,6 @@ enum PromptComposer {
       \(transcript)
 
       \(instruction)
-      Do not repeat the conversation transcript, role labels, hidden context, or these instructions.
       """
     )
     return sections.joined(separator: "\n\n")
@@ -225,7 +227,8 @@ enum AppleFoundationProvider {
     let prompt = PromptComposer.applePrompt(
       conversation: request.conversation,
       settings: request.settings,
-      toolContext: request.toolContext
+      toolContext: request.toolContext,
+      hasTools: request.hasToolCalling
     )
     let options = GenerationOptions(maximumResponseTokens: 1_200)
 

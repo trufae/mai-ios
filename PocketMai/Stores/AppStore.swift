@@ -471,15 +471,18 @@ final class AppStore: ObservableObject {
           conversation: conversations[i],
           settings: settings,
           toolContext: augmentedToolContext,
-          assistantMessageID: assistantID
+          assistantMessageID: assistantID,
+          hasToolCalling: false
         )
         let response = try await ChatProviderRouter.complete(request: request) {
           [weak self] streamed in
+          let cleaned = AppStore.strippedSpuriousToolCallText(streamed)
           self?.setAssistantMessage(
-            id: assistantID, text: streamed, role: .assistant, touch: false, streaming: true)
+            id: assistantID, text: cleaned, role: .assistant, touch: false, streaming: true)
         }
         try Task.checkCancellation()
-        setAssistantMessage(id: assistantID, text: response, role: .assistant)
+        let cleaned = AppStore.strippedSpuriousToolCallText(response)
+        setAssistantMessage(id: assistantID, text: cleaned, role: .assistant)
         return
       }
 
@@ -492,7 +495,8 @@ final class AppStore: ObservableObject {
           settings: settings,
           toolContext: augmentedToolContext,
           assistantMessageID: assistantID,
-          nativeTools: nativeTools
+          nativeTools: nativeTools,
+          hasToolCalling: true
         )
         let baseline = assistantText
         let response = try await ChatProviderRouter.complete(request: request) {
@@ -816,6 +820,25 @@ final class AppStore: ObservableObject {
 
   private func sortConversations() {
     conversations = Self.sortedConversations(conversations)
+  }
+
+  nonisolated static func strippedSpuriousToolCallText(_ text: String) -> String {
+    guard AgentTooling.containsToolCallMarker(in: text) else { return text }
+    let patterns = [
+      "<\\s*tool_call\\b[^>]*>[\\s\\S]*?<\\s*/\\s*tool_call\\s*>",
+      "<\\s*tool_call\\b[^>]*>[\\s\\S]*$",
+      "<\\s*/\\s*tool_call\\s*>",
+    ]
+    var result = text
+    for pattern in patterns {
+      result = result.replacingOccurrences(
+        of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+    }
+    let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      return "(model attempted a tool call but no tools are enabled.)"
+    }
+    return trimmed + "\n\n_(stripped spurious tool_call: no tools are enabled.)_"
   }
 
   nonisolated static func sortedConversations(_ conversations: [Conversation]) -> [Conversation] {
