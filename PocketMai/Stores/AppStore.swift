@@ -99,7 +99,7 @@ final class AppStore: ObservableObject {
       selectedConversationIDs.removeAll()
       return
     }
-    discardSelectedIncognitoConversation()
+    discardSelectedDisposableConversation()
     let conversation = makeNewConversation(incognito: incognito)
     conversations.insert(conversation, at: 0)
     sortConversations()
@@ -157,15 +157,23 @@ final class AppStore: ObservableObject {
   }
 
   func select(_ conversation: Conversation) {
+    let previousID = selectedConversationID
     selectedConversationID = conversation.id
     isIncognitoMode = conversation.isIncognito
+    if previousID != conversation.id, discardDisposableConversation(id: previousID) {
+      saveConversations()
+    }
   }
 
   func selectConversation(id: UUID) async {
+    let previousID = selectedConversationID
     await ensureConversationLoaded(id)
     guard let index = indexedConversationIndex(for: id) else { return }
     selectedConversationID = id
     isIncognitoMode = conversations[index].isIncognito
+    if previousID != id, discardDisposableConversation(id: previousID) {
+      saveConversations()
+    }
   }
 
   func toggleArchive(id: UUID) async {
@@ -331,7 +339,7 @@ final class AppStore: ObservableObject {
     }
     if conversations.isEmpty {
       selectedConversationID = nil
-      newConversation()
+      createInitialConversationIfNeeded()
     }
     syncIncognitoModeWithSelection()
     saveConversations()
@@ -405,7 +413,8 @@ final class AppStore: ObservableObject {
     guard let convIndex = currentConversationIndex else { return }
     let conversationID = conversations[convIndex].id
     guard !respondingConversationIDs.contains(conversationID) else { return }
-    guard let msgIndex = conversations[convIndex].messages.firstIndex(where: { $0.id == message.id })
+    guard
+      let msgIndex = conversations[convIndex].messages.firstIndex(where: { $0.id == message.id })
     else { return }
     let cutoff: Int = message.role == .user ? msgIndex : msgIndex - 1
     guard cutoff >= 0 else { return }
@@ -479,7 +488,8 @@ final class AppStore: ObservableObject {
     upsertSummary(for: conversations[i])
     saveConversations()
 
-    dispatchAssistantTurn(conversationID: conversationID, toolContext: embed ? toolContext.text : "")
+    dispatchAssistantTurn(
+      conversationID: conversationID, toolContext: embed ? toolContext.text : "")
   }
 
   private func dispatchAssistantTurn(conversationID: UUID, toolContext: String) {
@@ -789,7 +799,9 @@ final class AppStore: ObservableObject {
     }
   }
 
-  nonisolated static func sortedSummaries(_ summaries: [ConversationSummary]) -> [ConversationSummary] {
+  nonisolated static func sortedSummaries(_ summaries: [ConversationSummary])
+    -> [ConversationSummary]
+  {
     summaries.sorted { lhs, rhs in
       if lhs.isPinned != rhs.isPinned {
         return lhs.isPinned && !rhs.isPinned
@@ -801,20 +813,56 @@ final class AppStore: ObservableObject {
     }
   }
 
-  private func discardSelectedIncognitoConversation() {
-    guard let selectedConversationID,
-      let index = indexedConversationIndex(for: selectedConversationID),
-      conversations[index].isIncognito
+  private func discardSelectedDisposableConversation() {
+    discardDisposableConversation(id: selectedConversationID)
+  }
+
+  @discardableResult
+  private func discardDisposableConversation(id: UUID?) -> Bool {
+    guard let id,
+      let index = indexedConversationIndex(for: id),
+      isDisposableNewConversation(conversations[index])
     else {
-      return
+      return false
     }
-    let removedID = selectedConversationID
+    let removedID = id
     conversations.remove(at: index)
     rebuildConversationIndexes()
     removeSummaries(for: [removedID])
     responseTasks[removedID]?.cancel()
     responseTasks[removedID] = nil
     respondingConversationIDs.remove(removedID)
+    conversationDrafts.removeValue(forKey: removedID)
+    if !hasLoadedPersistedConversations {
+      deletedConversationIDsBeforeLoad.insert(removedID)
+    }
+    return true
+  }
+
+  private func isDisposableNewConversation(_ conversation: Conversation) -> Bool {
+    guard conversation.messages.isEmpty,
+      !respondingConversationIDs.contains(conversation.id),
+      conversationDrafts[conversation.id, default: ""].trimmingCharacters(
+        in: .whitespacesAndNewlines
+      )
+      .isEmpty,
+      !conversation.isPinned,
+      !conversation.isArchived
+    else {
+      return false
+    }
+    let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return title.isEmpty || title == "New chat"
+  }
+
+  private func createInitialConversationIfNeeded() {
+    guard conversations.isEmpty else { return }
+    let conversation = makeNewConversation()
+    conversations.insert(conversation, at: 0)
+    sortConversations()
+    selectedConversationID = conversation.id
+    isIncognitoMode = false
+    selectedConversationIDs.removeAll()
   }
 
   private func syncIncognitoModeWithSelection() {
@@ -862,7 +910,9 @@ final class AppStore: ObservableObject {
     }
     for conversationIndex in conversations.indices {
       guard conversationIndex != currentConversationIndex else { continue }
-      if let messageIndex = conversations[conversationIndex].messages.firstIndex(where: { $0.id == id }) {
+      if let messageIndex = conversations[conversationIndex].messages.firstIndex(where: {
+        $0.id == id
+      }) {
         return (conversationIndex, messageIndex)
       }
     }

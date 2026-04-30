@@ -233,7 +233,7 @@ struct SettingsView: View {
         ForEach(AppearanceTint.allCases) { tint in
           HStack {
             Circle()
-              .fill(tint.color)
+              .fill(tint.swatchColor)
               .frame(width: 12, height: 12)
             Text(tint.displayName)
           }

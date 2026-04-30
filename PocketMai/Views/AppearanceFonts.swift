@@ -14,7 +14,7 @@ extension AppearanceSettings {
     .system(size: max(11, fontSize - 1), design: .monospaced)
   }
 
-  var tintColor: Color {
+  var tintColor: Color? {
     tint.color
   }
 }
@@ -55,14 +55,18 @@ extension AppearanceFontFamily {
     case .system:
       descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
     case .serif:
-      descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
+      descriptor =
+        UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
         .withDesign(.serif) ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
     case .rounded:
-      descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
+      descriptor =
+        UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
         .withDesign(.rounded) ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
     case .monospaced:
-      descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
-        .withDesign(.monospaced) ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
+      descriptor =
+        UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
+        .withDesign(.monospaced)
+        ?? UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
     case .installed(let fontName):
       let font = UIFont(name: fontName, size: pointSize) ?? .preferredFont(forTextStyle: textStyle)
       return UIFontMetrics(forTextStyle: textStyle).scaledFont(for: font)
@@ -73,8 +77,9 @@ extension AppearanceFontFamily {
 }
 
 extension AppearanceTint {
-  var color: Color {
+  var color: Color? {
     switch self {
+    case .system: nil
     case .blue: .blue
     case .purple: .purple
     case .pink: .pink
@@ -87,5 +92,9 @@ extension AppearanceTint {
     case .cyan: .cyan
     case .indigo: .indigo
     }
+  }
+
+  var swatchColor: Color {
+    color ?? .accentColor
   }
 }

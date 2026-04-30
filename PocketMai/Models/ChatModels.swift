@@ -120,6 +120,7 @@ enum AppearanceFontFamily: Codable, Equatable, Hashable, Identifiable, Sendable 
 }
 
 enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
+  case system
   case blue
   case purple
   case pink
@@ -136,6 +137,7 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
 
   var displayName: String {
     switch self {
+    case .system: "System"
     case .blue: "Blue"
     case .purple: "Purple"
     case .pink: "Pink"
@@ -154,7 +156,7 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
 struct AppearanceSettings: Codable, Equatable, Sendable {
   var fontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
-  var tint: AppearanceTint = .blue
+  var tint: AppearanceTint = .system
 
   static let defaults = AppearanceSettings()
 
@@ -168,7 +170,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     fontFamily = (try? c.decode(AppearanceFontFamily.self, forKey: .fontFamily)) ?? .serif
     fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
-    tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .blue
+    tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
   }
 }
 
@@ -359,9 +361,10 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     isPinned = conversation.isPinned
     isArchived = conversation.isArchived
     hasMessages = !conversation.messages.isEmpty
-    preview = conversation.messages.last.map {
-      String($0.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
-    } ?? ""
+    preview =
+      conversation.messages.last.map {
+        String($0.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+      } ?? ""
   }
 
   var displayTitle: String {
