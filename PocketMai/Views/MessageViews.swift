@@ -524,6 +524,8 @@ struct MarkdownContentView: View {
           MarkdownTableView(headers: headers, rows: rows, alignments: alignments)
         case .taskList(let items):
           TaskListView(items: items)
+        case .bulletList(let items):
+          BulletListView(items: items)
         }
       }
     }
@@ -659,12 +661,31 @@ struct TaskListView: View {
   }
 }
 
+struct BulletListView: View {
+  let items: [String]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text("•")
+            .foregroundStyle(.secondary)
+          Text(attributedInlineMarkdown(item))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+  }
+}
+
 struct MarkdownBlock: Identifiable {
   enum Kind {
     case text(String)
     case code(language: String, code: String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
     case taskList(items: [TaskListItem])
+    case bulletList(items: [String])
   }
 
   let id = UUID()
@@ -736,6 +757,21 @@ enum MarkdownParser {
         continue
       }
 
+      if let firstItem = bulletListItem(trimmed) {
+        flushText()
+        var items: [String] = [firstItem]
+        var cursor = index + 1
+        while cursor < lines.count {
+          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
+          guard let nextItem = bulletListItem(nextTrimmed) else { break }
+          items.append(nextItem)
+          cursor += 1
+        }
+        blocks.append(MarkdownBlock(kind: .bulletList(items: items)))
+        index = cursor
+        continue
+      }
+
       if trimmed.contains("|"),
         index + 1 < lines.count,
         let alignments = tableAlignments(
@@ -796,6 +832,16 @@ enum MarkdownParser {
     if let space = text.first, space != " " && !text.isEmpty { return nil }
     text = text.drop(while: { $0 == " " })
     return TaskListItem(text: String(text), checked: checked)
+  }
+
+  private static func bulletListItem(_ trimmed: String) -> String? {
+    let bulletMarkers: [Character] = ["-", "*", "+"]
+    guard let first = trimmed.first, bulletMarkers.contains(first) else { return nil }
+    var rest = trimmed.dropFirst()
+    guard rest.first == " " else { return nil }
+    rest = rest.drop(while: { $0 == " " })
+    guard !rest.isEmpty else { return nil }
+    return String(rest)
   }
 
   private static func splitTableRow(_ line: String) -> [String] {
