@@ -4,6 +4,11 @@ struct PersistedConversations: Codable {
   var conversations: [Conversation]
 }
 
+private struct PersistedConversationIndex: Codable {
+  var version = 1
+  var ids: [UUID]
+}
+
 final class PersistenceStore: @unchecked Sendable {
   private let fileManager: FileManager
   private let baseURL: URL
@@ -13,6 +18,8 @@ final class PersistenceStore: @unchecked Sendable {
   // Touched only from writeQueue; serial access guarantees thread-safety.
   private var pendingSettings: DispatchWorkItem?
   private var pendingConversations: DispatchWorkItem?
+  private var persistedConversationIDs: [UUID] = []
+  private var persistedConversationsByID: [UUID: Conversation] = [:]
 
   init(fileManager: FileManager = .default) {
     self.fileManager = fileManager
@@ -26,11 +33,47 @@ final class PersistenceStore: @unchecked Sendable {
     baseURL.appendingPathComponent("conversations.json")
   }
 
+  private var conversationsDirectoryURL: URL {
+    baseURL.appendingPathComponent("conversations", isDirectory: true)
+  }
+
+  private var conversationsIndexURL: URL {
+    conversationsDirectoryURL.appendingPathComponent("index.json")
+  }
+
   private var settingsURL: URL {
     baseURL.appendingPathComponent("settings.json")
   }
 
   func loadConversations() -> [Conversation] {
+    if let conversations = loadIndexedConversations() {
+      seedPersistedSnapshot(conversations)
+      return conversations
+    }
+
+    let conversations = loadLegacyConversations()
+    if !conversations.isEmpty {
+      saveConversations(conversations)
+    }
+    return conversations
+  }
+
+  private func loadIndexedConversations() -> [Conversation]? {
+    guard let data = try? Data(contentsOf: conversationsIndexURL),
+      let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
+    else {
+      return nil
+    }
+
+    let decoder = makeDecoder()
+    return index.ids.compactMap { id in
+      let url = conversationFileURL(for: id)
+      guard let data = try? Data(contentsOf: url) else { return nil }
+      return try? decoder.decode(Conversation.self, from: data)
+    }
+  }
+
+  private func loadLegacyConversations() -> [Conversation] {
     guard let data = try? Data(contentsOf: conversationsURL) else { return [] }
     let decoder = makeDecoder()
     if let envelope = try? decoder.decode(PersistedConversations.self, from: data) {
@@ -41,14 +84,32 @@ final class PersistenceStore: @unchecked Sendable {
 
   func saveConversations(_ conversations: [Conversation]) {
     let visible = conversations.filter { !$0.isIncognito }
-    let envelope = PersistedConversations(conversations: visible)
-    let url = conversationsURL
-    let dir = baseURL
+    let ids = visible.map(\.id)
+    let byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
+    let conversationsDir = conversationsDirectoryURL
+    let indexURL = conversationsIndexURL
+    let legacyURL = conversationsURL
     let delay = debounce
     writeQueue.async { [weak self] in
       guard let self else { return }
       self.pendingConversations?.cancel()
-      let item = DispatchWorkItem { Self.persist(envelope, to: url, dir: dir) }
+      let item = DispatchWorkItem { [weak self] in
+        guard let self else { return }
+        let changed = visible.filter { self.persistedConversationsByID[$0.id] != $0 }
+        let orderChanged = self.persistedConversationIDs != ids
+        let persisted = Self.persistConversations(
+          changed,
+          ids: ids,
+          conversationsDir: conversationsDir,
+          indexURL: indexURL,
+          legacyURL: legacyURL,
+          writeIndex: orderChanged || !changed.isEmpty
+        )
+        if persisted {
+          self.persistedConversationIDs = ids
+          self.persistedConversationsByID = byID
+        }
+      }
       self.pendingConversations = item
       self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
     }
@@ -87,6 +148,76 @@ final class PersistenceStore: @unchecked Sendable {
     } catch {
       // Persistence errors are surfaced through the next successful read; avoid blocking.
     }
+  }
+
+  private static func persistConversations(
+    _ conversations: [Conversation],
+    ids: [UUID],
+    conversationsDir: URL,
+    indexURL: URL,
+    legacyURL: URL,
+    writeIndex: Bool
+  ) -> Bool {
+    do {
+      let fileManager = FileManager.default
+      try fileManager.createDirectory(at: conversationsDir, withIntermediateDirectories: true)
+      let encoder = makeEncoder()
+      for conversation in conversations {
+        let url = conversationFileURL(for: conversation.id, in: conversationsDir)
+        let data = try encoder.encode(conversation)
+        try data.write(to: url, options: [.atomic])
+      }
+
+      let liveFilenames = Set(ids.map { conversationFilename(for: $0) })
+      let files =
+        (try? fileManager.contentsOfDirectory(
+          at: conversationsDir, includingPropertiesForKeys: nil
+        )) ?? []
+      for file in files
+      where file.lastPathComponent != indexURL.lastPathComponent
+        && file.pathExtension == "json"
+        && !liveFilenames.contains(file.lastPathComponent)
+      {
+        try? fileManager.removeItem(at: file)
+      }
+
+      if writeIndex {
+        let index = PersistedConversationIndex(ids: ids)
+        let data = try encoder.encode(index)
+        try data.write(to: indexURL, options: [.atomic])
+      }
+      try? fileManager.removeItem(at: legacyURL)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private func seedPersistedSnapshot(_ conversations: [Conversation]) {
+    let ids = conversations.map(\.id)
+    let byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+    writeQueue.async { [weak self] in
+      self?.persistedConversationIDs = ids
+      self?.persistedConversationsByID = byID
+    }
+  }
+
+  private func conversationFileURL(for id: UUID) -> URL {
+    Self.conversationFileURL(for: id, in: conversationsDirectoryURL)
+  }
+
+  private static func conversationFileURL(for id: UUID, in directory: URL) -> URL {
+    directory.appendingPathComponent(conversationFilename(for: id))
+  }
+
+  private static func conversationFilename(for id: UUID) -> String {
+    "\(id.uuidString).json"
+  }
+
+  private static func makeEncoder() -> JSONEncoder {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    return encoder
   }
 
   private func makeDecoder() -> JSONDecoder {
