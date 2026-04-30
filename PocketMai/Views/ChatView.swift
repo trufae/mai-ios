@@ -341,66 +341,67 @@ struct ChatView: View {
 
   private var messages: some View {
     ScrollViewReader { proxy in
-      GeometryReader { geometry in
-        ScrollView {
-          LazyVStack(spacing: 14) {
-            if currentConversationIsEmpty {
-              emptyState
-            } else {
-              ForEach(store.currentConversation?.messages ?? []) { message in
-                MessageBubble(
-                  message: message,
-                  toolSettings: store.settings.toolSettings,
-                  onDelete: { messagePendingDeletion = message },
-                  onResubmit: message.role == .user
-                    ? { Task { await store.resubmit(message) } }
-                    : nil,
-                  onTrimFromHere: { messagePendingTrimAndResubmit = message },
-                  onRestartFresh: { messagePendingRestartFresh = message },
-                  showThinking: store.currentConversation?.showThinking ?? false,
-                  onStreamingTextChange: { _ in
-                    guard !userScrolledAfterLastMessage else { return }
-                    let now = Date()
-                    guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
-                    lastStreamingScrollAt = now
-                    scrollToBottom(proxy, animated: false)
-                  }
-                )
-                .id(message.id)
-              }
+      ScrollView {
+        LazyVStack(spacing: 14) {
+          if currentConversationIsEmpty {
+            emptyState
+              .containerRelativeFrame(.vertical, alignment: .center)
+          } else {
+            ForEach(store.currentConversation?.messages ?? []) { message in
+              MessageBubble(
+                message: message,
+                toolSettings: store.settings.toolSettings,
+                onDelete: { messagePendingDeletion = message },
+                onResubmit: message.role == .user
+                  ? { Task { await store.resubmit(message) } }
+                  : nil,
+                onTrimFromHere: { messagePendingTrimAndResubmit = message },
+                onRestartFresh: { messagePendingRestartFresh = message },
+                showThinking: store.currentConversation?.showThinking ?? false,
+                onStreamingTextChange: { _ in
+                  guard !userScrolledAfterLastMessage else { return }
+                  let now = Date()
+                  guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
+                  lastStreamingScrollAt = now
+                  scrollToBottom(proxy, animated: false)
+                }
+              )
+              .id(message.id)
             }
-            Color.clear
-              .frame(height: 1)
-              .id(messageListBottomID)
           }
-          .padding()
-          .frame(
-            maxWidth: .infinity,
-            minHeight: currentConversationIsEmpty ? geometry.size.height : nil,
-            alignment: .center
-          )
-          .scrollTargetLayout()
+          Color.clear
+            .frame(height: 1)
+            .id(messageListBottomID)
         }
-        .id(store.selectedConversationID)
-        .defaultScrollAnchor(.bottom)
-        .scrollDismissesKeyboard(.interactively)
-        .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
-        .simultaneousGesture(messageListScrollGesture)
-        .onChange(of: lastMessageSnapshot) { old, new in
-          guard old.conversationID == new.conversationID else {
-            userScrolledAfterLastMessage = false
-            return
-          }
-          if old.messageID != new.messageID {
-            userScrolledAfterLastMessage = false
-            scrollToBottom(proxy, animated: true)
-            return
-          }
-          guard old.text != new.text else { return }
-          guard !userScrolledAfterLastMessage else { return }
-          let now = Date()
-          guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
-          lastStreamingScrollAt = now
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .center)
+        .scrollTargetLayout()
+      }
+      .id(store.selectedConversationID)
+      .defaultScrollAnchor(.bottom)
+      .scrollDismissesKeyboard(.interactively)
+      .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
+      .simultaneousGesture(messageListScrollGesture)
+      .onChange(of: lastMessageSnapshot) { old, new in
+        guard old.conversationID == new.conversationID else {
+          userScrolledAfterLastMessage = false
+          return
+        }
+        if old.messageID != new.messageID {
+          userScrolledAfterLastMessage = false
+          scrollToBottom(proxy, animated: true)
+          return
+        }
+        guard old.text != new.text else { return }
+        guard !userScrolledAfterLastMessage else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
+        lastStreamingScrollAt = now
+        // Defer one runloop so the post-stream markdown layout is measured
+        // before we anchor to the bottom; otherwise we land on the old
+        // (plain-Text) bubble height and the new layout overshoots the
+        // viewport, leaving a blank gap until the user nudges the scroll.
+        DispatchQueue.main.async {
           scrollToBottom(proxy, animated: false)
         }
       }
