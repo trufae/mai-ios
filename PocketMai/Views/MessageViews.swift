@@ -86,8 +86,9 @@ private struct MessageBubbleContent: View, Equatable {
       messageID: message.id,
       text: displayText
     )
+    let usesMarkdown = !isStreaming && MarkdownParser.mayContainMarkdown(prepared.visibleText)
     let markdownBlocks =
-      isStreaming || prepared.visibleText.isEmpty
+      !usesMarkdown || prepared.visibleText.isEmpty
       ? []
       : MessageRenderCache.markdownBlocks(
         messageID: message.id,
@@ -123,7 +124,8 @@ private struct MessageBubbleContent: View, Equatable {
           bubble(
             visibleText: prepared.visibleText,
             rawText: displayText,
-            markdownBlocks: markdownBlocks
+            markdownBlocks: markdownBlocks,
+            usesMarkdown: usesMarkdown
           )
         }
       }
@@ -133,7 +135,12 @@ private struct MessageBubbleContent: View, Equatable {
   }
 
   @ViewBuilder
-  private func bubble(visibleText: String, rawText: String, markdownBlocks: [MarkdownBlock])
+  private func bubble(
+    visibleText: String,
+    rawText: String,
+    markdownBlocks: [MarkdownBlock],
+    usesMarkdown: Bool
+  )
     -> some View
   {
     let bubbleView = VStack(alignment: .leading, spacing: 8) {
@@ -153,8 +160,12 @@ private struct MessageBubbleContent: View, Equatable {
         Text(visibleText)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
-      } else {
+      } else if usesMarkdown {
         MarkdownContentView(blocks: markdownBlocks)
+      } else {
+        Text(visibleText)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(14)
@@ -727,6 +738,12 @@ struct MarkdownBlock: Identifiable {
 }
 
 enum MarkdownParser {
+  static func mayContainMarkdown(_ text: String) -> Bool {
+    guard !text.isEmpty else { return false }
+    let markers = ["```", "`", "**", "__", "- ", "* ", "+ ", "- [", "* [", "|", "[", "#"]
+    return markers.contains { text.contains($0) }
+  }
+
   static func blocks(from text: String) -> [MarkdownBlock] {
     let lines = text.components(separatedBy: .newlines)
     var blocks: [MarkdownBlock] = []

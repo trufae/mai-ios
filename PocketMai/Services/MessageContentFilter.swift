@@ -20,6 +20,13 @@ enum MessageContentFilter {
   ]
 
   static func render(_ text: String) -> RenderedMessageContent {
+    guard text.contains("<") else {
+      return RenderedMessageContent(
+        visibleText: normalizedVisibleText(text),
+        hiddenSections: []
+      )
+    }
+
     var cursor = text.startIndex
     var visible = ""
     var hiddenSections: [HiddenMessageSection] = []

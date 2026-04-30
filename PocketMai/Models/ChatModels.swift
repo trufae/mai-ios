@@ -242,6 +242,40 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var createdAt: Date = Date()
 }
 
+struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
+  var id: UUID
+  var title: String
+  var createdAt: Date
+  var updatedAt: Date
+  var isIncognito: Bool
+  var isPinned: Bool
+  var isArchived: Bool
+  var preview: String
+  var hasMessages: Bool
+
+  init(conversation: Conversation) {
+    id = conversation.id
+    title = conversation.title
+    createdAt = conversation.createdAt
+    updatedAt = conversation.updatedAt
+    isIncognito = conversation.isIncognito
+    isPinned = conversation.isPinned
+    isArchived = conversation.isArchived
+    hasMessages = !conversation.messages.isEmpty
+    preview = conversation.messages.last.map {
+      String($0.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+    } ?? ""
+  }
+
+  var displayTitle: String {
+    title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New chat" : title
+  }
+
+  var displayPreview: String {
+    preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No messages" : preview
+  }
+}
+
 struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var id: UUID = UUID()
   var title: String = "New chat"

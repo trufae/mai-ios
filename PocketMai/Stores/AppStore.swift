@@ -31,6 +31,7 @@ enum EndpointConnectionState: Equatable {
 @MainActor
 final class AppStore: ObservableObject {
   @Published var conversations: [Conversation]
+  @Published var conversationSummaries: [ConversationSummary] = []
   @Published var selectedConversationID: UUID?
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
@@ -64,12 +65,10 @@ final class AppStore: ObservableObject {
   private let persistence: PersistenceStore
   private var conversationDrafts: [UUID: String] = [:]
   private var conversationIndexByID: [UUID: Int] = [:]
-  private var messageLocationByID: [UUID: MessageLocation] = [:]
-
-  private struct MessageLocation {
-    let conversationID: UUID
-    let messageIndex: Int
-  }
+  private var hasLoadedPersistedConversations = false
+  private var pendingConversationSave = false
+  private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
+  private var deletedConversationIDsBeforeLoad: Set<UUID> = []
 
   init(
     persistence: PersistenceStore = PersistenceStore(),
@@ -78,9 +77,10 @@ final class AppStore: ObservableObject {
     self.persistence = persistence
     self.streamingTextStore = streamingTextStore
     settings = persistence.loadSettings()
-    conversations = Self.sortedConversations(persistence.loadConversations())
-    appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
+    conversations = []
+    appleAvailabilityMessage = nil
     startFreshConversationForLaunch()
+    Task { await loadStartupData() }
   }
 
   var currentConversation: Conversation? {
@@ -118,6 +118,26 @@ final class AppStore: ObservableObject {
     selectedConversationIDs.removeAll()
   }
 
+  private func loadStartupData() async {
+    await Task.yield()
+
+    let persistence = self.persistence
+    let summaries = await Task.detached(priority: .userInitiated) {
+      persistence.loadConversationSummaries()
+    }.value
+    mergeLoadedSummaries(summaries)
+
+    let availabilityTask = Task.detached(priority: .utility) {
+      AppleFoundationProvider.unavailableMessage
+    }
+    let loadedConversations = await Task.detached(priority: .userInitiated) {
+      persistence.loadConversations()
+    }.value
+
+    mergeLoadedConversations(loadedConversations)
+    appleAvailabilityMessage = await availabilityTask.value
+  }
+
   private func makeNewConversation(incognito: Bool = false) -> Conversation {
     let endpoint =
       settings.openAIEndpoints.first(where: { $0.id == settings.selectedEndpointID })
@@ -139,6 +159,51 @@ final class AppStore: ObservableObject {
   func select(_ conversation: Conversation) {
     selectedConversationID = conversation.id
     isIncognitoMode = conversation.isIncognito
+  }
+
+  func selectConversation(id: UUID) async {
+    await ensureConversationLoaded(id)
+    guard let index = indexedConversationIndex(for: id) else { return }
+    selectedConversationID = id
+    isIncognitoMode = conversations[index].isIncognito
+  }
+
+  func toggleArchive(id: UUID) async {
+    await ensureConversationLoaded(id)
+    guard let index = indexedConversationIndex(for: id) else { return }
+    conversations[index].isArchived.toggle()
+    conversations[index].updatedAt = Date()
+    sortConversations()
+    saveConversations()
+  }
+
+  func togglePin(id: UUID) async {
+    await ensureConversationLoaded(id)
+    guard let index = indexedConversationIndex(for: id) else { return }
+    conversations[index].isPinned.toggle()
+    conversations[index].updatedAt = Date()
+    sortConversations()
+    saveConversations()
+  }
+
+  func cloneConversation(id: UUID) async {
+    await ensureConversationLoaded(id)
+    guard let conversation = conversation(withID: id) else { return }
+    cloneConversation(conversation)
+  }
+
+  private func ensureConversationLoaded(_ id: UUID) async {
+    guard indexedConversationIndex(for: id) == nil else { return }
+    let persistence = self.persistence
+    let loadedConversation = await Task.detached(priority: .userInitiated) {
+      persistence.loadConversation(id: id)
+    }.value
+    guard let conversation = loadedConversation else {
+      return
+    }
+    guard indexedConversationIndex(for: id) == nil else { return }
+    conversations.append(conversation)
+    sortConversations()
   }
 
   func draftText(for conversationID: UUID?) -> String {
@@ -170,7 +235,7 @@ final class AppStore: ObservableObject {
     guard let index = currentConversationIndex else { return }
     update(&conversations[index])
     conversations[index].updatedAt = Date()
-    rebuildMessageIndex(forConversationAt: index)
+    upsertSummary(for: conversations[index])
     saveConversations()
   }
 
@@ -182,7 +247,10 @@ final class AppStore: ObservableObject {
 
   func clearAllConversations() {
     let archived = conversations.filter(\.isArchived)
-    let removedIDs = Set(conversations.filter { !$0.isArchived }.map(\.id))
+    let removedIDs = Set(conversationSummaries.filter { !$0.isArchived }.map(\.id))
+    if !hasLoadedPersistedConversations {
+      deletedConversationIDsBeforeLoad.formUnion(removedIDs)
+    }
     for id in removedIDs {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
@@ -193,6 +261,7 @@ final class AppStore: ObservableObject {
     streamingTextStore.removeAll()
     conversations = archived
     rebuildConversationIndexes()
+    conversationSummaries = Self.sortedSummaries(archived.map(ConversationSummary.init))
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
     isIncognitoMode = false
@@ -213,7 +282,7 @@ final class AppStore: ObservableObject {
     guard !conversations[index].messages.isEmpty else { return }
     conversations[index].messages.removeAll()
     conversations[index].updatedAt = Date()
-    rebuildMessageIndex(forConversationAt: index)
+    upsertSummary(for: conversations[index])
     saveConversations()
   }
 
@@ -237,13 +306,16 @@ final class AppStore: ObservableObject {
     conversations[index].messages.removeAll()
     conversations[index].title = "New chat"
     conversations[index].updatedAt = Date()
-    rebuildMessageIndex(forConversationAt: index)
+    upsertSummary(for: conversations[index])
     saveConversations()
 
     _ = await send(prompt: prompt)
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
+    if !hasLoadedPersistedConversations {
+      deletedConversationIDsBeforeLoad.formUnion(ids)
+    }
     for id in ids {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
@@ -252,6 +324,7 @@ final class AppStore: ObservableObject {
     }
     conversations.removeAll { ids.contains($0.id) }
     rebuildConversationIndexes()
+    removeSummaries(for: ids)
     selectedConversationIDs.removeAll()
     if let selectedConversationID, ids.contains(selectedConversationID) {
       self.selectedConversationID = conversations.first?.id
@@ -332,17 +405,13 @@ final class AppStore: ObservableObject {
     guard let convIndex = currentConversationIndex else { return }
     let conversationID = conversations[convIndex].id
     guard !respondingConversationIDs.contains(conversationID) else { return }
-    guard
-      let location = indexedMessageLocation(for: message.id),
-      location.conversationIndex == convIndex
+    guard let msgIndex = conversations[convIndex].messages.firstIndex(where: { $0.id == message.id })
     else { return }
-
-    let msgIndex = location.messageIndex
     let cutoff: Int = message.role == .user ? msgIndex : msgIndex - 1
     guard cutoff >= 0 else { return }
     conversations[convIndex].messages = Array(conversations[convIndex].messages.prefix(cutoff + 1))
     conversations[convIndex].updatedAt = Date()
-    rebuildMessageIndex(forConversationAt: convIndex)
+    upsertSummary(for: conversations[convIndex])
     saveConversations()
 
     guard let last = conversations[convIndex].messages.last, last.role == .user else { return }
@@ -398,12 +467,7 @@ final class AppStore: ObservableObject {
     switch mode {
     case .append:
       let userMessage = ChatMessage(role: .user, text: userText)
-      let messageIndex = conversations[i].messages.endIndex
       conversations[i].messages.append(userMessage)
-      messageLocationByID[userMessage.id] = MessageLocation(
-        conversationID: conversationID,
-        messageIndex: messageIndex
-      )
       conversations[i].refreshTitle(from: prompt)
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
@@ -412,6 +476,7 @@ final class AppStore: ObservableObject {
     }
     conversations[i].lastToolContextSignature = toolContext.signature
     conversations[i].updatedAt = Date()
+    upsertSummary(for: conversations[i])
     saveConversations()
 
     dispatchAssistantTurn(conversationID: conversationID, toolContext: embed ? toolContext.text : "")
@@ -448,7 +513,7 @@ final class AppStore: ObservableObject {
 
   private func currentTextOfMessage(id: UUID) -> String {
     if let streaming = streamingTextStore.currentText(for: id) { return streaming }
-    if let location = indexedMessageLocation(for: id) {
+    if let location = messageLocation(for: id) {
       return conversations[location.conversationIndex].messages[location.messageIndex].text
     }
     return ""
@@ -466,13 +531,9 @@ final class AppStore: ObservableObject {
   func appendAssistantMessage(to conversationID: UUID) -> UUID? {
     guard let index = indexedConversationIndex(for: conversationID) else { return nil }
     let assistantMessage = ChatMessage(role: .assistant, text: "")
-    let messageIndex = conversations[index].messages.endIndex
     conversations[index].messages.append(assistantMessage)
     conversations[index].updatedAt = Date()
-    messageLocationByID[assistantMessage.id] = MessageLocation(
-      conversationID: conversationID,
-      messageIndex: messageIndex
-    )
+    upsertSummary(for: conversations[index])
     saveConversations()
     return assistantMessage.id
   }
@@ -511,7 +572,7 @@ final class AppStore: ObservableObject {
         ChatMessage(role: .system, text: "Conversation summary (compacted):\n\n\(trimmed)")
       ]
       conversations[idx].updatedAt = Date()
-      rebuildMessageIndex(forConversationAt: idx)
+      upsertSummary(for: conversations[idx])
       saveConversations()
     } catch {
       errorMessage = error.localizedDescription
@@ -632,12 +693,69 @@ final class AppStore: ObservableObject {
   }
 
   func saveConversations() {
+    guard hasLoadedPersistedConversations else {
+      pendingConversationSave = true
+      dirtyConversationIDsBeforeLoad.formUnion(conversations.map(\.id))
+      return
+    }
     persistence.saveConversations(conversations)
   }
 
   private func sortConversations() {
     conversations = Self.sortedConversations(conversations)
     rebuildConversationIndexes()
+    rebuildSummariesFromConversations()
+  }
+
+  private func mergeLoadedSummaries(_ summaries: [ConversationSummary]) {
+    guard !summaries.isEmpty else { return }
+    var byID = Dictionary(uniqueKeysWithValues: conversationSummaries.map { ($0.id, $0) })
+    for summary in summaries
+    where byID[summary.id] == nil && !deletedConversationIDsBeforeLoad.contains(summary.id) {
+      byID[summary.id] = summary
+    }
+    conversationSummaries = Self.sortedSummaries(Array(byID.values))
+  }
+
+  private func mergeLoadedConversations(_ loaded: [Conversation]) {
+    let loaded = loaded.filter { !deletedConversationIDsBeforeLoad.contains($0.id) }
+    var byID = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
+    for conversation in conversations {
+      if dirtyConversationIDsBeforeLoad.contains(conversation.id) || byID[conversation.id] == nil {
+        byID[conversation.id] = conversation
+      }
+    }
+    conversations = Self.sortedConversations(Array(byID.values))
+    rebuildConversationIndexes()
+    rebuildSummariesFromConversations()
+    hasLoadedPersistedConversations = true
+    if pendingConversationSave {
+      pendingConversationSave = false
+      saveConversations()
+    }
+  }
+
+  private func rebuildSummariesFromConversations() {
+    let loadedSummaries = conversations.map(ConversationSummary.init)
+    var byID = Dictionary(uniqueKeysWithValues: conversationSummaries.map { ($0.id, $0) })
+    for summary in loadedSummaries {
+      byID[summary.id] = summary
+    }
+    conversationSummaries = Self.sortedSummaries(Array(byID.values))
+  }
+
+  private func upsertSummary(for conversation: Conversation) {
+    let summary = ConversationSummary(conversation: conversation)
+    if let index = conversationSummaries.firstIndex(where: { $0.id == conversation.id }) {
+      conversationSummaries[index] = summary
+    } else {
+      conversationSummaries.append(summary)
+    }
+    conversationSummaries = Self.sortedSummaries(conversationSummaries)
+  }
+
+  private func removeSummaries(for ids: Set<UUID>) {
+    conversationSummaries.removeAll { ids.contains($0.id) }
   }
 
   nonisolated static func strippedSpuriousToolCallText(_ text: String) -> String {
@@ -671,6 +789,18 @@ final class AppStore: ObservableObject {
     }
   }
 
+  nonisolated static func sortedSummaries(_ summaries: [ConversationSummary]) -> [ConversationSummary] {
+    summaries.sorted { lhs, rhs in
+      if lhs.isPinned != rhs.isPinned {
+        return lhs.isPinned && !rhs.isPinned
+      }
+      if lhs.updatedAt != rhs.updatedAt {
+        return lhs.updatedAt > rhs.updatedAt
+      }
+      return lhs.createdAt > rhs.createdAt
+    }
+  }
+
   private func discardSelectedIncognitoConversation() {
     guard let selectedConversationID,
       let index = indexedConversationIndex(for: selectedConversationID),
@@ -681,6 +811,7 @@ final class AppStore: ObservableObject {
     let removedID = selectedConversationID
     conversations.remove(at: index)
     rebuildConversationIndexes()
+    removeSummaries(for: [removedID])
     responseTasks[removedID]?.cancel()
     responseTasks[removedID] = nil
     respondingConversationIDs.remove(removedID)
@@ -714,57 +845,28 @@ final class AppStore: ObservableObject {
 
   private func rebuildConversationIndexes() {
     var conversationIndexes: [UUID: Int] = [:]
-    var messageLocations: [UUID: MessageLocation] = [:]
     conversationIndexes.reserveCapacity(conversations.count)
-    messageLocations.reserveCapacity(conversations.reduce(0) { $0 + $1.messages.count })
 
     for (conversationIndex, conversation) in conversations.enumerated() {
       conversationIndexes[conversation.id] = conversationIndex
-      for messageIndex in conversation.messages.indices {
-        messageLocations[conversation.messages[messageIndex].id] = MessageLocation(
-          conversationID: conversation.id,
-          messageIndex: messageIndex
-        )
-      }
     }
 
     conversationIndexByID = conversationIndexes
-    messageLocationByID = messageLocations
   }
 
-  private func rebuildMessageIndex(forConversationAt index: Int) {
-    guard conversations.indices.contains(index) else { return }
-    let conversationID = conversations[index].id
-    messageLocationByID = messageLocationByID.filter { $0.value.conversationID != conversationID }
-    for messageIndex in conversations[index].messages.indices {
-      let messageID = conversations[index].messages[messageIndex].id
-      messageLocationByID[messageID] = MessageLocation(
-        conversationID: conversationID,
-        messageIndex: messageIndex
-      )
-    }
-  }
-
-  private func indexedMessageLocation(for id: UUID) -> (conversationIndex: Int, messageIndex: Int)?
-  {
-    if let location = messageLocationByID[id],
-      let conversationIndex = conversationIndexByID[location.conversationID],
-      conversations.indices.contains(conversationIndex),
-      conversations[conversationIndex].messages.indices.contains(location.messageIndex),
-      conversations[conversationIndex].messages[location.messageIndex].id == id
+  private func messageLocation(for id: UUID) -> (conversationIndex: Int, messageIndex: Int)? {
+    if let selectedIndex = currentConversationIndex,
+      let messageIndex = conversations[selectedIndex].messages.firstIndex(where: { $0.id == id })
     {
-      return (conversationIndex, location.messageIndex)
+      return (selectedIndex, messageIndex)
     }
-    rebuildConversationIndexes()
-    guard let location = messageLocationByID[id],
-      let conversationIndex = conversationIndexByID[location.conversationID],
-      conversations.indices.contains(conversationIndex),
-      conversations[conversationIndex].messages.indices.contains(location.messageIndex),
-      conversations[conversationIndex].messages[location.messageIndex].id == id
-    else {
-      return nil
+    for conversationIndex in conversations.indices {
+      guard conversationIndex != currentConversationIndex else { continue }
+      if let messageIndex = conversations[conversationIndex].messages.firstIndex(where: { $0.id == id }) {
+        return (conversationIndex, messageIndex)
+      }
     }
-    return (conversationIndex, location.messageIndex)
+    return nil
   }
 
   func setAssistantMessage(
@@ -779,7 +881,7 @@ final class AppStore: ObservableObject {
     // Final / discrete update: commit to `conversations` and clear any
     // streaming buffer so bubbles fall back to the canonical message text.
     streamingTextStore.clear(id: id)
-    guard let location = indexedMessageLocation(for: id) else { return }
+    guard let location = messageLocation(for: id) else { return }
     let conversationIndex = location.conversationIndex
     let messageIndex = location.messageIndex
     var conversation = conversations[conversationIndex]
@@ -789,6 +891,7 @@ final class AppStore: ObservableObject {
       conversation.updatedAt = Date()
     }
     conversations[conversationIndex] = conversation
+    upsertSummary(for: conversation)
   }
 
   private func enqueueStreamingText(_ text: String, for id: UUID) {

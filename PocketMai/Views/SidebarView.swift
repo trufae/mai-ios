@@ -1,7 +1,5 @@
 import SwiftUI
 
-private let sidebarListCoordinateSpace = "SidebarListCoordinateSpace"
-
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
@@ -37,53 +35,47 @@ struct SidebarView: View {
     }
   }
 
-  private var visibleConversations: [Conversation] {
-    store.conversations.filter { $0.isArchived == showingArchive }
+  private var visibleConversations: [ConversationSummary] {
+    store.conversationSummaries.filter { $0.isArchived == showingArchive }
   }
 
   private var conversationList: some View {
-    GeometryReader { proxy in
-      List {
-        if showingArchive, visibleConversations.isEmpty {
-          Text("No archived conversations.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 12)
-            .modifier(SidebarEdgeContentBlur(containerHeight: proxy.size.height))
+    List {
+      if showingArchive, visibleConversations.isEmpty {
+        Text("No archived conversations.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .padding(.vertical, 12)
+      }
+      ForEach(visibleConversations) { conversation in
+        let isSelected = store.selectedConversationID == conversation.id
+        let isMultiSelected = selectedIDs.contains(conversation.id)
+        ConversationRow(
+          conversation: conversation,
+          isSelected: isSelected,
+          isResponding: store.isResponding(in: conversation.id),
+          isSelectionMode: isSelectionMode,
+          isMultiSelected: isMultiSelected
+        ) {
+          if isSelectionMode {
+            toggleSelection(of: conversation.id)
+          } else {
+            Task { await store.selectConversation(id: conversation.id) }
+            onSelectConversation()
+          }
         }
-        ForEach(visibleConversations) { conversation in
-          let isSelected = store.selectedConversationID == conversation.id
-          let isMultiSelected = selectedIDs.contains(conversation.id)
-          ConversationRow(
-            conversation: conversation,
-            isSelected: isSelected,
-            isResponding: store.isResponding(in: conversation.id),
-            containerHeight: proxy.size.height,
-            isSelectionMode: isSelectionMode,
-            isMultiSelected: isMultiSelected
-          ) {
-            if isSelectionMode {
-              toggleSelection(of: conversation.id)
-            } else {
-              store.select(conversation)
-              onSelectConversation()
-            }
+        .contextMenu {
+          if !isSelectionMode {
+            conversationContextMenu(for: conversation, isCurrent: isSelected)
           }
-          .contextMenu {
-            if !isSelectionMode {
-              conversationContextMenu(for: conversation, isCurrent: isSelected)
-            }
-          }
-          .modifier(SidebarEdgeContentBlur(containerHeight: proxy.size.height))
         }
       }
-      .listStyle(.sidebar)
-      .coordinateSpace(name: sidebarListCoordinateSpace)
     }
+    .listStyle(.sidebar)
   }
 
   @ViewBuilder
-  private func conversationContextMenu(for conversation: Conversation, isCurrent: Bool) -> some View
+  private func conversationContextMenu(for conversation: ConversationSummary, isCurrent: Bool) -> some View
   {
     Button {
       withAnimation {
@@ -95,7 +87,7 @@ struct SidebarView: View {
     }
 
     Button {
-      store.togglePin(conversation)
+      Task { await store.togglePin(id: conversation.id) }
     } label: {
       Label(
         conversation.isPinned ? "Unpin Conversation" : "Pin Conversation",
@@ -104,7 +96,7 @@ struct SidebarView: View {
     }
 
     Button {
-      store.toggleArchive(conversation)
+      Task { await store.toggleArchive(id: conversation.id) }
     } label: {
       Label(
         conversation.isArchived ? "Unarchive Conversation" : "Archive Conversation",
@@ -113,7 +105,7 @@ struct SidebarView: View {
     }
 
     Button {
-      store.cloneConversation(conversation)
+      Task { await store.cloneConversation(id: conversation.id) }
       onSelectConversation()
     } label: {
       Label("Clone Conversation", systemImage: "doc.on.doc")
@@ -127,7 +119,7 @@ struct SidebarView: View {
 
     if isCurrent {
       Button(role: .destructive) {
-        let others = Set(store.conversations.map(\.id)).subtracting([conversation.id])
+        let others = Set(store.conversationSummaries.map(\.id)).subtracting([conversation.id])
         guard !others.isEmpty else { return }
         pendingDeletion = .allExceptCurrent(others)
       } label: {
@@ -210,9 +202,10 @@ struct SidebarView: View {
 
   private func archiveSelected() {
     let ids = selectedIDs
-    for id in ids {
-      guard let conversation = store.conversations.first(where: { $0.id == id }) else { continue }
-      store.toggleArchive(conversation)
+    Task {
+      for id in ids {
+        await store.toggleArchive(id: id)
+      }
     }
     withAnimation {
       isSelectionMode = false
@@ -256,7 +249,7 @@ private struct PendingConversationDeletion: Identifiable {
   let buttonTitle: String
   let message: String
 
-  static func single(_ conversation: Conversation) -> PendingConversationDeletion {
+  static func single(_ conversation: ConversationSummary) -> PendingConversationDeletion {
     PendingConversationDeletion(
       ids: [conversation.id],
       title: "Delete this conversation?",
@@ -286,40 +279,11 @@ private struct PendingConversationDeletion: Identifiable {
   }
 }
 
-private struct SidebarEdgeContentBlur: ViewModifier {
-  let containerHeight: CGFloat
-  private let topFadeLength: CGFloat = 110
-  private let bottomFadeLength: CGFloat = 210
-  private let maxBlurRadius: CGFloat = 4
-
-  func body(content: Content) -> some View {
-    content.visualEffect { content, proxy in
-      content.blur(radius: blurRadius(for: proxy))
-    }
-  }
-
-  private nonisolated func blurRadius(for proxy: GeometryProxy) -> CGFloat {
-    let frame = proxy.frame(in: .named(sidebarListCoordinateSpace))
-    return maxBlurRadius * edgeProgress(for: frame)
-  }
-
-  private nonisolated func edgeProgress(for frame: CGRect) -> CGFloat {
-    guard containerHeight > 0 else { return 0 }
-    let top = max(0, min(1, 1 - frame.minY / topFadeLength))
-    let bottomStart = max(containerHeight, 0)
-    let bottom = max(0, min(1, (frame.maxY - bottomStart) / bottomFadeLength))
-    let progress = max(top, bottom)
-    return progress * progress
-  }
-}
-
 private struct SidebarRowBackground: View {
   let isSelected: Bool
-  let containerHeight: CGFloat
 
   var body: some View {
     (isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
-      .modifier(SidebarEdgeContentBlur(containerHeight: containerHeight))
   }
 }
 
@@ -390,10 +354,9 @@ private struct FloatingActionPill: View {
 }
 
 private struct ConversationRow: View {
-  let conversation: Conversation
+  let conversation: ConversationSummary
   let isSelected: Bool
   let isResponding: Bool
-  let containerHeight: CGFloat
   var isSelectionMode: Bool = false
   var isMultiSelected: Bool = false
   let action: () -> Void
@@ -422,7 +385,7 @@ private struct ConversationRow: View {
                 .foregroundStyle(.secondary)
             }
           }
-          Text(conversation.messages.last?.text ?? "No messages")
+          Text(conversation.displayPreview)
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
@@ -435,10 +398,7 @@ private struct ConversationRow: View {
     }
     .buttonStyle(.plain)
     .listRowBackground(
-      SidebarRowBackground(
-        isSelected: isSelected && !isSelectionMode,
-        containerHeight: containerHeight
-      )
+      SidebarRowBackground(isSelected: isSelected && !isSelectionMode)
     )
   }
 

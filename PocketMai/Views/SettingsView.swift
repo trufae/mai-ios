@@ -659,7 +659,7 @@ struct SettingsView: View {
   }
 
   private var hasConversationContent: Bool {
-    store.conversations.contains { !$0.messages.isEmpty }
+    store.conversationSummaries.contains(where: \.hasMessages)
   }
 
   private var settingsDeletionConfirmationBinding: Binding<Bool> {

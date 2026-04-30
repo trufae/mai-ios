@@ -5,8 +5,9 @@ struct PersistedConversations: Codable {
 }
 
 private struct PersistedConversationIndex: Codable {
-  var version = 1
+  var version = 2
   var ids: [UUID]
+  var summaries: [ConversationSummary]?
 }
 
 final class PersistenceStore: @unchecked Sendable {
@@ -18,7 +19,6 @@ final class PersistenceStore: @unchecked Sendable {
   // Touched only from writeQueue; serial access guarantees thread-safety.
   private var pendingSettings: DispatchWorkItem?
   private var pendingConversations: DispatchWorkItem?
-  private var persistedConversationIDs: [UUID] = []
   private var persistedConversationsByID: [UUID: Conversation] = [:]
 
   init(fileManager: FileManager = .default) {
@@ -56,6 +56,25 @@ final class PersistenceStore: @unchecked Sendable {
       saveConversations(conversations)
     }
     return conversations
+  }
+
+  func loadConversationSummaries() -> [ConversationSummary] {
+    guard let data = try? Data(contentsOf: conversationsIndexURL),
+      let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
+    else {
+      return []
+    }
+    if let summaries = index.summaries {
+      let byID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+      return index.ids.compactMap { byID[$0] }
+    }
+    return []
+  }
+
+  func loadConversation(id: UUID) -> Conversation? {
+    let url = conversationFileURL(for: id)
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    return try? makeDecoder().decode(Conversation.self, from: data)
   }
 
   private func loadIndexedConversations() -> [Conversation]? {
@@ -96,17 +115,16 @@ final class PersistenceStore: @unchecked Sendable {
       let item = DispatchWorkItem { [weak self] in
         guard let self else { return }
         let changed = visible.filter { self.persistedConversationsByID[$0.id] != $0 }
-        let orderChanged = self.persistedConversationIDs != ids
         let persisted = Self.persistConversations(
           changed,
           ids: ids,
+          summaries: visible.map(ConversationSummary.init),
           conversationsDir: conversationsDir,
           indexURL: indexURL,
           legacyURL: legacyURL,
-          writeIndex: orderChanged || !changed.isEmpty
+          writeIndex: true
         )
         if persisted {
-          self.persistedConversationIDs = ids
           self.persistedConversationsByID = byID
         }
       }
@@ -153,6 +171,7 @@ final class PersistenceStore: @unchecked Sendable {
   private static func persistConversations(
     _ conversations: [Conversation],
     ids: [UUID],
+    summaries: [ConversationSummary],
     conversationsDir: URL,
     indexURL: URL,
     legacyURL: URL,
@@ -182,7 +201,7 @@ final class PersistenceStore: @unchecked Sendable {
       }
 
       if writeIndex {
-        let index = PersistedConversationIndex(ids: ids)
+        let index = PersistedConversationIndex(ids: ids, summaries: summaries)
         let data = try encoder.encode(index)
         try data.write(to: indexURL, options: [.atomic])
       }
@@ -194,10 +213,8 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   private func seedPersistedSnapshot(_ conversations: [Conversation]) {
-    let ids = conversations.map(\.id)
     let byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
     writeQueue.async { [weak self] in
-      self?.persistedConversationIDs = ids
       self?.persistedConversationsByID = byID
     }
   }

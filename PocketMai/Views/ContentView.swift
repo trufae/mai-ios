@@ -13,14 +13,16 @@ struct ContentView: View {
       let revealProgress = panelOffset / panelWidth
 
       ZStack(alignment: .leading) {
-        SidebarView(
-          showingSettings: $showingSettings,
-          onSelectConversation: closeHistoryPanel
-        )
-        .frame(width: panelWidth)
-        .frame(maxHeight: .infinity)
-        .background(.regularMaterial)
-        .zIndex(0)
+        if showingHistory || historyDragOffset > 0 {
+          SidebarView(
+            showingSettings: $showingSettings,
+            onSelectConversation: closeHistoryPanel
+          )
+          .frame(width: panelWidth)
+          .frame(maxHeight: .infinity)
+          .background(.regularMaterial)
+          .zIndex(0)
+        }
 
         NavigationStack {
           ChatView(
