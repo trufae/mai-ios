@@ -58,22 +58,18 @@ final class AppStore: ObservableObject {
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityMessage: String?
-  /// In-flight streamed text per assistant message ID. Bubbles read this when
-  /// present instead of `message.text`, so token updates do not republish the
-  /// whole `conversations` array. Cleared once the message is committed to
-  /// `conversations` via `setAssistantMessage` without `streaming: true`.
-  @Published var streamingTexts: [UUID: String] = [:]
 
+  let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
   private let persistence: PersistenceStore
-  private var pendingStreamingTexts: [UUID: String] = [:]
-  private var streamingPublishTasks: [UUID: Task<Void, Never>] = [:]
-  private var lastStreamingPublishAt: [UUID: Date] = [:]
   private var conversationDrafts: [UUID: String] = [:]
-  private static let streamingPublishInterval: TimeInterval = 0.12
 
-  init(persistence: PersistenceStore = PersistenceStore()) {
+  init(
+    persistence: PersistenceStore = PersistenceStore(),
+    streamingTextStore: StreamingTextStore = StreamingTextStore()
+  ) {
     self.persistence = persistence
+    self.streamingTextStore = streamingTextStore
     settings = persistence.loadSettings()
     conversations = Self.sortedConversations(persistence.loadConversations())
     appleAvailabilityMessage = AppleFoundationProvider.unavailableMessage
@@ -184,7 +180,7 @@ final class AppStore: ObservableObject {
     }
     let archivedIDs = Set(archived.map(\.id))
     conversationDrafts = conversationDrafts.filter { archivedIDs.contains($0.key) }
-    streamingTexts.removeAll()
+    streamingTextStore.removeAll()
     conversations = archived
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
@@ -585,8 +581,7 @@ final class AppStore: ObservableObject {
   }
 
   private func currentTextOfMessage(id: UUID) -> String {
-    if let pending = pendingStreamingTexts[id] { return pending }
-    if let streaming = streamingTexts[id] { return streaming }
+    if let streaming = streamingTextStore.currentText(for: id) { return streaming }
     for conversation in conversations {
       if let message = conversation.messages.first(where: { $0.id == id }) {
         return message.text
@@ -891,11 +886,7 @@ final class AppStore: ObservableObject {
     }
     // Final / discrete update: commit to `conversations` and clear any
     // streaming buffer so bubbles fall back to the canonical message text.
-    pendingStreamingTexts.removeValue(forKey: id)
-    lastStreamingPublishAt.removeValue(forKey: id)
-    streamingPublishTasks[id]?.cancel()
-    streamingPublishTasks.removeValue(forKey: id)
-    streamingTexts.removeValue(forKey: id)
+    streamingTextStore.clear(id: id)
     guard
       let conversationIndex = conversations.firstIndex(where: { conversation in
         conversation.messages.contains(where: { $0.id == id })
@@ -915,34 +906,7 @@ final class AppStore: ObservableObject {
   }
 
   private func enqueueStreamingText(_ text: String, for id: UUID) {
-    guard streamingTexts[id] != text else { return }
-
-    let now = Date()
-    let lastPublish = lastStreamingPublishAt[id] ?? .distantPast
-    let elapsed = now.timeIntervalSince(lastPublish)
-
-    if elapsed >= Self.streamingPublishInterval {
-      lastStreamingPublishAt[id] = now
-      streamingTexts[id] = text
-      return
-    }
-
-    pendingStreamingTexts[id] = text
-    guard streamingPublishTasks[id] == nil else { return }
-
-    let delay = max(0, Self.streamingPublishInterval - elapsed)
-    streamingPublishTasks[id] = Task { @MainActor [weak self] in
-      let nanoseconds = UInt64(delay * 1_000_000_000)
-      try? await Task.sleep(nanoseconds: nanoseconds)
-      guard !Task.isCancelled else { return }
-      guard let self else { return }
-      self.streamingPublishTasks[id] = nil
-      guard let pending = self.pendingStreamingTexts.removeValue(forKey: id) else { return }
-      self.lastStreamingPublishAt[id] = Date()
-      if self.streamingTexts[id] != pending {
-        self.streamingTexts[id] = pending
-      }
-    }
+    streamingTextStore.enqueue(text, for: id)
   }
 
   private func export(conversation: Conversation, format: ConversationExportFormat) -> String {

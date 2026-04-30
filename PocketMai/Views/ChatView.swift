@@ -350,16 +350,22 @@ struct ChatView: View {
               ForEach(store.currentConversation?.messages ?? []) { message in
                 MessageBubble(
                   message: message,
-                  streamingOverride: store.streamingTexts[message.id],
+                  toolSettings: store.settings.toolSettings,
                   onDelete: { messagePendingDeletion = message },
                   onResubmit: message.role == .user
                     ? { Task { await store.resubmit(message) } }
                     : nil,
                   onTrimFromHere: { messagePendingTrimAndResubmit = message },
                   onRestartFresh: { messagePendingRestartFresh = message },
-                  showThinking: store.currentConversation?.showThinking ?? false
+                  showThinking: store.currentConversation?.showThinking ?? false,
+                  onStreamingTextChange: { _ in
+                    guard !userScrolledAfterLastMessage else { return }
+                    let now = Date()
+                    guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
+                    lastStreamingScrollAt = now
+                    scrollToBottom(proxy, animated: false)
+                  }
                 )
-                .equatable()
                 .id(message.id)
               }
             }
@@ -441,13 +447,10 @@ struct ChatView: View {
     var text: String?
   }
 
-  // Streaming text lives in `store.streamingTexts`, not in the message itself, so
-  // the snapshot reads from both to capture every visible change in one signal.
   private var lastMessageSnapshot: LastMessageSnapshot {
     let convo = store.currentConversation
     let last = convo?.messages.last
-    let text = last.flatMap { store.streamingTexts[$0.id] } ?? last?.text
-    return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: text)
+    return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: last?.text)
   }
 
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {

@@ -8,6 +8,7 @@ struct PocketMaiApp: App {
     WindowGroup {
       ContentView()
         .environmentObject(store)
+        .environmentObject(store.streamingTextStore)
     }
   }
 }

@@ -1,14 +1,43 @@
 import SwiftUI
 import UIKit
 
-struct MessageBubble: View, Equatable {
-  @EnvironmentObject private var store: AppStore
+struct MessageBubble: View {
+  @EnvironmentObject private var streamingTextStore: StreamingTextStore
+
   let message: ChatMessage
-  /// Live partial text from `AppStore.streamingTexts`, set only while the
-  /// message is being generated. When non-nil it overrides `message.text`.
-  /// Including it in `==` is what lets the streaming bubble re-render while
-  /// every other (untouched) bubble is skipped.
+  let toolSettings: NativeToolSettings
+  let onDelete: () -> Void
+  var onResubmit: (() -> Void)? = nil
+  var onTrimFromHere: (() -> Void)? = nil
+  var onRestartFresh: (() -> Void)? = nil
+  var showThinking: Bool = false
+  var onStreamingTextChange: ((String) -> Void)? = nil
+
+  var body: some View {
+    let streamingText = streamingTextStore.text(for: message.id)
+
+    MessageBubbleContent(
+      message: message,
+      streamingOverride: streamingText,
+      toolSettings: toolSettings,
+      onDelete: onDelete,
+      onResubmit: onResubmit,
+      onTrimFromHere: onTrimFromHere,
+      onRestartFresh: onRestartFresh,
+      showThinking: showThinking
+    )
+    .equatable()
+    .onChange(of: streamingText) { _, newText in
+      guard let newText else { return }
+      onStreamingTextChange?(newText)
+    }
+  }
+}
+
+private struct MessageBubbleContent: View, Equatable {
+  let message: ChatMessage
   var streamingOverride: String? = nil
+  let toolSettings: NativeToolSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -21,9 +50,10 @@ struct MessageBubble: View, Equatable {
 
   /// Identity for SwiftUI's EquatableView: skip body re-evaluation when neither
   /// the canonical message nor the streaming override has changed. Closure
-  /// equality is irrelevant — closures recapture fresh state via `store`.
-  nonisolated static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
+  /// equality is irrelevant because actions are invoked only from fresh menus.
+  nonisolated static func == (lhs: MessageBubbleContent, rhs: MessageBubbleContent) -> Bool {
     lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
+      && lhs.toolSettings == rhs.toolSettings
       && lhs.showThinking == rhs.showThinking
   }
 
@@ -121,7 +151,7 @@ struct MessageBubble: View, Equatable {
       Button {
         _ = TextToSpeechTool.speak(
           arguments: ["text": .string(visibleText)],
-          settings: store.settings.toolSettings)
+          settings: toolSettings)
       } label: {
         Label("Speak Message", systemImage: "speaker.wave.2")
       }
