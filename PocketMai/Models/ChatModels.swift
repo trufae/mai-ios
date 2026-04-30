@@ -58,6 +58,120 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum AppearanceFontFamily: Codable, Equatable, Hashable, Identifiable, Sendable {
+  case system
+  case serif
+  case rounded
+  case monospaced
+  case installed(String)
+
+  var id: String {
+    switch self {
+    case .system: "system"
+    case .serif: "serif"
+    case .rounded: "rounded"
+    case .monospaced: "monospaced"
+    case .installed(let fontName): "installed:\(fontName)"
+    }
+  }
+
+  var displayName: String {
+    switch self {
+    case .system: "System"
+    case .serif: "Serif"
+    case .rounded: "Rounded"
+    case .monospaced: "Monospaced"
+    case .installed(let fontName): fontName.replacingOccurrences(of: "-", with: " ")
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    let value = try container.decode(String.self)
+    switch value {
+    case "system": self = .system
+    case "serif": self = .serif
+    case "rounded": self = .rounded
+    case "monospaced": self = .monospaced
+    default:
+      if value.hasPrefix("installed:") {
+        self = .installed(String(value.dropFirst("installed:".count)))
+      } else {
+        self = .system
+      }
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .system:
+      try container.encode("system")
+    case .serif:
+      try container.encode("serif")
+    case .rounded:
+      try container.encode("rounded")
+    case .monospaced:
+      try container.encode("monospaced")
+    case .installed(let fontName):
+      try container.encode("installed:\(fontName)")
+    }
+  }
+}
+
+enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
+  case blue
+  case purple
+  case pink
+  case red
+  case orange
+  case yellow
+  case green
+  case mint
+  case teal
+  case cyan
+  case indigo
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .blue: "Blue"
+    case .purple: "Purple"
+    case .pink: "Pink"
+    case .red: "Red"
+    case .orange: "Orange"
+    case .yellow: "Yellow"
+    case .green: "Green"
+    case .mint: "Mint"
+    case .teal: "Teal"
+    case .cyan: "Cyan"
+    case .indigo: "Indigo"
+    }
+  }
+}
+
+struct AppearanceSettings: Codable, Equatable, Sendable {
+  var fontFamily: AppearanceFontFamily = .serif
+  var fontSize: Double = 17
+  var tint: AppearanceTint = .blue
+
+  static let defaults = AppearanceSettings()
+
+  init() {}
+
+  enum CodingKeys: String, CodingKey {
+    case fontFamily, fontSize, tint
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    fontFamily = (try? c.decode(AppearanceFontFamily.self, forKey: .fontFamily)) ?? .serif
+    fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
+    tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .blue
+  }
+}
+
 enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case datetime
   case location
@@ -543,6 +657,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var toolCallingMode: ToolCallingMode = .text
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
+  var appearance: AppearanceSettings = .defaults
 
   static let defaults = AppSettings()
 
@@ -557,7 +672,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, toolCallingMode
-    case useToolProxy, contextWindowMode
+    case useToolProxy, contextWindowMode, appearance
   }
 
   init(from decoder: Decoder) throws {
@@ -591,6 +706,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
     contextWindowMode =
       (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
+    appearance =
+      (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
   }
 }
 

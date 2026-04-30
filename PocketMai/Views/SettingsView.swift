@@ -111,6 +111,7 @@ struct SettingsView: View {
     NavigationStack(path: $endpointPath) {
       Form {
         providerSection
+        appearanceSection
         endpointSection
         promptSection
         toolsSection
@@ -217,6 +218,41 @@ struct SettingsView: View {
         "Apple Intelligence runs on-device. Add an endpoint below to use OpenAI-compatible providers."
     }
     return "Choose which provider answers new chats. Apple Intelligence runs on-device."
+  }
+
+  private var appearanceSection: some View {
+    Section {
+      Picker("Font", selection: settingsBinding(\.appearance.fontFamily)) {
+        ForEach(AppearanceFontFamily.pickerOptions) { font in
+          Text(font.displayName).tag(font)
+        }
+      }
+      .pickerStyle(.menu)
+
+      Picker("Tint", selection: settingsBinding(\.appearance.tint)) {
+        ForEach(AppearanceTint.allCases) { tint in
+          HStack {
+            Circle()
+              .fill(tint.color)
+              .frame(width: 12, height: 12)
+            Text(tint.displayName)
+          }
+          .tag(tint)
+        }
+      }
+      .pickerStyle(.menu)
+
+      Stepper(value: settingsBinding(\.appearance.fontSize), in: 13...24, step: 1) {
+        Text("Size \(Int(store.settings.appearance.fontSize)) pt")
+      }
+
+      Text("The quick brown fox jumps over the lazy dog.")
+        .font(store.settings.appearance.swiftUIFont)
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 2)
+    } header: {
+      Text("Appearance")
+    }
   }
 
   private var endpointSection: some View {

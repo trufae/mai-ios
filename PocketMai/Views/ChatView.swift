@@ -353,6 +353,7 @@ struct ChatView: View {
               MessageBubble(
                 message: message,
                 toolSettings: store.settings.toolSettings,
+                appearance: store.settings.appearance,
                 onDelete: { messagePendingDeletion = message },
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }
@@ -496,7 +497,8 @@ struct ChatView: View {
       store: store,
       placeholder: composerPlaceholder,
       conversationID: store.currentConversation?.id,
-      isResponding: currentChatIsResponding
+      isResponding: currentChatIsResponding,
+      appearance: store.settings.appearance
     )
     .equatable()
   }
@@ -507,6 +509,7 @@ private struct ChatComposer: View, Equatable {
   let placeholder: String
   let conversationID: UUID?
   let isResponding: Bool
+  let appearance: AppearanceSettings
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
@@ -516,6 +519,7 @@ private struct ChatComposer: View, Equatable {
     lhs.placeholder == rhs.placeholder
       && lhs.conversationID == rhs.conversationID
       && lhs.isResponding == rhs.isResponding
+      && lhs.appearance == rhs.appearance
   }
 
   var body: some View {
@@ -526,9 +530,13 @@ private struct ChatComposer: View, Equatable {
         text: draftBinding,
         height: $composerHeight,
         placeholder: placeholder,
-        isFocused: $composerFocused
+        isFocused: $composerFocused,
+        appearance: appearance
       )
       .frame(height: composerHeight)
+      .onChange(of: appearance) { _, newAppearance in
+        composerHeight = ComposerTextView.singleLineHeight(for: newAppearance)
+      }
 
       Button {
         if let id = conversationID, isResponding {
@@ -618,20 +626,25 @@ private struct ComposerTextView: UIViewRepresentable {
   @Binding var height: CGFloat
   var placeholder: String
   var isFocused: FocusState<Bool>.Binding
+  var appearance: AppearanceSettings
 
   static let maxLines: Int = 3
   private static let verticalInset: CGFloat = 7
 
   static var singleLineHeight: CGFloat {
-    lineHeight(for: 1)
+    lineHeight(for: 1, appearance: .defaults)
   }
 
-  static var maxComposerHeight: CGFloat {
-    lineHeight(for: maxLines)
+  static func singleLineHeight(for appearance: AppearanceSettings) -> CGFloat {
+    lineHeight(for: 1, appearance: appearance)
   }
 
-  private static func lineHeight(for lines: Int) -> CGFloat {
-    let font = UIFont.preferredFont(forTextStyle: .body)
+  static func maxComposerHeight(for appearance: AppearanceSettings) -> CGFloat {
+    lineHeight(for: maxLines, appearance: appearance)
+  }
+
+  private static func lineHeight(for lines: Int, appearance: AppearanceSettings) -> CGFloat {
+    let font = appearance.uiFont
     return ceil(font.lineHeight * CGFloat(lines)) + verticalInset * 2
   }
 
@@ -639,7 +652,7 @@ private struct ComposerTextView: UIViewRepresentable {
     let textView = UITextView()
     textView.delegate = context.coordinator
     textView.backgroundColor = .clear
-    textView.font = .preferredFont(forTextStyle: .body)
+    textView.font = appearance.uiFont
     textView.adjustsFontForContentSizeCategory = true
     textView.isScrollEnabled = false
     textView.textContainerInset = UIEdgeInsets(
@@ -663,6 +676,11 @@ private struct ComposerTextView: UIViewRepresentable {
       textView.text = text
       context.coordinator.updatePlaceholderVisibility(for: textView)
     }
+    let preferredFont = appearance.uiFont
+    if !fontsMatch(textView.font, preferredFont) {
+      textView.font = preferredFont
+      context.coordinator.updatePlaceholderFont(textView.font)
+    }
     context.coordinator.updatePlaceholderText(placeholder)
     recalculateHeight(textView)
     if isFocused.wrappedValue && !textView.isFirstResponder {
@@ -678,8 +696,8 @@ private struct ComposerTextView: UIViewRepresentable {
     guard width > 0 else { return }
     let fitted = textView.sizeThatFits(
       CGSize(width: width, height: .greatestFiniteMagnitude))
-    let minHeight = Self.singleLineHeight
-    let maxHeight = Self.maxComposerHeight
+    let minHeight = Self.singleLineHeight(for: appearance)
+    let maxHeight = Self.maxComposerHeight(for: appearance)
     let clamped = min(maxHeight, max(minHeight, ceil(fitted.height)))
     let shouldScroll = fitted.height > maxHeight + 0.5
     if textView.isScrollEnabled != shouldScroll {
@@ -690,6 +708,11 @@ private struct ComposerTextView: UIViewRepresentable {
         height = clamped
       }
     }
+  }
+
+  private func fontsMatch(_ lhs: UIFont?, _ rhs: UIFont) -> Bool {
+    guard let lhs else { return false }
+    return lhs.fontName == rhs.fontName && abs(lhs.pointSize - rhs.pointSize) < 0.1
   }
 
   func makeCoordinator() -> Coordinator {
@@ -722,6 +745,14 @@ private struct ComposerTextView: UIViewRepresentable {
     func updatePlaceholderText(_ text: String) {
       if placeholderLabel.text != text {
         placeholderLabel.text = text
+      }
+    }
+
+    func updatePlaceholderFont(_ font: UIFont?) {
+      if placeholderLabel.font.fontName != font?.fontName
+        || abs(placeholderLabel.font.pointSize - (font?.pointSize ?? 0)) >= 0.1
+      {
+        placeholderLabel.font = font
       }
     }
 

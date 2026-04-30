@@ -68,6 +68,8 @@ struct ContentView: View {
     } message: {
       Text(store.errorMessage ?? "")
     }
+    .tint(store.settings.appearance.tintColor)
+    .accentColor(store.settings.appearance.tintColor)
   }
 
   private func clampedHistoryOffset(panelWidth: CGFloat) -> CGFloat {

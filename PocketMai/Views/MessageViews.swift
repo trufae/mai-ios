@@ -6,6 +6,7 @@ struct MessageBubble: View {
 
   let message: ChatMessage
   let toolSettings: NativeToolSettings
+  let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -18,6 +19,7 @@ struct MessageBubble: View {
       message: message,
       streamingText: streamingTextStore.textObject(for: message.id),
       toolSettings: toolSettings,
+      appearance: appearance,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -32,6 +34,7 @@ private struct StreamingMessageBubble: View {
   let message: ChatMessage
   @ObservedObject var streamingText: StreamingText
   let toolSettings: NativeToolSettings
+  let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -44,6 +47,7 @@ private struct StreamingMessageBubble: View {
       message: message,
       streamingOverride: streamingText.text,
       toolSettings: toolSettings,
+      appearance: appearance,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -62,6 +66,7 @@ private struct MessageBubbleContent: View, Equatable {
   let message: ChatMessage
   var streamingOverride: String? = nil
   let toolSettings: NativeToolSettings
+  let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -78,6 +83,7 @@ private struct MessageBubbleContent: View, Equatable {
   nonisolated static func == (lhs: MessageBubbleContent, rhs: MessageBubbleContent) -> Bool {
     lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
       && lhs.toolSettings == rhs.toolSettings
+      && lhs.appearance == rhs.appearance
       && lhs.showThinking == rhs.showThinking
   }
 
@@ -153,17 +159,19 @@ private struct MessageBubbleContent: View, Equatable {
       }
       if visibleText.isEmpty {
         Text("...")
-          .font(.callout)
+          .font(appearance.swiftUIFont)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
       } else if isStreaming {
         Text(visibleText)
+          .font(appearance.swiftUIFont)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       } else if usesMarkdown {
-        MarkdownContentView(blocks: markdownBlocks)
+        MarkdownContentView(blocks: markdownBlocks, appearance: appearance)
       } else {
         Text(visibleText)
+          .font(appearance.swiftUIFont)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -546,13 +554,16 @@ enum ToolCallParser {
 
 struct MarkdownContentView: View {
   let blocks: [MarkdownBlock]
+  let appearance: AppearanceSettings
 
-  init(text: String) {
+  init(text: String, appearance: AppearanceSettings = .defaults) {
     self.blocks = MarkdownParser.blocks(from: text)
+    self.appearance = appearance
   }
 
-  init(blocks: [MarkdownBlock]) {
+  init(blocks: [MarkdownBlock], appearance: AppearanceSettings = .defaults) {
     self.blocks = blocks
+    self.appearance = appearance
   }
 
   var body: some View {
@@ -561,16 +572,18 @@ struct MarkdownContentView: View {
         switch block.kind {
         case .text(let value):
           Text(attributedInlineMarkdown(value))
+            .font(appearance.swiftUIFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let code):
-          CodeBlockView(language: language, code: code)
+          CodeBlockView(language: language, code: code, appearance: appearance)
         case .table(let headers, let rows, let alignments):
-          MarkdownTableView(headers: headers, rows: rows, alignments: alignments)
+          MarkdownTableView(
+            headers: headers, rows: rows, alignments: alignments, appearance: appearance)
         case .taskList(let items):
-          TaskListView(items: items)
+          TaskListView(items: items, appearance: appearance)
         case .bulletList(let items):
-          BulletListView(items: items)
+          BulletListView(items: items, appearance: appearance)
         }
       }
     }
@@ -589,6 +602,7 @@ struct MarkdownTableView: View {
   let headers: [String]
   let rows: [[String]]
   let alignments: [TextAlignment]
+  let appearance: AppearanceSettings
 
   var body: some View {
     Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
@@ -623,7 +637,11 @@ struct MarkdownTableView: View {
   private func cellView(_ value: String, columnIndex: Int, isHeader: Bool) -> some View {
     let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
     Text(attributedInlineMarkdown(value))
-      .font(isHeader ? .callout.weight(.semibold) : .callout)
+      .font(
+        isHeader
+          ? appearance.fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
+          : appearance.swiftUIFont
+      )
       .multilineTextAlignment(alignment)
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
       .padding(.horizontal, 10)
@@ -643,6 +661,7 @@ struct MarkdownTableView: View {
 struct CodeBlockView: View {
   let language: String
   let code: String
+  let appearance: AppearanceSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -664,7 +683,7 @@ struct CodeBlockView: View {
       Divider()
       ScrollView(.horizontal, showsIndicators: true) {
         Text(SyntaxHighlighter.highlight(code, language: language))
-          .font(.system(.callout, design: .monospaced))
+          .font(appearance.codeFont)
           .textSelection(.enabled)
           .padding(12)
       }
@@ -686,6 +705,7 @@ struct TaskListItem: Identifiable {
 
 struct TaskListView: View {
   let items: [TaskListItem]
+  let appearance: AppearanceSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -696,6 +716,7 @@ struct TaskListView: View {
             .imageScale(.medium)
             .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
           Text(attributedInlineMarkdown(item.text))
+            .font(appearance.swiftUIFont)
             .textSelection(.enabled)
             .strikethrough(item.checked, color: .secondary)
             .foregroundStyle(item.checked ? Color.secondary : Color.primary)
@@ -708,6 +729,7 @@ struct TaskListView: View {
 
 struct BulletListView: View {
   let items: [String]
+  let appearance: AppearanceSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -716,6 +738,7 @@ struct BulletListView: View {
           Text("•")
             .foregroundStyle(.secondary)
           Text(attributedInlineMarkdown(item))
+            .font(appearance.swiftUIFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         }
