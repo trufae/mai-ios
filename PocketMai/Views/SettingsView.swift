@@ -367,7 +367,7 @@ struct SettingsView: View {
       Text("Native Tools")
     } footer: {
       Text(
-        "Tap the checkbox to enable. Tap the row to expand options where available. Usage applies to Date & Time, Location, and Weather."
+        "Tap the checkbox to enable. Tap the row to expand options where available. Usage applies to Date & Time and Location; Weather is always on-demand."
       )
     }
   }

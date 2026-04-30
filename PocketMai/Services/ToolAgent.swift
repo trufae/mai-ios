@@ -35,9 +35,9 @@ enum ToolAgentRegistry {
       if conversation.enabledTools.contains(.location) {
         defs.append(contentsOf: LocationTool.definitions)
       }
-      if conversation.enabledTools.contains(.weather) {
-        defs.append(contentsOf: WeatherTool.definitions)
-      }
+    }
+    if conversation.enabledTools.contains(.weather) {
+      defs.append(contentsOf: WeatherTool.definitions)
     }
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidScheme {

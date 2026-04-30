@@ -32,14 +32,6 @@ enum ToolContextBuilder {
       signatureParts.append(
         "location:\(LocationRenderer.signature(settings: settings.toolSettings))")
     }
-    if asContext, enabled.contains(.weather) {
-      if let weather = await WeatherService.report(
-        settings: settings.toolSettings, locationService: locationService)
-      {
-        sections.append("Weather tool:\n\(weather)")
-      }
-      signatureParts.append("weather:\(WeatherService.signature(settings: settings.toolSettings))")
-    }
     if enabled.contains(.files) {
       let files = filesContext(settings: settings.toolSettings)
       if !files.isEmpty {
@@ -111,6 +103,14 @@ enum LocationRenderer {
 }
 
 enum WeatherService {
+  private static let minimumForecastDays = 7
+
+  private struct ProviderReport {
+    let body: String
+    let forecastDayCount: Int
+    let coordinate: CLLocationCoordinate2D?
+  }
+
   @MainActor
   static func report(
     settings: NativeToolSettings,
@@ -122,24 +122,39 @@ enum WeatherService {
       coordinate = await locationService().currentCoordinate()
     }
 
-    if let body = await wttrInReport(manual: manual, coordinate: coordinate) {
-      return body + "\n\n" + moonPhaseLine(for: Date())
+    let primary = await wttrInReport(manual: manual, coordinate: coordinate)
+    if let primary, primary.forecastDayCount >= minimumForecastDays {
+      return withMoonPhase(primary.body)
     }
-    if let body = await openMeteoReport(manual: manual, coordinate: coordinate) {
-      return body + "\n\n" + moonPhaseLine(for: Date())
+
+    let secondary = await openMeteoReport(
+      manual: manual,
+      coordinate: coordinate ?? primary?.coordinate
+    )
+    if let secondary, secondary.forecastDayCount >= minimumForecastDays {
+      return withMoonPhase(secondary.body)
+    }
+    if let primary, let secondary, secondary.forecastDayCount > primary.forecastDayCount {
+      return withMoonPhase(secondary.body)
+    }
+    if let primary {
+      return withMoonPhase(primary.body)
+    }
+    if let secondary {
+      return withMoonPhase(secondary.body)
     }
     return nil
   }
 
-  static func signature(settings: NativeToolSettings) -> String {
-    "\(settings.weatherLocation)|\(settings.useGPSLocation ? "gps" : "off")"
+  private static func withMoonPhase(_ body: String) -> String {
+    body + "\n\n" + moonPhaseLine(for: Date())
   }
 
   // MARK: - wttr.in (rich JSON)
 
   private static func wttrInReport(
     manual: String, coordinate: CLLocationCoordinate2D?
-  ) async -> String? {
+  ) async -> ProviderReport? {
     let path: String
     if !manual.isEmpty {
       let encoded = manual.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ""
@@ -161,9 +176,10 @@ enum WeatherService {
     return formatWttrIn(object)
   }
 
-  private static func formatWttrIn(_ object: [String: Any]) -> String? {
+  private static func formatWttrIn(_ object: [String: Any]) -> ProviderReport? {
     let area = ((object["nearest_area"] as? [[String: Any]])?.first) ?? [:]
     let areaName = areaDisplayName(area)
+    let areaCoordinate = areaCoordinate(area)
 
     var lines: [String] = []
     if !areaName.isEmpty {
@@ -183,10 +199,13 @@ enum WeatherService {
       lines.append("Precipitation: \(precip) mm")
     }
 
+    var forecastDayCount = 0
     if let weather = object["weather"] as? [[String: Any]], !weather.isEmpty {
       lines.append("")
-      lines.append("Forecast:")
-      for day in weather.prefix(7) {
+      let forecast = Array(weather.prefix(minimumForecastDays))
+      forecastDayCount = forecast.count
+      lines.append("Forecast (\(forecastDayCount) days):")
+      for day in forecast {
         let date = (day["date"] as? String) ?? ""
         let minT = (day["mintempC"] as? String) ?? "?"
         let maxT = (day["maxtempC"] as? String) ?? "?"
@@ -200,7 +219,13 @@ enum WeatherService {
     }
 
     let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    return body.isEmpty ? nil : body
+    return body.isEmpty
+      ? nil
+      : ProviderReport(
+        body: body,
+        forecastDayCount: forecastDayCount,
+        coordinate: areaCoordinate
+      )
   }
 
   private static func areaDisplayName(_ area: [String: Any]) -> String {
@@ -209,6 +234,16 @@ enum WeatherService {
     let region = firstString(area["region"]) ?? ""
     let parts = [name, region, country].filter { !$0.isEmpty }
     return parts.joined(separator: ", ")
+  }
+
+  private static func areaCoordinate(_ area: [String: Any]) -> CLLocationCoordinate2D? {
+    guard
+      let latitude = firstDouble(area["latitude"]),
+      let longitude = firstDouble(area["longitude"])
+    else {
+      return nil
+    }
+    return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
   }
 
   private static func firstString(_ raw: Any?) -> String? {
@@ -230,11 +265,18 @@ enum WeatherService {
     return nil
   }
 
+  private static func firstDouble(_ raw: Any?) -> Double? {
+    if let double = raw as? Double { return double }
+    if let int = raw as? Int { return Double(int) }
+    if let string = firstString(raw) { return Double(string) }
+    return nil
+  }
+
   // MARK: - Open-Meteo fallback
 
   private static func openMeteoReport(
     manual: String, coordinate: CLLocationCoordinate2D?
-  ) async -> String? {
+  ) async -> ProviderReport? {
     let resolved = await resolveCoordinate(manual: manual, coordinate: coordinate)
     guard let resolved else { return nil }
     var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
@@ -274,6 +316,9 @@ enum WeatherService {
         return (parsed.0, parsed.1, manual)
       }
       if let geocoded = await openMeteoGeocode(name: manual) { return geocoded }
+      if let coordinate {
+        return (coordinate.latitude, coordinate.longitude, manual)
+      }
       return nil
     }
     if let coordinate {
@@ -313,8 +358,9 @@ enum WeatherService {
     return (lat, lon, label.isEmpty ? name : label)
   }
 
-  private static func formatOpenMeteo(_ object: [String: Any], label: String) -> String? {
+  private static func formatOpenMeteo(_ object: [String: Any], label: String) -> ProviderReport? {
     var lines: [String] = ["Location: \(label)"]
+    var forecastDayCount = 0
     if let current = object["current"] as? [String: Any] {
       let temp = numberString(current["temperature_2m"]) ?? "?"
       let feels = numberString(current["apparent_temperature"]) ?? "?"
@@ -337,8 +383,9 @@ enum WeatherService {
       let chance = (daily["precipitation_probability_max"] as? [Int]) ?? []
       let wind = (daily["wind_speed_10m_max"] as? [Double]) ?? []
       lines.append("")
-      lines.append("Forecast:")
-      for index in 0..<min(times.count, 7) {
+      forecastDayCount = min(times.count, minimumForecastDays)
+      lines.append("Forecast (\(forecastDayCount) days):")
+      for index in 0..<forecastDayCount {
         let date = times[index]
         let minT = index < mins.count ? String(format: "%.0f", mins[index]) : "?"
         let maxT = index < maxs.count ? String(format: "%.0f", maxs[index]) : "?"
@@ -351,7 +398,10 @@ enum WeatherService {
         )
       }
     }
-    return lines.joined(separator: "\n")
+    let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return body.isEmpty
+      ? nil
+      : ProviderReport(body: body, forecastDayCount: forecastDayCount, coordinate: nil)
   }
 
   private static func numberString(_ raw: Any?) -> String? {

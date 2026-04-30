@@ -107,7 +107,7 @@ enum NativeToolMode: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .context:
       return
-        "Date & Time, Location, and Weather are rendered once and added to the system context. They re-render only when their parameters change."
+        "Date & Time and Location are rendered once and added to the system context. Weather remains an on-demand tool."
     case .onDemand:
       return
         "Date & Time, Location, and Weather are exposed as callable tools the model invokes when needed."
