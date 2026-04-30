@@ -532,7 +532,6 @@ struct AppSettings: Codable, Equatable, Sendable {
   var toolSettings: NativeToolSettings = .defaults
   var mcpServers: [MCPServer] = []
   var memory: String = ""
-  var embedMemory: Bool = true
   var toolCallingMode: ToolCallingMode = .text
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
@@ -549,7 +548,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   enum CodingKeys: String, CodingKey {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
-    case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
+    case toolSettings, mcpServers, memory, toolCallingMode
     case useToolProxy, contextWindowMode
   }
 
@@ -576,7 +575,6 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(NativeToolSettings.self, forKey: .toolSettings)) ?? .defaults
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""
-    embedMemory = (try? c.decode(Bool.self, forKey: .embedMemory)) ?? true
     let storedMode = (try? c.decode(String.self, forKey: .toolCallingMode)) ?? "text"
     let migratedFromLegacyProxy = (storedMode == "proxy")
     toolCallingMode =

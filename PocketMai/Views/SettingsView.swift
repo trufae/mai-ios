@@ -527,7 +527,6 @@ struct SettingsView: View {
         pendingDeletion = PendingSettingsDeletion(kind: .file, offsets: offsets)
       }
     case .memory:
-      Toggle("Embed memory in conversations", isOn: settingsBinding(\.embedMemory))
       TextEditor(text: settingsBinding(\.memory))
         .frame(minHeight: 140)
         .font(.callout)
@@ -554,7 +553,7 @@ struct SettingsView: View {
         !hasConversationContent
           || store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       Text(
-        "Memory is added to the system prompt as durable context. Toggle off to keep it locally without sending it to the model."
+        "Memory is added to the system prompt as durable context when the Memory context tool is enabled."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
