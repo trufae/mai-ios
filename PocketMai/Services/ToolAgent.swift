@@ -20,7 +20,7 @@ enum ToolAgentRegistry {
   ) -> [ToolDefinition] {
     var defs: [ToolDefinition] = []
     if conversation.enabledTools.contains(.webSearch) {
-      defs.append(contentsOf: WebSearchTool.definitions)
+      defs.append(contentsOf: WebSearchTool.definitions(settings: settings.toolSettings))
     }
     if conversation.enabledTools.contains(.todo) {
       defs.append(contentsOf: TodoTool.definitions)
@@ -124,6 +124,8 @@ enum ToolAgentRegistry {
     case WebSearchTool.name:
       return await WebSearchTool.search(
         arguments: normalizedCall.argumentValues, settings: store.settings)
+    case WebSearchTool.fetchName:
+      return await WebSearchTool.fetch(arguments: normalizedCall.argumentValues)
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
         arguments: normalizedCall.argumentValues, settings: store.settings.toolSettings)
@@ -309,25 +311,42 @@ enum ToolProxy {
 @MainActor
 enum WebSearchTool {
   static let name = "web_search"
+  static let fetchName = "web_fetch"
 
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: name,
-      description:
-        "Search the web only when current or external information is needed. Do not call this for ordinary conversation, writing, coding from provided context, or questions answerable without fresh lookup.",
-      parameters: [
-        ToolParameterDef(
-          name: "query", type: "string",
+  static func definitions(settings: NativeToolSettings) -> [ToolDefinition] {
+    var definitions = [
+      ToolDefinition(
+        name: name,
+        description:
+          "Search the web only when current or external information is needed. Do not call this for ordinary conversation, writing, coding from provided context, or questions answerable without fresh lookup.",
+        parameters: [
+          ToolParameterDef(
+            name: "query", type: "string",
+            description:
+              "Focused search query. Use only the information needed for lookup; do not include unrelated chat history.",
+            required: true),
+          ToolParameterDef(
+            name: "provider", type: "string",
+            description:
+              "Optional provider override: duckDuckGo, wikipedia, ollama, or all. Omit to use the configured default.",
+            required: false),
+        ])
+    ]
+    if settings.webSearchFetchingEnabled {
+      definitions.append(
+        ToolDefinition(
+          name: fetchName,
           description:
-            "Focused search query. Use only the information needed for lookup; do not include unrelated chat history.",
-          required: true),
-        ToolParameterDef(
-          name: "provider", type: "string",
-          description:
-            "Optional provider override: duckDuckGo, wikipedia, ollama, or all. Omit to use the configured default.",
-          required: false),
-      ])
-  ]
+            "Fetch a specific HTTP or HTTPS URL and return cleaned page text. Use after search when the content of a result page is needed; do not use for files, images, private URLs, or ordinary questions.",
+          parameters: [
+            ToolParameterDef(
+              name: "url", type: "string",
+              description: "The full HTTP or HTTPS URL to fetch and clean.",
+              required: true)
+          ]))
+    }
+    return definitions
+  }
 
   static func search(arguments: [String: AgentToolArgumentValue], settings: AppSettings) async
     -> String
@@ -345,6 +364,13 @@ enum WebSearchTool {
       return "No web results for '\(query)'."
     }
     return result
+  }
+
+  static func fetch(arguments: [String: AgentToolArgumentValue]) async -> String {
+    let url = (arguments["url"]?.stringValue ?? arguments["uri"]?.stringValue ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !url.isEmpty else { return "Error: url is required." }
+    return await WebFetchService.fetchContext(urlString: url)
   }
 
   private static func providerValue(_ raw: String?) -> WebSearchProvider? {

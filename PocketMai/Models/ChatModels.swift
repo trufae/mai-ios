@@ -458,6 +458,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var manualLocation: String = ""
   var weatherLocation: String = ""
   var webSearchProvider: WebSearchProvider = .duckDuckGo
+  var webSearchFetchingEnabled: Bool = false
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
   var textToSpeechLanguage: String = ""
@@ -471,7 +472,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case includeTimeZone, includeCurrentTime, includeYear, useGPSLocation
-    case manualLocation, weatherLocation, webSearchProvider, todos, files
+    case manualLocation, weatherLocation, webSearchProvider, webSearchFetchingEnabled, todos, files
     case textToSpeechLanguage, textToSpeechVoiceIdentifier
     case textToSpeechRate, textToSpeechPitch
   }
@@ -492,6 +493,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     webSearchProvider =
       (try? c.decode(WebSearchProvider.self, forKey: .webSearchProvider))
       ?? defaults.webSearchProvider
+    webSearchFetchingEnabled =
+      (try? c.decode(Bool.self, forKey: .webSearchFetchingEnabled))
+      ?? defaults.webSearchFetchingEnabled
     todos = (try? c.decode([TodoItem].self, forKey: .todos)) ?? defaults.todos
     files = (try? c.decode([ToolFile].self, forKey: .files)) ?? defaults.files
     textToSpeechLanguage =

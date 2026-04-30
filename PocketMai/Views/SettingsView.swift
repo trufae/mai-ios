@@ -423,6 +423,9 @@ struct SettingsView: View {
           Text(provider.displayName).tag(provider)
         }
       }
+      Toggle(
+        "Fetching data",
+        isOn: settingsBinding(\.toolSettings.webSearchFetchingEnabled))
     case .todo:
       HStack {
         TextField("New todo", text: $newTodoTitle)
