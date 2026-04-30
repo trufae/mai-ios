@@ -139,10 +139,10 @@ enum ToolAgentRegistry {
       return DateTimeTool.run(settings: store.settings.toolSettings)
     case LocationTool.name:
       return await LocationTool.run(
-        settings: store.settings.toolSettings, locationService: store.locationService)
+        settings: store.settings.toolSettings, locationService: { store.locationService })
     case WeatherTool.name:
       return await WeatherTool.run(
-        settings: store.settings.toolSettings, locationService: store.locationService)
+        settings: store.settings.toolSettings, locationService: { store.locationService })
     default:
       return await dispatchMCP(call: normalizedCall, store: store)
     }
@@ -559,7 +559,10 @@ enum LocationTool {
     )
   ]
 
-  static func run(settings: NativeToolSettings, locationService: LocationService) async -> String {
+  static func run(
+    settings: NativeToolSettings,
+    locationService: @MainActor () -> LocationService
+  ) async -> String {
     await LocationRenderer.render(settings: settings, locationService: locationService)
   }
 }
@@ -577,7 +580,10 @@ enum WeatherTool {
     )
   ]
 
-  static func run(settings: NativeToolSettings, locationService: LocationService) async -> String {
+  static func run(
+    settings: NativeToolSettings,
+    locationService: @MainActor () -> LocationService
+  ) async -> String {
     if let report = await WeatherService.report(
       settings: settings, locationService: locationService)
     {

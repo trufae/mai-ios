@@ -64,7 +64,7 @@ final class AppStore: ObservableObject {
   /// `conversations` via `setAssistantMessage` without `streaming: true`.
   @Published var streamingTexts: [UUID: String] = [:]
 
-  let locationService = LocationService()
+  lazy var locationService = LocationService()
   private let persistence: PersistenceStore
   private var pendingStreamingTexts: [UUID: String] = [:]
   private var streamingPublishTasks: [UUID: Task<Void, Never>] = [:]
@@ -362,7 +362,7 @@ final class AppStore: ObservableObject {
       input: prompt,
       conversation: conversations[index],
       settings: settings,
-      locationService: locationService
+      locationService: { self.locationService }
     )
     let trimmedTC = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
     let embed: Bool = {

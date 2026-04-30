@@ -13,7 +13,7 @@ enum ToolContextBuilder {
     input: String,
     conversation: Conversation,
     settings: AppSettings,
-    locationService: LocationService
+    locationService: @MainActor () -> LocationService
   ) async -> Output {
     var sections: [String] = []
     var signatureParts: [String] = []
@@ -94,11 +94,12 @@ enum DateTimeRenderer {
 
 enum LocationRenderer {
   @MainActor
-  static func render(settings: NativeToolSettings, locationService: LocationService) async
-    -> String
-  {
+  static func render(
+    settings: NativeToolSettings,
+    locationService: @MainActor () -> LocationService
+  ) async -> String {
     if settings.useGPSLocation {
-      return "Location tool:\n\(await locationService.currentLocationText())"
+      return "Location tool:\n\(await locationService().currentLocationText())"
     }
     let manual = settings.manualLocation.trimmingCharacters(in: .whitespacesAndNewlines)
     return manual.isEmpty ? "Location tool:\nNo location configured" : "Location tool:\n\(manual)"
@@ -111,13 +112,14 @@ enum LocationRenderer {
 
 enum WeatherService {
   @MainActor
-  static func report(settings: NativeToolSettings, locationService: LocationService) async
-    -> String?
-  {
+  static func report(
+    settings: NativeToolSettings,
+    locationService: @MainActor () -> LocationService
+  ) async -> String? {
     let manual = settings.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines)
     var coordinate: CLLocationCoordinate2D? = nil
     if manual.isEmpty, settings.useGPSLocation {
-      coordinate = await locationService.currentCoordinate()
+      coordinate = await locationService().currentCoordinate()
     }
 
     if let body = await wttrInReport(manual: manual, coordinate: coordinate) {
