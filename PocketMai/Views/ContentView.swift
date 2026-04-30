@@ -81,25 +81,20 @@ struct ContentView: View {
   }
 
   private func historyPanelDragGesture(panelWidth: CGFloat) -> some Gesture {
-    DragGesture(minimumDistance: 4, coordinateSpace: .local)
+    DragGesture(minimumDistance: 12, coordinateSpace: .local)
       .onChanged { value in
-        guard showingHistory || value.startLocation.x <= 34 else { return }
         let horizontal = value.translation.width
         let vertical = abs(value.translation.height)
-        guard abs(horizontal) > 6, abs(horizontal) > vertical * 0.65 else { return }
+        guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else { return }
 
         let baseOffset = showingHistory ? panelWidth : 0
         let draggedOffset = min(max(baseOffset + horizontal, 0), panelWidth)
         historyDragOffset = draggedOffset - baseOffset
       }
       .onEnded { value in
-        guard showingHistory || value.startLocation.x <= 34 else {
-          historyDragOffset = 0
-          return
-        }
         let horizontal = value.translation.width
         let vertical = abs(value.translation.height)
-        guard abs(horizontal) > 6, abs(horizontal) > vertical * 0.65 else {
+        guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else {
           historyDragOffset = 0
           return
         }

@@ -377,6 +377,7 @@ struct ChatView: View {
         }
         .id(store.selectedConversationID)
         .defaultScrollAnchor(.bottom)
+        .scrollDismissesKeyboard(.interactively)
         .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
         .simultaneousGesture(messageListScrollGesture)
         .onChange(of: lastMessageSnapshot) { old, new in
