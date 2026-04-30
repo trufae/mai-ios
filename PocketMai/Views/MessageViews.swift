@@ -14,11 +14,35 @@ struct MessageBubble: View {
   var onStreamingTextChange: ((String) -> Void)? = nil
 
   var body: some View {
-    let streamingText = streamingTextStore.text(for: message.id)
+    StreamingMessageBubble(
+      message: message,
+      streamingText: streamingTextStore.textObject(for: message.id),
+      toolSettings: toolSettings,
+      onDelete: onDelete,
+      onResubmit: onResubmit,
+      onTrimFromHere: onTrimFromHere,
+      onRestartFresh: onRestartFresh,
+      showThinking: showThinking,
+      onStreamingTextChange: onStreamingTextChange
+    )
+  }
+}
 
+private struct StreamingMessageBubble: View {
+  let message: ChatMessage
+  @ObservedObject var streamingText: StreamingText
+  let toolSettings: NativeToolSettings
+  let onDelete: () -> Void
+  var onResubmit: (() -> Void)? = nil
+  var onTrimFromHere: (() -> Void)? = nil
+  var onRestartFresh: (() -> Void)? = nil
+  var showThinking: Bool = false
+  var onStreamingTextChange: ((String) -> Void)? = nil
+
+  var body: some View {
     MessageBubbleContent(
       message: message,
-      streamingOverride: streamingText,
+      streamingOverride: streamingText.text,
       toolSettings: toolSettings,
       onDelete: onDelete,
       onResubmit: onResubmit,
@@ -27,7 +51,7 @@ struct MessageBubble: View {
       showThinking: showThinking
     )
     .equatable()
-    .onChange(of: streamingText) { _, newText in
+    .onChange(of: streamingText.text) { _, newText in
       guard let newText else { return }
       onStreamingTextChange?(newText)
     }

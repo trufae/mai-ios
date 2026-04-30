@@ -2,20 +2,34 @@ import Combine
 import Foundation
 
 @MainActor
+final class StreamingText: ObservableObject {
+  @Published fileprivate(set) var text: String?
+
+  fileprivate func setText(_ text: String?) {
+    self.text = text
+  }
+}
+
+@MainActor
 final class StreamingTextStore: ObservableObject {
-  @Published private var texts: [UUID: String] = [:]
+  private var textObjects: [UUID: StreamingText] = [:]
 
   private var pendingTexts: [UUID: String] = [:]
   private var publishTasks: [UUID: Task<Void, Never>] = [:]
   private var lastPublishAt: [UUID: Date] = [:]
   private static let publishInterval: TimeInterval = 0.12
 
-  func text(for id: UUID) -> String? {
-    texts[id]
+  func textObject(for id: UUID) -> StreamingText {
+    if let object = textObjects[id] {
+      return object
+    }
+    let object = StreamingText()
+    textObjects[id] = object
+    return object
   }
 
   func currentText(for id: UUID) -> String? {
-    pendingTexts[id] ?? texts[id]
+    pendingTexts[id] ?? textObjects[id]?.text
   }
 
   func enqueue(_ text: String, for id: UUID) {
@@ -27,7 +41,7 @@ final class StreamingTextStore: ObservableObject {
 
     if elapsed >= Self.publishInterval {
       lastPublishAt[id] = now
-      texts[id] = text
+      textObject(for: id).setText(text)
       return
     }
 
@@ -43,8 +57,9 @@ final class StreamingTextStore: ObservableObject {
       self.publishTasks[id] = nil
       guard let pending = self.pendingTexts.removeValue(forKey: id) else { return }
       self.lastPublishAt[id] = Date()
-      if self.texts[id] != pending {
-        self.texts[id] = pending
+      let object = self.textObject(for: id)
+      if object.text != pending {
+        object.setText(pending)
       }
     }
   }
@@ -54,7 +69,8 @@ final class StreamingTextStore: ObservableObject {
     lastPublishAt.removeValue(forKey: id)
     publishTasks[id]?.cancel()
     publishTasks.removeValue(forKey: id)
-    texts.removeValue(forKey: id)
+    textObjects[id]?.setText(nil)
+    textObjects.removeValue(forKey: id)
   }
 
   func removeAll() {
@@ -64,6 +80,9 @@ final class StreamingTextStore: ObservableObject {
     publishTasks.removeAll()
     pendingTexts.removeAll()
     lastPublishAt.removeAll()
-    texts.removeAll()
+    for object in textObjects.values {
+      object.setText(nil)
+    }
+    textObjects.removeAll()
   }
 }
