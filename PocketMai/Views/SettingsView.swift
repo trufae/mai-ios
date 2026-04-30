@@ -119,8 +119,8 @@ struct SettingsView: View {
         endpointSection
         promptSection
         toolsSection
+        contextToolsSection
         mcpSection
-        memorySection
         aboutSection
         dangerSection
       }
@@ -351,36 +351,38 @@ struct SettingsView: View {
 
   private var toolsSection: some View {
     Section {
-      Picker("Usage", selection: settingsBinding(\.nativeToolMode)) {
-        ForEach(NativeToolMode.allCases) { mode in
-          Text(mode.displayName).tag(mode)
-        }
-      }
-      .pickerStyle(.menu)
-      Text(store.settings.nativeToolMode.summary)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      ForEach(NativeToolID.allCases.filter { $0 != .memory }) { tool in
+      ForEach(NativeToolID.allCases.filter { !contextToolIDs.contains($0) }) { tool in
         toolRow(tool)
       }
     } header: {
       Text("Native Tools")
     } footer: {
+      Text("Tap the checkbox to enable. Tap the row to expand options where available.")
+    }
+  }
+
+  private var contextToolsSection: some View {
+    Section {
+      ForEach(Array(contextToolIDs)) { tool in
+        toolRow(tool)
+      }
+    } header: {
+      Text("Context Tools")
+    } footer: {
       Text(
-        "Tap the checkbox to enable. Tap the row to expand options where available. Usage applies to Date & Time and Location; Weather is always on-demand."
+        "Context tools are rendered into the system prompt instead of being called on-demand. Toggle each tool to include its content in every chat."
       )
     }
   }
 
-  @ViewBuilder
+  private var contextToolIDs: [NativeToolID] {
+    [.datetime, .location, .memory]
+  }
+
   private func toolRow(_ tool: NativeToolID) -> some View {
-    if toolHasOptions(tool) {
-      DisclosureGroup {
-        toolOptions(tool)
-      } label: {
-        toolLabel(tool)
-      }
-    } else {
+    DisclosureGroup {
+      toolOptions(tool)
+    } label: {
       toolLabel(tool)
     }
   }
@@ -405,13 +407,6 @@ struct SettingsView: View {
         .frame(width: 20)
       Text(tool.displayName)
         .foregroundStyle(.primary)
-    }
-  }
-
-  private func toolHasOptions(_ tool: NativeToolID) -> Bool {
-    switch tool {
-    case .memory: return false
-    default: return true
     }
   }
 
@@ -534,7 +529,37 @@ struct SettingsView: View {
         pendingDeletion = PendingSettingsDeletion(kind: .file, offsets: offsets)
       }
     case .memory:
-      EmptyView()
+      Toggle("Embed memory in conversations", isOn: settingsBinding(\.embedMemory))
+      TextEditor(text: settingsBinding(\.memory))
+        .frame(minHeight: 140)
+        .font(.callout)
+      Button {
+        Task { await store.updateMemoryFromConversations() }
+      } label: {
+        if store.isUpdatingMemory {
+          ProgressView()
+        } else {
+          Label("Update From Conversations", systemImage: "wand.and.sparkles")
+        }
+      }
+      .disabled(store.isUpdatingMemory || !hasConversationContent)
+      Button {
+        showingClearMemoryConfirmation = true
+      } label: {
+        let memoryEmpty =
+          store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let active = hasConversationContent && !memoryEmpty
+        Label("Clear Memory", systemImage: "trash")
+          .foregroundStyle(active ? Color.red : Color.secondary)
+      }
+      .disabled(
+        !hasConversationContent
+          || store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      Text(
+        "Memory is added to the system prompt as durable context. Toggle off to keep it locally without sending it to the model."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
   }
 
@@ -719,43 +744,6 @@ struct SettingsView: View {
       else { return }
       store.settings.mcpServers.remove(atOffsets: deletion.offsets)
       store.saveSettings()
-    }
-  }
-
-  private var memorySection: some View {
-    Section {
-      Toggle("Embed memory in conversations", isOn: settingsBinding(\.embedMemory))
-      TextEditor(text: settingsBinding(\.memory))
-        .frame(minHeight: 140)
-        .font(.callout)
-      Button {
-        Task { await store.updateMemoryFromConversations() }
-      } label: {
-        if store.isUpdatingMemory {
-          ProgressView()
-        } else {
-          Label("Update From Conversations", systemImage: "wand.and.sparkles")
-        }
-      }
-      .disabled(store.isUpdatingMemory || !hasConversationContent)
-      Button {
-        showingClearMemoryConfirmation = true
-      } label: {
-        let memoryEmpty =
-          store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let active = hasConversationContent && !memoryEmpty
-        Label("Clear Memory", systemImage: "trash")
-          .foregroundStyle(active ? Color.red : Color.secondary)
-      }
-      .disabled(
-        !hasConversationContent
-          || store.settings.memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    } header: {
-      Text("Memory")
-    } footer: {
-      Text(
-        "Memory is added to the system prompt as durable context. Toggle off to keep it locally without sending it to the model."
-      )
     }
   }
 

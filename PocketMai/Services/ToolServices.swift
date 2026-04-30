@@ -18,14 +18,13 @@ enum ToolContextBuilder {
     var sections: [String] = []
     var signatureParts: [String] = []
     let enabled = conversation.enabledTools
-    let asContext = settings.nativeToolMode == .context
 
-    if asContext, enabled.contains(.datetime) {
+    if enabled.contains(.datetime) {
       sections.append(DateTimeRenderer.render(settings: settings.toolSettings))
       signatureParts.append(
         "datetime:\(DateTimeRenderer.signature(settings: settings.toolSettings))")
     }
-    if asContext, enabled.contains(.location) {
+    if enabled.contains(.location) {
       sections.append(
         await LocationRenderer.render(
           settings: settings.toolSettings, locationService: locationService))

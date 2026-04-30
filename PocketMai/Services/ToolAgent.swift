@@ -28,14 +28,6 @@ enum ToolAgentRegistry {
     if conversation.enabledTools.contains(.textToSpeech) {
       defs.append(contentsOf: TextToSpeechTool.definitions)
     }
-    if settings.nativeToolMode == .onDemand {
-      if conversation.enabledTools.contains(.datetime) {
-        defs.append(contentsOf: DateTimeTool.definitions)
-      }
-      if conversation.enabledTools.contains(.location) {
-        defs.append(contentsOf: LocationTool.definitions)
-      }
-    }
     if conversation.enabledTools.contains(.weather) {
       defs.append(contentsOf: WeatherTool.definitions)
     }

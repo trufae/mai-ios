@@ -90,31 +90,6 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 
 }
 
-enum NativeToolMode: String, Codable, CaseIterable, Identifiable, Sendable {
-  case context
-  case onDemand
-
-  var id: String { rawValue }
-
-  var displayName: String {
-    switch self {
-    case .context: "Context"
-    case .onDemand: "On-demand"
-    }
-  }
-
-  var summary: String {
-    switch self {
-    case .context:
-      return
-        "Date & Time and Location are rendered once and added to the system context. Weather remains an on-demand tool."
-    case .onDemand:
-      return
-        "Date & Time, Location, and Weather are exposed as callable tools the model invokes when needed."
-    }
-  }
-}
-
 enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case text
   case native
@@ -557,7 +532,6 @@ struct AppSettings: Codable, Equatable, Sendable {
   var toolCallingMode: ToolCallingMode = .text
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
-  var nativeToolMode: NativeToolMode = .context
 
   static let defaults = AppSettings()
 
@@ -572,7 +546,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, embedMemory, toolCallingMode
-    case useToolProxy, contextWindowMode, nativeToolMode
+    case useToolProxy, contextWindowMode
   }
 
   init(from decoder: Decoder) throws {
@@ -607,8 +581,6 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
     contextWindowMode =
       (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
-    nativeToolMode =
-      (try? c.decode(NativeToolMode.self, forKey: .nativeToolMode)) ?? .context
   }
 }
 
