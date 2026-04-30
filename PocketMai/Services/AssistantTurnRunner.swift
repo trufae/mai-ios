@@ -7,15 +7,9 @@ enum AssistantTurnRunner {
     toolContext: String,
     store: AppStore
   ) async {
-    guard let index = store.conversations.firstIndex(where: { $0.id == conversationID }) else {
+    guard let assistantID = store.appendAssistantMessage(to: conversationID) else {
       return
     }
-
-    let assistantMessage = ChatMessage(role: .assistant, text: "")
-    store.conversations[index].messages.append(assistantMessage)
-    store.conversations[index].updatedAt = Date()
-    let assistantID = assistantMessage.id
-    store.saveConversations()
 
     do {
       try await runLoop(
@@ -44,12 +38,12 @@ enum AssistantTurnRunner {
     toolContext: String,
     store: AppStore
   ) async throws {
-    guard let index = store.conversations.firstIndex(where: { $0.id == conversationID }) else {
+    guard let conversation = store.conversation(withID: conversationID) else {
       return
     }
 
     let agentDefinitions = ToolAgentRegistry.visibleDefinitions(
-      for: store.conversations[index],
+      for: conversation,
       settings: store.settings,
       mcpTools: store.mcpTools
     )
@@ -58,7 +52,7 @@ enum AssistantTurnRunner {
       definitions: agentDefinitions
     )
     let nativeTools = nativeToolsIfNeeded(
-      conversation: store.conversations[index],
+      conversation: conversation,
       settings: store.settings,
       definitions: agentDefinitions
     )
@@ -79,11 +73,11 @@ enum AssistantTurnRunner {
 
     for _ in 0..<maxIterations {
       try Task.checkCancellation()
-      guard let i = store.conversations.firstIndex(where: { $0.id == conversationID }) else {
+      guard let conversation = store.conversation(withID: conversationID) else {
         return
       }
       let request = ChatCompletionRequest(
-        conversation: store.conversations[i],
+        conversation: conversation,
         settings: store.settings,
         toolContext: augmentedToolContext,
         assistantMessageID: assistantID,
@@ -147,11 +141,11 @@ enum AssistantTurnRunner {
     toolContext: String,
     store: AppStore
   ) async throws {
-    guard let i = store.conversations.firstIndex(where: { $0.id == conversationID }) else {
+    guard let conversation = store.conversation(withID: conversationID) else {
       return
     }
     let request = ChatCompletionRequest(
-      conversation: store.conversations[i],
+      conversation: conversation,
       settings: store.settings,
       toolContext: toolContext,
       assistantMessageID: assistantID,
