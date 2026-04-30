@@ -389,187 +389,28 @@ final class AppStore: ObservableObject {
     conversations[i].updatedAt = Date()
     saveConversations()
 
-    dispatchAssistantTurn(
-      conversationID: conversationID, prompt: prompt,
-      toolContext: embed ? toolContext.text : "")
+    dispatchAssistantTurn(conversationID: conversationID, toolContext: embed ? toolContext.text : "")
   }
 
-  private func dispatchAssistantTurn(
-    conversationID: UUID, prompt: String, toolContext: String
-  ) {
+  private func dispatchAssistantTurn(conversationID: UUID, toolContext: String) {
     respondingConversationIDs.insert(conversationID)
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
-      await self.runAssistantTurn(
-        conversationID: conversationID, prompt: prompt, toolContext: toolContext)
+      defer {
+        respondingConversationIDs.remove(conversationID)
+        responseTasks[conversationID] = nil
+        saveConversations()
+      }
+      await AssistantTurnRunner.run(
+        conversationID: conversationID,
+        toolContext: toolContext,
+        store: self
+      )
     }
     responseTasks[conversationID] = task
   }
 
-  private func runAssistantTurn(
-    conversationID: UUID, prompt: String, toolContext: String
-  ) async {
-    defer {
-      respondingConversationIDs.remove(conversationID)
-      responseTasks[conversationID] = nil
-      saveConversations()
-    }
-
-    guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-
-    let assistantMessage = ChatMessage(role: .assistant, text: "")
-    conversations[index].messages.append(assistantMessage)
-    conversations[index].updatedAt = Date()
-    let assistantID = assistantMessage.id
-    saveConversations()
-
-    do {
-      let agentDefinitions = ToolAgentRegistry.visibleDefinitions(
-        for: conversations[index], settings: settings, mcpTools: mcpTools)
-      let agentToolPrompt = ToolAgentRegistry.promptDescription(for: agentDefinitions)
-      var augmentedToolContext = toolContext
-      if !agentToolPrompt.isEmpty {
-        if augmentedToolContext.isEmpty {
-          augmentedToolContext = agentToolPrompt
-        } else {
-          augmentedToolContext += "\n\n" + agentToolPrompt
-        }
-      }
-
-      var assistantText = ""
-      var didFinish = false
-      let toolNameResolver = AgentToolNameResolver(tools: agentDefinitions)
-
-      let nativeTools: [OpenAITool]? = {
-        guard
-          settings.toolCallingMode == .native,
-          conversations[index].provider == .openAICompatible,
-          !agentDefinitions.isEmpty
-        else { return nil }
-        return agentDefinitions.map { def in
-          OpenAITool(
-            function: OpenAIFunctionSpec(
-              name: toolNameResolver.apiName(for: def.name),
-              description:
-                def.description
-                + (toolNameResolver.apiName(for: def.name) == def.name
-                  ? "" : " Original tool name: \(def.name)."),
-              parameters: OpenAIFunctionSchema(
-                properties: Dictionary(
-                  uniqueKeysWithValues: def.parameters.map { p in
-                    (
-                      p.name,
-                      OpenAIPropertySpec(type: p.type, description: p.description)
-                    )
-                  }),
-                required: def.parameters.filter(\.required).map(\.name)
-              )
-            )
-          )
-        }
-      }()
-
-      if agentDefinitions.isEmpty {
-        guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-        let request = ChatCompletionRequest(
-          conversation: conversations[i],
-          settings: settings,
-          toolContext: augmentedToolContext,
-          assistantMessageID: assistantID,
-          hasToolCalling: false
-        )
-        let response = try await ChatProviderRouter.complete(request: request) {
-          [weak self] streamed in
-          let cleaned = AppStore.strippedSpuriousToolCallText(streamed)
-          self?.setAssistantMessage(
-            id: assistantID, text: cleaned, role: .assistant, touch: false, streaming: true)
-        }
-        try Task.checkCancellation()
-        let cleaned = AppStore.strippedSpuriousToolCallText(response)
-        setAssistantMessage(id: assistantID, text: cleaned, role: .assistant)
-        return
-      }
-
-      let maxIterations = 8
-      for _ in 0..<maxIterations {
-        try Task.checkCancellation()
-        guard let i = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-        let request = ChatCompletionRequest(
-          conversation: conversations[i],
-          settings: settings,
-          toolContext: augmentedToolContext,
-          assistantMessageID: assistantID,
-          nativeTools: nativeTools,
-          hasToolCalling: true
-        )
-        let baseline = assistantText
-        let response = try await ChatProviderRouter.complete(request: request) {
-          [weak self] streamed in
-          let combined = baseline.isEmpty ? streamed : "\(baseline)\n\n\(streamed)"
-          self?.setAssistantMessage(
-            id: assistantID, text: combined, role: .assistant, touch: false, streaming: true)
-        }
-
-        try Task.checkCancellation()
-
-        let calls = ToolAgentRegistry.parseCalls(in: response, definitions: agentDefinitions)
-        if calls.isEmpty {
-          if AgentTooling.containsToolCallMarker(in: response) {
-            let feedback = AgentTooling.malformedToolCallFeedback(from: response)
-            let turnText = [response, feedback]
-              .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-              .filter { !$0.isEmpty }
-              .joined(separator: "\n\n")
-            assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
-            setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-            saveConversations()
-            continue
-          }
-          assistantText = assistantText.isEmpty ? response : "\(assistantText)\n\n\(response)"
-          setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-          didFinish = true
-          break
-        }
-
-        var transformed = response
-        var runBlocks: [String] = []
-        for call in calls {
-          try Task.checkCancellation()
-          let normalizedCall = ToolAgentRegistry.normalized(
-            call: call, definitions: agentDefinitions)
-          let result = await ToolAgentRegistry.execute(call: normalizedCall, store: self)
-          let runBlock = ToolAgentRegistry.makeRunBlock(call: normalizedCall, result: result)
-          transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
-          runBlocks.append(runBlock)
-        }
-        let turnText = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
-          .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-          .joined(separator: "\n\n")
-        assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
-        setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-        saveConversations()
-      }
-
-      if !didFinish {
-        let suffix =
-          "\n\nTool loop stopped after \(maxIterations) tool rounds before the model produced a final answer."
-        setAssistantMessage(id: assistantID, text: assistantText + suffix, role: .assistant)
-      }
-    } catch is CancellationError {
-      markAssistantStopped(id: assistantID)
-    } catch {
-      let nsError = error as NSError
-      if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-        markAssistantStopped(id: assistantID)
-      } else {
-        let text = error.localizedDescription
-        setAssistantMessage(id: assistantID, text: text, role: .error)
-        errorMessage = text
-      }
-    }
-  }
-
-  private func markAssistantStopped(id: UUID) {
+  func markAssistantStopped(id: UUID) {
     let current = currentTextOfMessage(id: id)
     let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty {
@@ -594,62 +435,32 @@ final class AppStore: ObservableObject {
     guard !isCompacting, !isResponding else { return }
     guard let index = currentConversationIndex else { return }
     let conversation = conversations[index]
-    let conversationID = conversation.id
-    let transcriptEntries = conversation.messages.compactMap { msg -> String? in
-      guard msg.role != .error else { return nil }
-      let text = MessageContentFilter.promptSafeText(from: msg.text)
-      guard !text.isEmpty else { return nil }
-      return "\(msg.role.displayName):\n\(text)"
-    }
-    guard transcriptEntries.count >= 2 else {
-      errorMessage = "Nothing to compact yet."
-      return
-    }
+    let settingsSnapshot = settings
 
     isCompacting = true
     defer { isCompacting = false }
     errorMessage = nil
 
-    let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
+    guard
+      let compact = await ConversationPromptBuilder.compactRequest(
+        conversation: conversation,
+        settings: settingsSnapshot
+      )
+    else {
+      errorMessage = "Nothing to compact yet."
+      return
+    }
 
-    let model: String = {
-      let m = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !m.isEmpty { return m }
-      if conversation.provider == .apple { return settings.appleModelID }
-      if let endpoint = settings.openAIEndpoints.first(where: { $0.id == conversation.endpointID })
-      {
-        return endpoint.defaultModel
-      }
-      return ""
-    }()
-
-    let prompt = """
-      Compact the transcript below into durable context for continuing the same chat.
-
-      Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
-
-      Preserve:
-      - User goals, preferences, constraints, and decisions
-      - Important names, projects, files, commands, code snippets, errors, and results
-      - Current state, unresolved questions, and next steps
-
-      Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
-
-      Transcript:
-
-      \(transcript)
-      """
     do {
-      let summary = try await runOneShotPrompt(
-        title: "Compact", prompt: prompt,
-        provider: conversation.provider, modelID: model,
-        endpointID: conversation.endpointID)
+      let summary = try await OneShotPromptRunner.run(compact.oneShot, settings: settingsSnapshot)
       let trimmed = MessageContentFilter.promptSafeText(from: summary)
       guard !trimmed.isEmpty else {
         errorMessage = "Compact returned an empty summary."
         return
       }
-      guard let idx = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+      guard let idx = conversations.firstIndex(where: { $0.id == compact.conversationID }) else {
+        return
+      }
       conversations[idx].messages = [
         ChatMessage(role: .system, text: "Conversation summary (compacted):\n\n\(trimmed)")
       ]
@@ -665,64 +476,24 @@ final class AppStore: ObservableObject {
     isUpdatingMemory = true
     defer { isUpdatingMemory = false }
 
-    let transcript =
-      conversations
-      .filter { !$0.isIncognito }
-      .flatMap { conversation in
-        conversation.messages.compactMap { message -> String? in
-          guard message.role != .error else { return nil }
-          let text = MessageContentFilter.promptSafeText(from: message.text)
-          guard !text.isEmpty else { return nil }
-          return "\(message.role.displayName):\n\(text)"
-        }
-      }
-      .joined(separator: "\n\n")
-    guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let conversationsSnapshot = conversations
+    let settingsSnapshot = settings
+    guard
+      let prompt = await ConversationPromptBuilder.memoryUpdateRequest(
+        conversations: conversationsSnapshot,
+        settings: settingsSnapshot
+      )
+    else {
+      return
+    }
 
-    let prompt = """
-      Extract durable user memory from these conversations.
-
-      Output only concise memory notes. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about this task.
-
-      Keep stable facts and recurring preferences: names, locations, projects, technical preferences, workflow habits, and standing instructions. Ignore one-off tasks, transient chat state, assistant behavior, tool outputs unless they reveal a durable user preference, and sensitive secrets such as credentials or tokens.
-
-      \(transcript)
-      """
-    let provider = settings.defaultProvider
-    let model =
-      provider == .apple
-      ? settings.appleModelID : (settings.openAIEndpoints.first?.defaultModel ?? "")
     do {
-      let memory = try await runOneShotPrompt(
-        title: "Memory update", prompt: prompt,
-        provider: provider, modelID: model,
-        endpointID: settings.selectedEndpointID)
+      let memory = try await OneShotPromptRunner.run(prompt, settings: settingsSnapshot)
       settings.memory = MessageContentFilter.promptSafeText(from: memory)
       saveSettings()
     } catch {
       errorMessage = error.localizedDescription
     }
-  }
-
-  private func runOneShotPrompt(
-    title: String, prompt: String,
-    provider: ProviderKind, modelID: String, endpointID: UUID?
-  ) async throws -> String {
-    var oneShot = Conversation()
-    oneShot.title = title
-    oneShot.provider = provider
-    oneShot.modelID = modelID
-    oneShot.endpointID = endpointID
-    oneShot.enabledTools = []
-    oneShot.usesStreaming = false
-    oneShot.messages = [ChatMessage(role: .user, text: prompt)]
-    let request = ChatCompletionRequest(
-      conversation: oneShot,
-      settings: settings,
-      toolContext: "",
-      assistantMessageID: UUID()
-    )
-    return try await ChatProviderRouter.complete(request: request) { _ in }
   }
 
   func importToolFile(from url: URL) {
@@ -875,7 +646,7 @@ final class AppStore: ObservableObject {
     return conversations.firstIndex(where: { $0.id == selectedConversationID })
   }
 
-  private func setAssistantMessage(
+  func setAssistantMessage(
     id: UUID, text: String, role: ChatRole, touch: Bool = true, streaming: Bool = false
   ) {
     if streaming {
