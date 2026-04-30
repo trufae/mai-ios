@@ -21,7 +21,6 @@ private struct PendingSettingsDeletion: Identifiable {
 private enum SettingsDeletionKind {
   case endpoint
   case systemPrompt
-  case todo
   case file
   case mcpServer
 
@@ -29,7 +28,6 @@ private enum SettingsDeletionKind {
     switch self {
     case .endpoint: "Delete endpoint?"
     case .systemPrompt: "Delete system prompt?"
-    case .todo: "Delete todo?"
     case .file: "Delete file?"
     case .mcpServer: "Delete MCP server?"
     }
@@ -39,7 +37,6 @@ private enum SettingsDeletionKind {
     switch self {
     case .endpoint: "Delete \(itemName("Endpoint", count: count))"
     case .systemPrompt: "Delete \(itemName("Prompt", count: count))"
-    case .todo: "Delete \(itemName("Todo", count: count))"
     case .file: "Delete \(itemName("File", count: count))"
     case .mcpServer: "Delete \(itemName("Server", count: count))"
     }
@@ -51,8 +48,6 @@ private enum SettingsDeletionKind {
       "\(count) endpoint\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .systemPrompt:
       "\(count) system prompt\(count == 1 ? "" : "s") will be removed. This cannot be undone."
-    case .todo:
-      "\(count) todo\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .file:
       "\(count) imported file\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .mcpServer:
@@ -458,7 +453,7 @@ struct SettingsView: View {
         }
       }
       .onDelete { offsets in
-        pendingDeletion = PendingSettingsDeletion(kind: .todo, offsets: offsets)
+        deleteTodos(at: offsets)
       }
     case .textToSpeech:
       Picker("Language", selection: settingsBinding(\.toolSettings.textToSpeechLanguage)) {
@@ -729,11 +724,6 @@ struct SettingsView: View {
         store.settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
       }
       store.saveSettings()
-    case .todo:
-      guard deletion.offsets.allSatisfy({ store.settings.toolSettings.todos.indices.contains($0) })
-      else { return }
-      store.settings.toolSettings.todos.remove(atOffsets: deletion.offsets)
-      store.saveSettings()
     case .file:
       guard deletion.offsets.allSatisfy({ store.settings.toolSettings.files.indices.contains($0) })
       else { return }
@@ -745,6 +735,14 @@ struct SettingsView: View {
       store.settings.mcpServers.remove(atOffsets: deletion.offsets)
       store.saveSettings()
     }
+  }
+
+  private func deleteTodos(at offsets: IndexSet) {
+    guard offsets.allSatisfy({ store.settings.toolSettings.todos.indices.contains($0) }) else {
+      return
+    }
+    store.settings.toolSettings.todos.remove(atOffsets: offsets)
+    store.saveSettings()
   }
 
   private var defaultProviderBinding: Binding<DefaultProviderSelection> {
