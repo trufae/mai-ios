@@ -48,6 +48,14 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     case .json: "JSON"
     }
   }
+
+  var systemImage: String {
+    switch self {
+    case .markdown: "doc.richtext"
+    case .plainText: "doc.plaintext"
+    case .json: "curlybraces"
+    }
+  }
 }
 
 enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {

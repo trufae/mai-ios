@@ -69,8 +69,10 @@ struct ChatView: View {
           Divider()
           Section("Export") {
             ForEach(ConversationExportFormat.allCases) { format in
-              Button("Copy as \(format.displayName)") {
+              Button {
                 store.copyConversation(format: format)
+              } label: {
+                Label("Copy as \(format.displayName)", systemImage: format.systemImage)
               }
             }
             Button {
