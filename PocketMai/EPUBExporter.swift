@@ -96,23 +96,34 @@ enum EPUBExporter {
   private struct MessageContent {
     let visibleText: String
     let reasoningSections: [String]
+
+    var hasExportedBody: Bool {
+      !visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || reasoningSections.contains {
+          !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
   }
 
   private static func buildChapters(conversation: Conversation, bookTitle: String) -> [Chapter] {
     var chapters: [Chapter] = []
     chapters.append(makeTitleChapter(conversation: conversation, bookTitle: bookTitle))
 
-    for (index, message) in conversation.messages.enumerated() {
-      let id = String(format: "msg%03d", index + 1)
+    var exportedMessageCount = 0
+    for message in conversation.messages {
       let content = messageContent(for: message, includeThinking: conversation.showThinking)
+      guard content.hasExportedBody else { continue }
+
+      exportedMessageCount += 1
+      let id = String(format: "msg%03d", exportedMessageCount)
       let blocks = MarkdownParser.blocks(from: content.visibleText)
       let snippet = chapterSnippet(blocks: blocks)
       let displayRole = message.role.displayName
       let tocTitle: String
       if snippet.isEmpty {
-        tocTitle = "\(index + 1). \(displayRole)"
+        tocTitle = "\(exportedMessageCount). \(displayRole)"
       } else {
-        tocTitle = "\(index + 1). \(displayRole) — \(snippet)"
+        tocTitle = "\(exportedMessageCount). \(displayRole) — \(snippet)"
       }
 
       let bodyHTML = htmlForMessageContent(content, visibleBlocks: blocks)

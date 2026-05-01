@@ -111,7 +111,11 @@ private enum FullChatScreenshotRenderer {
       let pdfRenderer = UIGraphicsPDFRenderer(bounds: bounds)
       pdfData = pdfRenderer.pdfData { context in
         context.beginPage()
+        context.cgContext.saveGState()
+        context.cgContext.translateBy(x: 0, y: bounds.height)
+        context.cgContext.scaleBy(x: 1, y: -1)
         renderInContext(context.cgContext)
+        context.cgContext.restoreGState()
       }
     }
 

@@ -33,10 +33,9 @@ enum MessageContentFilter {
 
     while let opening = nextOpening(in: text, from: cursor) {
       visible += text[cursor..<opening.range.lowerBound]
-      let closeTag = "</\(opening.tag)>"
       if let closing = text.range(
-        of: closeTag,
-        options: [.caseInsensitive],
+        of: closingPattern(for: opening.tag),
+        options: [.regularExpression, .caseInsensitive],
         range: opening.range.upperBound..<text.endIndex
       ) {
         appendHiddenSection(
@@ -84,12 +83,20 @@ enum MessageContentFilter {
   )? {
     hiddenTags.compactMap { tag in
       text.range(
-        of: "<\(tag)>",
-        options: [.caseInsensitive],
+        of: openingPattern(for: tag),
+        options: [.regularExpression, .caseInsensitive],
         range: start..<text.endIndex
       ).map { (tag, $0) }
     }
     .min { lhs, rhs in lhs.range.lowerBound < rhs.range.lowerBound }
+  }
+
+  private static func openingPattern(for tag: String) -> String {
+    "<\\s*\(tag)\\b[^>]*>"
+  }
+
+  private static func closingPattern(for tag: String) -> String {
+    "<\\s*/\\s*\(tag)\\s*>"
   }
 
   private static func appendHiddenSection(

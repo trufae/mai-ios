@@ -511,8 +511,7 @@ enum TextToSpeechTool {
     title: String? = nil,
     messageID: UUID? = nil
   ) -> String {
-    let text = (arguments["text"]?.stringValue ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = TTSSpeechTextSanitizer.sanitized(arguments["text"]?.stringValue ?? "")
     guard !text.isEmpty else { return "Error: text is required." }
 
     let interrupt = arguments["interrupt"]?.boolValue ?? true

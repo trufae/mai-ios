@@ -44,9 +44,12 @@ final class TTSExporter: ObservableObject {
       audioFile = nil
     }
 
-    let speakable = messages.filter { msg in
-      (msg.role == .user || msg.role == .assistant)
-        && !msg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let speakable = messages.compactMap { msg -> SpeakableMessage? in
+      guard msg.role == .user || msg.role == .assistant else { return nil }
+      let text = TTSSpeechTextSanitizer.sanitized(
+        MessageContentFilter.render(msg.text).visibleText)
+      guard !text.isEmpty else { return nil }
+      return SpeakableMessage(role: msg.role, text: text)
     }
     guard !speakable.isEmpty else { throw ExportError.noSpeakableMessages }
 
@@ -81,8 +84,7 @@ final class TTSExporter: ObservableObject {
     voice: RoleVoiceSettings,
     fileURL: URL
   ) async throws {
-    let utterance = AVSpeechUtterance(
-      string: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    let utterance = AVSpeechUtterance(string: text)
     if !voice.voiceIdentifier.isEmpty,
       let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
     {
@@ -150,5 +152,10 @@ final class TTSExporter: ObservableObject {
   private final class SynthesisState {
     var didFinish: Bool = false
     var didReceiveAnyAudio: Bool = false
+  }
+
+  private struct SpeakableMessage {
+    let role: ChatRole
+    let text: String
   }
 }

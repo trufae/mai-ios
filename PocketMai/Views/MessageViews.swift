@@ -12,6 +12,7 @@ struct MessageBubble: View {
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
+  var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
@@ -26,6 +27,7 @@ struct MessageBubble: View {
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
+      onSpeakFromHere: onSpeakFromHere,
       showThinking: showThinking,
       onStreamingTextChange: onStreamingTextChange
     )
@@ -42,6 +44,7 @@ private struct StreamingMessageBubble: View {
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
+  var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
@@ -56,6 +59,7 @@ private struct StreamingMessageBubble: View {
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
+      onSpeakFromHere: onSpeakFromHere,
       showThinking: showThinking
     )
     .equatable()
@@ -76,6 +80,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
+  var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
 
   private var isUser: Bool { message.role == .user }
@@ -213,6 +218,7 @@ private struct MessageBubbleContent: View, Equatable {
     } label: {
       Label("Copy Raw Message", systemImage: "doc.text")
     }
+    Divider()
     Button {
       _ = TextToSpeechTool.speak(
         arguments: ["text": .string(visibleText)],
@@ -222,6 +228,13 @@ private struct MessageBubbleContent: View, Equatable {
         messageID: message.id)
     } label: {
       Label("Speak Message", systemImage: "speaker.wave.2")
+    }
+    if let onSpeakFromHere {
+      Button {
+        onSpeakFromHere()
+      } label: {
+        Label("Speak From Here", systemImage: "speaker.wave.2.fill")
+      }
     }
     if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
       Divider()

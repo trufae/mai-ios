@@ -16,6 +16,8 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   private let synthesizer = AVSpeechSynthesizer()
   private var remoteCommandsConfigured = false
+  private var queuedSpeech: [QueuedSpeech] = []
+  private var pendingSpeechAfterCancel: QueuedSpeech?
 
   override init() {
     super.init()
@@ -32,35 +34,82 @@ final class TTSPlayer: NSObject, ObservableObject {
     messageID: UUID? = nil,
     interrupt: Bool = true
   ) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
+    guard
+      let speech = QueuedSpeech(
+        text: text,
+        voice: voice,
+        role: role,
+        title: title,
+        tag: tag,
+        messageID: messageID
+      )
+    else { return }
 
     if synthesizer.isSpeaking {
       if interrupt {
+        queuedSpeech.removeAll()
+        pendingSpeechAfterCancel = speech
         synthesizer.stopSpeaking(at: .immediate)
       } else {
         return
       }
+      return
     }
 
+    queuedSpeech.removeAll()
+    pendingSpeechAfterCancel = nil
+    beginSpeaking(speech)
+  }
+
+  func speakFromHere(messages: [ChatMessage], voices: VoiceSettings) {
+    let items = messages.compactMap { message -> QueuedSpeech? in
+      let role: VoiceRole
+      switch message.role {
+      case .user: role = .user
+      case .assistant: role = .assistant
+      default: return nil
+      }
+      return QueuedSpeech(
+        text: MessageContentFilter.render(message.text).visibleText,
+        voice: voices.settings(for: role),
+        role: role,
+        title: message.role.displayName,
+        tag: nil,
+        messageID: message.id
+      )
+    }
+    guard let first = items.first else { return }
+
+    queuedSpeech = Array(items.dropFirst())
+    if synthesizer.isSpeaking {
+      pendingSpeechAfterCancel = first
+      synthesizer.stopSpeaking(at: .immediate)
+      return
+    }
+
+    pendingSpeechAfterCancel = nil
+    beginSpeaking(first)
+  }
+
+  private func beginSpeaking(_ speech: QueuedSpeech) {
     activateAudioSession()
 
-    let utterance = AVSpeechUtterance(string: trimmed)
-    if !voice.voiceIdentifier.isEmpty,
-      let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
+    let utterance = AVSpeechUtterance(string: speech.text)
+    if !speech.voice.voiceIdentifier.isEmpty,
+      let v = AVSpeechSynthesisVoice(identifier: speech.voice.voiceIdentifier)
     {
       utterance.voice = v
-    } else if !voice.language.isEmpty {
-      utterance.voice = AVSpeechSynthesisVoice(language: voice.language)
+    } else if !speech.voice.language.isEmpty {
+      utterance.voice = AVSpeechSynthesisVoice(language: speech.voice.language)
     }
-    utterance.rate = Float(max(0, min(1, voice.rate)))
-    utterance.pitchMultiplier = Float(max(0.5, min(2, voice.pitch)))
+    utterance.rate = Float(max(0, min(1, speech.voice.rate)))
+    utterance.pitchMultiplier = Float(max(0.5, min(2, speech.voice.pitch)))
 
-    currentRole = role
-    currentTitle = title
-    currentText = trimmed
-    currentTag = tag
-    currentMessageID = messageID
+    currentRole = speech.role
+    currentTitle = speech.title
+    currentText = speech.text
+    currentTag = speech.tag
+    currentMessageID = speech.messageID
     isSpeaking = true
     isPaused = false
     updateNowPlaying()
@@ -79,6 +128,8 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   func stop() {
+    queuedSpeech.removeAll()
+    pendingSpeechAfterCancel = nil
     if synthesizer.isSpeaking {
       synthesizer.stopSpeaking(at: .immediate)
       return
@@ -90,7 +141,27 @@ final class TTSPlayer: NSObject, ObservableObject {
     isSpeaking && currentTag == tag
   }
 
+  private func handleFinished() {
+    if !queuedSpeech.isEmpty {
+      let next = queuedSpeech.removeFirst()
+      beginSpeaking(next)
+      return
+    }
+    handleStopped()
+  }
+
+  private func handleCancelled() {
+    if let next = pendingSpeechAfterCancel {
+      pendingSpeechAfterCancel = nil
+      beginSpeaking(next)
+      return
+    }
+    handleStopped()
+  }
+
   private func handleStopped() {
+    queuedSpeech.removeAll()
+    pendingSpeechAfterCancel = nil
     isSpeaking = false
     isPaused = false
     currentRole = nil
@@ -171,19 +242,46 @@ final class TTSPlayer: NSObject, ObservableObject {
       return .success
     }
   }
+
+  private struct QueuedSpeech {
+    let text: String
+    let voice: RoleVoiceSettings
+    let role: VoiceRole
+    let title: String?
+    let tag: String?
+    let messageID: UUID?
+
+    init?(
+      text: String,
+      voice: RoleVoiceSettings,
+      role: VoiceRole,
+      title: String?,
+      tag: String?,
+      messageID: UUID?
+    ) {
+      let sanitized = TTSSpeechTextSanitizer.sanitized(text)
+      guard !sanitized.isEmpty else { return nil }
+      self.text = sanitized
+      self.voice = voice
+      self.role = role
+      self.title = title
+      self.tag = tag
+      self.messageID = messageID
+    }
+  }
 }
 
 extension TTSPlayer: AVSpeechSynthesizerDelegate {
   nonisolated func speechSynthesizer(
     _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
   ) {
-    Task { @MainActor in self.handleStopped() }
+    Task { @MainActor in self.handleFinished() }
   }
 
   nonisolated func speechSynthesizer(
     _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
   ) {
-    Task { @MainActor in self.handleStopped() }
+    Task { @MainActor in self.handleCancelled() }
   }
 
   nonisolated func speechSynthesizer(

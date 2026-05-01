@@ -311,7 +311,7 @@ struct ChatView: View {
         store.newConversation()
       } label: {
         Label {
-          Text("New Chat")
+          Text("💬 New Chat")
         } icon: {
           Text("💬")
         }
@@ -320,7 +320,7 @@ struct ChatView: View {
         store.newConversation(incognito: true)
       } label: {
         Label {
-          Text("New Incognito Chat")
+          Text("👻 New Incognito Chat")
         } icon: {
           Text("👻")
         }
@@ -351,7 +351,7 @@ struct ChatView: View {
       Button {
         Task { await exportAudio() }
       } label: {
-        Label("Export as Audio (.m4a)", systemImage: "waveform")
+        Label("Export as Audio", systemImage: "waveform")
       }
       .disabled(audioExporter.isExporting)
     }
@@ -387,6 +387,18 @@ struct ChatView: View {
     }
   }
 
+  private func speakFromHere(_ message: ChatMessage) {
+    guard
+      let conversation = store.currentConversation,
+      let index = conversation.messages.firstIndex(where: { $0.id == message.id })
+    else {
+      return
+    }
+    ttsPlayer.speakFromHere(
+      messages: Array(conversation.messages[index...]),
+      voices: store.settings.toolSettings.voices
+    )
+  }
 
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     guard store.currentConversation?.provider == .apple,
@@ -417,6 +429,7 @@ struct ChatView: View {
                 onTrimFromHere: { messagePendingTrimAndResubmit = message },
                 onRestartFresh: { messagePendingRestartFresh = message },
                 onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
+                onSpeakFromHere: { speakFromHere(message) },
                 showThinking: store.currentConversation?.showThinking ?? false,
                 onStreamingTextChange: { _ in
                   guard !userScrolledAfterLastMessage else { return }
