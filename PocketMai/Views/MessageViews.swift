@@ -149,6 +149,8 @@ private struct MessageBubbleContent: View, Equatable {
   )
     -> some View
   {
+    let messageFont = appearance.swiftUIFont(for: message.role)
+    let messageFontFamily = appearance.fontFamily(for: message.role)
     let bubbleView = VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
         Image(systemName: iconName)
@@ -159,19 +161,23 @@ private struct MessageBubbleContent: View, Equatable {
       }
       if visibleText.isEmpty {
         Text("...")
-          .font(appearance.swiftUIFont)
+          .font(messageFont)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
       } else if isStreaming {
         Text(visibleText)
-          .font(appearance.swiftUIFont)
+          .font(messageFont)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       } else if usesMarkdown {
-        MarkdownContentView(blocks: markdownBlocks, appearance: appearance)
+        MarkdownContentView(
+          blocks: markdownBlocks,
+          appearance: appearance,
+          fontFamily: messageFontFamily
+        )
       } else {
         Text(visibleText)
-          .font(appearance.swiftUIFont)
+          .font(messageFont)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -563,18 +569,30 @@ enum ToolCallParser {
 struct MarkdownContentView: View {
   let blocks: [MarkdownBlock]
   let appearance: AppearanceSettings
+  let fontFamily: AppearanceFontFamily
 
-  init(text: String, appearance: AppearanceSettings = .defaults) {
+  init(
+    text: String,
+    appearance: AppearanceSettings = .defaults,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
     self.blocks = MarkdownParser.blocks(from: text)
     self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
   }
 
-  init(blocks: [MarkdownBlock], appearance: AppearanceSettings = .defaults) {
+  init(
+    blocks: [MarkdownBlock],
+    appearance: AppearanceSettings = .defaults,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
     self.blocks = blocks
     self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
   }
 
   var body: some View {
+    let bodyFont = fontFamily.swiftUIFont(size: appearance.fontSize)
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
         switch block.kind {
@@ -585,18 +603,23 @@ struct MarkdownContentView: View {
             .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
           Text(attributedInlineMarkdown(value))
-            .font(appearance.swiftUIFont)
+            .font(bodyFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let code):
           CodeBlockView(language: language, code: code, appearance: appearance)
         case .table(let headers, let rows, let alignments):
           MarkdownTableView(
-            headers: headers, rows: rows, alignments: alignments, appearance: appearance)
+            headers: headers,
+            rows: rows,
+            alignments: alignments,
+            appearance: appearance,
+            fontFamily: fontFamily
+          )
         case .taskList(let items):
-          TaskListView(items: items, appearance: appearance)
+          TaskListView(items: items, appearance: appearance, fontFamily: fontFamily)
         case .bulletList(let items):
-          BulletListView(items: items, appearance: appearance)
+          BulletListView(items: items, appearance: appearance, fontFamily: fontFamily)
         }
       }
     }
@@ -610,7 +633,7 @@ struct MarkdownContentView: View {
       case 2: 1.32
       default: 1.16
       }
-    return appearance.fontFamily.swiftUIFont(size: appearance.fontSize * scale)
+    return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
       .weight(clampedLevel == 1 ? .bold : .semibold)
   }
 }
@@ -628,6 +651,21 @@ struct MarkdownTableView: View {
   let rows: [[String]]
   let alignments: [TextAlignment]
   let appearance: AppearanceSettings
+  var fontFamily: AppearanceFontFamily
+
+  init(
+    headers: [String],
+    rows: [[String]],
+    alignments: [TextAlignment],
+    appearance: AppearanceSettings,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
+    self.headers = headers
+    self.rows = rows
+    self.alignments = alignments
+    self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+  }
 
   var body: some View {
     Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
@@ -664,8 +702,8 @@ struct MarkdownTableView: View {
     Text(attributedInlineMarkdown(value))
       .font(
         isHeader
-          ? appearance.fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
-          : appearance.swiftUIFont
+          ? fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
+          : fontFamily.swiftUIFont(size: appearance.fontSize)
       )
       .multilineTextAlignment(alignment)
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
@@ -731,8 +769,20 @@ struct TaskListItem: Identifiable {
 struct TaskListView: View {
   let items: [TaskListItem]
   let appearance: AppearanceSettings
+  var fontFamily: AppearanceFontFamily
+
+  init(
+    items: [TaskListItem],
+    appearance: AppearanceSettings,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
+    self.items = items
+    self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+  }
 
   var body: some View {
+    let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
     VStack(alignment: .leading, spacing: 6) {
       ForEach(items) { item in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -741,7 +791,7 @@ struct TaskListView: View {
             .imageScale(.medium)
             .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
           Text(attributedInlineMarkdown(item.text))
-            .font(appearance.swiftUIFont)
+            .font(textFont)
             .textSelection(.enabled)
             .strikethrough(item.checked, color: .secondary)
             .foregroundStyle(item.checked ? Color.secondary : Color.primary)
@@ -755,15 +805,27 @@ struct TaskListView: View {
 struct BulletListView: View {
   let items: [String]
   let appearance: AppearanceSettings
+  var fontFamily: AppearanceFontFamily
+
+  init(
+    items: [String],
+    appearance: AppearanceSettings,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
+    self.items = items
+    self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+  }
 
   var body: some View {
+    let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
     VStack(alignment: .leading, spacing: 6) {
       ForEach(Array(items.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text("•")
             .foregroundStyle(.secondary)
           Text(attributedInlineMarkdown(item))
-            .font(appearance.swiftUIFont)
+            .font(textFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         }

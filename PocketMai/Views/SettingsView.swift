@@ -222,7 +222,14 @@ struct SettingsView: View {
 
   private var appearanceSection: some View {
     Section {
-      Picker("Font", selection: settingsBinding(\.appearance.fontFamily)) {
+      Picker("User Font", selection: settingsBinding(\.appearance.userFontFamily)) {
+        ForEach(AppearanceFontFamily.pickerOptions) { font in
+          Text(font.displayName).tag(font)
+        }
+      }
+      .pickerStyle(.menu)
+
+      Picker("Assistant Font", selection: settingsBinding(\.appearance.assistantFontFamily)) {
         ForEach(AppearanceFontFamily.pickerOptions) { font in
           Text(font.displayName).tag(font)
         }
@@ -246,10 +253,15 @@ struct SettingsView: View {
         Text("Size \(Int(store.settings.appearance.fontSize)) pt")
       }
 
-      Text("The quick brown fox jumps over the lazy dog.")
-        .font(store.settings.appearance.swiftUIFont)
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 2)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("User: the quick brown fox jumps over the lazy dog.")
+          .font(store.settings.appearance.userSwiftUIFont)
+          .foregroundStyle(.secondary)
+        Text("Assistant: the quick brown fox jumps over the lazy dog.")
+          .font(store.settings.appearance.assistantSwiftUIFont)
+          .foregroundStyle(.secondary)
+      }
+      .padding(.vertical, 2)
     } header: {
       Text("Appearance")
     }

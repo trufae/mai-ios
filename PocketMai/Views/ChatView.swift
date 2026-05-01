@@ -644,7 +644,7 @@ private struct ComposerTextView: UIViewRepresentable {
   }
 
   private static func lineHeight(for lines: Int, appearance: AppearanceSettings) -> CGFloat {
-    let font = appearance.uiFont
+    let font = appearance.userUIFont
     return ceil(font.lineHeight * CGFloat(lines)) + verticalInset * 2
   }
 
@@ -652,7 +652,7 @@ private struct ComposerTextView: UIViewRepresentable {
     let textView = UITextView()
     textView.delegate = context.coordinator
     textView.backgroundColor = .clear
-    textView.font = appearance.uiFont
+    textView.font = appearance.userUIFont
     textView.adjustsFontForContentSizeCategory = true
     textView.isScrollEnabled = false
     textView.textContainerInset = UIEdgeInsets(
@@ -676,7 +676,7 @@ private struct ComposerTextView: UIViewRepresentable {
       textView.text = text
       context.coordinator.updatePlaceholderVisibility(for: textView)
     }
-    let preferredFont = appearance.uiFont
+    let preferredFont = appearance.userUIFont
     if !fontsMatch(textView.font, preferredFont) {
       textView.font = preferredFont
       context.coordinator.updatePlaceholderFont(textView.font)

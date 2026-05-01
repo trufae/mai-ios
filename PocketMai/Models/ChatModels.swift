@@ -154,7 +154,8 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct AppearanceSettings: Codable, Equatable, Sendable {
-  var fontFamily: AppearanceFontFamily = .serif
+  var userFontFamily: AppearanceFontFamily = .rounded
+  var assistantFontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
   var tint: AppearanceTint = .system
 
@@ -163,14 +164,27 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case fontFamily, fontSize, tint
+    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint
   }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    fontFamily = (try? c.decode(AppearanceFontFamily.self, forKey: .fontFamily)) ?? .serif
+    let legacyFamily = try? c.decode(AppearanceFontFamily.self, forKey: .fontFamily)
+    userFontFamily =
+      (try? c.decode(AppearanceFontFamily.self, forKey: .userFontFamily)) ?? .rounded
+    assistantFontFamily =
+      (try? c.decode(AppearanceFontFamily.self, forKey: .assistantFontFamily))
+      ?? legacyFamily ?? .serif
     fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(userFontFamily, forKey: .userFontFamily)
+    try c.encode(assistantFontFamily, forKey: .assistantFontFamily)
+    try c.encode(fontSize, forKey: .fontSize)
+    try c.encode(tint, forKey: .tint)
   }
 }
 

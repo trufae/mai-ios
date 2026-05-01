@@ -2,13 +2,22 @@ import SwiftUI
 import UIKit
 
 extension AppearanceSettings {
-  var swiftUIFont: Font {
-    fontFamily.swiftUIFont(size: fontSize)
+  func fontFamily(for role: ChatRole) -> AppearanceFontFamily {
+    role == .user ? userFontFamily : assistantFontFamily
   }
 
-  var uiFont: UIFont {
-    fontFamily.uiFont(size: fontSize)
+  func swiftUIFont(for role: ChatRole) -> Font {
+    fontFamily(for: role).swiftUIFont(size: fontSize)
   }
+
+  func uiFont(for role: ChatRole) -> UIFont {
+    fontFamily(for: role).uiFont(size: fontSize)
+  }
+
+  var userSwiftUIFont: Font { swiftUIFont(for: .user) }
+  var assistantSwiftUIFont: Font { swiftUIFont(for: .assistant) }
+  var userUIFont: UIFont { uiFont(for: .user) }
+  var assistantUIFont: UIFont { uiFont(for: .assistant) }
 
   var codeFont: Font {
     .system(size: max(11, fontSize - 1), design: .monospaced)
