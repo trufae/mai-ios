@@ -522,8 +522,13 @@ private struct ChatComposer: View, Equatable {
       && lhs.appearance == rhs.appearance
   }
 
+  private var composerAlignment: VerticalAlignment {
+    let single = ComposerTextView.singleLineHeight(for: appearance)
+    return composerHeight <= single + 0.5 ? .center : .bottom
+  }
+
   var body: some View {
-    HStack(alignment: .bottom, spacing: 10) {
+    HStack(alignment: composerAlignment, spacing: 10) {
       toolMenu
 
       ComposerTextView(
