@@ -725,6 +725,29 @@ struct AppSettings: Codable, Equatable, Sendable {
       ?? AppSettings.defaultSystemPrompt
   }
 
+  var defaultOpenAIEndpoint: OpenAIEndpoint? {
+    if let selectedEndpointID,
+      let endpoint = openAIEndpoints.first(where: { $0.id == selectedEndpointID && $0.isEnabled })
+    {
+      return endpoint
+    }
+    return openAIEndpoints.first(where: \.isEnabled)
+  }
+
+  var defaultProviderConfiguration:
+    (provider: ProviderKind, endpointID: UUID?, modelID: String)
+  {
+    switch defaultProvider {
+    case .apple:
+      return (.apple, nil, appleModelID)
+    case .openAICompatible:
+      guard let endpoint = defaultOpenAIEndpoint else {
+        return (.apple, nil, appleModelID)
+      }
+      return (.openAICompatible, endpoint.id, endpoint.defaultModel)
+    }
+  }
+
   enum CodingKeys: String, CodingKey {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools

@@ -32,8 +32,9 @@ enum ConversationPromptBuilder {
         let m = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !m.isEmpty { return m }
         if conversation.provider == .apple { return settings.appleModelID }
-        if let endpoint = settings.openAIEndpoints.first(where: { $0.id == conversation.endpointID }
-        ) {
+        if let endpoint = OpenAICompatibleProvider.selectedEndpoint(
+          for: conversation, settings: settings)
+        {
           return endpoint.defaultModel
         }
         return ""
@@ -98,16 +99,13 @@ enum ConversationPromptBuilder {
 
         \(transcript)
         """
-      let provider = settings.defaultProvider
-      let model =
-        provider == .apple
-        ? settings.appleModelID : (settings.openAIEndpoints.first?.defaultModel ?? "")
+      let defaultProvider = settings.defaultProviderConfiguration
       return OneShotPromptRequest(
         title: "Memory update",
         prompt: prompt,
-        provider: provider,
-        modelID: model,
-        endpointID: settings.selectedEndpointID
+        provider: defaultProvider.provider,
+        modelID: defaultProvider.modelID,
+        endpointID: defaultProvider.endpointID
       )
     }.value
   }

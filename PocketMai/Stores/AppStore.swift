@@ -97,16 +97,16 @@ final class AppStore: ObservableObject {
     {
       isIncognitoMode = incognito
       selectedConversationIDs.removeAll()
+      if isDisposableNewConversation(current),
+        !conversationUsesNewConversationDefaults(current, incognito: incognito)
+      {
+        discardSelectedDisposableConversation()
+        createAndSelectNewConversation(incognito: incognito)
+      }
       return
     }
     discardSelectedDisposableConversation()
-    let conversation = makeNewConversation(incognito: incognito)
-    conversations.insert(conversation, at: 0)
-    sortConversations()
-    selectedConversationID = conversation.id
-    isIncognitoMode = incognito
-    selectedConversationIDs.removeAll()
-    saveConversations()
+    createAndSelectNewConversation(incognito: incognito)
   }
 
   private func startFreshConversationForLaunch() {
@@ -139,21 +139,47 @@ final class AppStore: ObservableObject {
   }
 
   private func makeNewConversation(incognito: Bool = false) -> Conversation {
-    let endpoint =
-      settings.openAIEndpoints.first(where: { $0.id == settings.selectedEndpointID })
-      ?? settings.openAIEndpoints.first
-    let provider = settings.defaultProvider
-    let model = provider == .apple ? settings.appleModelID : (endpoint?.defaultModel ?? "")
+    let defaultProvider = settings.defaultProviderConfiguration
     var conversation = Conversation()
     conversation.isIncognito = incognito
-    conversation.provider = provider
-    conversation.modelID = model
-    conversation.endpointID = endpoint?.id
+    conversation.provider = defaultProvider.provider
+    conversation.modelID = defaultProvider.modelID
+    conversation.endpointID = defaultProvider.endpointID
     conversation.systemPromptID = settings.defaultSystemPromptID
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.usesStreaming = settings.streamByDefault
     conversation.showThinking = settings.showThinkingByDefault
     return conversation
+  }
+
+  private func createAndSelectNewConversation(incognito: Bool = false) {
+    let conversation = makeNewConversation(incognito: incognito)
+    conversations.insert(conversation, at: 0)
+    sortConversations()
+    selectedConversationID = conversation.id
+    isIncognitoMode = incognito
+    selectedConversationIDs.removeAll()
+    saveConversations()
+  }
+
+  private func conversationUsesNewConversationDefaults(
+    _ conversation: Conversation, incognito: Bool
+  ) -> Bool {
+    let defaults = makeNewConversation(incognito: incognito)
+    return conversation.isIncognito == defaults.isIncognito
+      && conversation.provider == defaults.provider
+      && conversation.endpointID == defaults.endpointID
+      && normalizedModelID(conversation.modelID) == normalizedModelID(defaults.modelID)
+      && conversation.systemPromptID == defaults.systemPromptID
+      && conversation.enabledTools == defaults.enabledTools
+      && conversation.usesStreaming == defaults.usesStreaming
+      && conversation.showThinking == defaults.showThinking
+      && conversation.reasoningLevel == defaults.reasoningLevel
+      && conversation.disabledMCPTools == defaults.disabledMCPTools
+  }
+
+  private func normalizedModelID(_ modelID: String) -> String {
+    modelID.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   func select(_ conversation: Conversation) {

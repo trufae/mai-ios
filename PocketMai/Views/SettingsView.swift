@@ -259,7 +259,7 @@ struct SettingsView: View {
       Picker("Default Provider", selection: defaultProviderBinding) {
         Label("Apple Intelligence", systemImage: "apple.logo")
           .tag(DefaultProviderSelection.apple)
-        ForEach(store.settings.openAIEndpoints) { endpoint in
+        ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
           Label(
             endpoint.name.isEmpty ? "Untitled Endpoint" : endpoint.name,
             systemImage: "network"
@@ -907,11 +907,11 @@ struct SettingsView: View {
           return .apple
         case .openAICompatible:
           if let id = store.settings.selectedEndpointID,
-            store.settings.openAIEndpoints.contains(where: { $0.id == id })
+            store.settings.openAIEndpoints.contains(where: { $0.id == id && $0.isEnabled })
           {
             return .endpoint(id)
           }
-          if let first = store.settings.openAIEndpoints.first {
+          if let first = store.settings.defaultOpenAIEndpoint {
             return .endpoint(first.id)
           }
           return .apple
@@ -1029,6 +1029,7 @@ private struct EndpointDetailView: View {
     }
     .navigationTitle(endpoint.name.isEmpty ? "Endpoint" : endpoint.name)
     .navigationBarTitleDisplayMode(.inline)
+    .onChange(of: endpoint) { _, _ in store.saveSettings() }
     .onChange(of: endpoint.baseURL) { _, _ in store.resetEndpointStatus(endpoint.id) }
     .onChange(of: endpoint.apiKey) { _, _ in store.resetEndpointStatus(endpoint.id) }
   }

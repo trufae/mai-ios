@@ -1195,13 +1195,14 @@ private struct ConversationModelSettingsView: View {
             Button {
               saveProviderModelAsDefault()
             } label: {
-              Label("Save Provider & Model as Default", systemImage: "star")
+              Label(
+                providerModelDefaultButtonTitle,
+                systemImage: isCurrentProviderModelDefault ? "checkmark.circle" : "star"
+              )
             }
             .disabled(!canSaveProviderModelAsDefault)
           } footer: {
-            if didSaveDefaults {
-              Text("Future chats will use this provider and model.")
-            }
+            Text(providerModelDefaultFooterText)
           }
         }
       }
@@ -1258,12 +1259,47 @@ private struct ConversationModelSettingsView: View {
 
   private var canSaveProviderModelAsDefault: Bool {
     guard let conversation = store.currentConversation else { return false }
+    if isCurrentProviderModelDefault { return false }
     switch conversation.provider {
     case .apple:
       return true
     case .openAICompatible:
       return selectedEndpoint != nil
     }
+  }
+
+  private var isCurrentProviderModelDefault: Bool {
+    guard let conversation = store.currentConversation else { return false }
+    let defaults = store.settings.defaultProviderConfiguration
+    switch conversation.provider {
+    case .apple:
+      return defaults.provider == .apple
+        && normalizedModel(conversation.modelID) == normalizedModel(defaults.modelID)
+    case .openAICompatible:
+      guard let endpoint = selectedEndpoint else { return false }
+      let model = effectiveConversationModel(conversation, endpoint: endpoint)
+      return defaults.provider == .openAICompatible
+        && defaults.endpointID == endpoint.id
+        && normalizedModel(model) == normalizedModel(defaults.modelID)
+    }
+  }
+
+  private var providerModelDefaultButtonTitle: String {
+    isCurrentProviderModelDefault ? "Using app defaults" : "Use as default"
+  }
+
+  private var providerModelDefaultFooterText: String {
+    if isCurrentProviderModelDefault {
+      return "These provider and model settings already match the app defaults."
+    }
+    guard let conversation = store.currentConversation else { return "" }
+    if conversation.provider == .openAICompatible && selectedEndpoint == nil {
+      return "Choose an enabled endpoint before using these settings as the default."
+    }
+    if didSaveDefaults {
+      return "Future chats will use this provider and model."
+    }
+    return "Make these provider and model settings the default for new chats."
   }
 
   private func saveProviderModelAsDefault() {
@@ -1276,7 +1312,7 @@ private struct ConversationModelSettingsView: View {
       guard let endpoint = selectedEndpoint,
         let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id })
       else { return }
-      let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+      let model = effectiveConversationModel(conversation, endpoint: endpoint)
       store.settings.defaultProvider = .openAICompatible
       store.settings.selectedEndpointID = endpoint.id
       if !model.isEmpty {
@@ -1285,6 +1321,17 @@ private struct ConversationModelSettingsView: View {
     }
     store.saveSettings()
     didSaveDefaults = true
+  }
+
+  private func effectiveConversationModel(
+    _ conversation: Conversation, endpoint: OpenAIEndpoint
+  ) -> String {
+    let model = normalizedModel(conversation.modelID)
+    return model.isEmpty ? normalizedModel(endpoint.defaultModel) : model
+  }
+
+  private func normalizedModel(_ model: String) -> String {
+    model.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private var providerSelectionBinding: Binding<DefaultProviderSelection> {
