@@ -464,7 +464,6 @@ enum TodoTool {
 @MainActor
 enum TextToSpeechTool {
   static let name = "text-to-speech"
-  private static let synthesizer = AVSpeechSynthesizer()
 
   static let definitions: [ToolDefinition] = [
     ToolDefinition(
@@ -508,44 +507,33 @@ enum TextToSpeechTool {
   static func speak(
     arguments: [String: AgentToolArgumentValue],
     settings: NativeToolSettings,
-    role: VoiceRole = .assistant
+    role: VoiceRole = .assistant,
+    title: String? = nil
   ) -> String {
     let text = (arguments["text"]?.stringValue ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return "Error: text is required." }
 
     let interrupt = arguments["interrupt"]?.boolValue ?? true
-    if interrupt, synthesizer.isSpeaking {
-      synthesizer.stopSpeaking(at: .immediate)
-    }
-
-    let roleSettings = settings.voices.settings(for: role)
-    let utterance = AVSpeechUtterance(string: text)
-    let voiceIdentifier =
+    let roleDefaults = settings.voices.settings(for: role)
+    let voiceOverride =
       AgentTooling.firstNonEmpty(
         arguments["voice"]?.stringValue,
-        arguments["voice_identifier"]?.stringValue,
-        roleSettings.voiceIdentifier)
-    let language =
-      AgentTooling.firstNonEmpty(arguments["language"]?.stringValue, roleSettings.language)
-    if let voiceIdentifier,
-      let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
-    {
-      utterance.voice = voice
-    } else if let language {
-      utterance.voice = AVSpeechSynthesisVoice(language: language)
-    }
-    let rate = arguments["rate"]?.numberValue ?? roleSettings.rate
-    utterance.rate = clamped(Float(rate), min: 0, max: 1)
-    let pitch = arguments["pitch"]?.numberValue ?? roleSettings.pitch
-    utterance.pitchMultiplier = clamped(Float(pitch), min: 0.5, max: 2)
+        arguments["voice_identifier"]?.stringValue)
+    let languageOverride = arguments["language"]?.stringValue
+    let voice = RoleVoiceSettings(
+      language: languageOverride ?? roleDefaults.language,
+      voiceIdentifier: voiceOverride ?? roleDefaults.voiceIdentifier,
+      rate: arguments["rate"]?.numberValue ?? roleDefaults.rate,
+      pitch: arguments["pitch"]?.numberValue ?? roleDefaults.pitch)
 
-    synthesizer.speak(utterance)
+    TTSPlayer.shared.speak(
+      text: text,
+      voice: voice,
+      role: role,
+      title: title,
+      interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
-  }
-
-  private static func clamped(_ value: Float, min: Float, max: Float) -> Float {
-    Swift.max(min, Swift.min(max, value))
   }
 }
 

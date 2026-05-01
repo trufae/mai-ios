@@ -138,52 +138,12 @@ private enum VoiceTestPhrases {
   }
 }
 
-@MainActor
-private final class VoiceTestController: NSObject, ObservableObject,
-  AVSpeechSynthesizerDelegate
-{
-  @Published var playingRole: VoiceRole?
-
-  private let synthesizer = AVSpeechSynthesizer()
-
-  override init() {
-    super.init()
-    synthesizer.delegate = self
+private enum VoiceTest {
+  static func tag(for role: VoiceRole) -> String {
+    "settings-test:\(role.rawValue)"
   }
 
-  func toggle(role: VoiceRole, voice: RoleVoiceSettings) {
-    if playingRole == role {
-      stop()
-      return
-    }
-    if synthesizer.isSpeaking {
-      synthesizer.stopSpeaking(at: .immediate)
-    }
-
-    let language = effectiveLanguage(for: voice)
-    let utterance = AVSpeechUtterance(string: VoiceTestPhrases.phrase(forLanguageTag: language))
-    if !voice.voiceIdentifier.isEmpty,
-      let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
-    {
-      utterance.voice = v
-    } else if !language.isEmpty {
-      utterance.voice = AVSpeechSynthesisVoice(language: language)
-    }
-    utterance.rate = Float(max(0, min(1, voice.rate)))
-    utterance.pitchMultiplier = Float(max(0.5, min(2, voice.pitch)))
-
-    playingRole = role
-    synthesizer.speak(utterance)
-  }
-
-  func stop() {
-    if synthesizer.isSpeaking {
-      synthesizer.stopSpeaking(at: .immediate)
-    }
-    playingRole = nil
-  }
-
-  private func effectiveLanguage(for voice: RoleVoiceSettings) -> String {
+  static func effectiveLanguage(for voice: RoleVoiceSettings) -> String {
     if !voice.language.isEmpty { return voice.language }
     if !voice.voiceIdentifier.isEmpty,
       let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
@@ -193,21 +153,26 @@ private final class VoiceTestController: NSObject, ObservableObject,
     return Locale.current.identifier
   }
 
-  nonisolated func speechSynthesizer(
-    _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
-  ) {
-    Task { @MainActor in self.playingRole = nil }
-  }
-
-  nonisolated func speechSynthesizer(
-    _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
-  ) {
-    Task { @MainActor in self.playingRole = nil }
+  @MainActor
+  static func toggle(role: VoiceRole, voice: RoleVoiceSettings, player: TTSPlayer) {
+    let tag = tag(for: role)
+    if player.isPlaying(tag: tag) {
+      player.stop()
+      return
+    }
+    let phrase = VoiceTestPhrases.phrase(forLanguageTag: effectiveLanguage(for: voice))
+    player.speak(
+      text: phrase,
+      voice: voice,
+      role: role,
+      title: "Voice Test",
+      tag: tag)
   }
 }
 
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
+  @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.dismiss) private var dismiss
   @State private var showingFileImporter = false
   @State private var newTodoTitle = ""
@@ -215,7 +180,6 @@ struct SettingsView: View {
   @State private var showingClearMemoryConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
-  @StateObject private var voiceTester = VoiceTestController()
 
   var body: some View {
     NavigationStack(path: $endpointPath) {
@@ -439,9 +403,12 @@ struct SettingsView: View {
     }
 
     Button {
-      voiceTester.toggle(role: role, voice: store.settings[keyPath: keyPath])
+      VoiceTest.toggle(
+        role: role,
+        voice: store.settings[keyPath: keyPath],
+        player: ttsPlayer)
     } label: {
-      let isPlaying = voiceTester.playingRole == role
+      let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
       Label(
         isPlaying ? "Stop Test" : "Test Voice",
         systemImage: isPlaying ? "stop.circle" : "play.circle")
