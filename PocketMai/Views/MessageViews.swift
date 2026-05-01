@@ -460,13 +460,13 @@ private struct ToolCallRow: View {
       .buttonStyle(.plain)
       if expanded {
         Divider().opacity(0.4)
-        Text(entry.body.isEmpty ? "(no output)" : entry.body)
-          .font(.callout)
-          .foregroundStyle(.primary)
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
+        VStack(alignment: .leading, spacing: 8) {
+          toolSection(label: "Input", value: entry.params, emptyText: "(no input)")
+          toolSection(label: "Output", value: entry.body, emptyText: "(no output)")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
       }
     }
     .background(.thinMaterial.opacity(0.55))
@@ -475,6 +475,22 @@ private struct ToolCallRow: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(Color.accentColor.opacity(0.18), lineWidth: 0.5)
     )
+  }
+
+  @ViewBuilder
+  private func toolSection(label: String, value: String, emptyText: String) -> some View {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    VStack(alignment: .leading, spacing: 4) {
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+      Text(trimmed.isEmpty ? emptyText : value)
+        .font(.system(.footnote, design: .monospaced))
+        .foregroundStyle(trimmed.isEmpty ? Color.secondary : Color.primary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
   }
 }
 
