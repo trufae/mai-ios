@@ -75,7 +75,8 @@ struct SidebarView: View {
   }
 
   @ViewBuilder
-  private func conversationContextMenu(for conversation: ConversationSummary, isCurrent: Bool) -> some View
+  private func conversationContextMenu(for conversation: ConversationSummary, isCurrent: Bool)
+    -> some View
   {
     Button {
       withAnimation {

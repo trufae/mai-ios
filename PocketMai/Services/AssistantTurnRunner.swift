@@ -85,7 +85,8 @@ enum AssistantTurnRunner {
         hasToolCalling: true
       )
       let baseline = assistantText
-      let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
+      let response = try await ChatProviderRouter.complete(request: request) {
+        [weak store] streamed in
         let combined = baseline.isEmpty ? streamed : "\(baseline)\n\n\(streamed)"
         store?.setAssistantMessage(
           id: assistantID,
@@ -151,7 +152,8 @@ enum AssistantTurnRunner {
       assistantMessageID: assistantID,
       hasToolCalling: false
     )
-    let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
+    let response = try await ChatProviderRouter.complete(request: request) {
+      [weak store] streamed in
       let cleaned = AppStore.strippedSpuriousToolCallText(streamed)
       store?.setAssistantMessage(
         id: assistantID,
