@@ -928,20 +928,22 @@ final class AppStore: ObservableObject {
       enqueueStreamingText(text, for: id)
       return
     }
-    // Final / discrete update: commit to `conversations` and clear any
-    // streaming buffer so bubbles fall back to the canonical message text.
-    streamingTextStore.clear(id: id)
-    guard let location = messageLocation(for: id) else { return }
-    let conversationIndex = location.conversationIndex
-    let messageIndex = location.messageIndex
-    var conversation = conversations[conversationIndex]
-    conversation.messages[messageIndex].text = text
-    conversation.messages[messageIndex].role = role
-    if touch {
-      conversation.updatedAt = Date()
+    // Final / discrete update: write the canonical message first so any
+    // re-render observing the streaming buffer being cleared sees the final
+    // text in `message.text` instead of the empty placeholder it started with.
+    if let location = messageLocation(for: id) {
+      let conversationIndex = location.conversationIndex
+      let messageIndex = location.messageIndex
+      var conversation = conversations[conversationIndex]
+      conversation.messages[messageIndex].text = text
+      conversation.messages[messageIndex].role = role
+      if touch {
+        conversation.updatedAt = Date()
+      }
+      conversations[conversationIndex] = conversation
+      upsertSummary(for: conversation)
     }
-    conversations[conversationIndex] = conversation
-    upsertSummary(for: conversation)
+    streamingTextStore.clear(id: id)
   }
 
   private func enqueueStreamingText(_ text: String, for id: UUID) {

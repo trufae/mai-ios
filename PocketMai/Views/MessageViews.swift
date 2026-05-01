@@ -111,7 +111,7 @@ private struct MessageBubbleContent: View, Equatable {
           FoldableMetaSection(
             title: "Reasoning",
             systemImage: "brain",
-            content: section.content,
+            content: isStreaming ? Self.tailWindow(section.content) : section.content,
             monospaced: false,
             dimmedContent: true,
             initiallyExpanded: showThinking
@@ -266,6 +266,24 @@ private struct MessageBubbleContent: View, Equatable {
       return AnyShapeStyle(Color.accentColor.opacity(0.22))
     }
     return AnyShapeStyle(.regularMaterial)
+  }
+
+  private static let streamingReasoningTail = 1500
+
+  /// While a message is still streaming, the reasoning section keeps growing
+  /// and SwiftUI re-lays out the entire `Text` block on every token tick — at
+  /// 5-10 KB that dominates the main thread. Showing only the trailing window
+  /// caps layout cost at O(streamingReasoningTail) per update; the full text
+  /// is rendered once the stream finalizes.
+  private static func tailWindow(_ text: String) -> String {
+    guard
+      let start = text.index(
+        text.endIndex, offsetBy: -streamingReasoningTail, limitedBy: text.startIndex
+      )
+    else {
+      return text
+    }
+    return "…" + text[start...]
   }
 }
 

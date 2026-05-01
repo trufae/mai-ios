@@ -12,7 +12,6 @@ struct ChatView: View {
   @State private var messagePendingRestartFresh: ChatMessage?
   @State private var exportedEPUB: ExportedEPUB?
   @State private var renameDraft = ""
-  @State private var lastStreamingScrollAt = Date.distantPast
   @State private var userScrolledAfterLastMessage = false
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
@@ -363,9 +362,6 @@ struct ChatView: View {
                 showThinking: store.currentConversation?.showThinking ?? false,
                 onStreamingTextChange: { _ in
                   guard !userScrolledAfterLastMessage else { return }
-                  let now = Date()
-                  guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
-                  lastStreamingScrollAt = now
                   scrollToBottom(proxy, animated: false)
                 }
               )
@@ -386,7 +382,7 @@ struct ChatView: View {
       .overlay(alignment: .top) { EdgeFadeBlur(edge: .top, height: 24) }
       .simultaneousGesture(messageListScrollGesture)
       .onChange(of: lastMessageSnapshot) { old, new in
-        guard old.conversationID == new.conversationID else {
+        if old.conversationID != new.conversationID {
           userScrolledAfterLastMessage = false
           return
         }
@@ -395,15 +391,11 @@ struct ChatView: View {
           scrollToBottom(proxy, animated: true)
           return
         }
-        guard old.text != new.text else { return }
-        guard !userScrolledAfterLastMessage else { return }
-        let now = Date()
-        guard now.timeIntervalSince(lastStreamingScrollAt) >= 0.35 else { return }
-        lastStreamingScrollAt = now
-        // Defer one runloop so the post-stream markdown layout is measured
-        // before we anchor to the bottom; otherwise we land on the old
-        // (plain-Text) bubble height and the new layout overshoots the
-        // viewport, leaving a blank gap until the user nudges the scroll.
+        guard old.text != new.text, !userScrolledAfterLastMessage else { return }
+        // The final text swap flips the bubble from plain Text to the markdown
+        // renderer, which can be substantially taller. Defer one runloop so
+        // the new layout is measured before we anchor, otherwise we land on
+        // the old bubble height and the content overshoots the viewport.
         DispatchQueue.main.async {
           scrollToBottom(proxy, animated: false)
         }
