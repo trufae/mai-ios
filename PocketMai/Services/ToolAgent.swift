@@ -508,7 +508,8 @@ enum TextToSpeechTool {
     arguments: [String: AgentToolArgumentValue],
     settings: NativeToolSettings,
     role: VoiceRole = .assistant,
-    title: String? = nil
+    title: String? = nil,
+    messageID: UUID? = nil
   ) -> String {
     let text = (arguments["text"]?.stringValue ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -532,6 +533,7 @@ enum TextToSpeechTool {
       voice: voice,
       role: role,
       title: title,
+      messageID: messageID,
       interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
   }

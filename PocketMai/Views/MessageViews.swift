@@ -217,7 +217,9 @@ private struct MessageBubbleContent: View, Equatable {
       _ = TextToSpeechTool.speak(
         arguments: ["text": .string(visibleText)],
         settings: toolSettings,
-        role: isUser ? .user : .assistant)
+        role: isUser ? .user : .assistant,
+        title: message.role.displayName,
+        messageID: message.id)
     } label: {
       Label("Speak Message", systemImage: "speaker.wave.2")
     }

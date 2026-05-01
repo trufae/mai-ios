@@ -3,6 +3,7 @@ import UIKit
 
 struct ChatView: View {
   @EnvironmentObject private var store: AppStore
+  @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
   @State private var showingProviderModelSheet = false
   @State private var showingCompactConfirmation = false
@@ -13,6 +14,7 @@ struct ChatView: View {
   @State private var exportedEPUB: ExportedEPUB?
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
+  @State private var pendingScrollToMessageID: UUID?
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
 
@@ -21,9 +23,13 @@ struct ChatView: View {
       if let providerStatus {
         providerStatusBanner(providerStatus)
       }
+      NowSpeakingBar { messageID in
+        pendingScrollToMessageID = messageID
+      }
       messages
       composer
     }
+    .animation(.snappy, value: ttsPlayer.isSpeaking)
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbarBackground(.hidden, for: .navigationBar)
@@ -400,6 +406,13 @@ struct ChatView: View {
         DispatchQueue.main.async {
           scrollToBottom(proxy, animated: false)
         }
+      }
+      .onChange(of: pendingScrollToMessageID) { _, target in
+        guard let target else { return }
+        withAnimation(.snappy) {
+          proxy.scrollTo(target, anchor: .center)
+        }
+        pendingScrollToMessageID = nil
       }
     }
   }
