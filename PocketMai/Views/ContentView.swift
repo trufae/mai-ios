@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
   @EnvironmentObject private var store: AppStore
+  @StateObject private var screenshotService = ChatScreenshotService()
   @State private var showingSettings = false
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
@@ -67,6 +68,10 @@ struct ContentView: View {
       Button("OK") { store.errorMessage = nil }
     } message: {
       Text(store.errorMessage ?? "")
+    }
+    .background(ChatScreenshotServiceInstaller(service: screenshotService))
+    .onAppear {
+      screenshotService.store = store
     }
     .tint(store.settings.appearance.tintColor)
     .accentColor(store.settings.appearance.tintColor)
