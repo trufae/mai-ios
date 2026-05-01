@@ -359,6 +359,7 @@ struct ChatView: View {
                   : nil,
                 onTrimFromHere: { messagePendingTrimAndResubmit = message },
                 onRestartFresh: { messagePendingRestartFresh = message },
+                onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
                 showThinking: store.currentConversation?.showThinking ?? false,
                 onStreamingTextChange: { _ in
                   guard !userScrolledAfterLastMessage else { return }

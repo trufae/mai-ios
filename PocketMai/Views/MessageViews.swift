@@ -11,6 +11,7 @@ struct MessageBubble: View {
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
+  var onNewChatWithMessage: (() -> Void)? = nil
   var showThinking: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
@@ -24,6 +25,7 @@ struct MessageBubble: View {
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
+      onNewChatWithMessage: onNewChatWithMessage,
       showThinking: showThinking,
       onStreamingTextChange: onStreamingTextChange
     )
@@ -39,6 +41,7 @@ private struct StreamingMessageBubble: View {
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
+  var onNewChatWithMessage: (() -> Void)? = nil
   var showThinking: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
@@ -52,6 +55,7 @@ private struct StreamingMessageBubble: View {
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
+      onNewChatWithMessage: onNewChatWithMessage,
       showThinking: showThinking
     )
     .equatable()
@@ -71,6 +75,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
+  var onNewChatWithMessage: (() -> Void)? = nil
   var showThinking: Bool = false
 
   private var isUser: Bool { message.role == .user }
@@ -230,6 +235,13 @@ private struct MessageBubbleContent: View, Equatable {
           Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
         }
       }
+      if let onNewChatWithMessage {
+        Button {
+          onNewChatWithMessage()
+        } label: {
+          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
+        }
+      }
       Divider()
     } else if let onRestartFresh {
       Divider()
@@ -237,6 +249,21 @@ private struct MessageBubbleContent: View, Equatable {
         onRestartFresh()
       } label: {
         Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+      }
+      if let onNewChatWithMessage {
+        Button {
+          onNewChatWithMessage()
+        } label: {
+          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
+        }
+      }
+      Divider()
+    } else if let onNewChatWithMessage {
+      Divider()
+      Button {
+        onNewChatWithMessage()
+      } label: {
+        Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
       }
       Divider()
     }

@@ -304,12 +304,7 @@ final class AppStore: ObservableObject {
 
   func restartFromScratch(with message: ChatMessage) async {
     guard !isResponding, let index = currentConversationIndex else { return }
-    let visible = MessageContentFilter.render(message.text).visibleText
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    let fallback = MessageContentFilter.promptSafeText(from: message.text)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    let prompt = visible.isEmpty ? fallback : visible
-    guard !prompt.isEmpty else { return }
+    guard let prompt = restartPrompt(from: message) else { return }
 
     conversations[index].messages.removeAll()
     conversations[index].title = "New chat"
@@ -318,6 +313,42 @@ final class AppStore: ObservableObject {
     saveConversations()
 
     _ = await send(prompt: prompt)
+  }
+
+  func startNewConversation(with message: ChatMessage) async {
+    guard let prompt = restartPrompt(from: message) else { return }
+
+    let source = currentConversation
+    discardSelectedDisposableConversation()
+    var conversation = makeNewConversation(incognito: source?.isIncognito ?? isIncognitoMode)
+    if let source {
+      conversation.provider = source.provider
+      conversation.modelID = source.modelID
+      conversation.endpointID = source.endpointID
+      conversation.systemPromptID = source.systemPromptID
+      conversation.enabledTools = source.enabledTools
+      conversation.usesStreaming = source.usesStreaming
+      conversation.disabledMCPTools = source.disabledMCPTools
+      conversation.reasoningLevel = source.reasoningLevel
+      conversation.showThinking = source.showThinking
+    }
+    conversations.insert(conversation, at: 0)
+    sortConversations()
+    selectedConversationID = conversation.id
+    isIncognitoMode = conversation.isIncognito
+    selectedConversationIDs.removeAll()
+    saveConversations()
+
+    _ = await send(prompt: prompt)
+  }
+
+  private func restartPrompt(from message: ChatMessage) -> String? {
+    let visible = MessageContentFilter.render(message.text).visibleText
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallback = MessageContentFilter.promptSafeText(from: message.text)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let prompt = visible.isEmpty ? fallback : visible
+    return prompt.isEmpty ? nil : prompt
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
