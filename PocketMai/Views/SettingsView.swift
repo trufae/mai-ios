@@ -744,7 +744,7 @@ struct SettingsView: View {
         Label("Add MCP Server", systemImage: "plus")
       }
     } header: {
-      Text("MCP Servers")
+      Text("External Tools")
     } footer: {
       Text("HTTP and HTTPS endpoints are accepted. Tap a server to edit its details.")
     }
@@ -802,6 +802,11 @@ struct SettingsView: View {
         Spacer()
         Text("pancake").foregroundStyle(.secondary)
       }
+      HStack {
+        Text("Version")
+        Spacer()
+        Text(appVersionString).foregroundStyle(.secondary)
+      }
       Link(destination: URL(string: "https://github.com/trufae/mai")!) {
         HStack {
           Label("GitHub", systemImage: "link")
@@ -814,6 +819,15 @@ struct SettingsView: View {
     } header: {
       Text("About PocketMai")
     }
+  }
+
+  private var appVersionString: String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+    if let build = info?["CFBundleVersion"] as? String, build != short {
+      return "\(short) (\(build))"
+    }
+    return short
   }
 
   private var dangerSection: some View {
