@@ -12,9 +12,13 @@ struct ChatView: View {
   @State private var messagePendingTrimAndResubmit: ChatMessage?
   @State private var messagePendingRestartFresh: ChatMessage?
   @State private var exportedEPUB: ExportedEPUB?
+  @State private var exportedAudio: ExportedAudio?
+  @State private var showingAudioExport: Bool = false
+  @State private var audioExportError: String?
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
+  @StateObject private var audioExporter = TTSExporter()
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
 
@@ -52,44 +56,7 @@ struct ChatView: View {
         chatTitle
       }
       ToolbarItem(placement: .topBarTrailing) {
-        Menu {
-          Button {
-            store.newConversation()
-          } label: {
-            Label {
-              Text("New Chat")
-            } icon: {
-              Text("💬")
-            }
-          }
-          Button {
-            store.newConversation(incognito: true)
-          } label: {
-            Label {
-              Text("New Incognito Chat")
-            } icon: {
-              Text("👻")
-            }
-          }
-          Divider()
-          Section("Export") {
-            ForEach(ConversationExportFormat.allCases) { format in
-              Button {
-                store.copyConversation(format: format)
-              } label: {
-                Label("Copy as \(format.displayName)", systemImage: format.systemImage)
-              }
-            }
-            Button {
-              exportEPUB()
-            } label: {
-              Label("Export in ePUB", systemImage: "book")
-            }
-          }
-        } label: {
-          Image(systemName: "square.and.pencil")
-        }
-        .buttonStyle(.glass)
+        trailingMenu
       }
     }
     .alert("Rename Chat", isPresented: $showingRenameAlert) {
@@ -106,6 +73,12 @@ struct ChatView: View {
     .sheet(item: $exportedEPUB) { file in
       ActivityShareSheet(activityItems: [file.url])
     }
+    .modifier(
+      AudioExportPresentations(
+        exporter: audioExporter,
+        exportedAudio: $exportedAudio,
+        showingAudioExport: $showingAudioExport,
+        audioExportError: $audioExportError))
     .alert(
       "Delete this message?",
       isPresented: deleteMessageConfirmationBinding,
@@ -332,10 +305,88 @@ struct ChatView: View {
     }
   }
 
+  private var trailingMenu: some View {
+    Menu {
+      Button {
+        store.newConversation()
+      } label: {
+        Label {
+          Text("New Chat")
+        } icon: {
+          Text("💬")
+        }
+      }
+      Button {
+        store.newConversation(incognito: true)
+      } label: {
+        Label {
+          Text("New Incognito Chat")
+        } icon: {
+          Text("👻")
+        }
+      }
+      Divider()
+      exportMenuSection
+    } label: {
+      Image(systemName: "square.and.pencil")
+    }
+    .buttonStyle(.glass)
+  }
+
+  @ViewBuilder
+  private var exportMenuSection: some View {
+    Section("Export") {
+      ForEach(ConversationExportFormat.allCases) { format in
+        Button {
+          store.copyConversation(format: format)
+        } label: {
+          Label("Copy as \(format.displayName)", systemImage: format.systemImage)
+        }
+      }
+      Button {
+        exportEPUB()
+      } label: {
+        Label("Export in ePUB", systemImage: "book")
+      }
+      Button {
+        Task { await exportAudio() }
+      } label: {
+        Label("Export as Audio (.m4a)", systemImage: "waveform")
+      }
+      .disabled(audioExporter.isExporting)
+    }
+  }
+
   private func exportEPUB() {
     guard let url = store.exportCurrentConversationEPUB() else { return }
     exportedEPUB = ExportedEPUB(url: url)
   }
+
+  private func exportAudio() async {
+    guard let conversation = store.currentConversation else { return }
+    let safeName =
+      conversation.displayTitle
+      .components(separatedBy: CharacterSet(charactersIn: "/\\:?*\"<>|"))
+      .joined(separator: "-")
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("\(safeName).m4a")
+    showingAudioExport = true
+    do {
+      try await audioExporter.export(
+        messages: conversation.messages,
+        voices: store.settings.toolSettings.voices,
+        to: url)
+      showingAudioExport = false
+      exportedAudio = ExportedAudio(url: url)
+    } catch is CancellationError {
+      showingAudioExport = false
+    } catch {
+      showingAudioExport = false
+      audioExportError = (error as? LocalizedError)?.errorDescription
+        ?? error.localizedDescription
+    }
+  }
+
 
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     guard store.currentConversation?.provider == .apple,
@@ -786,6 +837,65 @@ private struct ComposerTextView: UIViewRepresentable {
 private struct ExportedEPUB: Identifiable {
   let id = UUID()
   let url: URL
+}
+
+private struct ExportedAudio: Identifiable {
+  let id = UUID()
+  let url: URL
+}
+
+private struct AudioExportPresentations: ViewModifier {
+  @ObservedObject var exporter: TTSExporter
+  @Binding var exportedAudio: ExportedAudio?
+  @Binding var showingAudioExport: Bool
+  @Binding var audioExportError: String?
+
+  func body(content: Content) -> some View {
+    content
+      .sheet(item: $exportedAudio) { file in
+        ActivityShareSheet(activityItems: [file.url])
+      }
+      .sheet(isPresented: $showingAudioExport) {
+        AudioExportProgressView(exporter: exporter) {
+          exporter.cancel()
+        }
+      }
+      .alert(
+        "Audio export failed",
+        isPresented: Binding(
+          get: { audioExportError != nil },
+          set: { if !$0 { audioExportError = nil } }),
+        presenting: audioExportError
+      ) { _ in
+        Button("OK", role: .cancel) { audioExportError = nil }
+      } message: { message in
+        Text(message)
+      }
+  }
+}
+
+private struct AudioExportProgressView: View {
+  @ObservedObject var exporter: TTSExporter
+  let onCancel: () -> Void
+
+  var body: some View {
+    VStack(spacing: 16) {
+      Image(systemName: "waveform")
+        .font(.system(size: 32))
+        .foregroundStyle(.secondary)
+      ProgressView(value: exporter.progress)
+        .progressViewStyle(.linear)
+      Text(exporter.phase)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+      Button("Cancel", role: .cancel, action: onCancel)
+    }
+    .padding(24)
+    .frame(maxWidth: .infinity)
+    .presentationDetents([.height(220)])
+    .interactiveDismissDisabled()
+  }
 }
 
 private struct ActivityShareSheet: UIViewControllerRepresentable {
