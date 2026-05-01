@@ -589,6 +589,36 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct RoleVoiceSettings: Codable, Equatable, Sendable {
+  var language: String = ""
+  var voiceIdentifier: String = ""
+  var rate: Double = 0.5
+  var pitch: Double = 1.0
+
+  static let defaults = RoleVoiceSettings()
+}
+
+struct VoiceSettings: Codable, Equatable, Sendable {
+  var user: RoleVoiceSettings = .defaults
+  var assistant: RoleVoiceSettings = .defaults
+
+  static let defaults = VoiceSettings()
+}
+
+enum VoiceRole: String, Codable, Sendable {
+  case user
+  case assistant
+}
+
+extension VoiceSettings {
+  func settings(for role: VoiceRole) -> RoleVoiceSettings {
+    switch role {
+    case .user: return user
+    case .assistant: return assistant
+    }
+  }
+}
+
 struct NativeToolSettings: Codable, Equatable, Sendable {
   var includeTimeZone: Bool = true
   var includeCurrentTime: Bool = true
@@ -600,10 +630,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webSearchFetchingEnabled: Bool = false
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
-  var textToSpeechLanguage: String = ""
-  var textToSpeechVoiceIdentifier: String = ""
-  var textToSpeechRate: Double = 0.5
-  var textToSpeechPitch: Double = 1.0
+  var voices: VoiceSettings = .defaults
 
   static let defaults = NativeToolSettings()
 
@@ -612,6 +639,10 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   enum CodingKeys: String, CodingKey {
     case includeTimeZone, includeCurrentTime, includeYear, useGPSLocation
     case manualLocation, weatherLocation, webSearchProvider, webSearchFetchingEnabled, todos, files
+    case voices
+  }
+
+  private enum LegacyCodingKeys: String, CodingKey {
     case textToSpeechLanguage, textToSpeechVoiceIdentifier
     case textToSpeechRate, textToSpeechPitch
   }
@@ -637,16 +668,25 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
       ?? defaults.webSearchFetchingEnabled
     todos = (try? c.decode([TodoItem].self, forKey: .todos)) ?? defaults.todos
     files = (try? c.decode([ToolFile].self, forKey: .files)) ?? defaults.files
-    textToSpeechLanguage =
-      (try? c.decode(String.self, forKey: .textToSpeechLanguage))
-      ?? defaults.textToSpeechLanguage
-    textToSpeechVoiceIdentifier =
-      (try? c.decode(String.self, forKey: .textToSpeechVoiceIdentifier))
-      ?? defaults.textToSpeechVoiceIdentifier
-    textToSpeechRate =
-      (try? c.decode(Double.self, forKey: .textToSpeechRate)) ?? defaults.textToSpeechRate
-    textToSpeechPitch =
-      (try? c.decode(Double.self, forKey: .textToSpeechPitch)) ?? defaults.textToSpeechPitch
+
+    if let decoded = try? c.decode(VoiceSettings.self, forKey: .voices) {
+      voices = decoded
+    } else if let legacy = try? decoder.container(keyedBy: LegacyCodingKeys.self) {
+      // Migrate from the previous flat textToSpeech* fields. Both roles seed
+      // from the same legacy values so the user has a consistent starting
+      // point and can diverge them later.
+      let legacyVoice = RoleVoiceSettings(
+        language: (try? legacy.decode(String.self, forKey: .textToSpeechLanguage)) ?? "",
+        voiceIdentifier:
+          (try? legacy.decode(String.self, forKey: .textToSpeechVoiceIdentifier)) ?? "",
+        rate: (try? legacy.decode(Double.self, forKey: .textToSpeechRate))
+          ?? RoleVoiceSettings.defaults.rate,
+        pitch: (try? legacy.decode(Double.self, forKey: .textToSpeechPitch))
+          ?? RoleVoiceSettings.defaults.pitch)
+      voices = VoiceSettings(user: legacyVoice, assistant: legacyVoice)
+    } else {
+      voices = defaults.voices
+    }
   }
 }
 

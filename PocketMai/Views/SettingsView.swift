@@ -97,6 +97,115 @@ private enum TTSVoiceCache {
   }
 }
 
+private enum VoiceTestPhrases {
+  // Keyed by primary BCP-47 subtag (e.g. "es" for "es-ES").
+  static let phrases: [String: String] = [
+    "en": "Hello, this is a voice test.",
+    "es": "Hola, esta es una prueba de voz.",
+    "ca": "Hola, això és una prova de veu.",
+    "fr": "Bonjour, ceci est un test vocal.",
+    "de": "Hallo, das ist ein Stimmtest.",
+    "it": "Ciao, questa è una prova vocale.",
+    "pt": "Olá, este é um teste de voz.",
+    "nl": "Hallo, dit is een stemtest.",
+    "sv": "Hej, det här är ett rösttest.",
+    "no": "Hei, dette er en stemmetest.",
+    "da": "Hej, dette er en stemmetest.",
+    "fi": "Hei, tämä on äänitesti.",
+    "pl": "Cześć, to jest test głosu.",
+    "tr": "Merhaba, bu bir ses testidir.",
+    "ru": "Привет, это проверка голоса.",
+    "uk": "Привіт, це перевірка голосу.",
+    "ja": "こんにちは、これは音声テストです。",
+    "zh": "你好，这是一次语音测试。",
+    "ko": "안녕하세요, 이것은 음성 테스트입니다.",
+    "ar": "مرحبًا، هذا اختبار للصوت.",
+    "he": "שלום, זוהי בדיקת קול.",
+    "hi": "नमस्ते, यह आवाज़ का परीक्षण है।",
+    "th": "สวัสดี นี่คือการทดสอบเสียง",
+    "vi": "Xin chào, đây là một bài kiểm tra giọng nói.",
+    "id": "Halo, ini adalah tes suara.",
+    "el": "Γειά σας, αυτή είναι μια δοκιμή φωνής.",
+    "cs": "Ahoj, toto je hlasový test.",
+    "ro": "Salut, acesta este un test de voce.",
+    "hu": "Helló, ez egy hangteszt.",
+  ]
+
+  static func phrase(forLanguageTag tag: String) -> String {
+    let primary = tag.split(separator: "-").first.map(String.init)?.lowercased() ?? ""
+    if let exact = phrases[primary] { return exact }
+    return phrases["en"] ?? "Hello, this is a voice test."
+  }
+}
+
+@MainActor
+private final class VoiceTestController: NSObject, ObservableObject,
+  AVSpeechSynthesizerDelegate
+{
+  @Published var playingRole: VoiceRole?
+
+  private let synthesizer = AVSpeechSynthesizer()
+
+  override init() {
+    super.init()
+    synthesizer.delegate = self
+  }
+
+  func toggle(role: VoiceRole, voice: RoleVoiceSettings) {
+    if playingRole == role {
+      stop()
+      return
+    }
+    if synthesizer.isSpeaking {
+      synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    let language = effectiveLanguage(for: voice)
+    let utterance = AVSpeechUtterance(string: VoiceTestPhrases.phrase(forLanguageTag: language))
+    if !voice.voiceIdentifier.isEmpty,
+      let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
+    {
+      utterance.voice = v
+    } else if !language.isEmpty {
+      utterance.voice = AVSpeechSynthesisVoice(language: language)
+    }
+    utterance.rate = Float(max(0, min(1, voice.rate)))
+    utterance.pitchMultiplier = Float(max(0.5, min(2, voice.pitch)))
+
+    playingRole = role
+    synthesizer.speak(utterance)
+  }
+
+  func stop() {
+    if synthesizer.isSpeaking {
+      synthesizer.stopSpeaking(at: .immediate)
+    }
+    playingRole = nil
+  }
+
+  private func effectiveLanguage(for voice: RoleVoiceSettings) -> String {
+    if !voice.language.isEmpty { return voice.language }
+    if !voice.voiceIdentifier.isEmpty,
+      let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
+    {
+      return v.language
+    }
+    return Locale.current.identifier
+  }
+
+  nonisolated func speechSynthesizer(
+    _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
+  ) {
+    Task { @MainActor in self.playingRole = nil }
+  }
+
+  nonisolated func speechSynthesizer(
+    _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
+  ) {
+    Task { @MainActor in self.playingRole = nil }
+  }
+}
+
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
@@ -106,12 +215,14 @@ struct SettingsView: View {
   @State private var showingClearMemoryConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
+  @StateObject private var voiceTester = VoiceTestController()
 
   var body: some View {
     NavigationStack(path: $endpointPath) {
       Form {
         providerSection
         appearanceSection
+        voiceSection
         endpointSection
         promptSection
         toolsSection
@@ -264,6 +375,76 @@ struct SettingsView: View {
       .padding(.vertical, 2)
     } header: {
       Text("Appearance")
+    }
+  }
+
+  private var voiceSection: some View {
+    Section {
+      DisclosureGroup {
+        roleVoiceEditor(role: .user, keyPath: \.toolSettings.voices.user)
+      } label: {
+        Label("User Voice", systemImage: "person.wave.2")
+      }
+      DisclosureGroup {
+        roleVoiceEditor(role: .assistant, keyPath: \.toolSettings.voices.assistant)
+      } label: {
+        Label("Assistant Voice", systemImage: "speaker.wave.2")
+      }
+    } header: {
+      Text("Voice")
+    } footer: {
+      Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
+    }
+  }
+
+  @ViewBuilder
+  private func roleVoiceEditor(
+    role: VoiceRole,
+    keyPath: WritableKeyPath<AppSettings, RoleVoiceSettings>
+  ) -> some View {
+    let language = store.settings[keyPath: keyPath].language
+    Picker("Language", selection: settingsBinding(keyPath.appending(path: \.language))) {
+      Text("System Default").tag("")
+      ForEach(TTSVoiceCache.languages, id: \.self) { lang in
+        Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
+      }
+    }
+    .onChange(of: store.settings[keyPath: keyPath].language) { _, newLanguage in
+      guard !newLanguage.isEmpty,
+        let voice = TTSVoiceCache.voices.first(where: {
+          $0.identifier == store.settings[keyPath: keyPath].voiceIdentifier
+        }),
+        voice.language != newLanguage
+      else { return }
+      store.settings[keyPath: keyPath].voiceIdentifier = ""
+      store.saveSettings()
+    }
+
+    Picker("Voice", selection: settingsBinding(keyPath.appending(path: \.voiceIdentifier))) {
+      Text("Default Voice").tag("")
+      ForEach(TTSVoiceCache.voiceOptions(for: language), id: \.identifier) { voice in
+        Text("\(voice.name) (\(TTSVoiceCache.languageDisplayName(voice.language)))")
+          .tag(voice.identifier)
+      }
+    }
+
+    VStack(alignment: .leading) {
+      Text("Rate")
+      Slider(value: settingsBinding(keyPath.appending(path: \.rate)), in: 0...1, step: 0.05)
+    }
+
+    VStack(alignment: .leading) {
+      Text("Pitch")
+      Slider(value: settingsBinding(keyPath.appending(path: \.pitch)), in: 0.5...2, step: 0.05)
+    }
+
+    Button {
+      voiceTester.toggle(role: role, voice: store.settings[keyPath: keyPath])
+    } label: {
+      let isPlaying = voiceTester.playingRole == role
+      Label(
+        isPlaying ? "Stop Test" : "Test Voice",
+        systemImage: isPlaying ? "stop.circle" : "play.circle")
     }
   }
 
@@ -507,53 +688,9 @@ struct SettingsView: View {
         deleteTodos(at: offsets)
       }
     case .textToSpeech:
-      Picker("Language", selection: settingsBinding(\.toolSettings.textToSpeechLanguage)) {
-        Text("System Default").tag("")
-        ForEach(TTSVoiceCache.languages, id: \.self) { language in
-          Text(TTSVoiceCache.languageDisplayName(language)).tag(language)
-        }
-      }
-      .onChange(of: store.settings.toolSettings.textToSpeechLanguage) { _, language in
-        guard !language.isEmpty,
-          let voice = TTSVoiceCache.voices.first(where: {
-            $0.identifier == store.settings.toolSettings.textToSpeechVoiceIdentifier
-          }),
-          voice.language != language
-        else { return }
-        store.settings.toolSettings.textToSpeechVoiceIdentifier = ""
-        store.saveSettings()
-      }
-
-      Picker("Voice", selection: settingsBinding(\.toolSettings.textToSpeechVoiceIdentifier)) {
-        Text("Default Voice").tag("")
-        ForEach(
-          TTSVoiceCache.voiceOptions(for: store.settings.toolSettings.textToSpeechLanguage),
-          id: \.identifier
-        ) { voice in
-          Text("\(voice.name) (\(TTSVoiceCache.languageDisplayName(voice.language)))")
-            .tag(voice.identifier)
-        }
-      }
-
-      VStack(alignment: .leading) {
-        Text("Rate")
-        Slider(value: settingsBinding(\.toolSettings.textToSpeechRate), in: 0...1, step: 0.05)
-      }
-
-      VStack(alignment: .leading) {
-        Text("Pitch")
-        Slider(value: settingsBinding(\.toolSettings.textToSpeechPitch), in: 0.5...2, step: 0.05)
-      }
-
-      Button {
-        let sample =
-          "Hello, this is a voice test. Hola, esto es una prueba de voz. Hola, això és una prova de veu. Bonjour, ceci est un test vocal. Hallo, das ist ein Stimmtest. Ciao, questa è una prova vocale. こんにちは、これは音声テストです。 你好，这是一次语音测试。"
-        _ = TextToSpeechTool.speak(
-          arguments: ["text": .string(sample)],
-          settings: store.settings.toolSettings)
-      } label: {
-        Label("Test Voice", systemImage: "play.circle")
-      }
+      Text("Configure user and assistant voices in the Voice section above.")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
     case .files:
       Button {
         showingFileImporter = true
@@ -845,29 +982,6 @@ struct SettingsView: View {
     }
   }
 
-  private var textToSpeechVoices: [AVSpeechSynthesisVoice] {
-    AVSpeechSynthesisVoice.speechVoices().sorted {
-      if $0.language != $1.language { return $0.language < $1.language }
-      return $0.name < $1.name
-    }
-  }
-
-  private var textToSpeechLanguages: [String] {
-    Array(Set(textToSpeechVoices.map(\.language))).sorted {
-      languageDisplayName($0) < languageDisplayName($1)
-    }
-  }
-
-  private var textToSpeechVoiceOptions: [AVSpeechSynthesisVoice] {
-    let language = store.settings.toolSettings.textToSpeechLanguage
-    guard !language.isEmpty else { return textToSpeechVoices }
-    return textToSpeechVoices.filter { $0.language == language }
-  }
-
-  private func languageDisplayName(_ language: String) -> String {
-    let name = Locale.current.localizedString(forIdentifier: language) ?? language
-    return "\(name) (\(language))"
-  }
 
   private func toggleTool(_ tool: NativeToolID) {
     if store.settings.defaultEnabledTools.contains(tool) {

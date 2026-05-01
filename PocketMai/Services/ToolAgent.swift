@@ -505,9 +505,11 @@ enum TextToSpeechTool {
       ])
   ]
 
-  static func speak(arguments: [String: AgentToolArgumentValue], settings: NativeToolSettings)
-    -> String
-  {
+  static func speak(
+    arguments: [String: AgentToolArgumentValue],
+    settings: NativeToolSettings,
+    role: VoiceRole = .assistant
+  ) -> String {
     let text = (arguments["text"]?.stringValue ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return "Error: text is required." }
@@ -517,14 +519,15 @@ enum TextToSpeechTool {
       synthesizer.stopSpeaking(at: .immediate)
     }
 
+    let roleSettings = settings.voices.settings(for: role)
     let utterance = AVSpeechUtterance(string: text)
     let voiceIdentifier =
       AgentTooling.firstNonEmpty(
         arguments["voice"]?.stringValue,
         arguments["voice_identifier"]?.stringValue,
-        settings.textToSpeechVoiceIdentifier)
+        roleSettings.voiceIdentifier)
     let language =
-      AgentTooling.firstNonEmpty(arguments["language"]?.stringValue, settings.textToSpeechLanguage)
+      AgentTooling.firstNonEmpty(arguments["language"]?.stringValue, roleSettings.language)
     if let voiceIdentifier,
       let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
     {
@@ -532,9 +535,9 @@ enum TextToSpeechTool {
     } else if let language {
       utterance.voice = AVSpeechSynthesisVoice(language: language)
     }
-    let rate = arguments["rate"]?.numberValue ?? settings.textToSpeechRate
+    let rate = arguments["rate"]?.numberValue ?? roleSettings.rate
     utterance.rate = clamped(Float(rate), min: 0, max: 1)
-    let pitch = arguments["pitch"]?.numberValue ?? settings.textToSpeechPitch
+    let pitch = arguments["pitch"]?.numberValue ?? roleSettings.pitch
     utterance.pitchMultiplier = clamped(Float(pitch), min: 0.5, max: 2)
 
     synthesizer.speak(utterance)
