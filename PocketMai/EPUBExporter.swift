@@ -93,13 +93,19 @@ enum EPUBExporter {
     let xhtml: String
   }
 
+  private struct MessageContent {
+    let visibleText: String
+    let reasoningSections: [String]
+  }
+
   private static func buildChapters(conversation: Conversation, bookTitle: String) -> [Chapter] {
     var chapters: [Chapter] = []
     chapters.append(makeTitleChapter(conversation: conversation, bookTitle: bookTitle))
 
     for (index, message) in conversation.messages.enumerated() {
       let id = String(format: "msg%03d", index + 1)
-      let blocks = MarkdownParser.blocks(from: message.text)
+      let content = messageContent(for: message, includeThinking: conversation.showThinking)
+      let blocks = MarkdownParser.blocks(from: content.visibleText)
       let snippet = chapterSnippet(blocks: blocks)
       let displayRole = message.role.displayName
       let tocTitle: String
@@ -109,10 +115,7 @@ enum EPUBExporter {
         tocTitle = "\(index + 1). \(displayRole) — \(snippet)"
       }
 
-      let bodyHTML =
-        blocks.isEmpty
-        ? "<p></p>"
-        : blocks.map(htmlForBlock).joined(separator: "\n      ")
+      let bodyHTML = htmlForMessageContent(content, visibleBlocks: blocks)
 
       let xhtml = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -138,6 +141,17 @@ enum EPUBExporter {
     }
 
     return chapters
+  }
+
+  private static func messageContent(for message: ChatMessage, includeThinking: Bool)
+    -> MessageContent
+  {
+    let rendered = MessageContentFilter.render(message.text)
+    let reasoningSections =
+      includeThinking
+      ? rendered.hiddenSections.filter { $0.tag == "think" }.map(\.content)
+      : []
+    return MessageContent(visibleText: rendered.visibleText, reasoningSections: reasoningSections)
   }
 
   private static func makeTitleChapter(conversation: Conversation, bookTitle: String) -> Chapter {
@@ -209,6 +223,33 @@ enum EPUBExporter {
   }
 
   // MARK: - Block rendering
+
+  private static func htmlForMessageContent(
+    _ content: MessageContent, visibleBlocks: [MarkdownBlock]
+  ) -> String {
+    var parts: [String] = []
+    for section in content.reasoningSections {
+      let blocks = MarkdownParser.blocks(from: section)
+      let body =
+        blocks.isEmpty
+        ? "<p></p>"
+        : blocks.map(htmlForBlock).joined(separator: "\n        ")
+      parts.append(
+        """
+        <section class="reasoning">
+          <h2>Reasoning</h2>
+          \(body)
+        </section>
+        """
+      )
+    }
+
+    if !content.visibleText.isEmpty {
+      parts.append(visibleBlocks.map(htmlForBlock).joined(separator: "\n      "))
+    }
+
+    return parts.isEmpty ? "<p></p>" : parts.joined(separator: "\n      ")
+  }
 
   private static func htmlForBlock(_ block: MarkdownBlock) -> String {
     switch block.kind {
@@ -471,6 +512,19 @@ enum EPUBExporter {
     section.message.role-assistant h1.role { color: #0969da; }
     section.message.role-tool h1.role { color: #8250df; }
     section.message.role-error h1.role { color: #cf222e; }
+    section.reasoning {
+      background: #f6f8fa;
+      border-left: 3px solid #8250df;
+      color: #57606a;
+      margin: 0 0 1em;
+      padding: 0.6em 1em;
+    }
+    section.reasoning h2 {
+      color: #8250df;
+      font-size: 0.95em;
+      margin-top: 0;
+      text-transform: uppercase;
+    }
     p { margin: 0.7em 0; }
     pre {
       background: #f6f8fa;
