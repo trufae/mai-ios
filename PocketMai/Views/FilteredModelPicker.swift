@@ -6,10 +6,19 @@ struct FilteredModelPicker: View {
   let models: [String]
   var emptySelectionTitle: String? = nil
 
+  private var sortedModels: [String] {
+    models.sorted { lhs, rhs in
+      let lhsIsFree = lhs.localizedCaseInsensitiveContains("free")
+      let rhsIsFree = rhs.localizedCaseInsensitiveContains("free")
+      if lhsIsFree != rhsIsFree { return lhsIsFree }
+      return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+    }
+  }
+
   private var filteredModels: [String] {
     let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else { return models }
-    return models.filter { $0.localizedCaseInsensitiveContains(query) }
+    guard !query.isEmpty else { return sortedModels }
+    return sortedModels.filter { $0.localizedCaseInsensitiveContains(query) }
   }
 
   var body: some View {
@@ -31,10 +40,14 @@ struct FilteredModelPicker: View {
       }
       .pickerStyle(.menu)
 
-      TextField("Filter", text: $filter)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .textFieldStyle(.roundedBorder)
+      HStack {
+        Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+        TextField("Model name", text: $filter)
+          .multilineTextAlignment(.trailing)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .textFieldStyle(.plain)
+      }
     }
   }
 }
