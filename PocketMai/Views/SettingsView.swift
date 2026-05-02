@@ -186,12 +186,7 @@ struct SettingsView: View {
       Form {
         providerSection
         appearanceSection
-        voiceSection
-        endpointSection
-        promptSection
         toolsSection
-        contextToolsSection
-        mcpSection
         aboutSection
         dangerSection
       }
@@ -254,9 +249,21 @@ struct SettingsView: View {
     }
   }
 
+  @ViewBuilder
+  private var advancedOptionsContent: some View {
+    Toggle("Show thinking", isOn: settingsBinding(\.showThinkingByDefault))
+    Toggle("Stream responses", isOn: settingsBinding(\.streamByDefault))
+    Picker("Context", selection: settingsBinding(\.contextWindowMode)) {
+      ForEach(ContextWindowMode.allCases) { mode in
+        Text(mode.displayName).tag(mode)
+      }
+    }
+    .pickerStyle(.menu)
+  }
+
   private var providerSection: some View {
     Section {
-      Picker("Default Provider", selection: defaultProviderBinding) {
+      Picker("Default", selection: defaultProviderBinding) {
         Label("Apple Intelligence", systemImage: "apple.logo")
           .tag(DefaultProviderSelection.apple)
         ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
@@ -268,16 +275,26 @@ struct SettingsView: View {
         }
       }
       .pickerStyle(.menu)
-      Toggle("Show thinking", isOn: settingsBinding(\.showThinkingByDefault))
-      Toggle("Stream Responses", isOn: settingsBinding(\.streamByDefault))
-      Picker("Context", selection: settingsBinding(\.contextWindowMode)) {
-        ForEach(ContextWindowMode.allCases) { mode in
-          Text(mode.displayName).tag(mode)
-        }
+
+      DisclosureGroup {
+        endpointContent
+      } label: {
+        Label("Endpoints", systemImage: "network")
       }
-      .pickerStyle(.menu)
+
+      DisclosureGroup {
+        promptContent
+      } label: {
+        Label("System Prompts", systemImage: "text.bubble")
+      }
+
+      DisclosureGroup {
+        advancedOptionsContent
+      } label: {
+        Label("Advanced Options", systemImage: "slider.horizontal.3")
+      }
     } header: {
-      Text("Default Provider")
+      Text("Inference")
     } footer: {
       Text(providerFooterText)
     }
@@ -290,28 +307,14 @@ struct SettingsView: View {
   private var providerFooterText: String {
     if store.settings.openAIEndpoints.isEmpty {
       return
-        "Apple Intelligence runs on-device. Add an endpoint below to use OpenAI-compatible providers."
+        "Apple Intelligence runs on-device. Expand Endpoints to add OpenAI-compatible providers."
     }
     return "Choose which provider answers new chats. Apple Intelligence runs on-device."
   }
 
   private var appearanceSection: some View {
     Section {
-      Picker("User Font", selection: settingsBinding(\.appearance.userFontFamily)) {
-        ForEach(AppearanceFontFamily.pickerOptions) { font in
-          Text(font.displayName).tag(font)
-        }
-      }
-      .pickerStyle(.menu)
-
-      Picker("Assistant Font", selection: settingsBinding(\.appearance.assistantFontFamily)) {
-        ForEach(AppearanceFontFamily.pickerOptions) { font in
-          Text(font.displayName).tag(font)
-        }
-      }
-      .pickerStyle(.menu)
-
-      Picker("Tint", selection: settingsBinding(\.appearance.tint)) {
+      Picker("Accent Tint", selection: settingsBinding(\.appearance.tint)) {
         ForEach(AppearanceTint.allCases) { tint in
           HStack {
             Circle()
@@ -324,41 +327,68 @@ struct SettingsView: View {
       }
       .pickerStyle(.menu)
 
-      Stepper(value: settingsBinding(\.appearance.fontSize), in: 13...24, step: 1) {
-        Text("Size \(Int(store.settings.appearance.fontSize)) pt")
+      DisclosureGroup {
+        fontOptionsContent
+      } label: {
+        Label("Fonts", systemImage: "textformat")
       }
 
-      VStack(alignment: .leading, spacing: 4) {
-        Text("User: the quick brown fox jumps over the lazy dog.")
-          .font(store.settings.appearance.userSwiftUIFont)
-          .foregroundStyle(.secondary)
-        Text("Assistant: the quick brown fox jumps over the lazy dog.")
-          .font(store.settings.appearance.assistantSwiftUIFont)
-          .foregroundStyle(.secondary)
+      DisclosureGroup {
+        voicesContent
+      } label: {
+        Label("Voices", systemImage: "speaker.wave.2")
       }
-      .padding(.vertical, 2)
     } header: {
       Text("Appearance")
     }
   }
 
-  private var voiceSection: some View {
-    Section {
-      DisclosureGroup {
-        roleVoiceEditor(role: .user, keyPath: \.toolSettings.voices.user)
-      } label: {
-        Label("User Voice", systemImage: "person.wave.2")
+  @ViewBuilder
+  private var fontOptionsContent: some View {
+    Picker("User Font", selection: settingsBinding(\.appearance.userFontFamily)) {
+      ForEach(AppearanceFontFamily.pickerOptions) { font in
+        Text(font.displayName).tag(font)
       }
-      DisclosureGroup {
-        roleVoiceEditor(role: .assistant, keyPath: \.toolSettings.voices.assistant)
-      } label: {
-        Label("Assistant Voice", systemImage: "speaker.wave.2")
-      }
-    } header: {
-      Text("Voice")
-    } footer: {
-      Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
     }
+    .pickerStyle(.menu)
+
+    Picker("Assistant Font", selection: settingsBinding(\.appearance.assistantFontFamily)) {
+      ForEach(AppearanceFontFamily.pickerOptions) { font in
+        Text(font.displayName).tag(font)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Stepper(value: settingsBinding(\.appearance.fontSize), in: 13...24, step: 1) {
+      Text("Size \(Int(store.settings.appearance.fontSize)) pt")
+    }
+
+    VStack(alignment: .leading, spacing: 4) {
+      Text("User: the quick brown fox jumps over the lazy dog.")
+        .font(store.settings.appearance.userSwiftUIFont)
+        .foregroundStyle(.secondary)
+      Text("Assistant: the quick brown fox jumps over the lazy dog.")
+        .font(store.settings.appearance.assistantSwiftUIFont)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 2)
+  }
+
+  @ViewBuilder
+  private var voicesContent: some View {
+    DisclosureGroup {
+      roleVoiceEditor(role: .user, keyPath: \.toolSettings.voices.user)
+    } label: {
+      Label("User Voice", systemImage: "person.wave.2")
+    }
+    DisclosureGroup {
+      roleVoiceEditor(role: .assistant, keyPath: \.toolSettings.voices.assistant)
+    } label: {
+      Label("Assistant Voice", systemImage: "speaker.wave.2")
+    }
+    Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
@@ -415,31 +445,29 @@ struct SettingsView: View {
     }
   }
 
-  private var endpointSection: some View {
-    Section {
-      ForEach(store.settings.openAIEndpoints) { endpoint in
-        NavigationLink(value: endpoint.id) {
-          endpointRow(endpoint)
-        }
+  @ViewBuilder
+  private var endpointContent: some View {
+    ForEach(store.settings.openAIEndpoints) { endpoint in
+      NavigationLink(value: endpoint.id) {
+        endpointRow(endpoint)
       }
-      .onDelete { offsets in
-        pendingDeletion = PendingSettingsDeletion(kind: .endpoint, offsets: offsets)
-      }
-      Button {
-        let endpoint = OpenAIEndpoint()
-        store.settings.openAIEndpoints.append(endpoint)
-        store.settings.selectedEndpointID = endpoint.id
-        store.saveSettings()
-        Task { await store.refreshEndpoint(endpoint) }
-        endpointPath.append(endpoint.id)
-      } label: {
-        Label("Add Endpoint", systemImage: "plus")
-      }
-    } header: {
-      Text("Endpoints")
-    } footer: {
-      Text("Tap an endpoint to edit credentials and pick a default model.")
     }
+    .onDelete { offsets in
+      pendingDeletion = PendingSettingsDeletion(kind: .endpoint, offsets: offsets)
+    }
+    Button {
+      let endpoint = OpenAIEndpoint()
+      store.settings.openAIEndpoints.append(endpoint)
+      store.settings.selectedEndpointID = endpoint.id
+      store.saveSettings()
+      Task { await store.refreshEndpoint(endpoint) }
+      endpointPath.append(endpoint.id)
+    } label: {
+      Label("Add Endpoint", systemImage: "plus")
+    }
+    Text("Tap an endpoint to edit credentials and pick a default model.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   private func endpointRow(_ endpoint: OpenAIEndpoint) -> some View {
@@ -485,37 +513,35 @@ struct SettingsView: View {
     }
   }
 
-  private var promptSection: some View {
-    Section {
-      Picker("Default Prompt", selection: settingsBinding(\.defaultSystemPromptID)) {
-        ForEach(store.settings.systemPrompts) { prompt in
-          Text(prompt.name.isEmpty ? "Untitled" : prompt.name).tag(prompt.id)
-        }
+  @ViewBuilder
+  private var promptContent: some View {
+    Picker("Default Prompt", selection: settingsBinding(\.defaultSystemPromptID)) {
+      ForEach(store.settings.systemPrompts) { prompt in
+        Text(prompt.name.isEmpty ? "Untitled" : prompt.name).tag(prompt.id)
       }
-      .pickerStyle(.menu)
-      ForEach($store.settings.systemPrompts) { $prompt in
-        NavigationLink {
-          SystemPromptDetailView(prompt: $prompt)
-        } label: {
-          promptRow(prompt)
-        }
-      }
-      .onDelete { offsets in
-        pendingDeletion = PendingSettingsDeletion(kind: .systemPrompt, offsets: offsets)
-      }
-      Button {
-        let prompt = SystemPrompt(name: "Custom prompt", text: "You are a helpful assistant.")
-        store.settings.systemPrompts.append(prompt)
-        store.settings.defaultSystemPromptID = prompt.id
-        store.saveSettings()
-      } label: {
-        Label("Add Prompt", systemImage: "plus")
-      }
-    } header: {
-      Text("System Prompts")
-    } footer: {
-      Text("Tap a prompt to edit. The default is sent to the model at the start of every chat.")
     }
+    .pickerStyle(.menu)
+    ForEach($store.settings.systemPrompts) { $prompt in
+      NavigationLink {
+        SystemPromptDetailView(prompt: $prompt)
+      } label: {
+        promptRow(prompt)
+      }
+    }
+    .onDelete { offsets in
+      pendingDeletion = PendingSettingsDeletion(kind: .systemPrompt, offsets: offsets)
+    }
+    Button {
+      let prompt = SystemPrompt(name: "Custom prompt", text: "You are a helpful assistant.")
+      store.settings.systemPrompts.append(prompt)
+      store.settings.defaultSystemPromptID = prompt.id
+      store.saveSettings()
+    } label: {
+      Label("Add Prompt", systemImage: "plus")
+    }
+    Text("Tap a prompt to edit. The default is sent to the model at the start of every chat.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   private func promptRow(_ prompt: SystemPrompt) -> some View {
@@ -542,28 +568,55 @@ struct SettingsView: View {
 
   private var toolsSection: some View {
     Section {
-      ForEach(NativeToolID.allCases.filter { !contextToolIDs.contains($0) }) { tool in
-        toolRow(tool)
+      DisclosureGroup {
+        nativeToolsContent
+      } label: {
+        Label("Native", systemImage: "wrench.and.screwdriver")
+      }
+
+      DisclosureGroup {
+        contextToolsContent
+      } label: {
+        Label("Informational", systemImage: "text.append")
+      }
+
+      DisclosureGroup {
+        externalToolsContent
+      } label: {
+        Label("MCPs", systemImage: "server.rack")
+      }
+
+      DisclosureGroup {
+        Text("Coming soon")
+          .foregroundStyle(.secondary)
+      } label: {
+        Label("Skills", systemImage: "sparkles")
       }
     } header: {
-      Text("Native Tools")
-    } footer: {
-      Text("Tap the checkbox to enable. Tap the row to expand options where available.")
+      Text("Tools")
     }
   }
 
-  private var contextToolsSection: some View {
-    Section {
-      ForEach(Array(contextToolIDs)) { tool in
-        toolRow(tool)
-      }
-    } header: {
-      Text("Context Tools")
-    } footer: {
-      Text(
-        "Context tools are rendered into the system prompt instead of being called on-demand. Toggle each tool to include its content in every chat."
-      )
+  @ViewBuilder
+  private var nativeToolsContent: some View {
+    ForEach(NativeToolID.allCases.filter { !contextToolIDs.contains($0) }) { tool in
+      toolRow(tool)
     }
+    Text("Tap the checkbox to enable. Tap the row to expand options where available.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+  }
+
+  @ViewBuilder
+  private var contextToolsContent: some View {
+    ForEach(Array(contextToolIDs)) { tool in
+      toolRow(tool)
+    }
+    Text(
+      "Context tools are rendered into the system prompt instead of being called on-demand. Toggle each tool to include its content in every chat."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   private var contextToolIDs: [NativeToolID] {
@@ -655,7 +708,7 @@ struct SettingsView: View {
         deleteTodos(at: offsets)
       }
     case .textToSpeech:
-      Text("Configure user and assistant voices in the Voice section above.")
+      Text("Configure user and assistant voices in Appearance.")
         .font(.footnote)
         .foregroundStyle(.secondary)
     case .files:
@@ -712,42 +765,40 @@ struct SettingsView: View {
     }
   }
 
-  private var mcpSection: some View {
-    Section {
-      Picker("Tool Calling", selection: settingsBinding(\.toolCallingMode)) {
-        ForEach(ToolCallingMode.allCases) { mode in
-          Text(mode.displayName).tag(mode)
-        }
+  @ViewBuilder
+  private var externalToolsContent: some View {
+    Picker("Tool Calling", selection: settingsBinding(\.toolCallingMode)) {
+      ForEach(ToolCallingMode.allCases) { mode in
+        Text(mode.displayName).tag(mode)
       }
-      .pickerStyle(.menu)
-      Text(store.settings.toolCallingMode.summary)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      Toggle("Use tool proxy (list / call)", isOn: settingsBinding(\.useToolProxy))
-      Text(toolProxySummary)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      ForEach($store.settings.mcpServers) { $server in
-        NavigationLink {
-          MCPServerDetailView(server: $server)
-        } label: {
-          mcpRow(server)
-        }
-      }
-      .onDelete { offsets in
-        pendingDeletion = PendingSettingsDeletion(kind: .mcpServer, offsets: offsets)
-      }
-      Button {
-        store.settings.mcpServers.append(MCPServer())
-        store.saveSettings()
-      } label: {
-        Label("Add MCP Server", systemImage: "plus")
-      }
-    } header: {
-      Text("External Tools")
-    } footer: {
-      Text("HTTP and HTTPS endpoints are accepted. Tap a server to edit its details.")
     }
+    .pickerStyle(.menu)
+    Text(store.settings.toolCallingMode.summary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    Toggle("Use tool proxy (list / call)", isOn: settingsBinding(\.useToolProxy))
+    Text(toolProxySummary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    ForEach($store.settings.mcpServers) { $server in
+      NavigationLink {
+        MCPServerDetailView(server: $server)
+      } label: {
+        mcpRow(server)
+      }
+    }
+    .onDelete { offsets in
+      pendingDeletion = PendingSettingsDeletion(kind: .mcpServer, offsets: offsets)
+    }
+    Button {
+      store.settings.mcpServers.append(MCPServer())
+      store.saveSettings()
+    } label: {
+      Label("Add MCP Server", systemImage: "plus")
+    }
+    Text("HTTP and HTTPS endpoints are accepted. Tap a server to edit its details.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   private func mcpRow(_ server: MCPServer) -> some View {
@@ -1018,6 +1069,7 @@ private struct EndpointDetailView: View {
 
       Section {
         modelField
+        reasoningLevelField
       } header: {
         Text("Default Model")
       } footer: {
@@ -1063,6 +1115,38 @@ private struct EndpointDetailView: View {
         emptySelectionTitle: "Select a model"
       )
     }
+  }
+
+  private var reasoningLevelField: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Label("Reasoning", systemImage: endpoint.defaultReasoningLevel.systemImage)
+          .contentTransition(.symbolEffect(.replace))
+        Spacer()
+        Text(endpoint.defaultReasoningLevel.displayName)
+          .foregroundStyle(.secondary)
+          .contentTransition(.numericText())
+          .animation(.snappy, value: endpoint.defaultReasoningLevel)
+      }
+      Slider(
+        value: reasoningSliderBinding,
+        in: 0...Double(ReasoningLevel.allCases.count - 1),
+        step: 1
+      )
+    }
+  }
+
+  private var reasoningSliderBinding: Binding<Double> {
+    Binding(
+      get: {
+        Double(ReasoningLevel.allCases.firstIndex(of: endpoint.defaultReasoningLevel) ?? 0)
+      },
+      set: { value in
+        let cases = ReasoningLevel.allCases
+        let index = max(0, min(cases.count - 1, Int(value.rounded())))
+        endpoint.defaultReasoningLevel = cases[index]
+      }
+    )
   }
 
   @ViewBuilder

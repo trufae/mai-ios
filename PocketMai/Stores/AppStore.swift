@@ -145,6 +145,11 @@ final class AppStore: ObservableObject {
     conversation.provider = defaultProvider.provider
     conversation.modelID = defaultProvider.modelID
     conversation.endpointID = defaultProvider.endpointID
+    if let endpointID = defaultProvider.endpointID,
+      let endpoint = settings.openAIEndpoints.first(where: { $0.id == endpointID })
+    {
+      conversation.reasoningLevel = endpoint.defaultReasoningLevel
+    }
     conversation.systemPromptID = settings.defaultSystemPromptID
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.usesStreaming = settings.streamByDefault

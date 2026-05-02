@@ -479,6 +479,7 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   var baseURL: String
   var apiKey: String
   var defaultModel: String
+  var defaultReasoningLevel: ReasoningLevel
   var isEnabled: Bool
 
   init(
@@ -487,6 +488,7 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     baseURL: String = "https://api.openai.com/v1",
     apiKey: String = "",
     defaultModel: String = "",
+    defaultReasoningLevel: ReasoningLevel = .automatic,
     isEnabled: Bool = true
   ) {
     self.id = id
@@ -494,7 +496,35 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     self.baseURL = baseURL
     self.apiKey = apiKey
     self.defaultModel = defaultModel
+    self.defaultReasoningLevel = defaultReasoningLevel
     self.isEnabled = isEnabled
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case id, name, baseURL, apiKey, defaultModel, defaultReasoningLevel, isEnabled
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(UUID.self, forKey: .id)
+    name = try c.decode(String.self, forKey: .name)
+    baseURL = try c.decode(String.self, forKey: .baseURL)
+    apiKey = try c.decode(String.self, forKey: .apiKey)
+    defaultModel = try c.decode(String.self, forKey: .defaultModel)
+    defaultReasoningLevel =
+      (try? c.decode(ReasoningLevel.self, forKey: .defaultReasoningLevel)) ?? .automatic
+    isEnabled = try c.decode(Bool.self, forKey: .isEnabled)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(id, forKey: .id)
+    try c.encode(name, forKey: .name)
+    try c.encode(baseURL, forKey: .baseURL)
+    try c.encode(apiKey, forKey: .apiKey)
+    try c.encode(defaultModel, forKey: .defaultModel)
+    try c.encode(defaultReasoningLevel, forKey: .defaultReasoningLevel)
+    try c.encode(isEnabled, forKey: .isEnabled)
   }
 }
 
