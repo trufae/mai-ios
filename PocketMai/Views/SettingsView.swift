@@ -172,7 +172,6 @@ private enum VoiceTest {
 
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
-  @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.dismiss) private var dismiss
   @State private var showingFileImporter = false
   @State private var newTodoTitle = ""
@@ -375,73 +374,20 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var voicesContent: some View {
-    DisclosureGroup {
-      roleVoiceEditor(role: .user, keyPath: \.toolSettings.voices.user)
+    NavigationLink {
+      RoleVoiceSettingsView(role: .user, voice: settingsBinding(\.toolSettings.voices.user))
     } label: {
-      Label("User Voice", systemImage: "person.wave.2")
+      Text("User")
     }
-    DisclosureGroup {
-      roleVoiceEditor(role: .assistant, keyPath: \.toolSettings.voices.assistant)
+    NavigationLink {
+      RoleVoiceSettingsView(
+        role: .assistant, voice: settingsBinding(\.toolSettings.voices.assistant))
     } label: {
-      Label("Assistant Voice", systemImage: "speaker.wave.2")
+      Text("Assistant")
     }
     Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
       .font(.caption)
       .foregroundStyle(.secondary)
-  }
-
-  @ViewBuilder
-  private func roleVoiceEditor(
-    role: VoiceRole,
-    keyPath: WritableKeyPath<AppSettings, RoleVoiceSettings>
-  ) -> some View {
-    let language = store.settings[keyPath: keyPath].language
-    Picker("Language", selection: settingsBinding(keyPath.appending(path: \.language))) {
-      Text("System Default").tag("")
-      ForEach(TTSVoiceCache.languages, id: \.self) { lang in
-        Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
-      }
-    }
-    .onChange(of: store.settings[keyPath: keyPath].language) { _, newLanguage in
-      guard !newLanguage.isEmpty,
-        let voice = TTSVoiceCache.voices.first(where: {
-          $0.identifier == store.settings[keyPath: keyPath].voiceIdentifier
-        }),
-        voice.language != newLanguage
-      else { return }
-      store.settings[keyPath: keyPath].voiceIdentifier = ""
-      store.saveSettings()
-    }
-
-    Picker("Voice", selection: settingsBinding(keyPath.appending(path: \.voiceIdentifier))) {
-      Text("Default Voice").tag("")
-      ForEach(TTSVoiceCache.voiceOptions(for: language), id: \.identifier) { voice in
-        Text("\(voice.name) (\(TTSVoiceCache.languageDisplayName(voice.language)))")
-          .tag(voice.identifier)
-      }
-    }
-
-    VStack(alignment: .leading) {
-      Text("Rate")
-      Slider(value: settingsBinding(keyPath.appending(path: \.rate)), in: 0...1, step: 0.05)
-    }
-
-    VStack(alignment: .leading) {
-      Text("Pitch")
-      Slider(value: settingsBinding(keyPath.appending(path: \.pitch)), in: 0.5...2, step: 0.05)
-    }
-
-    Button {
-      VoiceTest.toggle(
-        role: role,
-        voice: store.settings[keyPath: keyPath],
-        player: ttsPlayer)
-    } label: {
-      let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
-      Label(
-        isPlaying ? "Stop Test" : "Test Voice",
-        systemImage: isPlaying ? "stop.circle" : "play.circle")
-    }
   }
 
   @ViewBuilder
@@ -1053,6 +999,86 @@ struct SettingsView: View {
       store.settings.defaultEnabledTools.insert(tool)
     }
     store.saveSettings()
+  }
+}
+
+private struct RoleVoiceSettingsView: View {
+  @EnvironmentObject private var ttsPlayer: TTSPlayer
+  let role: VoiceRole
+  @Binding var voice: RoleVoiceSettings
+
+  var body: some View {
+    Form {
+      Section {
+        Picker("Language", selection: voiceBinding(\.language)) {
+          Text("System Default").tag("")
+          ForEach(TTSVoiceCache.languages, id: \.self) { lang in
+            Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
+          }
+        }
+
+        Picker("Voice", selection: voiceBinding(\.voiceIdentifier)) {
+          Text("Default Voice").tag("")
+          ForEach(TTSVoiceCache.voiceOptions(for: voice.language), id: \.identifier) { option in
+            Text("\(option.name) (\(TTSVoiceCache.languageDisplayName(option.language)))")
+              .tag(option.identifier)
+          }
+        }
+      }
+
+      Section {
+        VStack(alignment: .leading) {
+          Text("Rate")
+          Slider(value: voiceBinding(\.rate), in: 0...1, step: 0.05)
+        }
+
+        VStack(alignment: .leading) {
+          Text("Pitch")
+          Slider(value: voiceBinding(\.pitch), in: 0.5...2, step: 0.05)
+        }
+      }
+
+      Section {
+        Button {
+          VoiceTest.toggle(role: role, voice: voice, player: ttsPlayer)
+        } label: {
+          let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
+          Label(
+            isPlaying ? "Stop Test" : "Test Voice",
+            systemImage: isPlaying ? "stop.circle" : "play.circle")
+        }
+      }
+    }
+    .navigationTitle(title)
+    .navigationBarTitleDisplayMode(.inline)
+    .onChange(of: voice.language) { _, newLanguage in
+      guard !newLanguage.isEmpty,
+        let selectedVoice = TTSVoiceCache.voices.first(where: {
+          $0.identifier == voice.voiceIdentifier
+        }),
+        selectedVoice.language != newLanguage
+      else { return }
+      voice.voiceIdentifier = ""
+    }
+  }
+
+  private var title: String {
+    switch role {
+    case .user: "User"
+    case .assistant: "Assistant"
+    }
+  }
+
+  private func voiceBinding<Value>(_ keyPath: WritableKeyPath<RoleVoiceSettings, Value>)
+    -> Binding<Value>
+  {
+    Binding(
+      get: { voice[keyPath: keyPath] },
+      set: { newValue in
+        var copy = voice
+        copy[keyPath: keyPath] = newValue
+        voice = copy
+      })
   }
 }
 
