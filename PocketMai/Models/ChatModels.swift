@@ -484,7 +484,7 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
 
   init(
     id: UUID = UUID(),
-    name: String = "New Endpoint",
+    name: String = "",
     baseURL: String = "https://api.openai.com/v1",
     apiKey: String = "",
     defaultModel: String = "",
@@ -525,6 +525,15 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     try c.encode(defaultModel, forKey: .defaultModel)
     try c.encode(defaultReasoningLevel, forKey: .defaultReasoningLevel)
     try c.encode(isEnabled, forKey: .isEnabled)
+  }
+}
+
+extension OpenAIEndpoint {
+  static let defaultDisplayName = "New Endpoint"
+
+  var displayName: String {
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedName.isEmpty ? Self.defaultDisplayName : trimmedName
   }
 }
 

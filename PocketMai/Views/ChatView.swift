@@ -274,8 +274,9 @@ struct ChatView: View {
       let endpoint = conversation.endpointID.flatMap { id in
         store.settings.openAIEndpoints.first(where: { $0.id == id })
       }
-      return AgentTooling.firstNonEmpty(endpoint?.name, URL(string: endpoint?.baseURL ?? "")?.host)
-        ?? "Endpoint"
+      return endpoint?.displayName
+        ?? AgentTooling.firstNonEmpty(URL(string: endpoint?.baseURL ?? "")?.host)
+        ?? OpenAIEndpoint.defaultDisplayName
     }
   }
 
@@ -1156,11 +1157,8 @@ private struct ConversationModelSettingsView: View {
               Label("Apple Intelligence", systemImage: "apple.logo")
                 .tag(DefaultProviderSelection.apple)
               ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
-                Label(
-                  endpoint.name.isEmpty ? "Untitled Endpoint" : endpoint.name,
-                  systemImage: "network"
-                )
-                .tag(DefaultProviderSelection.endpoint(endpoint.id))
+                Label(endpoint.displayName, systemImage: "network")
+                  .tag(DefaultProviderSelection.endpoint(endpoint.id))
               }
             }
             .pickerStyle(.menu)

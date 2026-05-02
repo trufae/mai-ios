@@ -180,6 +180,7 @@ struct SettingsView: View {
   @State private var showingClearMemoryConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
+  @State private var toastMessage: String?
 
   var body: some View {
     NavigationStack(path: $endpointPath) {
@@ -235,9 +236,10 @@ struct SettingsView: View {
       .navigationTitle("Settings")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
-          Button("Done") { dismiss() }
+          Button("Done") { saveAndDismiss() }
         }
       }
+      .settingsToast($toastMessage)
       .fileImporter(
         isPresented: $showingFileImporter,
         allowedContentTypes: [.text, .plainText, .json, .sourceCode]
@@ -267,11 +269,8 @@ struct SettingsView: View {
         Label("Apple Intelligence", systemImage: "apple.logo")
           .tag(DefaultProviderSelection.apple)
         ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
-          Label(
-            endpoint.name.isEmpty ? "Untitled Endpoint" : endpoint.name,
-            systemImage: "network"
-          )
-          .tag(DefaultProviderSelection.endpoint(endpoint.id))
+          Label(endpoint.displayName, systemImage: "network")
+            .tag(DefaultProviderSelection.endpoint(endpoint.id))
         }
       }
       .pickerStyle(.menu)
@@ -486,7 +485,7 @@ struct SettingsView: View {
         .foregroundStyle(status.statusColor)
         .frame(width: 18)
       VStack(alignment: .leading, spacing: 2) {
-        Text(endpoint.name.isEmpty ? "Untitled Endpoint" : endpoint.name)
+        Text(endpoint.displayName)
           .font(.body)
           .foregroundStyle(.primary)
         Text(subtitle)
@@ -964,6 +963,39 @@ struct SettingsView: View {
     store.saveSettings()
   }
 
+  private func saveAndDismiss() {
+    guard finalizeEmptyEndpointNames() else { return }
+    store.saveSettings()
+    dismiss()
+  }
+
+  private func finalizeEmptyEndpointNames() -> Bool {
+    for index in store.settings.openAIEndpoints.indices {
+      let endpoint = store.settings.openAIEndpoints[index]
+      let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmedName.isEmpty else { continue }
+
+      if let message = EndpointNameResolution.validationMessage(
+        for: endpoint,
+        in: store.settings.openAIEndpoints)
+      {
+        showToast(message)
+        return false
+      }
+
+      if let name = EndpointNameResolution.savedName(for: endpoint) {
+        store.settings.openAIEndpoints[index].name = name
+      }
+    }
+    return true
+  }
+
+  private func showToast(_ message: String) {
+    withAnimation(.snappy) {
+      toastMessage = message
+    }
+  }
+
   private var defaultProviderBinding: Binding<DefaultProviderSelection> {
     Binding(
       get: {
@@ -1014,7 +1046,6 @@ struct SettingsView: View {
     }
   }
 
-
   private func toggleTool(_ tool: NativeToolID) {
     if store.settings.defaultEnabledTools.contains(tool) {
       store.settings.defaultEnabledTools.remove(tool)
@@ -1025,16 +1056,104 @@ struct SettingsView: View {
   }
 }
 
+private enum EndpointNameResolution {
+  static func savedName(for endpoint: OpenAIEndpoint) -> String? {
+    let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedName.isEmpty {
+      return trimmedName
+    }
+    return providerName(for: endpoint)
+  }
+
+  static func validationMessage(for endpoint: OpenAIEndpoint, in endpoints: [OpenAIEndpoint])
+    -> String?
+  {
+    let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedName.isEmpty else { return nil }
+    guard let fallbackName = providerName(for: endpoint) else {
+      return "Specify a name for this endpoint."
+    }
+    if hasDuplicateName(fallbackName, excluding: endpoint.id, in: endpoints) {
+      return "Another endpoint is already named \"\(fallbackName)\". Specify a name."
+    }
+    return nil
+  }
+
+  private static func providerName(for endpoint: OpenAIEndpoint) -> String? {
+    let baseURL = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    return endpointProviderPresets.first(where: { $0.url == baseURL })?.name
+  }
+
+  private static func hasDuplicateName(
+    _ name: String,
+    excluding endpointID: UUID,
+    in endpoints: [OpenAIEndpoint]
+  ) -> Bool {
+    let normalized = normalizedName(name)
+    return endpoints.contains { endpoint in
+      guard endpoint.id != endpointID,
+        let endpointName = savedName(for: endpoint)
+      else { return false }
+      return normalizedName(endpointName) == normalized
+    }
+  }
+
+  private static func normalizedName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+}
+
+private struct SettingsToastModifier: ViewModifier {
+  @Binding var message: String?
+
+  func body(content: Content) -> some View {
+    content
+      .overlay(alignment: .top) {
+        if let message {
+          Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.red, in: Capsule())
+            .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+            .padding(.top, 12)
+            .padding(.horizontal, 16)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .zIndex(1)
+        }
+      }
+      .onChange(of: message) { _, newValue in
+        guard let newValue else { return }
+        Task { @MainActor in
+          try? await Task.sleep(for: .seconds(3))
+          guard message == newValue else { return }
+          withAnimation(.snappy) {
+            message = nil
+          }
+        }
+      }
+  }
+}
+
+extension View {
+  fileprivate func settingsToast(_ message: Binding<String?>) -> some View {
+    modifier(SettingsToastModifier(message: message))
+  }
+}
+
 private struct EndpointDetailView: View {
   @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
   @Binding var endpoint: OpenAIEndpoint
   @State private var modelFilter = ""
+  @State private var toastMessage: String?
 
   var body: some View {
     Form {
       Section {
         Toggle("Enabled", isOn: $endpoint.isEnabled)
-        TextField("Name", text: $endpoint.name)
+        TextField(OpenAIEndpoint.defaultDisplayName, text: $endpoint.name)
       } footer: {
         Text("A friendly name shown in the provider picker.")
       }
@@ -1093,8 +1212,14 @@ private struct EndpointDetailView: View {
         .disabled(isChecking)
       }
     }
-    .navigationTitle(endpoint.name.isEmpty ? "Endpoint" : endpoint.name)
+    .navigationTitle(endpoint.displayName)
     .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Save") { saveEndpointAndDismiss() }
+      }
+    }
+    .settingsToast($toastMessage)
     .onChange(of: endpoint) { _, _ in store.saveSettings() }
     .onChange(of: endpoint.baseURL) { _, _ in store.resetEndpointStatus(endpoint.id) }
     .onChange(of: endpoint.apiKey) { _, _ in store.resetEndpointStatus(endpoint.id) }
@@ -1174,6 +1299,27 @@ private struct EndpointDetailView: View {
       return true
     }
     return false
+  }
+
+  private func saveEndpointAndDismiss() {
+    if let message = EndpointNameResolution.validationMessage(
+      for: endpoint,
+      in: store.settings.openAIEndpoints)
+    {
+      showToast(message)
+      return
+    }
+    if let savedName = EndpointNameResolution.savedName(for: endpoint) {
+      endpoint.name = savedName
+    }
+    store.saveSettings()
+    dismiss()
+  }
+
+  private func showToast(_ message: String) {
+    withAnimation(.snappy) {
+      toastMessage = message
+    }
   }
 
   private var providerPresetBinding: Binding<String> {
