@@ -98,14 +98,14 @@ struct SidebarView: View {
         selectedIDs = [conversation.id]
       }
     } label: {
-      Label("Select", systemImage: "checkmark.circle")
+      Label("Select...", systemImage: "checkmark.circle")
     }
 
     Button {
       Task { await store.togglePin(id: conversation.id) }
     } label: {
       Label(
-        conversation.isPinned ? "Unpin Conversation" : "Pin Conversation",
+        conversation.isPinned ? "Unpin Conversation" : "Pin to Top",
         systemImage: conversation.isPinned ? "pin.slash" : "pin"
       )
     }
@@ -114,7 +114,7 @@ struct SidebarView: View {
       Task { await store.toggleArchive(id: conversation.id) }
     } label: {
       Label(
-        conversation.isArchived ? "Unarchive Conversation" : "Archive Conversation",
+        conversation.isArchived ? "Unarchive Conversation" : "Archive Chat",
         systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
       )
     }
@@ -126,20 +126,12 @@ struct SidebarView: View {
       Label("Clone Conversation", systemImage: "doc.on.doc")
     }
 
+    Divider()
+
     Button(role: .destructive) {
       pendingDeletion = .single(conversation)
     } label: {
-      Label("Delete Conversation", systemImage: "trash")
-    }
-
-    if isCurrent {
-      Button(role: .destructive) {
-        let others = Set(store.conversationSummaries.map(\.id)).subtracting([conversation.id])
-        guard !others.isEmpty else { return }
-        pendingDeletion = .allExceptCurrent(others)
-      } label: {
-        Label("Delete all except this one", systemImage: "trash.slash")
-      }
+      Label("Delete...", systemImage: "trash")
     }
   }
 
@@ -283,15 +275,6 @@ private struct PendingConversationDeletion: Identifiable {
     )
   }
 
-  static func allExceptCurrent(_ ids: Set<UUID>) -> PendingConversationDeletion {
-    PendingConversationDeletion(
-      ids: ids,
-      title: "Delete other conversations?",
-      buttonTitle: "Delete \(ids.count) Conversation\(ids.count == 1 ? "" : "s")",
-      message:
-        "\(ids.count) other conversation\(ids.count == 1 ? "" : "s") and their messages will be deleted. This cannot be undone."
-    )
-  }
 }
 
 private struct SidebarRowBackground: View {
