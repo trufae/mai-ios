@@ -36,7 +36,6 @@ final class AppStore: ObservableObject {
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
   @Published var respondingConversationIDs: Set<UUID> = []
-  @Published var isIncognitoMode = false
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -90,23 +89,21 @@ final class AppStore: ObservableObject {
     return conversations[index]
   }
 
-  func newConversation(incognito: Bool = false) {
+  func newConversation() {
     if let current = currentConversation,
-      current.messages.isEmpty,
-      current.isIncognito == incognito
+      current.messages.isEmpty
     {
-      isIncognitoMode = incognito
       selectedConversationIDs.removeAll()
       if isDisposableNewConversation(current),
-        !conversationUsesNewConversationDefaults(current, incognito: incognito)
+        !conversationUsesNewConversationDefaults(current)
       {
         discardSelectedDisposableConversation()
-        createAndSelectNewConversation(incognito: incognito)
+        createAndSelectNewConversation()
       }
       return
     }
     discardSelectedDisposableConversation()
-    createAndSelectNewConversation(incognito: incognito)
+    createAndSelectNewConversation()
   }
 
   private func startFreshConversationForLaunch() {
@@ -114,7 +111,6 @@ final class AppStore: ObservableObject {
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
-    isIncognitoMode = false
     selectedConversationIDs.removeAll()
   }
 
@@ -138,10 +134,9 @@ final class AppStore: ObservableObject {
     appleAvailabilityMessage = await availabilityTask.value
   }
 
-  private func makeNewConversation(incognito: Bool = false) -> Conversation {
+  private func makeNewConversation() -> Conversation {
     let defaultProvider = settings.defaultProviderConfiguration
     var conversation = Conversation()
-    conversation.isIncognito = incognito
     conversation.provider = defaultProvider.provider
     conversation.modelID = defaultProvider.modelID
     conversation.endpointID = defaultProvider.endpointID
@@ -157,22 +152,18 @@ final class AppStore: ObservableObject {
     return conversation
   }
 
-  private func createAndSelectNewConversation(incognito: Bool = false) {
-    let conversation = makeNewConversation(incognito: incognito)
+  private func createAndSelectNewConversation() {
+    let conversation = makeNewConversation()
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
-    isIncognitoMode = incognito
     selectedConversationIDs.removeAll()
     saveConversations()
   }
 
-  private func conversationUsesNewConversationDefaults(
-    _ conversation: Conversation, incognito: Bool
-  ) -> Bool {
-    let defaults = makeNewConversation(incognito: incognito)
-    return conversation.isIncognito == defaults.isIncognito
-      && conversation.provider == defaults.provider
+  private func conversationUsesNewConversationDefaults(_ conversation: Conversation) -> Bool {
+    let defaults = makeNewConversation()
+    return conversation.provider == defaults.provider
       && conversation.endpointID == defaults.endpointID
       && normalizedModelID(conversation.modelID) == normalizedModelID(defaults.modelID)
       && conversation.systemPromptID == defaults.systemPromptID
@@ -190,7 +181,6 @@ final class AppStore: ObservableObject {
   func select(_ conversation: Conversation) {
     let previousID = selectedConversationID
     selectedConversationID = conversation.id
-    isIncognitoMode = conversation.isIncognito
     if previousID != conversation.id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
@@ -199,9 +189,8 @@ final class AppStore: ObservableObject {
   func selectConversation(id: UUID) async {
     let previousID = selectedConversationID
     await ensureConversationLoaded(id)
-    guard let index = indexedConversationIndex(for: id) else { return }
+    guard indexedConversationIndex(for: id) != nil else { return }
     selectedConversationID = id
-    isIncognitoMode = conversations[index].isIncognito
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
@@ -259,17 +248,6 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func toggleIncognitoMode() {
-    guard let index = currentConversationIndex else {
-      isIncognitoMode.toggle()
-      return
-    }
-    conversations[index].isIncognito.toggle()
-    conversations[index].updatedAt = Date()
-    isIncognitoMode = conversations[index].isIncognito
-    saveConversations()
-  }
-
   func updateCurrentConversation(_ update: (inout Conversation) -> Void) {
     guard let index = currentConversationIndex else { return }
     update(&conversations[index])
@@ -303,7 +281,6 @@ final class AppStore: ObservableObject {
     conversationSummaries = Self.sortedSummaries(archived.map(ConversationSummary.init))
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
-    isIncognitoMode = false
     saveConversations()
     newConversation()
   }
@@ -351,7 +328,7 @@ final class AppStore: ObservableObject {
 
     let source = currentConversation
     discardSelectedDisposableConversation()
-    var conversation = makeNewConversation(incognito: source?.isIncognito ?? isIncognitoMode)
+    var conversation = makeNewConversation()
     if let source {
       conversation.provider = source.provider
       conversation.modelID = source.modelID
@@ -366,7 +343,6 @@ final class AppStore: ObservableObject {
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
-    isIncognitoMode = conversation.isIncognito
     selectedConversationIDs.removeAll()
     saveConversations()
 
@@ -403,7 +379,6 @@ final class AppStore: ObservableObject {
       selectedConversationID = nil
       createInitialConversationIfNeeded()
     }
-    syncIncognitoModeWithSelection()
     saveConversations()
   }
 
@@ -438,7 +413,6 @@ final class AppStore: ObservableObject {
     }
     sortConversations()
     selectedConversationID = cloned.id
-    isIncognitoMode = cloned.isIncognito
     saveConversations()
   }
 
@@ -923,12 +897,7 @@ final class AppStore: ObservableObject {
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
-    isIncognitoMode = false
     selectedConversationIDs.removeAll()
-  }
-
-  private func syncIncognitoModeWithSelection() {
-    isIncognitoMode = currentConversation?.isIncognito ?? false
   }
 
   private var currentConversationIndex: Int? {

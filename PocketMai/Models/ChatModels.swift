@@ -360,7 +360,6 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   var title: String
   var createdAt: Date
   var updatedAt: Date
-  var isIncognito: Bool
   var isPinned: Bool
   var isArchived: Bool
   var preview: String
@@ -371,7 +370,6 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     title = conversation.title
     createdAt = conversation.createdAt
     updatedAt = conversation.updatedAt
-    isIncognito = conversation.isIncognito
     isPinned = conversation.isPinned
     isArchived = conversation.isArchived
     hasMessages = !conversation.messages.isEmpty
@@ -396,7 +394,6 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var messages: [ChatMessage] = []
   var createdAt: Date = Date()
   var updatedAt: Date = Date()
-  var isIncognito: Bool = false
   var provider: ProviderKind = .apple
   var modelID: String = AppSettings.appleDefaultModelID
   var endpointID: UUID? = nil
@@ -418,7 +415,6 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case messages
     case createdAt
     case updatedAt
-    case isIncognito
     case provider
     case modelID
     case endpointID
@@ -440,7 +436,6 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     messages = try container.decode([ChatMessage].self, forKey: .messages)
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
-    isIncognito = try container.decode(Bool.self, forKey: .isIncognito)
     provider = try container.decode(ProviderKind.self, forKey: .provider)
     modelID = try container.decode(String.self, forKey: .modelID)
     endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)

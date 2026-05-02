@@ -423,10 +423,6 @@ private struct ConversationRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             }
-            if conversation.isIncognito {
-              Image(systemName: "eye.slash")
-                .foregroundStyle(.secondary)
-            }
           }
           Text(conversation.displayPreview)
             .font(.caption)

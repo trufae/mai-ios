@@ -250,7 +250,7 @@ struct ChatView: View {
   }
 
   private var composerPlaceholder: String {
-    (store.currentConversation?.isIncognito ?? false) ? "Incognito message" : "Message"
+    "Message"
   }
 
   private var currentChatIsResponding: Bool {
@@ -311,20 +311,7 @@ struct ChatView: View {
       Button {
         store.newConversation()
       } label: {
-        Label {
-          Text("💬 New Chat")
-        } icon: {
-          Text("💬")
-        }
-      }
-      Button {
-        store.newConversation(incognito: true)
-      } label: {
-        Label {
-          Text("👻 New Incognito Chat")
-        } icon: {
-          Text("👻")
-        }
+        Label("New Chat", systemImage: "bubble.left.and.text.bubble.right")
       }
       Divider()
       exportMenuSection

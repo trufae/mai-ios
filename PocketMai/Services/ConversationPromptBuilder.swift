@@ -76,7 +76,6 @@ enum ConversationPromptBuilder {
     await Task.detached(priority: .userInitiated) {
       let transcript =
         conversations
-        .filter { !$0.isIncognito }
         .flatMap { conversation in
           conversation.messages.compactMap { message -> String? in
             guard message.role != .error else { return nil }

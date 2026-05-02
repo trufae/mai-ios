@@ -102,9 +102,8 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func saveConversations(_ conversations: [Conversation]) {
-    let visible = conversations.filter { !$0.isIncognito }
-    let ids = visible.map(\.id)
-    let byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
+    let ids = conversations.map(\.id)
+    let byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
     let conversationsDir = conversationsDirectoryURL
     let indexURL = conversationsIndexURL
     let legacyURL = conversationsURL
@@ -114,11 +113,11 @@ final class PersistenceStore: @unchecked Sendable {
       self.pendingConversations?.cancel()
       let item = DispatchWorkItem { [weak self] in
         guard let self else { return }
-        let changed = visible.filter { self.persistedConversationsByID[$0.id] != $0 }
+        let changed = conversations.filter { self.persistedConversationsByID[$0.id] != $0 }
         let persisted = Self.persistConversations(
           changed,
           ids: ids,
-          summaries: visible.map(ConversationSummary.init),
+          summaries: conversations.map(ConversationSummary.init),
           conversationsDir: conversationsDir,
           indexURL: indexURL,
           legacyURL: legacyURL,
