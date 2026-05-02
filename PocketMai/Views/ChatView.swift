@@ -550,18 +550,12 @@ private struct ChatComposer: View, Equatable {
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
-  @State private var composerHeight: CGFloat = ComposerTextView.singleLineHeight
 
   nonisolated static func == (lhs: ChatComposer, rhs: ChatComposer) -> Bool {
     lhs.placeholder == rhs.placeholder
       && lhs.conversationID == rhs.conversationID
       && lhs.isResponding == rhs.isResponding
       && lhs.appearance == rhs.appearance
-  }
-
-  private var composerAlignment: VerticalAlignment {
-    let single = ComposerTextView.singleLineHeight(for: appearance)
-    return composerHeight <= single + 0.5 ? .center : .bottom
   }
 
   private var canSubmitDraft: Bool {
@@ -574,20 +568,16 @@ private struct ChatComposer: View, Equatable {
   }
 
   var body: some View {
-    HStack(alignment: composerAlignment, spacing: 10) {
+    HStack(alignment: .bottom, spacing: 10) {
       toolMenu
 
-      ComposerTextView(
-        text: draftBinding,
-        height: $composerHeight,
-        placeholder: placeholder,
-        isFocused: $composerFocused,
-        appearance: appearance
-      )
-      .frame(height: composerHeight)
-      .onChange(of: appearance) { _, newAppearance in
-        composerHeight = ComposerTextView.singleLineHeight(for: newAppearance)
-      }
+      TextField(placeholder, text: draftBinding, axis: .vertical)
+        .font(appearance.userSwiftUIFont)
+        .textFieldStyle(.plain)
+        .lineLimit(1...3)
+        .padding(.vertical, 5)
+        .frame(minHeight: 32, alignment: .center)
+        .focused($composerFocused)
 
       Button {
         if let id = conversationID, isResponding {
@@ -600,7 +590,7 @@ private struct ChatComposer: View, Equatable {
           .font(.title2)
           .symbolRenderingMode(.hierarchical)
           .foregroundStyle(sendButtonColor)
-          .frame(width: 32, height: 32)
+          .frame(width: 24, height: 24)
           .contentShape(Circle())
       }
       .buttonStyle(.glass)
@@ -661,7 +651,7 @@ private struct ChatComposer: View, Equatable {
     } label: {
       Image(systemName: "plus")
         .font(.title3.weight(.semibold))
-        .frame(width: 32, height: 32)
+        .frame(width: 24, height: 24)
     }
     .buttonStyle(.glass)
     .popover(isPresented: $showingToolPicker, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom)
@@ -671,157 +661,6 @@ private struct ChatComposer: View, Equatable {
         .presentationCompactAdaptation(.popover)
     }
     .help("Tools")
-  }
-}
-
-private struct ComposerTextView: UIViewRepresentable {
-  @Binding var text: String
-  @Binding var height: CGFloat
-  var placeholder: String
-  var isFocused: FocusState<Bool>.Binding
-  var appearance: AppearanceSettings
-
-  static let maxLines: Int = 3
-  private static let verticalInset: CGFloat = 7
-
-  static var singleLineHeight: CGFloat {
-    lineHeight(for: 1, appearance: .defaults)
-  }
-
-  static func singleLineHeight(for appearance: AppearanceSettings) -> CGFloat {
-    lineHeight(for: 1, appearance: appearance)
-  }
-
-  static func maxComposerHeight(for appearance: AppearanceSettings) -> CGFloat {
-    lineHeight(for: maxLines, appearance: appearance)
-  }
-
-  private static func lineHeight(for lines: Int, appearance: AppearanceSettings) -> CGFloat {
-    let font = appearance.userUIFont
-    return ceil(font.lineHeight * CGFloat(lines)) + verticalInset * 2
-  }
-
-  func makeUIView(context: Context) -> UITextView {
-    let textView = UITextView()
-    textView.delegate = context.coordinator
-    textView.backgroundColor = .clear
-    textView.font = appearance.userUIFont
-    textView.adjustsFontForContentSizeCategory = true
-    textView.isScrollEnabled = false
-    textView.textContainerInset = UIEdgeInsets(
-      top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
-    textView.textContainer.lineFragmentPadding = 0
-    textView.returnKeyType = .default
-    textView.autocorrectionType = .yes
-    textView.smartQuotesType = .no
-    textView.smartDashesType = .no
-    textView.smartInsertDeleteType = .no
-    textView.spellCheckingType = .yes
-    textView.keyboardAppearance = .default
-    textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    context.coordinator.installPlaceholder(in: textView, text: placeholder)
-    return textView
-  }
-
-  func updateUIView(_ textView: UITextView, context: Context) {
-    context.coordinator.parent = self
-    if textView.text != text {
-      textView.text = text
-      context.coordinator.updatePlaceholderVisibility(for: textView)
-    }
-    let preferredFont = appearance.userUIFont
-    if !fontsMatch(textView.font, preferredFont) {
-      textView.font = preferredFont
-      context.coordinator.updatePlaceholderFont(textView.font)
-    }
-    context.coordinator.updatePlaceholderText(placeholder)
-    recalculateHeight(textView)
-    if isFocused.wrappedValue && !textView.isFirstResponder {
-      textView.becomeFirstResponder()
-    }
-  }
-
-  fileprivate func recalculateHeight(_ textView: UITextView) {
-    let width =
-      textView.bounds.width > 0
-      ? textView.bounds.width
-      : textView.textContainer.size.width
-    guard width > 0 else { return }
-    let fitted = textView.sizeThatFits(
-      CGSize(width: width, height: .greatestFiniteMagnitude))
-    let minHeight = Self.singleLineHeight(for: appearance)
-    let maxHeight = Self.maxComposerHeight(for: appearance)
-    let clamped = min(maxHeight, max(minHeight, ceil(fitted.height)))
-    let shouldScroll = fitted.height > maxHeight + 0.5
-    if textView.isScrollEnabled != shouldScroll {
-      textView.isScrollEnabled = shouldScroll
-    }
-    if abs(clamped - height) > 0.5 {
-      DispatchQueue.main.async {
-        height = clamped
-      }
-    }
-  }
-
-  private func fontsMatch(_ lhs: UIFont?, _ rhs: UIFont) -> Bool {
-    guard let lhs else { return false }
-    return lhs.fontName == rhs.fontName && abs(lhs.pointSize - rhs.pointSize) < 0.1
-  }
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(parent: self)
-  }
-
-  final class Coordinator: NSObject, UITextViewDelegate {
-    var parent: ComposerTextView
-    private let placeholderLabel = UILabel()
-
-    init(parent: ComposerTextView) {
-      self.parent = parent
-      super.init()
-    }
-
-    func installPlaceholder(in textView: UITextView, text: String) {
-      placeholderLabel.font = textView.font
-      placeholderLabel.textColor = .placeholderText
-      placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-      placeholderLabel.text = text
-      textView.addSubview(placeholderLabel)
-      NSLayoutConstraint.activate([
-        placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
-        placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
-        placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: 7),
-      ])
-      updatePlaceholderVisibility(for: textView)
-    }
-
-    func updatePlaceholderText(_ text: String) {
-      if placeholderLabel.text != text {
-        placeholderLabel.text = text
-      }
-    }
-
-    func updatePlaceholderFont(_ font: UIFont?) {
-      if placeholderLabel.font.fontName != font?.fontName
-        || abs(placeholderLabel.font.pointSize - (font?.pointSize ?? 0)) >= 0.1
-      {
-        placeholderLabel.font = font
-      }
-    }
-
-    func updatePlaceholderVisibility(for textView: UITextView) {
-      placeholderLabel.isHidden = !textView.text.isEmpty
-    }
-
-    func textViewDidChange(_ textView: UITextView) {
-      parent.text = textView.text
-      updatePlaceholderVisibility(for: textView)
-      parent.recalculateHeight(textView)
-    }
-
-    func textViewDidBeginEditing(_ textView: UITextView) {
-      parent.isFocused.wrappedValue = true
-    }
   }
 }
 
