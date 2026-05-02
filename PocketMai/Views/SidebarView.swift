@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let sidebarListCoordinateSpace = "SidebarListCoordinateSpace"
+
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
@@ -40,38 +42,50 @@ struct SidebarView: View {
   }
 
   private var conversationList: some View {
-    List {
-      if showingArchive, visibleConversations.isEmpty {
-        Text("No archived conversations.")
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .padding(.vertical, 12)
-      }
-      ForEach(visibleConversations) { conversation in
-        let isSelected = store.selectedConversationID == conversation.id
-        let isMultiSelected = selectedIDs.contains(conversation.id)
-        ConversationRow(
-          conversation: conversation,
-          isSelected: isSelected,
-          isResponding: store.isResponding(in: conversation.id),
-          isSelectionMode: isSelectionMode,
-          isMultiSelected: isMultiSelected
-        ) {
-          if isSelectionMode {
-            toggleSelection(of: conversation.id)
-          } else {
-            Task { await store.selectConversation(id: conversation.id) }
-            onSelectConversation()
-          }
+    GeometryReader { proxy in
+      List {
+        if showingArchive, visibleConversations.isEmpty {
+          Text("No archived conversations.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 12)
+            .modifier(SidebarEdgeContentBlur(containerHeight: proxy.size.height))
         }
-        .contextMenu {
-          if !isSelectionMode {
-            conversationContextMenu(for: conversation, isCurrent: isSelected)
+        ForEach(visibleConversations) { conversation in
+          let isSelected = store.selectedConversationID == conversation.id
+          let isMultiSelected = selectedIDs.contains(conversation.id)
+          ConversationRow(
+            conversation: conversation,
+            isSelected: isSelected,
+            isResponding: store.isResponding(in: conversation.id),
+            isSelectionMode: isSelectionMode,
+            isMultiSelected: isMultiSelected
+          ) {
+            if isSelectionMode {
+              toggleSelection(of: conversation.id)
+            } else {
+              Task { await store.selectConversation(id: conversation.id) }
+              onSelectConversation()
+            }
           }
+          .contextMenu {
+            if !isSelectionMode {
+              conversationContextMenu(for: conversation, isCurrent: isSelected)
+            }
+          }
+          .listRowBackground(
+            SidebarRowBackground(
+              isSelected: isSelected && !isSelectionMode,
+              containerHeight: proxy.size.height
+            )
+          )
+          .modifier(SidebarEdgeContentBlur(containerHeight: proxy.size.height))
         }
       }
+      .listStyle(.sidebar)
+      .scrollIndicators(.hidden)
+      .coordinateSpace(name: sidebarListCoordinateSpace)
     }
-    .listStyle(.sidebar)
   }
 
   @ViewBuilder
@@ -282,9 +296,37 @@ private struct PendingConversationDeletion: Identifiable {
 
 private struct SidebarRowBackground: View {
   let isSelected: Bool
+  let containerHeight: CGFloat
 
   var body: some View {
     (isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
+      .modifier(SidebarEdgeContentBlur(containerHeight: containerHeight))
+  }
+}
+
+private struct SidebarEdgeContentBlur: ViewModifier {
+  let containerHeight: CGFloat
+  private let topFadeLength: CGFloat = 110
+  private let bottomFadeLength: CGFloat = 210
+  private let maxBlurRadius: CGFloat = 4
+
+  func body(content: Content) -> some View {
+    content.visualEffect { content, proxy in
+      content.blur(radius: blurRadius(for: proxy))
+    }
+  }
+
+  private nonisolated func blurRadius(for proxy: GeometryProxy) -> CGFloat {
+    let frame = proxy.frame(in: .named(sidebarListCoordinateSpace))
+    return maxBlurRadius * edgeProgress(for: frame)
+  }
+
+  private nonisolated func edgeProgress(for frame: CGRect) -> CGFloat {
+    guard containerHeight > 0 else { return 0 }
+    let top = max(0, min(1, 1 - frame.minY / topFadeLength))
+    let bottom = max(0, min(1, (frame.maxY - containerHeight) / bottomFadeLength))
+    let progress = max(top, bottom)
+    return progress * progress
   }
 }
 
@@ -398,9 +440,6 @@ private struct ConversationRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .listRowBackground(
-      SidebarRowBackground(isSelected: isSelected && !isSelectionMode)
-    )
   }
 
   @ViewBuilder
