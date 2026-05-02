@@ -1,10 +1,10 @@
 import CoreLocation
 import Foundation
 
-enum ToolContextBuilder {
+enum ContextBuilder {
   struct Output {
     let text: String
-    /// Equal signatures mean the embedded context hasn't changed.
+    /// Equal signatures mean the configured context sources haven't changed.
     let signature: String
   }
 
@@ -63,23 +63,21 @@ enum DateTimeRenderer {
   static func render(settings: NativeToolSettings) -> String {
     var values: [String] = []
     let now = Date()
-    if settings.includeCurrentTime {
-      let formatter = DateFormatter()
-      formatter.dateStyle = .full
-      formatter.timeStyle = .long
-      values.append("Current date/time: \(formatter.string(from: now))")
-    }
+    let formatter = DateFormatter()
+    formatter.dateStyle = .full
+    formatter.timeStyle = .long
+    values.append("Current date/time: \(formatter.string(from: now))")
     if settings.includeTimeZone {
       values.append("Time zone: \(TimeZone.current.identifier)")
     }
-    if settings.includeYear {
-      values.append("Current year: \(Calendar.current.component(.year, from: now))")
+    if settings.includeMoonPhase {
+      values.append(WeatherService.moonPhaseLine(for: now))
     }
     return "Date & Time tool:\n" + values.joined(separator: "\n")
   }
 
   static func signature(settings: NativeToolSettings) -> String {
-    "\(settings.includeCurrentTime ? 1 : 0)\(settings.includeTimeZone ? 1 : 0)\(settings.includeYear ? 1 : 0)"
+    "\(settings.includeTimeZone ? 1 : 0)\(settings.includeMoonPhase ? 1 : 0)"
   }
 }
 

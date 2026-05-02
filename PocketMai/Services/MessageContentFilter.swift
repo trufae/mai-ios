@@ -13,10 +13,10 @@ struct HiddenMessageSection: Identifiable {
 
 enum MessageContentFilter {
   private static let hiddenTags = [
-    "tool_context", "tool_run", "tool_call", "think", "conversation",
+    "context", "tool_context", "tool_run", "tool_call", "think", "conversation",
   ]
   private static let promptStripTags: Set<String> = [
-    "tool_context", "conversation", "think", "tool_call",
+    "context", "tool_context", "conversation", "think", "tool_call",
   ]
 
   static func render(_ text: String) -> RenderedMessageContent {

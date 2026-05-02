@@ -370,7 +370,7 @@ private enum MessageRenderCache {
 
     let rendered = MessageContentFilter.render(text)
     let toolEntries = rendered.hiddenSections
-      .filter { $0.tag == "tool_context" || $0.tag == "tool_run" }
+      .filter { $0.tag == "context" || $0.tag == "tool_context" || $0.tag == "tool_run" }
       .flatMap { ToolCallParser.parse($0.content) }
     let reasoningSections = rendered.hiddenSections.filter { $0.tag == "think" }
     let transcriptSections = rendered.hiddenSections.filter { $0.tag == "conversation" }

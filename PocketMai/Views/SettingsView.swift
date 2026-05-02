@@ -631,8 +631,7 @@ struct SettingsView: View {
     switch tool {
     case .datetime:
       Toggle("Include time zone", isOn: settingsBinding(\.toolSettings.includeTimeZone))
-      Toggle("Include current time", isOn: settingsBinding(\.toolSettings.includeCurrentTime))
-      Toggle("Include year", isOn: settingsBinding(\.toolSettings.includeYear))
+      Toggle("Include moon phase", isOn: settingsBinding(\.toolSettings.includeMoonPhase))
     case .location:
       Toggle("Use GPS location", isOn: settingsBinding(\.toolSettings.useGPSLocation))
       TextField("Manual location", text: settingsBinding(\.toolSettings.manualLocation))

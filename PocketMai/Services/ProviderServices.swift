@@ -4,7 +4,7 @@ import FoundationModels
 struct ChatCompletionRequest: Sendable {
   var conversation: Conversation
   var settings: AppSettings
-  var toolContext: String
+  var context: String
   var assistantMessageID: UUID
   var nativeTools: [OpenAITool]? = nil
   var hasToolCalling: Bool = false
@@ -134,7 +134,7 @@ enum PromptComposer {
       )
     }
     parts.append(
-      "Do not output internal tags or prompt scaffolding such as <think>, <tool_context>, or <conversation>. Return only the user-facing assistant message."
+      "Do not output internal tags or prompt scaffolding such as <think>, <context>, or <conversation>. Return only the user-facing assistant message."
     )
     return parts.joined(separator: "\n\n")
   }
@@ -142,16 +142,16 @@ enum PromptComposer {
   static func applePrompt(
     conversation: Conversation,
     settings: AppSettings,
-    toolContext: String,
+    context: String,
     hasTools: Bool = false,
     messageLimitOverride: Int? = nil
   ) -> String {
     var sections: [String] = []
-    if !toolContext.isEmpty {
+    if !context.isEmpty {
       sections.append(
         """
-        Context from enabled native tools:
-        \(toolContext)
+        Context:
+        \(context)
         """
       )
     }
@@ -182,16 +182,16 @@ enum PromptComposer {
   static func openAIMessages(
     conversation: Conversation,
     settings: AppSettings,
-    toolContext: String,
+    context: String,
     model: String,
     endpoint: OpenAIEndpoint,
     messageLimitOverride: Int? = nil
   ) -> [OpenAIMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
     let systemContent =
-      toolContext.isEmpty
+      context.isEmpty
       ? baseSystem
-      : "\(baseSystem)\n\n## Context from enabled native tools\n\(toolContext)"
+      : "\(baseSystem)\n\n## Context\n\(context)"
     var messages = [OpenAIMessage(role: "system", content: systemContent)]
     let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
     let limited: [ChatMessage] = {
@@ -282,7 +282,7 @@ enum AppleFoundationProvider {
     let prompt = PromptComposer.applePrompt(
       conversation: request.conversation,
       settings: request.settings,
-      toolContext: request.toolContext,
+      context: request.context,
       hasTools: request.hasToolCalling,
       messageLimitOverride: request.messageLimitOverride
     )
@@ -876,7 +876,7 @@ enum OpenAICompatibleProvider {
         messages: PromptComposer.openAIMessages(
           conversation: request.conversation,
           settings: request.settings,
-          toolContext: request.toolContext,
+          context: request.context,
           model: model,
           endpoint: endpoint,
           messageLimitOverride: request.messageLimitOverride

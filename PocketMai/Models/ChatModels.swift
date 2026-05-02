@@ -416,7 +416,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var disabledMCPTools: Set<String> = []
   var reasoningLevel: ReasoningLevel = .automatic
   var showThinking: Bool = false
-  var lastToolContextSignature: String? = nil
+  var lastContextSignature: String? = nil
   var isArchived: Bool = false
 
   init() {}
@@ -437,6 +437,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case disabledMCPTools
     case reasoningLevel
     case showThinking
+    case lastContextSignature
     case lastToolContextSignature
     case isArchived
   }
@@ -460,9 +461,31 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     reasoningLevel =
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
     showThinking = (try? container.decode(Bool.self, forKey: .showThinking)) ?? false
-    lastToolContextSignature =
-      try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature)
+    lastContextSignature =
+      (try? container.decodeIfPresent(String.self, forKey: .lastContextSignature))
+      ?? (try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature))
     isArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(title, forKey: .title)
+    try container.encode(messages, forKey: .messages)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(updatedAt, forKey: .updatedAt)
+    try container.encode(provider, forKey: .provider)
+    try container.encode(modelID, forKey: .modelID)
+    try container.encodeIfPresent(endpointID, forKey: .endpointID)
+    try container.encodeIfPresent(systemPromptID, forKey: .systemPromptID)
+    try container.encode(enabledTools, forKey: .enabledTools)
+    try container.encode(usesStreaming, forKey: .usesStreaming)
+    try container.encode(isPinned, forKey: .isPinned)
+    try container.encode(disabledMCPTools, forKey: .disabledMCPTools)
+    try container.encode(reasoningLevel, forKey: .reasoningLevel)
+    try container.encode(showThinking, forKey: .showThinking)
+    try container.encodeIfPresent(lastContextSignature, forKey: .lastContextSignature)
+    try container.encode(isArchived, forKey: .isArchived)
   }
 
   var displayTitle: String {
@@ -710,8 +733,7 @@ extension VoiceSettings {
 
 struct NativeToolSettings: Codable, Equatable, Sendable {
   var includeTimeZone: Bool = true
-  var includeCurrentTime: Bool = true
-  var includeYear: Bool = true
+  var includeMoonPhase: Bool = true
   var useGPSLocation: Bool = false
   var manualLocation: String = ""
   var weatherLocation: String = ""
@@ -726,7 +748,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case includeTimeZone, includeCurrentTime, includeYear, useGPSLocation
+    case includeTimeZone, includeMoonPhase, includeCurrentTime, includeYear, useGPSLocation
     case manualLocation, weatherLocation, webSearchProvider, webSearchFetchingEnabled, todos, files
     case voices
   }
@@ -741,9 +763,10 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     let defaults = NativeToolSettings.defaults
     includeTimeZone =
       (try? c.decode(Bool.self, forKey: .includeTimeZone)) ?? defaults.includeTimeZone
-    includeCurrentTime =
-      (try? c.decode(Bool.self, forKey: .includeCurrentTime)) ?? defaults.includeCurrentTime
-    includeYear = (try? c.decode(Bool.self, forKey: .includeYear)) ?? defaults.includeYear
+    includeMoonPhase =
+      (try? c.decode(Bool.self, forKey: .includeMoonPhase))
+      ?? (try? c.decode(Bool.self, forKey: .includeYear))
+      ?? defaults.includeMoonPhase
     useGPSLocation = (try? c.decode(Bool.self, forKey: .useGPSLocation)) ?? defaults.useGPSLocation
     manualLocation =
       (try? c.decode(String.self, forKey: .manualLocation)) ?? defaults.manualLocation
@@ -776,6 +799,20 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     } else {
       voices = defaults.voices
     }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(includeTimeZone, forKey: .includeTimeZone)
+    try c.encode(includeMoonPhase, forKey: .includeMoonPhase)
+    try c.encode(useGPSLocation, forKey: .useGPSLocation)
+    try c.encode(manualLocation, forKey: .manualLocation)
+    try c.encode(weatherLocation, forKey: .weatherLocation)
+    try c.encode(webSearchProvider, forKey: .webSearchProvider)
+    try c.encode(webSearchFetchingEnabled, forKey: .webSearchFetchingEnabled)
+    try c.encode(todos, forKey: .todos)
+    try c.encode(files, forKey: .files)
+    try c.encode(voices, forKey: .voices)
   }
 }
 

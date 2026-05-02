@@ -420,7 +420,7 @@ final class AppStore: ObservableObject {
     cloned.createdAt = now
     cloned.updatedAt = now
     cloned.isPinned = false
-    cloned.lastToolContextSignature = nil
+    cloned.lastContextSignature = nil
     cloned.isArchived = false
     if let index = indexedConversationIndex(for: conversation.id) {
       conversations.insert(cloned, at: index)
@@ -502,49 +502,34 @@ final class AppStore: ObservableObject {
   ) async {
     guard let index = indexedConversationIndex(for: conversationID) else { return }
     let conversation = conversations[index]
-    let previousToolContextSignature = conversation.lastToolContextSignature
-    let toolContext = await ToolContextBuilder.build(
+    let context = await ContextBuilder.build(
       input: prompt,
       conversation: conversation,
       settings: settings,
       locationService: { self.locationService }
     )
-    let trimmedTC = toolContext.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    let embed: Bool = {
-      guard !trimmedTC.isEmpty else { return false }
-      switch mode {
-      case .append:
-        return previousToolContextSignature != toolContext.signature
-      case .replaceLastUser:
-        return true
-      }
-    }()
-    let userText =
-      embed
-      ? "\(prompt)\n\n<tool_context>\n\(trimmedTC)\n</tool_context>"
-      : prompt
 
     guard let i = indexedConversationIndex(for: conversationID) else { return }
     switch mode {
     case .append:
-      let userMessage = ChatMessage(role: .user, text: userText)
+      let userMessage = ChatMessage(role: .user, text: prompt)
       conversations[i].messages.append(userMessage)
       conversations[i].refreshTitle(from: prompt)
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
-        conversations[i].messages[lastIndex].text = userText
+        conversations[i].messages[lastIndex].text = prompt
       }
     }
-    conversations[i].lastToolContextSignature = toolContext.signature
+    conversations[i].lastContextSignature = context.signature
     conversations[i].updatedAt = Date()
     upsertSummary(for: conversations[i])
     saveConversations()
 
     dispatchAssistantTurn(
-      conversationID: conversationID, toolContext: embed ? toolContext.text : "")
+      conversationID: conversationID, context: context.text)
   }
 
-  private func dispatchAssistantTurn(conversationID: UUID, toolContext: String) {
+  private func dispatchAssistantTurn(conversationID: UUID, context: String) {
     respondingConversationIDs.insert(conversationID)
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
@@ -555,7 +540,7 @@ final class AppStore: ObservableObject {
       }
       await AssistantTurnRunner.run(
         conversationID: conversationID,
-        toolContext: toolContext,
+        context: context,
         store: self
       )
     }

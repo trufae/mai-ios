@@ -4,7 +4,7 @@ import Foundation
 enum AssistantTurnRunner {
   static func run(
     conversationID: UUID,
-    toolContext: String,
+    context: String,
     store: AppStore
   ) async {
     guard let assistantID = store.appendAssistantMessage(to: conversationID) else {
@@ -15,7 +15,7 @@ enum AssistantTurnRunner {
       try await runLoop(
         conversationID: conversationID,
         assistantID: assistantID,
-        toolContext: toolContext,
+        context: context,
         store: store
       )
     } catch is CancellationError {
@@ -35,20 +35,33 @@ enum AssistantTurnRunner {
   private static func runLoop(
     conversationID: UUID,
     assistantID: UUID,
-    toolContext: String,
+    context: String,
     store: AppStore
   ) async throws {
     guard let conversation = store.conversation(withID: conversationID) else {
       return
     }
 
-    let agentDefinitions = ToolAgentRegistry.visibleDefinitions(
+    let concreteDefinitions = ToolAgentRegistry.definitions(
       for: conversation,
       settings: store.settings,
       mcpTools: store.mcpTools
     )
-    let augmentedToolContext = augmentedContext(
-      base: toolContext,
+    let latestPrompt = latestUserPrompt(in: conversation)
+    let shouldUseTools = ToolAgentRegistry.shouldEnterAgentLoop(
+      for: latestPrompt,
+      definitions: concreteDefinitions
+    )
+    let agentDefinitions =
+      shouldUseTools
+      ? ToolAgentRegistry.visibleDefinitions(
+        for: conversation,
+        settings: store.settings,
+        mcpTools: store.mcpTools
+      )
+      : []
+    let requestContext = augmentedContext(
+      base: context,
       definitions: agentDefinitions
     )
     let nativeTools = nativeToolsIfNeeded(
@@ -61,7 +74,7 @@ enum AssistantTurnRunner {
       try await completeWithoutTools(
         conversationID: conversationID,
         assistantID: assistantID,
-        toolContext: augmentedToolContext,
+        context: requestContext,
         store: store
       )
       return
@@ -79,7 +92,7 @@ enum AssistantTurnRunner {
       let request = ChatCompletionRequest(
         conversation: conversation,
         settings: store.settings,
-        toolContext: augmentedToolContext,
+        context: requestContext,
         assistantMessageID: assistantID,
         nativeTools: nativeTools,
         hasToolCalling: true
@@ -139,7 +152,7 @@ enum AssistantTurnRunner {
   private static func completeWithoutTools(
     conversationID: UUID,
     assistantID: UUID,
-    toolContext: String,
+    context: String,
     store: AppStore
   ) async throws {
     guard let conversation = store.conversation(withID: conversationID) else {
@@ -148,7 +161,7 @@ enum AssistantTurnRunner {
     let request = ChatCompletionRequest(
       conversation: conversation,
       settings: store.settings,
-      toolContext: toolContext,
+      context: context,
       assistantMessageID: assistantID,
       hasToolCalling: false
     )
@@ -196,6 +209,13 @@ enum AssistantTurnRunner {
     let agentToolPrompt = ToolAgentRegistry.promptDescription(for: definitions)
     guard !agentToolPrompt.isEmpty else { return base }
     return base.isEmpty ? agentToolPrompt : "\(base)\n\n\(agentToolPrompt)"
+  }
+
+  private static func latestUserPrompt(in conversation: Conversation) -> String {
+    guard let message = conversation.messages.last(where: { $0.role == .user }) else {
+      return ""
+    }
+    return MessageContentFilter.promptSafeText(from: message.text)
   }
 
   private static func nativeToolsIfNeeded(

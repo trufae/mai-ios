@@ -67,6 +67,75 @@ enum ToolAgentRegistry {
     return AgentTooling.parseCalls(in: text, tools: definitions)
   }
 
+  static func shouldEnterAgentLoop(for prompt: String, definitions: [ToolDefinition]) -> Bool {
+    guard !definitions.isEmpty else { return false }
+    let text = prompt.lowercased()
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return false }
+
+    let names = Set(definitions.map(\.name))
+    if names.contains(WebSearchTool.name) || names.contains(WebSearchTool.fetchName) {
+      if containsAny(
+        text,
+        [
+          "search the web", "web search", "look up", "lookup", "browse", "internet",
+          "online", "latest", "recent news", "news about", "fetch http", "fetch https",
+          "open http", "open https",
+        ])
+      {
+        return true
+      }
+    }
+    if names.contains(WeatherTool.name) {
+      if containsAny(
+        text,
+        [
+          "weather", "forecast", "temperature", "rain", "raining", "wind", "humidity",
+          "umbrella",
+        ])
+      {
+        return true
+      }
+    }
+    if names.contains(TodoTool.listName) || names.contains(TodoTool.addName)
+      || names.contains(TodoTool.doneName)
+    {
+      if containsAny(
+        text,
+        [
+          "todo", "to-do", "task list", "add a task", "add task", "mark done",
+          "mark it done", "check off",
+        ])
+      {
+        return true
+      }
+    }
+    if names.contains(TextToSpeechTool.name) {
+      if containsAny(
+        text,
+        ["speak", "read aloud", "read this aloud", "say this out loud", "text to speech", "tts"])
+      {
+        return true
+      }
+    }
+    if containsAny(text, ["use a tool", "use the tool", "call a tool", "call the tool", "mcp"]) {
+      return true
+    }
+
+    let compactPrompt = compactToolMatchKey(text)
+    let promptTokens = significantTokens(in: text)
+    return definitions.contains { definition in
+      if toolNameLikelyMentioned(definition.name, in: compactPrompt) {
+        return true
+      }
+      guard !isBuiltInTool(definition.name) else { return false }
+      let searchable = ([definition.name, definition.description]
+        + definition.parameters.flatMap { [$0.name, $0.description] })
+        .joined(separator: " ")
+      return promptTokens.intersection(significantTokens(in: searchable)).count >= 2
+    }
+  }
+
   static func normalized(call: ParsedToolCall, definitions: [ToolDefinition]) -> ParsedToolCall {
     let resolver = AgentToolNameResolver(tools: definitions)
     let canonicalName = resolver.canonicalName(for: call.name) ?? call.name
@@ -80,6 +149,52 @@ enum ToolAgentRegistry {
       rawBlock: call.rawBlock,
       toolCallID: call.toolCallID,
       apiName: call.apiName)
+  }
+
+  private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
+    needles.contains { text.contains($0) }
+  }
+
+  private static func toolNameLikelyMentioned(_ name: String, in compactPrompt: String) -> Bool {
+    let candidates = [
+      name,
+      name.replacingOccurrences(of: "::", with: " "),
+      name.replacingOccurrences(of: "_", with: " "),
+      name.replacingOccurrences(of: "-", with: " "),
+      name.split(separator: ".").last.map(String.init) ?? name,
+      name.components(separatedBy: "::").last ?? name,
+    ]
+    return candidates.contains { candidate in
+      let key = compactToolMatchKey(candidate)
+      return key.count >= 4 && compactPrompt.contains(key)
+    }
+  }
+
+  private static func compactToolMatchKey(_ text: String) -> String {
+    text.lowercased().filter { $0.isLetter || $0.isNumber }
+  }
+
+  private static func significantTokens(in text: String) -> Set<String> {
+    let stopwords: Set<String> = [
+      "about", "after", "again", "also", "and", "are", "argument", "arguments", "call",
+      "from", "have", "into", "list", "name", "need", "only", "please", "return",
+      "that", "the", "this", "tool", "tools", "use", "using", "what", "when", "with",
+      "your",
+    ]
+    let words = text.lowercased().split { !$0.isLetter && !$0.isNumber }
+      .map(String.init)
+      .filter { $0.count >= 4 && !stopwords.contains($0) }
+    return Set(words)
+  }
+
+  private static func isBuiltInTool(_ name: String) -> Bool {
+    switch name {
+    case WebSearchTool.name, WebSearchTool.fetchName, WeatherTool.name,
+      TodoTool.listName, TodoTool.addName, TodoTool.doneName, TextToSpeechTool.name:
+      return true
+    default:
+      return false
+    }
   }
 
   static func execute(call: ParsedToolCall, store: AppStore) async -> String {
@@ -564,7 +679,7 @@ enum DateTimeTool {
     ToolDefinition(
       name: name,
       description:
-        "Return the current date, time, time zone, and year using the user's configured Date & Time options.",
+        "Return the current date/time plus optional time zone and moon phase using the user's configured Date & Time options.",
       parameters: []
     )
   ]

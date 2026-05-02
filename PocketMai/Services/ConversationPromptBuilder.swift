@@ -123,7 +123,7 @@ enum OneShotPromptRunner {
     let request = ChatCompletionRequest(
       conversation: oneShot,
       settings: settings,
-      toolContext: "",
+      context: "",
       assistantMessageID: UUID()
     )
     return try await ChatProviderRouter.complete(request: request) { _ in }
