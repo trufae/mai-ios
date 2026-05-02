@@ -36,7 +36,8 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   case markdown
-  case plainText
+  case epub
+  case audio
   case json
 
   var id: String { rawValue }
@@ -44,16 +45,27 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   var displayName: String {
     switch self {
     case .markdown: "Markdown"
-    case .plainText: "Plain Text"
     case .json: "JSON"
+    case .epub: "EPUB"
+    case .audio: "Audio"
     }
   }
 
   var systemImage: String {
     switch self {
     case .markdown: "doc.richtext"
-    case .plainText: "doc.plaintext"
     case .json: "curlybraces"
+    case .epub: "book"
+    case .audio: "waveform"
+    }
+  }
+
+  var fileExtension: String {
+    switch self {
+    case .markdown: "md"
+    case .json: "json"
+    case .epub: "epub"
+    case .audio: "m4a"
     }
   }
 }

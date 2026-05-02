@@ -668,11 +668,6 @@ final class AppStore: ObservableObject {
     UIPasteboard.general.string = message.text
   }
 
-  func copyConversation(format: ConversationExportFormat) {
-    guard let conversation = currentConversation else { return }
-    UIPasteboard.general.string = export(conversation: conversation, format: format)
-  }
-
   func exportCurrentConversationEPUB() -> URL? {
     guard let conversation = currentConversation else { return nil }
     let data = EPUBExporter.makeEPUB(conversation: conversation)
@@ -688,6 +683,33 @@ final class AppStore: ObservableObject {
       return url
     } catch {
       errorMessage = "Could not export ePUB: \(error.localizedDescription)"
+      return nil
+    }
+  }
+
+  func exportCurrentConversationFile(format: ConversationExportFormat) -> URL? {
+    guard let conversation = currentConversation else { return nil }
+    switch format {
+    case .markdown, .json:
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "PocketMaiExports",
+        isDirectory: true
+      )
+      do {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = exportFilename(for: conversation)
+        let url = directory.appendingPathComponent(filename).appendingPathExtension(
+          format.fileExtension)
+        try export(conversation: conversation, format: format).write(
+          to: url, atomically: true, encoding: .utf8)
+        return url
+      } catch {
+        errorMessage = "Could not export \(format.displayName): \(error.localizedDescription)"
+        return nil
+      }
+    case .epub:
+      return exportCurrentConversationEPUB()
+    case .audio:
       return nil
     }
   }
@@ -987,10 +1009,6 @@ final class AppStore: ObservableObject {
       return conversation.messages.map { message in
         "## \(message.role.displayName)\n\n\(message.text)"
       }.joined(separator: "\n\n")
-    case .plainText:
-      return conversation.messages.map { message in
-        "\(message.role.displayName):\n\(message.text)"
-      }.joined(separator: "\n\n")
     case .json:
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1001,10 +1019,12 @@ final class AppStore: ObservableObject {
         return "{}"
       }
       return json
+    case .epub, .audio:
+      return ""
     }
   }
 
-  private func exportFilename(for conversation: Conversation) -> String {
+  func exportFilename(for conversation: Conversation) -> String {
     let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
       .union(.newlines)
       .union(.controlCharacters)

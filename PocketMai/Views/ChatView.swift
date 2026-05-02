@@ -7,12 +7,10 @@ struct ChatView: View {
   @State private var showingRenameAlert = false
   @State private var showingProviderModelSheet = false
   @State private var showingCompactConfirmation = false
-  @State private var showingClearConfirmation = false
   @State private var messagePendingDeletion: ChatMessage?
   @State private var messagePendingTrimAndResubmit: ChatMessage?
   @State private var messagePendingRestartFresh: ChatMessage?
-  @State private var exportedEPUB: ExportedEPUB?
-  @State private var exportedAudio: ExportedAudio?
+  @State private var exportShareFile: ExportedFile?
   @State private var showingAudioExport: Bool = false
   @State private var audioExportError: String?
   @State private var renameDraft = ""
@@ -59,7 +57,7 @@ struct ChatView: View {
         trailingMenu
       }
     }
-    .alert("Rename Chat", isPresented: $showingRenameAlert) {
+    .alert("Change Title", isPresented: $showingRenameAlert) {
       TextField("Chat title", text: $renameDraft)
       Button("Cancel", role: .cancel) {}
       Button("Save") {
@@ -70,13 +68,12 @@ struct ChatView: View {
       ConversationModelSettingsView()
         .environmentObject(store)
     }
-    .sheet(item: $exportedEPUB) { file in
+    .sheet(item: $exportShareFile) { file in
       ActivityShareSheet(activityItems: [file.url])
     }
     .modifier(
       AudioExportPresentations(
         exporter: audioExporter,
-        exportedAudio: $exportedAudio,
         showingAudioExport: $showingAudioExport,
         audioExportError: $audioExportError))
     .alert(
@@ -131,8 +128,9 @@ struct ChatView: View {
       Button {
         beginRename()
       } label: {
-        Label("Rename Chat", systemImage: "pencil")
+        Label("Change Title...", systemImage: "pencil")
       }
+      Divider()
       Button {
         showingProviderModelSheet = true
       } label: {
@@ -162,12 +160,6 @@ struct ChatView: View {
         Label("Compact Chat", systemImage: "rectangle.compress.vertical")
       }
       .disabled(!canCompactCurrentChat)
-      Button(role: .destructive) {
-        showingClearConfirmation = true
-      } label: {
-        Label("Clear Chat", systemImage: "eraser")
-      }
-      .disabled(!canClearCurrentChat)
     } label: {
       VStack(spacing: 1) {
         Text(store.currentConversation?.displayTitle ?? "Chat")
@@ -204,20 +196,6 @@ struct ChatView: View {
         "All messages will be replaced with a single AI-generated summary. This cannot be undone."
       )
     }
-    .confirmationDialog(
-      "Clear this chat?",
-      isPresented: $showingClearConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Clear Chat", role: .destructive) {
-        store.clearCurrentConversation()
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(
-        "All messages will be removed. The chat itself will remain in the sidebar. This cannot be undone."
-      )
-    }
     .accessibilityHint("Tap for chat options")
   }
 
@@ -241,12 +219,6 @@ struct ChatView: View {
         && !msg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     return substantive.count >= 2
-  }
-
-  private var canClearCurrentChat: Bool {
-    guard let conversation = store.currentConversation else { return false }
-    if store.isResponding || store.isCompacting { return false }
-    return !conversation.messages.isEmpty
   }
 
   private var composerPlaceholder: String {
@@ -313,6 +285,7 @@ struct ChatView: View {
       } label: {
         Label("New Chat", systemImage: "bubble.left.and.text.bubble.right")
       }
+      .disabled(currentConversationIsEmpty)
       Divider()
       exportMenuSection
     } label: {
@@ -323,55 +296,61 @@ struct ChatView: View {
 
   @ViewBuilder
   private var exportMenuSection: some View {
-    Section("Export") {
+    Section("Export Conversation") {
       ForEach(ConversationExportFormat.allCases) { format in
         Button {
-          store.copyConversation(format: format)
+          Task { await shareExport(format) }
         } label: {
-          Label("Copy as \(format.displayName)", systemImage: format.systemImage)
+          Label(format.displayName, systemImage: format.systemImage)
         }
-      }
-      Button {
-        exportEPUB()
-      } label: {
-        Label("Export in ePUB", systemImage: "book")
-      }
-      Button {
-        Task { await exportAudio() }
-      } label: {
-        Label("Export as Audio", systemImage: "waveform")
+        .disabled(format == .audio && audioExporter.isExporting)
       }
       .disabled(audioExporter.isExporting)
     }
   }
 
-  private func exportEPUB() {
-    guard let url = store.exportCurrentConversationEPUB() else { return }
-    exportedEPUB = ExportedEPUB(url: url)
+  @MainActor
+  private func shareExport(_ format: ConversationExportFormat) async {
+    guard let url = await exportFileURL(for: format) else { return }
+    exportShareFile = ExportedFile(url: url)
   }
 
-  private func exportAudio() async {
-    guard let conversation = store.currentConversation else { return }
-    let safeName =
-      conversation.displayTitle
-      .components(separatedBy: CharacterSet(charactersIn: "/\\:?*\"<>|"))
-      .joined(separator: "-")
-    let url = FileManager.default.temporaryDirectory
-      .appendingPathComponent("\(safeName).m4a")
+  @MainActor
+  private func exportFileURL(for format: ConversationExportFormat) async -> URL? {
+    if format == .audio {
+      return await exportAudioFile()
+    }
+    return store.exportCurrentConversationFile(format: format)
+  }
+
+  @MainActor
+  private func exportAudioFile() async -> URL? {
+    guard let conversation = store.currentConversation else { return nil }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "PocketMaiExports",
+      isDirectory: true
+    )
+    let url = directory
+      .appendingPathComponent(store.exportFilename(for: conversation))
+      .appendingPathExtension(ConversationExportFormat.audio.fileExtension)
     showingAudioExport = true
     do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       try await audioExporter.export(
         messages: conversation.messages,
         voices: store.settings.toolSettings.voices,
         to: url)
       showingAudioExport = false
-      exportedAudio = ExportedAudio(url: url)
+      try? await Task.sleep(for: .milliseconds(250))
+      return url
     } catch is CancellationError {
       showingAudioExport = false
+      return nil
     } catch {
       showingAudioExport = false
       audioExportError = (error as? LocalizedError)?.errorDescription
         ?? error.localizedDescription
+      return nil
     }
   }
 
@@ -835,27 +814,18 @@ private struct ComposerTextView: UIViewRepresentable {
   }
 }
 
-private struct ExportedEPUB: Identifiable {
-  let id = UUID()
-  let url: URL
-}
-
-private struct ExportedAudio: Identifiable {
+private struct ExportedFile: Identifiable {
   let id = UUID()
   let url: URL
 }
 
 private struct AudioExportPresentations: ViewModifier {
   @ObservedObject var exporter: TTSExporter
-  @Binding var exportedAudio: ExportedAudio?
   @Binding var showingAudioExport: Bool
   @Binding var audioExportError: String?
 
   func body(content: Content) -> some View {
     content
-      .sheet(item: $exportedAudio) { file in
-        ActivityShareSheet(activityItems: [file.url])
-      }
       .sheet(isPresented: $showingAudioExport) {
         AudioExportProgressView(exporter: exporter) {
           exporter.cancel()
