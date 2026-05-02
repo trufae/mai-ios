@@ -345,10 +345,6 @@ enum AgentTooling {
     return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
   }
 
-  static func parseToolCallJSON(_ json: String, rawBlock: String) -> ParsedToolCall? {
-    parseToolCallPayload(json, attributes: "", rawBlock: rawBlock)
-  }
-
   static func containsToolCallMarker(in text: String) -> Bool {
     text.range(
       of: "<\\s*/?\\s*tool_call\\b",

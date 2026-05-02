@@ -91,7 +91,7 @@ extension AppearanceTint {
     case .system: nil
     case .blue: .blue
     case .purple: .purple
-    case .pink: .pink
+    case .pink: Color(red: 1.0, green: 0.18, blue: 0.62)
     case .red: .red
     case .orange: .orange
     case .yellow: .yellow

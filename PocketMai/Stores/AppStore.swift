@@ -178,14 +178,6 @@ final class AppStore: ObservableObject {
     modelID.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  func select(_ conversation: Conversation) {
-    let previousID = selectedConversationID
-    selectedConversationID = conversation.id
-    if previousID != conversation.id, discardDisposableConversation(id: previousID) {
-      saveConversations()
-    }
-  }
-
   func selectConversation(id: UUID) async {
     let previousID = selectedConversationID
     await ensureConversationLoaded(id)
@@ -293,15 +285,6 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
-  func clearCurrentConversation() {
-    guard let index = currentConversationIndex else { return }
-    guard !conversations[index].messages.isEmpty else { return }
-    conversations[index].messages.removeAll()
-    conversations[index].updatedAt = Date()
-    upsertSummary(for: conversations[index])
-    saveConversations()
-  }
-
   func resubmit(_ message: ChatMessage) async {
     guard message.role == .user, !isResponding else { return }
     let cleaned = MessageContentFilter.promptSafeText(from: message.text)
@@ -380,10 +363,6 @@ final class AppStore: ObservableObject {
       createInitialConversationIfNeeded()
     }
     saveConversations()
-  }
-
-  func deleteConversation(_ conversation: Conversation) {
-    deleteConversations([conversation.id])
   }
 
   func cloneConversation(_ conversation: Conversation) {
@@ -662,10 +641,6 @@ final class AppStore: ObservableObject {
       String(data: data.prefix(24_000), encoding: .utf8) ?? "Binary file: \(data.count) bytes"
     settings.toolSettings.files.append(ToolFile(name: url.lastPathComponent, excerpt: excerpt))
     saveSettings()
-  }
-
-  func copyMessage(_ message: ChatMessage) {
-    UIPasteboard.general.string = message.text
   }
 
   func exportCurrentConversationEPUB() -> URL? {
