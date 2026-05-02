@@ -564,6 +564,15 @@ private struct ChatComposer: View, Equatable {
     return composerHeight <= single + 0.5 ? .center : .bottom
   }
 
+  private var canSubmitDraft: Bool {
+    !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var sendButtonColor: Color {
+    if isResponding { return .red }
+    return canSubmitDraft ? .accentColor : .secondary
+  }
+
   var body: some View {
     HStack(alignment: composerAlignment, spacing: 10) {
       toolMenu
@@ -587,13 +596,15 @@ private struct ChatComposer: View, Equatable {
           submitDraft()
         }
       } label: {
-        Image(systemName: isResponding ? "stop.circle" : "arrow.up.circle.fill")
+        Image(systemName: isResponding ? "stop.circle" : "arrow.up.circle")
           .font(.title2)
+          .symbolRenderingMode(.hierarchical)
+          .foregroundStyle(sendButtonColor)
+          .frame(width: 32, height: 32)
+          .contentShape(Circle())
       }
-      .buttonStyle(.glassProminent)
-      .disabled(
-        !isResponding
-          && draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      .buttonStyle(.glass)
+      .disabled(!isResponding && !canSubmitDraft)
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
