@@ -706,6 +706,12 @@ private struct OpenAIErrorResponse: Decodable {
   var error: APIError
 }
 
+private struct NvidiaErrorResponse: Decodable {
+  var status: Int?
+  var title: String?
+  var detail: String?
+}
+
 private struct OpenAIModelsResponse: Decodable {
   struct Model: Decodable {
     var id: String
@@ -1177,6 +1183,16 @@ enum OpenAICompatibleProvider {
       let message = error.error.message ?? "Request failed"
       let type = error.error.type.map { " (\($0))" } ?? ""
       return .providerRequestFailed("Provider returned HTTP \(statusCode): \(message)\(type)")
+    }
+    if let nv = try? JSONDecoder().decode(NvidiaErrorResponse.self, from: data),
+      let detail = nv.detail
+    {
+      if statusCode == 404, detail.range(of: #"^Function '[^']+': Not found for account"#, options: .regularExpression) != nil {
+        return .providerRequestFailed(
+          "Model is not available on your NVIDIA account (HTTP 404). The /v1/models catalog lists every NIM, but only some are entitled to a given API key. Pick another model from the list or request access on build.nvidia.com.")
+      }
+      let title = nv.title ?? "Error"
+      return .providerRequestFailed("Provider returned HTTP \(statusCode): \(title) — \(detail)")
     }
     let body =
       String(data: data, encoding: .utf8)?
