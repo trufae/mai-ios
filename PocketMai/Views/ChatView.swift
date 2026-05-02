@@ -363,7 +363,8 @@ struct ChatView: View {
     }
     ttsPlayer.speakFromHere(
       messages: Array(conversation.messages[index...]),
-      voices: store.settings.toolSettings.voices
+      voices: store.settings.toolSettings.voices,
+      openAIEndpoints: store.settings.openAIEndpoints
     )
   }
 
@@ -388,6 +389,7 @@ struct ChatView: View {
               MessageBubble(
                 message: message,
                 toolSettings: store.settings.toolSettings,
+                openAIEndpoints: store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
                 onDelete: { messagePendingDeletion = message },
                 onResubmit: message.role == .user

@@ -138,6 +138,7 @@ private struct FullChatScreenshotView: View {
           MessageBubble(
             message: message,
             toolSettings: toolSettings,
+            openAIEndpoints: [],
             appearance: appearance,
             onDelete: {},
             showThinking: conversation.showThinking

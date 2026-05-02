@@ -144,6 +144,7 @@ private enum VoiceTest {
   }
 
   static func effectiveLanguage(for voice: RoleVoiceSettings) -> String {
+    if voice.provider == .openAICompatible { return Locale.current.identifier }
     if !voice.language.isEmpty { return voice.language }
     if !voice.voiceIdentifier.isEmpty,
       let v = AVSpeechSynthesisVoice(identifier: voice.voiceIdentifier)
@@ -154,7 +155,12 @@ private enum VoiceTest {
   }
 
   @MainActor
-  static func toggle(role: VoiceRole, voice: RoleVoiceSettings, player: TTSPlayer) {
+  static func toggle(
+    role: VoiceRole,
+    voice: RoleVoiceSettings,
+    openAIEndpoints: [OpenAIEndpoint],
+    player: TTSPlayer
+  ) {
     let tag = tag(for: role)
     if player.isPlaying(tag: tag) {
       player.stop()
@@ -166,8 +172,14 @@ private enum VoiceTest {
       voice: voice,
       role: role,
       title: "Voice Test",
-      tag: tag)
+      tag: tag,
+      openAIEndpoints: openAIEndpoints)
   }
+}
+
+private enum VoiceProviderSelection: Hashable {
+  case system
+  case openAI(UUID)
 }
 
 struct SettingsView: View {
@@ -529,15 +541,15 @@ struct SettingsView: View {
   private var toolsSection: some View {
     Section {
       DisclosureGroup {
-        nativeToolsContent
+        contextToolsContent
       } label: {
-        Label("Native", systemImage: "wrench.and.screwdriver")
+        Label("Contextual", systemImage: "text.append")
       }
 
       DisclosureGroup {
-        contextToolsContent
+        nativeToolsContent
       } label: {
-        Label("Informational", systemImage: "text.append")
+        Label("Native", systemImage: "wrench.and.screwdriver")
       }
 
       DisclosureGroup {
@@ -887,6 +899,9 @@ struct SettingsView: View {
       else { return }
       let removedIDs = deletion.offsets.map { store.settings.openAIEndpoints[$0].id }
       store.settings.openAIEndpoints.remove(atOffsets: deletion.offsets)
+      for id in removedIDs {
+        store.resetEndpointStatus(id)
+      }
       if let selected = store.settings.selectedEndpointID, removedIDs.contains(selected) {
         store.settings.selectedEndpointID = store.settings.openAIEndpoints.first?.id
         if store.settings.selectedEndpointID == nil {
@@ -1025,6 +1040,7 @@ struct SettingsView: View {
 }
 
 private struct RoleVoiceSettingsView: View {
+  @EnvironmentObject private var store: AppStore
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   let role: VoiceRole
   @Binding var voice: RoleVoiceSettings
@@ -1032,37 +1048,77 @@ private struct RoleVoiceSettingsView: View {
   var body: some View {
     Form {
       Section {
-        Picker("Language", selection: voiceBinding(\.language)) {
-          Text("System Default").tag("")
-          ForEach(TTSVoiceCache.languages, id: \.self) { lang in
-            Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
+        Picker("Provider", selection: providerBinding) {
+          Text("System").tag(VoiceProviderSelection.system)
+          ForEach(openAIVoiceEndpoints) { endpoint in
+            Text(endpoint.displayName).tag(VoiceProviderSelection.openAI(endpoint.id))
           }
         }
-
-        Picker("Voice", selection: voiceBinding(\.voiceIdentifier)) {
-          Text("Default Voice").tag("")
-          ForEach(TTSVoiceCache.voiceOptions(for: voice.language), id: \.identifier) { option in
-            Text("\(option.name) (\(TTSVoiceCache.languageDisplayName(option.language)))")
-              .tag(option.identifier)
-          }
-        }
+      } footer: {
+        Text("Only OpenAI-compatible providers with discovered /v1/voices are listed.")
       }
 
-      Section {
-        VStack(alignment: .leading) {
-          Text("Rate")
-          Slider(value: voiceBinding(\.rate), in: 0...1, step: 0.05)
+      if voice.provider == .openAICompatible {
+        Section {
+          openAIVoicePicker
+          Button {
+            refreshSelectedVoiceEndpoint()
+          } label: {
+            if isRefreshingSelectedVoiceEndpoint {
+              HStack {
+                ProgressView()
+                Text("Refreshing Voices...")
+              }
+            } else {
+              Label("Refresh Voices", systemImage: "arrow.clockwise")
+            }
+          }
+          .disabled(selectedOpenAIEndpoint == nil || isRefreshingSelectedVoiceEndpoint)
+        } footer: {
+          if selectedEndpointVoices.isEmpty {
+            Text("Refresh this provider to load voices from /v1/voices.")
+          } else {
+            Text("Provider voices are requested as WAV audio from /v1/audio/speech.")
+          }
+        }
+      } else {
+        Section {
+          Picker("Language", selection: voiceBinding(\.language)) {
+            Text("System Default").tag("")
+            ForEach(TTSVoiceCache.languages, id: \.self) { lang in
+              Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
+            }
+          }
+
+          Picker("Voice", selection: voiceBinding(\.voiceIdentifier)) {
+            Text("Default Voice").tag("")
+            ForEach(TTSVoiceCache.voiceOptions(for: voice.language), id: \.identifier) { option in
+              Text("\(option.name) (\(TTSVoiceCache.languageDisplayName(option.language)))")
+                .tag(option.identifier)
+            }
+          }
         }
 
-        VStack(alignment: .leading) {
-          Text("Pitch")
-          Slider(value: voiceBinding(\.pitch), in: 0.5...2, step: 0.05)
+        Section {
+          VStack(alignment: .leading) {
+            Text("Rate")
+            Slider(value: voiceBinding(\.rate), in: 0...1, step: 0.05)
+          }
+
+          VStack(alignment: .leading) {
+            Text("Pitch")
+            Slider(value: voiceBinding(\.pitch), in: 0.5...2, step: 0.05)
+          }
         }
       }
 
       Section {
         Button {
-          VoiceTest.toggle(role: role, voice: voice, player: ttsPlayer)
+          VoiceTest.toggle(
+            role: role,
+            voice: voice,
+            openAIEndpoints: store.settings.openAIEndpoints,
+            player: ttsPlayer)
         } label: {
           let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
           Label(
@@ -1074,6 +1130,7 @@ private struct RoleVoiceSettingsView: View {
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
     .onChange(of: voice.language) { _, newLanguage in
+      guard voice.provider == .system else { return }
       guard !newLanguage.isEmpty,
         let selectedVoice = TTSVoiceCache.voices.first(where: {
           $0.identifier == voice.voiceIdentifier
@@ -1081,6 +1138,12 @@ private struct RoleVoiceSettingsView: View {
         selectedVoice.language != newLanguage
       else { return }
       voice.voiceIdentifier = ""
+    }
+    .onAppear {
+      normalizeProviderVoiceSelection()
+    }
+    .onChange(of: selectedEndpointVoices) { _, _ in
+      normalizeProviderVoiceSelection()
     }
   }
 
@@ -1101,6 +1164,102 @@ private struct RoleVoiceSettingsView: View {
         copy[keyPath: keyPath] = newValue
         voice = copy
       })
+  }
+
+  private var providerBinding: Binding<VoiceProviderSelection> {
+    Binding(
+      get: {
+        if voice.provider == .openAICompatible, let id = voice.openAIEndpointID {
+          return .openAI(id)
+        }
+        return .system
+      },
+      set: { selection in
+        var copy = voice
+        switch selection {
+        case .system:
+          copy.provider = .system
+        case .openAI(let id):
+          copy.provider = .openAICompatible
+          copy.openAIEndpointID = id
+          let voices = store.endpointVoices[id] ?? []
+          if !voices.contains(copy.openAIVoice) {
+            copy.openAIVoice = voices.first ?? copy.openAIVoice
+          }
+        }
+        voice = copy
+      })
+  }
+
+  @ViewBuilder
+  private var openAIVoicePicker: some View {
+    Picker("Voice", selection: voiceBinding(\.openAIVoice)) {
+      if openAIVoiceOptions.isEmpty {
+        Text("No voices loaded").tag("")
+      } else {
+        ForEach(openAIVoiceOptions, id: \.self) { option in
+          Text(option).tag(option)
+        }
+      }
+    }
+  }
+
+  private var openAIVoiceOptions: [String] {
+    var options = selectedEndpointVoices
+    let current = voice.openAIVoice.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !current.isEmpty && !options.contains(current) {
+      options.insert(current, at: 0)
+    }
+    return options
+  }
+
+  private var selectedEndpointVoices: [String] {
+    guard voice.provider == .openAICompatible,
+      let id = voice.openAIEndpointID
+    else { return [] }
+    return store.endpointVoices[id] ?? []
+  }
+
+  private var openAIVoiceEndpoints: [OpenAIEndpoint] {
+    store.settings.openAIEndpoints.filter { endpoint in
+      endpoint.isEnabled && !(store.endpointVoices[endpoint.id] ?? []).isEmpty
+    }
+  }
+
+  private var selectedOpenAIEndpoint: OpenAIEndpoint? {
+    guard let id = voice.openAIEndpointID else { return nil }
+    return openAIVoiceEndpoints.first(where: { $0.id == id })
+  }
+
+  private var isRefreshingSelectedVoiceEndpoint: Bool {
+    guard let id = voice.openAIEndpointID,
+      case .checking = store.endpointStatuses[id]
+    else { return false }
+    return true
+  }
+
+  private func normalizeProviderVoiceSelection() {
+    guard voice.provider == .openAICompatible else { return }
+    guard !openAIVoiceEndpoints.isEmpty else {
+      voice.provider = .system
+      voice.openAIEndpointID = nil
+      return
+    }
+    if voice.openAIEndpointID == nil
+      || !openAIVoiceEndpoints.contains(where: { $0.id == voice.openAIEndpointID })
+    {
+      voice.openAIEndpointID = openAIVoiceEndpoints.first?.id
+    }
+    guard let id = voice.openAIEndpointID else { return }
+    let voices = store.endpointVoices[id] ?? []
+    if !voices.isEmpty && !voices.contains(voice.openAIVoice) {
+      voice.openAIVoice = voices[0]
+    }
+  }
+
+  private func refreshSelectedVoiceEndpoint() {
+    guard let endpoint = selectedOpenAIEndpoint else { return }
+    Task { await store.refreshEndpoint(endpoint) }
   }
 }
 
@@ -1254,7 +1413,7 @@ private struct EndpointDetailView: View {
               Text("Testing connection…")
             }
           } else {
-            Label("Test & Refresh Models", systemImage: "arrow.clockwise")
+            Label("Test & Refresh Models & Voices", systemImage: "arrow.clockwise")
           }
         }
         .disabled(isChecking)
@@ -1326,16 +1485,21 @@ private struct EndpointDetailView: View {
   private var statusFooter: some View {
     let status = store.endpointStatuses[endpoint.id] ?? .unknown
     let models = store.endpointModels[endpoint.id] ?? []
+    let voices = store.endpointVoices[endpoint.id] ?? []
     switch status {
     case .unknown:
-      Text("Tap “Test & Refresh Models” to verify the connection and load the model list.")
+      Text("Tap “Test & Refresh Models & Voices” to verify the connection and load capabilities.")
     case .checking:
       Text("Testing connection…")
     case .available:
-      if models.isEmpty {
+      if models.isEmpty && voices.isEmpty {
         Text("Connected.")
-      } else {
+      } else if voices.isEmpty {
         Text("Connected. \(models.count) models available.")
+      } else if models.isEmpty {
+        Text("Connected. \(voices.count) voices available.")
+      } else {
+        Text("Connected. \(models.count) models and \(voices.count) voices available.")
       }
     case .failed(let message):
       Text(message).foregroundStyle(.red)

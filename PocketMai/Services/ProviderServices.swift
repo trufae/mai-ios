@@ -714,6 +714,42 @@ private struct OpenAIModelsResponse: Decodable {
   var data: [Model]
 }
 
+private struct OpenAIVoicesResponse: Decodable {
+  struct Voice: Decodable {
+    var id: String
+
+    init(from decoder: Decoder) throws {
+      if let value = try? decoder.singleValueContainer().decode(String.self) {
+        id = value
+        return
+      }
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      id =
+        (try? c.decode(String.self, forKey: .id))
+        ?? (try? c.decode(String.self, forKey: .name))
+        ?? ""
+    }
+
+    enum CodingKeys: String, CodingKey {
+      case id, name
+    }
+  }
+
+  var data: [Voice]
+}
+
+private struct OpenAISpeechRequest: Encodable {
+  var input: String
+  var voice: String
+  var responseFormat: String
+  var model: String?
+
+  enum CodingKeys: String, CodingKey {
+    case input, voice, model
+    case responseFormat = "response_format"
+  }
+}
+
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
     let url = try modelsURL(from: endpoint.baseURL)
@@ -743,6 +779,77 @@ enum OpenAICompatibleProvider {
       throw ChatProviderError.providerRequestFailed("The endpoint returned no models.")
     }
     return models
+  }
+
+  static func fetchVoices(endpoint: OpenAIEndpoint) async throws -> [String] {
+    let url = try voicesURL(from: endpoint.baseURL)
+    var urlRequest = URLRequest(url: url)
+    urlRequest.httpMethod = "GET"
+    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
+    if let authorization {
+      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
+    }
+
+    let delegate = RedirectPreservingDelegate(
+      authorization: authorization, originalRequest: urlRequest)
+    let (data, response) = try await URLSession.shared.data(
+      for: urlRequest, delegate: delegate)
+    try validateHTTPResponse(response, data: data)
+    let decoded = try JSONDecoder().decode(OpenAIVoicesResponse.self, from: data)
+    let voices = decoded.data
+      .map(\.id)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      .sorted()
+    if voices.isEmpty {
+      throw ChatProviderError.providerRequestFailed("The endpoint returned no voices.")
+    }
+    return voices
+  }
+
+  static func synthesizeSpeechAudio(
+    endpoint: OpenAIEndpoint,
+    input: String,
+    voice: String,
+    responseFormat: String = "wav"
+  ) async throws -> Data {
+    let url = try speechURL(from: endpoint.baseURL)
+    var urlRequest = URLRequest(url: url)
+    urlRequest.httpMethod = "POST"
+    urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    urlRequest.setValue(speechAcceptHeader(for: responseFormat), forHTTPHeaderField: "Accept")
+    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
+    if let authorization {
+      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
+    }
+    let model = endpoint.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    urlRequest.httpBody = try JSONEncoder().encode(
+      OpenAISpeechRequest(
+        input: input,
+        voice: voice,
+        responseFormat: responseFormat,
+        model: model.isEmpty ? nil : model))
+
+    let delegate = RedirectPreservingDelegate(
+      authorization: authorization, originalRequest: urlRequest)
+    let (data, response) = try await URLSession.shared.data(for: urlRequest, delegate: delegate)
+    try validateHTTPResponse(response, data: data)
+    if data.isEmpty {
+      throw ChatProviderError.emptyResponse
+    }
+    return data
+  }
+
+  private static func speechAcceptHeader(for responseFormat: String) -> String {
+    switch responseFormat.lowercased() {
+    case "aac": return "audio/aac"
+    case "mp3": return "audio/mpeg"
+    case "wav": return "audio/wav"
+    case "opus", "ogg": return "audio/ogg"
+    case "flac": return "audio/flac"
+    default: return "*/*"
+    }
   }
 
   static func complete(
@@ -822,6 +929,38 @@ enum OpenAICompatibleProvider {
     if pathComponents.last != "models" {
       pathComponents.append("models")
     }
+    components.path = "/" + pathComponents.joined(separator: "/")
+    components.query = nil
+
+    guard let url = components.url else {
+      throw ChatProviderError.invalidEndpoint(baseURL)
+    }
+    return url
+  }
+
+  private static func voicesURL(from baseURL: String) throws -> URL {
+    try endpointURL(from: baseURL, appending: ["voices"])
+  }
+
+  private static func speechURL(from baseURL: String) throws -> URL {
+    try endpointURL(from: baseURL, appending: ["audio", "speech"])
+  }
+
+  private static func endpointURL(from baseURL: String, appending suffix: [String]) throws -> URL {
+    guard var components = URLComponents(string: baseURL),
+      ["http", "https"].contains(components.scheme?.lowercased() ?? "")
+    else {
+      throw ChatProviderError.invalidEndpoint(baseURL)
+    }
+
+    var pathComponents = components.path.split(separator: "/").map(String.init)
+    for removable in [["chat", "completions"], ["models"], ["voices"], ["audio", "speech"]] {
+      if pathComponents.suffix(removable.count) == removable[...]
+      {
+        pathComponents.removeLast(removable.count)
+      }
+    }
+    pathComponents.append(contentsOf: suffix)
     components.path = "/" + pathComponents.joined(separator: "/")
     components.query = nil
 

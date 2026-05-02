@@ -6,6 +6,7 @@ struct MessageBubble: View {
 
   let message: ChatMessage
   let toolSettings: NativeToolSettings
+  let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
@@ -21,6 +22,7 @@ struct MessageBubble: View {
       message: message,
       streamingText: streamingTextStore.textObject(for: message.id),
       toolSettings: toolSettings,
+      openAIEndpoints: openAIEndpoints,
       appearance: appearance,
       onDelete: onDelete,
       onResubmit: onResubmit,
@@ -38,6 +40,7 @@ private struct StreamingMessageBubble: View {
   let message: ChatMessage
   @ObservedObject var streamingText: StreamingText
   let toolSettings: NativeToolSettings
+  let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
@@ -53,6 +56,7 @@ private struct StreamingMessageBubble: View {
       message: message,
       streamingOverride: streamingText.text,
       toolSettings: toolSettings,
+      openAIEndpoints: openAIEndpoints,
       appearance: appearance,
       onDelete: onDelete,
       onResubmit: onResubmit,
@@ -74,6 +78,7 @@ private struct MessageBubbleContent: View, Equatable {
   let message: ChatMessage
   var streamingOverride: String? = nil
   let toolSettings: NativeToolSettings
+  let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
@@ -93,6 +98,7 @@ private struct MessageBubbleContent: View, Equatable {
   nonisolated static func == (lhs: MessageBubbleContent, rhs: MessageBubbleContent) -> Bool {
     lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
       && lhs.toolSettings == rhs.toolSettings
+      && lhs.openAIEndpoints == rhs.openAIEndpoints
       && lhs.appearance == rhs.appearance
       && lhs.showThinking == rhs.showThinking
   }
@@ -223,6 +229,7 @@ private struct MessageBubbleContent: View, Equatable {
       _ = TextToSpeechTool.speak(
         arguments: ["text": .string(visibleText)],
         settings: toolSettings,
+        openAIEndpoints: openAIEndpoints,
         role: isUser ? .user : .assistant,
         title: message.role.displayName,
         messageID: message.id)

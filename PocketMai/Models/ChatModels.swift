@@ -635,11 +635,54 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+enum TTSVoiceProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
+  case system
+  case openAICompatible
+
+  var id: String { rawValue }
+}
+
 struct RoleVoiceSettings: Codable, Equatable, Sendable {
+  var provider: TTSVoiceProviderKind = .system
   var language: String = ""
   var voiceIdentifier: String = ""
+  var openAIEndpointID: UUID? = nil
+  var openAIVoice: String = ""
   var rate: Double = 0.5
   var pitch: Double = 1.0
+
+  init(
+    provider: TTSVoiceProviderKind = .system,
+    language: String = "",
+    voiceIdentifier: String = "",
+    openAIEndpointID: UUID? = nil,
+    openAIVoice: String = "",
+    rate: Double = 0.5,
+    pitch: Double = 1.0
+  ) {
+    self.provider = provider
+    self.language = language
+    self.voiceIdentifier = voiceIdentifier
+    self.openAIEndpointID = openAIEndpointID
+    self.openAIVoice = openAIVoice
+    self.rate = rate
+    self.pitch = pitch
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case provider, language, voiceIdentifier, openAIEndpointID, openAIVoice, rate, pitch
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    provider = (try? c.decode(TTSVoiceProviderKind.self, forKey: .provider)) ?? .system
+    language = (try? c.decode(String.self, forKey: .language)) ?? ""
+    voiceIdentifier = (try? c.decode(String.self, forKey: .voiceIdentifier)) ?? ""
+    openAIEndpointID = try? c.decode(UUID.self, forKey: .openAIEndpointID)
+    openAIVoice = (try? c.decode(String.self, forKey: .openAIVoice)) ?? ""
+    rate = (try? c.decode(Double.self, forKey: .rate)) ?? 0.5
+    pitch = (try? c.decode(Double.self, forKey: .pitch)) ?? 1.0
+  }
 
   static let defaults = RoleVoiceSettings()
 }

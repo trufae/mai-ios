@@ -18,6 +18,10 @@ final class TTSPlayer: NSObject, ObservableObject {
   private var remoteCommandsConfigured = false
   private var queuedSpeech: [QueuedSpeech] = []
   private var pendingSpeechAfterCancel: QueuedSpeech?
+  private var providerSpeechTask: Task<Void, Never>?
+  private var audioPlayer: AVAudioPlayer?
+  private var audioFileURL: URL?
+  private var speechGeneration = 0
 
   override init() {
     super.init()
@@ -32,6 +36,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     title: String? = nil,
     tag: String? = nil,
     messageID: UUID? = nil,
+    openAIEndpoints: [OpenAIEndpoint] = [],
     interrupt: Bool = true
   ) {
     guard
@@ -41,15 +46,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         role: role,
         title: title,
         tag: tag,
-        messageID: messageID
+        messageID: messageID,
+        openAIEndpoints: openAIEndpoints
       )
     else { return }
 
-    if synthesizer.isSpeaking {
+    if hasActiveSpeech {
       if interrupt {
         queuedSpeech.removeAll()
         pendingSpeechAfterCancel = speech
-        synthesizer.stopSpeaking(at: .immediate)
+        cancelActiveSpeech()
       } else {
         return
       }
@@ -61,7 +67,11 @@ final class TTSPlayer: NSObject, ObservableObject {
     beginSpeaking(speech)
   }
 
-  func speakFromHere(messages: [ChatMessage], voices: VoiceSettings) {
+  func speakFromHere(
+    messages: [ChatMessage],
+    voices: VoiceSettings,
+    openAIEndpoints: [OpenAIEndpoint] = []
+  ) {
     let items = messages.compactMap { message -> QueuedSpeech? in
       let role: VoiceRole
       switch message.role {
@@ -75,15 +85,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         role: role,
         title: message.role.displayName,
         tag: nil,
-        messageID: message.id
+        messageID: message.id,
+        openAIEndpoints: openAIEndpoints
       )
     }
     guard let first = items.first else { return }
 
     queuedSpeech = Array(items.dropFirst())
-    if synthesizer.isSpeaking {
+    if hasActiveSpeech {
       pendingSpeechAfterCancel = first
-      synthesizer.stopSpeaking(at: .immediate)
+      cancelActiveSpeech()
       return
     }
 
@@ -93,7 +104,29 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   private func beginSpeaking(_ speech: QueuedSpeech) {
     activateAudioSession()
+    speechGeneration += 1
 
+    currentRole = speech.role
+    currentTitle = speech.title
+    currentText = speech.text
+    currentTag = speech.tag
+    currentMessageID = speech.messageID
+    isSpeaking = true
+    isPaused = false
+    updateNowPlaying()
+
+    if speech.voice.provider == .openAICompatible,
+      let endpoint = speech.openAIEndpoint,
+      !speech.voice.openAIVoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      beginProviderSpeaking(speech, endpoint: endpoint, generation: speechGeneration)
+      return
+    }
+
+    beginSystemSpeaking(speech)
+  }
+
+  private func beginSystemSpeaking(_ speech: QueuedSpeech) {
     let utterance = AVSpeechUtterance(string: speech.text)
     if !speech.voice.voiceIdentifier.isEmpty,
       let v = AVSpeechSynthesisVoice(identifier: speech.voice.voiceIdentifier)
@@ -105,25 +138,105 @@ final class TTSPlayer: NSObject, ObservableObject {
     utterance.rate = Float(max(0, min(1, speech.voice.rate)))
     utterance.pitchMultiplier = Float(max(0.5, min(2, speech.voice.pitch)))
 
-    currentRole = speech.role
-    currentTitle = speech.title
-    currentText = speech.text
-    currentTag = speech.tag
-    currentMessageID = speech.messageID
-    isSpeaking = true
-    isPaused = false
-    updateNowPlaying()
-
     synthesizer.speak(utterance)
   }
 
+  private func beginProviderSpeaking(
+    _ speech: QueuedSpeech,
+    endpoint: OpenAIEndpoint,
+    generation: Int
+  ) {
+    let voice = speech.voice.openAIVoice.trimmingCharacters(in: .whitespacesAndNewlines)
+    providerSpeechTask = Task { [weak self] in
+      let formats = ["wav"]
+      for format in formats {
+        guard !Task.isCancelled else { return }
+        do {
+          let data = try await OpenAICompatibleProvider.synthesizeSpeechAudio(
+            endpoint: endpoint,
+            input: speech.text,
+            voice: voice,
+            responseFormat: format)
+          try Task.checkCancellation()
+          let didStart = await MainActor.run {
+            self?.playProviderAudio(data, fileExtension: format, generation: generation) ?? false
+          }
+          if didStart { return }
+        } catch is CancellationError {
+          return
+        } catch {
+          continue
+        }
+      }
+
+      await MainActor.run {
+        guard let self, self.speechGeneration == generation else { return }
+        self.handleStopped()
+      }
+    }
+  }
+
+  private func playProviderAudio(
+    _ data: Data,
+    fileExtension: String,
+    generation: Int
+  ) -> Bool {
+    guard speechGeneration == generation else { return true }
+    var url: URL?
+    do {
+      cleanupAudioFile()
+      let candidateURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PocketMaiTTS-\(UUID().uuidString)")
+        .appendingPathExtension(fileExtension)
+      url = candidateURL
+      let url = candidateURL
+      let playableData = normalizedProviderAudioData(data, fileExtension: fileExtension)
+      try playableData.write(to: url, options: .atomic)
+      let player = try AVAudioPlayer(contentsOf: url)
+      player.delegate = self
+      player.prepareToPlay()
+      if player.play() {
+        audioFileURL = url
+        audioPlayer = player
+        providerSpeechTask = nil
+        return true
+      }
+      try? FileManager.default.removeItem(at: url)
+      return false
+    } catch {
+      if let url {
+        try? FileManager.default.removeItem(at: url)
+      }
+      cleanupAudioFile()
+      return false
+    }
+  }
+
+  private func normalizedProviderAudioData(_ data: Data, fileExtension: String) -> Data {
+    guard fileExtension.lowercased() == "wav" else { return data }
+    return data.withRepairedWAVChunkSizes()
+  }
+
+
   func pause() {
+    if let audioPlayer, audioPlayer.isPlaying, !isPaused {
+      audioPlayer.pause()
+      isPaused = true
+      updateNowPlaying()
+      return
+    }
     guard synthesizer.isSpeaking, !isPaused else { return }
     synthesizer.pauseSpeaking(at: .word)
   }
 
   func resume() {
     guard isPaused else { return }
+    if let audioPlayer {
+      audioPlayer.play()
+      isPaused = false
+      updateNowPlaying()
+      return
+    }
     synthesizer.continueSpeaking()
   }
 
@@ -134,6 +247,11 @@ final class TTSPlayer: NSObject, ObservableObject {
       synthesizer.stopSpeaking(at: .immediate)
       return
     }
+    if providerSpeechTask != nil || audioPlayer != nil {
+      cancelProviderSpeech()
+      handleStopped()
+      return
+    }
     handleStopped()
   }
 
@@ -142,6 +260,10 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   private func handleFinished() {
+    if audioPlayer != nil {
+      audioPlayer = nil
+      cleanupAudioFile()
+    }
     if !queuedSpeech.isEmpty {
       let next = queuedSpeech.removeFirst()
       beginSpeaking(next)
@@ -162,6 +284,11 @@ final class TTSPlayer: NSObject, ObservableObject {
   private func handleStopped() {
     queuedSpeech.removeAll()
     pendingSpeechAfterCancel = nil
+    providerSpeechTask?.cancel()
+    providerSpeechTask = nil
+    audioPlayer?.stop()
+    audioPlayer = nil
+    cleanupAudioFile()
     isSpeaking = false
     isPaused = false
     currentRole = nil
@@ -171,6 +298,34 @@ final class TTSPlayer: NSObject, ObservableObject {
     currentMessageID = nil
     clearNowPlaying()
     deactivateAudioSession()
+  }
+
+  private var hasActiveSpeech: Bool {
+    synthesizer.isSpeaking || providerSpeechTask != nil || audioPlayer != nil
+  }
+
+  private func cancelActiveSpeech() {
+    if synthesizer.isSpeaking {
+      synthesizer.stopSpeaking(at: .immediate)
+      return
+    }
+    cancelProviderSpeech()
+    handleCancelled()
+  }
+
+  private func cancelProviderSpeech() {
+    providerSpeechTask?.cancel()
+    providerSpeechTask = nil
+    audioPlayer?.stop()
+    audioPlayer = nil
+    cleanupAudioFile()
+  }
+
+  private func cleanupAudioFile() {
+    if let audioFileURL {
+      try? FileManager.default.removeItem(at: audioFileURL)
+    }
+    audioFileURL = nil
   }
 
   private func activateAudioSession() {
@@ -250,6 +405,11 @@ final class TTSPlayer: NSObject, ObservableObject {
     let title: String?
     let tag: String?
     let messageID: UUID?
+    let openAIEndpoints: [OpenAIEndpoint]
+    var openAIEndpoint: OpenAIEndpoint? {
+      guard let id = voice.openAIEndpointID else { return nil }
+      return openAIEndpoints.first(where: { $0.id == id && $0.isEnabled })
+    }
 
     init?(
       text: String,
@@ -257,7 +417,8 @@ final class TTSPlayer: NSObject, ObservableObject {
       role: VoiceRole,
       title: String?,
       tag: String?,
-      messageID: UUID?
+      messageID: UUID?,
+      openAIEndpoints: [OpenAIEndpoint]
     ) {
       let sanitized = TTSSpeechTextSanitizer.sanitized(text)
       guard !sanitized.isEmpty else { return nil }
@@ -267,6 +428,7 @@ final class TTSPlayer: NSObject, ObservableObject {
       self.title = title
       self.tag = tag
       self.messageID = messageID
+      self.openAIEndpoints = openAIEndpoints
     }
   }
 }
@@ -300,5 +462,74 @@ extension TTSPlayer: AVSpeechSynthesizerDelegate {
       self.isPaused = false
       self.updateNowPlaying()
     }
+  }
+}
+
+extension TTSPlayer: AVAudioPlayerDelegate {
+  nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    Task { @MainActor in self.handleFinished() }
+  }
+
+  nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+    Task { @MainActor in self.handleStopped() }
+  }
+}
+
+private extension Data {
+  func withRepairedWAVChunkSizes() -> Data {
+    guard count >= 44,
+      matchesASCII("RIFF", at: 0),
+      matchesASCII("WAVE", at: 8)
+    else { return self }
+
+    var repaired = self
+    repaired.writeLittleEndianUInt32(UInt32(clamping: count - 8), at: 4)
+
+    var offset = 12
+    while offset + 8 <= repaired.count {
+      let chunkIDOffset = offset
+      let chunkSizeOffset = offset + 4
+      let chunkSize = repaired.littleEndianUInt32(at: chunkSizeOffset)
+      let chunkDataOffset = offset + 8
+      if repaired.matchesASCII("data", at: chunkIDOffset) {
+        let actualDataSize = Swift.max(0, repaired.count - chunkDataOffset)
+        repaired.writeLittleEndianUInt32(UInt32(clamping: actualDataSize), at: chunkSizeOffset)
+        return repaired
+      }
+
+      let nextOffset = chunkDataOffset + Int(chunkSize) + (Int(chunkSize) & 1)
+      guard nextOffset > offset else { return repaired }
+      if nextOffset > repaired.count {
+        return repaired
+      }
+      offset = nextOffset
+    }
+
+    return repaired
+  }
+
+  func matchesASCII(_ string: String, at offset: Int) -> Bool {
+    let bytes = Array(string.utf8)
+    guard offset >= 0, offset + bytes.count <= count else { return false }
+    for index in bytes.indices where self[offset + index] != bytes[index] {
+      return false
+    }
+    return true
+  }
+
+  func littleEndianUInt32(at offset: Int) -> UInt32 {
+    guard offset >= 0, offset + 4 <= count else { return 0 }
+    return UInt32(self[offset])
+      | (UInt32(self[offset + 1]) << 8)
+      | (UInt32(self[offset + 2]) << 16)
+      | (UInt32(self[offset + 3]) << 24)
+  }
+
+  mutating func writeLittleEndianUInt32(_ value: UInt32, at offset: Int) {
+    guard offset >= 0, offset + 4 <= count else { return }
+    self[offset] = UInt8(value & 0xff)
+    self[offset + 1] = UInt8((value >> 8) & 0xff)
+    self[offset + 2] = UInt8((value >> 16) & 0xff)
+    self[offset + 3] = UInt8((value >> 24) & 0xff)
   }
 }

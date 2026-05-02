@@ -53,6 +53,7 @@ final class AppStore: ObservableObject {
   @Published var isCompacting = false
   @Published var endpointStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var endpointModels: [UUID: [String]] = [:]
+  @Published var endpointVoices: [UUID: [String]] = [:]
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   /// Cached Apple Intelligence availability message; nil means available.
@@ -81,6 +82,7 @@ final class AppStore: ObservableObject {
     appleAvailabilityMessage = nil
     startFreshConversationForLaunch()
     Task { await loadStartupData() }
+    refreshConfiguredEndpointsInBackground()
   }
 
   var currentConversation: Conversation? {
@@ -297,6 +299,7 @@ final class AppStore: ObservableObject {
     selectedConversationIDs.removeAll()
     endpointStatuses.removeAll()
     endpointModels.removeAll()
+    endpointVoices.removeAll()
     mcpStatuses.removeAll()
     mcpTools.removeAll()
     errorMessage = nil
@@ -730,6 +733,7 @@ final class AppStore: ObservableObject {
   func resetEndpointStatus(_ id: UUID) {
     endpointStatuses[id] = .unknown
     endpointModels[id] = nil
+    endpointVoices[id] = nil
   }
 
   func resetMCPStatus(_ id: UUID) {
@@ -751,9 +755,16 @@ final class AppStore: ObservableObject {
 
   func refreshEndpoint(_ endpoint: OpenAIEndpoint) async {
     endpointStatuses[endpoint.id] = .checking
-    do {
-      let models = try await OpenAICompatibleProvider.fetchModels(endpoint: endpoint)
+    async let modelResult = fetchEndpointModelsResult(endpoint)
+    async let voiceResult = fetchEndpointVoicesResult(endpoint)
+    let results = await (models: modelResult, voices: voiceResult)
+
+    let models = (try? results.models.get()) ?? []
+    let voices = (try? results.voices.get()) ?? []
+
+    if !models.isEmpty || !voices.isEmpty {
       endpointModels[endpoint.id] = models
+      endpointVoices[endpoint.id] = voices
       endpointStatuses[endpoint.id] = .available
       if let firstModel = models.first,
         let index = settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id }),
@@ -763,10 +774,59 @@ final class AppStore: ObservableObject {
         settings.openAIEndpoints[index].defaultModel = firstModel
         saveSettings()
       }
-    } catch {
+    } else {
       endpointModels[endpoint.id] = nil
-      endpointStatuses[endpoint.id] = .failed(error.localizedDescription)
+      endpointVoices[endpoint.id] = nil
+      endpointStatuses[endpoint.id] = .failed(endpointRefreshErrorMessage(results))
     }
+  }
+
+  func refreshConfiguredEndpointsInBackground() {
+    let endpoints = settings.openAIEndpoints.filter(\.isEnabled)
+    guard !endpoints.isEmpty else { return }
+    for endpoint in endpoints {
+      Task { await refreshEndpoint(endpoint) }
+    }
+  }
+
+  private func fetchEndpointModelsResult(_ endpoint: OpenAIEndpoint) async -> Result<[String], Error> {
+    do {
+      return .success(try await OpenAICompatibleProvider.fetchModels(endpoint: endpoint))
+    } catch {
+      return .failure(error)
+    }
+  }
+
+  private func fetchEndpointVoicesResult(_ endpoint: OpenAIEndpoint) async -> Result<[String], Error> {
+    do {
+      return .success(try await OpenAICompatibleProvider.fetchVoices(endpoint: endpoint))
+    } catch {
+      return .failure(error)
+    }
+  }
+
+  private func endpointRefreshErrorMessage(
+    _ results: (models: Result<[String], Error>, voices: Result<[String], Error>)
+  ) -> String {
+    let modelMessage = failureMessage(results.models)
+    let voiceMessage = failureMessage(results.voices)
+    switch (modelMessage, voiceMessage) {
+    case (.some(let model), .some(let voice)):
+      return "Models: \(model)\nVoices: \(voice)"
+    case (.some(let model), .none):
+      return model
+    case (.none, .some(let voice)):
+      return voice
+    case (.none, .none):
+      return "The endpoint returned no models or voices."
+    }
+  }
+
+  private func failureMessage(_ result: Result<[String], Error>) -> String? {
+    if case .failure(let error) = result {
+      return error.localizedDescription
+    }
+    return nil
   }
 
   func saveConversations() {

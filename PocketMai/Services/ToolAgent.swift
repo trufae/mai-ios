@@ -128,7 +128,9 @@ enum ToolAgentRegistry {
       return await WebSearchTool.fetch(arguments: normalizedCall.argumentValues)
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
-        arguments: normalizedCall.argumentValues, settings: store.settings.toolSettings)
+        arguments: normalizedCall.argumentValues,
+        settings: store.settings.toolSettings,
+        openAIEndpoints: store.settings.openAIEndpoints)
     case DateTimeTool.name:
       return DateTimeTool.run(settings: store.settings.toolSettings)
     case LocationTool.name:
@@ -469,7 +471,7 @@ enum TextToSpeechTool {
     ToolDefinition(
       name: name,
       description:
-        "Speak the provided text aloud on this iOS device using the system text-to-speech voice.",
+        "Speak the provided text aloud on this iOS device using the configured text-to-speech voice.",
       parameters: [
         ToolParameterDef(
           name: "text", type: "string",
@@ -484,7 +486,7 @@ enum TextToSpeechTool {
         ToolParameterDef(
           name: "voice", type: "string",
           description:
-            "Optional AVSpeechSynthesisVoice identifier. Omit to use the configured default voice.",
+            "Optional voice identifier. Omit to use the configured default voice.",
           required: false),
         ToolParameterDef(
           name: "rate", type: "number",
@@ -507,6 +509,7 @@ enum TextToSpeechTool {
   static func speak(
     arguments: [String: AgentToolArgumentValue],
     settings: NativeToolSettings,
+    openAIEndpoints: [OpenAIEndpoint] = [],
     role: VoiceRole = .assistant,
     title: String? = nil,
     messageID: UUID? = nil
@@ -521,18 +524,33 @@ enum TextToSpeechTool {
         arguments["voice"]?.stringValue,
         arguments["voice_identifier"]?.stringValue)
     let languageOverride = arguments["language"]?.stringValue
-    let voice = RoleVoiceSettings(
+    var voice = roleDefaults
+    voice.language = languageOverride ?? roleDefaults.language
+    voice.rate = arguments["rate"]?.numberValue ?? roleDefaults.rate
+    voice.pitch = arguments["pitch"]?.numberValue ?? roleDefaults.pitch
+    if let voiceOverride {
+      if roleDefaults.provider == .openAICompatible {
+        voice.openAIVoice = voiceOverride
+      } else {
+        voice.voiceIdentifier = voiceOverride
+      }
+    }
+    let selectedVoice = RoleVoiceSettings(
+      provider: voice.provider,
       language: languageOverride ?? roleDefaults.language,
-      voiceIdentifier: voiceOverride ?? roleDefaults.voiceIdentifier,
+      voiceIdentifier: voice.voiceIdentifier,
+      openAIEndpointID: voice.openAIEndpointID,
+      openAIVoice: voice.openAIVoice,
       rate: arguments["rate"]?.numberValue ?? roleDefaults.rate,
       pitch: arguments["pitch"]?.numberValue ?? roleDefaults.pitch)
 
     TTSPlayer.shared.speak(
       text: text,
-      voice: voice,
+      voice: selectedVoice,
       role: role,
       title: title,
       messageID: messageID,
+      openAIEndpoints: openAIEndpoints,
       interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
   }
