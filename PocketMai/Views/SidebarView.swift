@@ -114,7 +114,7 @@ struct SidebarView: View {
       Task { await store.toggleArchive(id: conversation.id) }
     } label: {
       Label(
-        conversation.isArchived ? "Unarchive Conversation" : "Archive Chat",
+        conversation.isArchived ? "Unarchive" : "Archive Chat",
         systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
       )
     }

@@ -155,6 +155,19 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  func factoryReset() {
+    let baseURL = baseURL
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.pendingSettings?.cancel()
+      self.pendingSettings = nil
+      self.pendingConversations?.cancel()
+      self.pendingConversations = nil
+      self.persistedConversationsByID.removeAll()
+      try? self.fileManager.removeItem(at: baseURL)
+    }
+  }
+
   private static func persist<T: Encodable>(_ value: T, to url: URL, dir: URL) {
     do {
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

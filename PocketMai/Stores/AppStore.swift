@@ -68,6 +68,7 @@ final class AppStore: ObservableObject {
   private var pendingConversationSave = false
   private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
   private var deletedConversationIDsBeforeLoad: Set<UUID> = []
+  private var dataGeneration = 0
 
   init(
     persistence: PersistenceStore = PersistenceStore(),
@@ -115,12 +116,14 @@ final class AppStore: ObservableObject {
   }
 
   private func loadStartupData() async {
+    let generation = dataGeneration
     await Task.yield()
 
     let persistence = self.persistence
     let summaries = await Task.detached(priority: .userInitiated) {
       persistence.loadConversationSummaries()
     }.value
+    guard generation == dataGeneration else { return }
     mergeLoadedSummaries(summaries)
 
     let availabilityTask = Task.detached(priority: .utility) {
@@ -130,6 +133,7 @@ final class AppStore: ObservableObject {
       persistence.loadConversations()
     }.value
 
+    guard generation == dataGeneration else { return }
     mergeLoadedConversations(loadedConversations)
     appleAvailabilityMessage = await availabilityTask.value
   }
@@ -275,6 +279,36 @@ final class AppStore: ObservableObject {
     selectedConversationIDs.removeAll()
     saveConversations()
     newConversation()
+  }
+
+  func factoryReset() {
+    dataGeneration += 1
+    for task in responseTasks.values {
+      task.cancel()
+    }
+    responseTasks.removeAll()
+    respondingConversationIDs.removeAll()
+    conversationDrafts.removeAll()
+    streamingTextStore.removeAll()
+    settings = .defaults
+    conversations.removeAll()
+    conversationSummaries.removeAll()
+    selectedConversationID = nil
+    selectedConversationIDs.removeAll()
+    endpointStatuses.removeAll()
+    endpointModels.removeAll()
+    mcpStatuses.removeAll()
+    mcpTools.removeAll()
+    errorMessage = nil
+    isUpdatingMemory = false
+    isCompacting = false
+    hasLoadedPersistedConversations = true
+    pendingConversationSave = false
+    dirtyConversationIDsBeforeLoad.removeAll()
+    deletedConversationIDsBeforeLoad.removeAll()
+    rebuildConversationIndexes()
+    persistence.factoryReset()
+    createInitialConversationIfNeeded()
   }
 
   func toggleArchive(_ conversation: Conversation) {

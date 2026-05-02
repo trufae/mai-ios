@@ -176,6 +176,7 @@ struct SettingsView: View {
   @State private var showingFileImporter = false
   @State private var newTodoTitle = ""
   @State private var showingClearAllConfirmation = false
+  @State private var showingFactoryResetConfirmation = false
   @State private var showingClearMemoryConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
@@ -205,6 +206,20 @@ struct SettingsView: View {
         }
       } message: {
         Text("Every chat and its messages will be deleted. This cannot be undone.")
+      }
+      .alert(
+        "Factory reset PocketMai?",
+        isPresented: $showingFactoryResetConfirmation
+      ) {
+        Button("Cancel", role: .cancel) {}
+        Button("Factory Reset", role: .destructive) {
+          store.factoryReset()
+          dismiss()
+        }
+      } message: {
+        Text(
+          "All conversations, settings, endpoints, API keys, memory, tools, and local app data will be removed from this device. This cannot be undone."
+        )
       }
       .alert(
         pendingDeletion?.kind.title ?? "Delete item?",
@@ -813,7 +828,7 @@ struct SettingsView: View {
         }
       }
     } header: {
-      Text("About PocketMai")
+      Text("About")
     }
   }
 
@@ -835,10 +850,17 @@ struct SettingsView: View {
           .foregroundStyle(hasConversationContent ? Color.red : Color.secondary)
       }
       .disabled(!hasConversationContent)
+
+      Button(role: .destructive) {
+        showingFactoryResetConfirmation = true
+      } label: {
+        Label("Factory Reset", systemImage: "arrow.counterclockwise.circle")
+          .foregroundStyle(Color.red)
+      }
     } header: {
       Text("Danger Zone")
     } footer: {
-      Text("Removes every chat from this device.")
+      Text("Clear conversations removes chats. Factory Reset removes chats, settings, endpoints, API keys, memory, tools, and local app data from this device.")
     }
   }
 
