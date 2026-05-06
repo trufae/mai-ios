@@ -445,7 +445,7 @@ enum WebSearchTool {
           ToolParameterDef(
             name: "provider", type: "string",
             description:
-              "Optional provider override: duckDuckGo, wikipedia, ollama, or all. Omit to use the configured default.",
+              "Optional provider override: duckDuckGo, wikipedia, searXNG, ollama, or all. Omit to use the configured default.",
             required: false),
         ])
     ]

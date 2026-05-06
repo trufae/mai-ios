@@ -744,6 +744,13 @@ struct SettingsView: View {
           Text(provider.displayName).tag(provider)
         }
       }
+      TextField("SearXNG URL", text: settingsBinding(\.toolSettings.webSearchSearXNGURL))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+      TextField("SearXNG username", text: settingsBinding(\.toolSettings.webSearchSearXNGUsername))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+      SecureField("SearXNG password", text: settingsBinding(\.toolSettings.webSearchSearXNGPassword))
       Toggle(
         "Fetching data",
         isOn: settingsBinding(\.toolSettings.webSearchFetchingEnabled))

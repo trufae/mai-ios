@@ -474,6 +474,11 @@ enum WebSearchService {
   private static let maxWebResults = 6
   private static let maxWikipediaSummaries = 3
 
+  private struct SearXNGConfiguration: Sendable {
+    let baseURL: URL
+    let authorization: String?
+  }
+
   static func searchContext(
     query: String, provider: WebSearchProvider, settings: AppSettings
   ) async -> String? {
@@ -482,15 +487,28 @@ enum WebSearchService {
     let q = String(trimmed.prefix(maxQueryLength))
 
     let ollamaEndpoint = Self.ollamaEndpoint(in: settings)
+    let searXNGConfiguration = Self.searXNGConfiguration(in: settings.toolSettings)
+    if provider == .searXNG, searXNGConfiguration == nil {
+      return """
+        Web Search tool (query: "\(q)"):
+
+        SearXNG: URL is not configured.
+        """
+    }
+
+    let useSearXNG = (provider == .searXNG || provider == .all) && searXNGConfiguration != nil
     let useOllama = (provider == .ollama || provider == .all) && ollamaEndpoint != nil
     let useDDG = provider == .duckDuckGo || provider == .all
     let useWiki = provider == .wikipedia || provider == .all
 
+    async let searXNG: String? =
+      useSearXNG ? searXNG(query: q, configuration: searXNGConfiguration!) : nil
     async let ollama: String? =
       useOllama ? ollamaWebSearch(query: q, endpoint: ollamaEndpoint!) : nil
     async let ddg: String? = useDDG ? duckDuckGo(query: q) : nil
     async let wiki: String? = useWiki ? wikipedia(query: q) : nil
     var sections: [String] = []
+    if let s = await searXNG { sections.append(s) }
     if let s = await ollama { sections.append(s) }
     if let s = await ddg { sections.append(s) }
     if let s = await wiki { sections.append(s) }
@@ -514,6 +532,32 @@ enum WebSearchService {
       let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
       return host.hasSuffix("ollama.com") && !trimmedKey.isEmpty
     }
+  }
+
+  private static func searXNGConfiguration(in settings: NativeToolSettings) -> SearXNGConfiguration? {
+    let trimmedURL = settings.webSearchSearXNGURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedURL.isEmpty else { return nil }
+    let urlString = trimmedURL.contains("://") ? trimmedURL : "https://\(trimmedURL)"
+    guard
+      let url = URL(string: urlString),
+      let scheme = url.scheme?.lowercased(),
+      scheme == "http" || scheme == "https",
+      url.host != nil
+    else {
+      return nil
+    }
+
+    let username = settings.webSearchSearXNGUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+    let password = settings.webSearchSearXNGPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+    let authorization: String?
+    if username.isEmpty && password.isEmpty {
+      authorization = nil
+    } else {
+      let credentials = "\(username):\(password)"
+      let encoded = Data(credentials.utf8).base64EncodedString()
+      authorization = "Basic \(encoded)"
+    }
+    return SearXNGConfiguration(baseURL: url, authorization: authorization)
   }
 
   // MARK: - Ollama Web Search
@@ -569,6 +613,83 @@ enum WebSearchService {
     }
     guard !lines.isEmpty else { return nil }
     return "Ollama Web Search:\n" + lines.joined(separator: "\n")
+  }
+
+  // MARK: - SearXNG
+
+  private static func searXNG(query: String, configuration: SearXNGConfiguration) async -> String? {
+    guard let url = searXNGSearchURL(query: query, baseURL: configuration.baseURL),
+      let object = await getJSON(url: url, authorization: configuration.authorization)
+        as? [String: Any]
+    else {
+      return nil
+    }
+
+    var lines: [String] = []
+    if let answers = object["answers"] as? [String] {
+      lines.append(contentsOf: answers.prefix(3).compactMap { answer -> String? in
+        let cleaned = stripHTML(answer)
+        return cleaned.isEmpty ? nil : "Answer: \(cleaned)"
+      })
+    }
+
+    let rawResults = object["results"] as? [[String: Any]] ?? []
+    var seenURLs = Set<String>()
+    var resultCount = 0
+    for item in rawResults {
+      if resultCount >= maxWebResults { break }
+      let title = stripHTML(((item["title"] as? String) ?? "").cleaned)
+      let urlString = ((item["url"] as? String) ?? "").cleaned
+      let snippet = stripHTML(
+        ((item["content"] as? String) ?? (item["snippet"] as? String) ?? "").cleaned)
+      guard !title.isEmpty || !snippet.isEmpty || !urlString.isEmpty else { continue }
+      let key = urlString.isEmpty ? title : urlString
+      if seenURLs.contains(key) { continue }
+      seenURLs.insert(key)
+
+      var entry = "- \(title.isEmpty ? urlString : title)"
+      if !snippet.isEmpty {
+        entry += "\n  \(snippet)"
+      }
+      if !urlString.isEmpty, urlString != title {
+        entry += "\n  \(urlString)"
+      }
+      lines.append(entry)
+      resultCount += 1
+    }
+
+    guard !lines.isEmpty else { return nil }
+    return "SearXNG results:\n" + lines.joined(separator: "\n")
+  }
+
+  private static func searXNGSearchURL(query: String, baseURL: URL) -> URL? {
+    guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    components.path = searXNGSearchPath(from: components.path)
+    var queryItems = components.queryItems ?? []
+    queryItems.removeAll { item in
+      let name = item.name.lowercased()
+      return name == "q" || name == "format"
+    }
+    queryItems.append(URLQueryItem(name: "q", value: query))
+    queryItems.append(URLQueryItem(name: "format", value: "json"))
+    components.queryItems = queryItems
+    return components.url
+  }
+
+  private static func searXNGSearchPath(from path: String) -> String {
+    var trimmed = path
+    while trimmed.hasSuffix("/") {
+      trimmed.removeLast()
+    }
+    if trimmed.isEmpty {
+      return "/search"
+    }
+    if trimmed.hasSuffix("/search") {
+      return trimmed
+    }
+    return "\(trimmed)/search"
   }
 
   // MARK: - DuckDuckGo
@@ -775,20 +896,32 @@ enum WebSearchService {
 
   // MARK: - HTTP helpers
 
-  private static func getJSON(url: URL) async -> Any? {
-    guard let data = await getData(url: url, accept: "application/json") else { return nil }
+  private static func getJSON(url: URL, authorization: String? = nil) async -> Any? {
+    guard let data = await getData(url: url, accept: "application/json", authorization: authorization)
+    else {
+      return nil
+    }
     return try? JSONSerialization.jsonObject(with: data)
   }
 
-  private static func getString(url: URL, accept: String) async -> String? {
-    guard let data = await getData(url: url, accept: accept) else { return nil }
+  private static func getString(url: URL, accept: String, authorization: String? = nil) async
+    -> String?
+  {
+    guard let data = await getData(url: url, accept: accept, authorization: authorization) else {
+      return nil
+    }
     return String(data: data, encoding: .utf8)
   }
 
-  private static func getData(url: URL, accept: String) async -> Data? {
+  private static func getData(url: URL, accept: String, authorization: String? = nil) async
+    -> Data?
+  {
     var request = URLRequest(url: url)
     request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
     request.setValue(accept, forHTTPHeaderField: "Accept")
+    if let authorization {
+      request.setValue(authorization, forHTTPHeaderField: "Authorization")
+    }
     request.timeoutInterval = requestTimeout
     do {
       let (data, response) = try await URLSession.shared.data(for: request)

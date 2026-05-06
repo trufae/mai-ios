@@ -366,6 +366,7 @@ enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
 enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   case duckDuckGo
   case wikipedia
+  case searXNG
   case ollama
   case all
 
@@ -375,6 +376,7 @@ enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .duckDuckGo: "DuckDuckGo"
     case .wikipedia: "Wikipedia"
+    case .searXNG: "SearXNG"
     case .ollama: "Ollama Web Search"
     case .all: "All"
     }
@@ -764,6 +766,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var manualLocation: String = ""
   var weatherLocation: String = ""
   var webSearchProvider: WebSearchProvider = .duckDuckGo
+  var webSearchSearXNGURL: String = ""
+  var webSearchSearXNGUsername: String = ""
+  var webSearchSearXNGPassword: String = ""
   var webSearchFetchingEnabled: Bool = false
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
@@ -775,7 +780,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case includeTimeZone, includeMoonPhase, includeCurrentTime, includeYear, useGPSLocation
-    case manualLocation, weatherLocation, webSearchProvider, webSearchFetchingEnabled, todos, files
+    case manualLocation, weatherLocation, webSearchProvider
+    case webSearchSearXNGURL, webSearchSearXNGUsername, webSearchSearXNGPassword
+    case webSearchFetchingEnabled, todos, files
     case voices
   }
 
@@ -801,6 +808,15 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     webSearchProvider =
       (try? c.decode(WebSearchProvider.self, forKey: .webSearchProvider))
       ?? defaults.webSearchProvider
+    webSearchSearXNGURL =
+      (try? c.decode(String.self, forKey: .webSearchSearXNGURL))
+      ?? defaults.webSearchSearXNGURL
+    webSearchSearXNGUsername =
+      (try? c.decode(String.self, forKey: .webSearchSearXNGUsername))
+      ?? defaults.webSearchSearXNGUsername
+    webSearchSearXNGPassword =
+      (try? c.decode(String.self, forKey: .webSearchSearXNGPassword))
+      ?? defaults.webSearchSearXNGPassword
     webSearchFetchingEnabled =
       (try? c.decode(Bool.self, forKey: .webSearchFetchingEnabled))
       ?? defaults.webSearchFetchingEnabled
@@ -835,6 +851,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(manualLocation, forKey: .manualLocation)
     try c.encode(weatherLocation, forKey: .weatherLocation)
     try c.encode(webSearchProvider, forKey: .webSearchProvider)
+    try c.encode(webSearchSearXNGURL, forKey: .webSearchSearXNGURL)
+    try c.encode(webSearchSearXNGUsername, forKey: .webSearchSearXNGUsername)
+    try c.encode(webSearchSearXNGPassword, forKey: .webSearchSearXNGPassword)
     try c.encode(webSearchFetchingEnabled, forKey: .webSearchFetchingEnabled)
     try c.encode(todos, forKey: .todos)
     try c.encode(files, forKey: .files)
