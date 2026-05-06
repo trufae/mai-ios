@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 
+import HFAPI
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -10,15 +11,15 @@ import MLXLMTokenizers
 @MainActor
 final class LocalLLMViewModel: ObservableObject {
   static let defaultModelId = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
+  private static let benchmarkPrompt = "Write one short sentence about local AI."
 
   @Published var selectedModelId = LocalLLMViewModel.defaultModelId
   @Published var customModelId = ""
-  @Published var prompt = "Write a short welcome message."
-  @Published var output = ""
   @Published var status = "Choose an MLX-ready Hugging Face repo."
   @Published var isLoading = false
   @Published var isReady = false
   @Published var downloadProgress: Double?
+  @Published var cachedModels: [CachedMLXModel] = []
 
   let presets = [
     "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit",
@@ -30,13 +31,21 @@ final class LocalLLMViewModel: ObservableObject {
   private var container: ModelContainer?
   private var loadedModelId: String?
 
+  init() {
+    refreshCachedModels()
+  }
+
   var activeModelId: String {
     let custom = customModelId.trimmingCharacters(in: .whitespacesAndNewlines)
     return custom.isEmpty ? selectedModelId : custom
   }
 
-  var canGenerate: Bool {
-    isReady && !isLoading && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  var isActiveModelReady: Bool {
+    isReady && loadedModelId == activeModelId
+  }
+
+  var canTest: Bool {
+    isActiveModelReady && !isLoading
   }
 
   func loadModel() async {
@@ -49,11 +58,11 @@ final class LocalLLMViewModel: ObservableObject {
     isLoading = true
     isReady = false
     downloadProgress = nil
-    output = "Loading model: \(modelId)"
-    status = "Preparing Hugging Face download..."
+    status = "Preparing Hugging Face download for \(modelId)..."
     defer {
       isLoading = false
       downloadProgress = nil
+      refreshCachedModels()
     }
 
     do {
@@ -81,10 +90,8 @@ final class LocalLLMViewModel: ObservableObject {
       loadedModelId = modelId
       isReady = true
       status = "Model ready: \(modelId)"
-      output = "Model ready: \(modelId)"
     } catch is CancellationError {
       status = "Model load cancelled."
-      output = status
     } catch {
       container = nil
       loadedModelId = nil
@@ -92,51 +99,68 @@ final class LocalLLMViewModel: ObservableObject {
     }
   }
 
-  func generate() async {
-    guard let container else {
-      output = "Load a model first."
-      status = output
-      return
-    }
-
-    let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedPrompt.isEmpty else {
-      showFailure(LocalLLMError.emptyPrompt, action: "Generation", modelId: loadedModelId ?? activeModelId)
+  func runTest() async {
+    guard let container, isActiveModelReady else {
+      status = "Load the active model before running the test."
       return
     }
 
     isLoading = true
-    output = ""
-    status = "Generating..."
+    status = "Running MLX benchmark..."
     defer { isLoading = false }
 
     do {
-      let input = try await container.prepare(input: UserInput(prompt: trimmedPrompt))
+      let input = try await container.prepare(input: UserInput(prompt: Self.benchmarkPrompt))
       let stream = try await container.generate(
         input: input,
-        parameters: GenerateParameters(maxTokens: 256, temperature: 0.7)
+        parameters: GenerateParameters(maxTokens: 128, temperature: 0.2)
       )
 
-      var generatedText = ""
+      var tokenCount = 0
+      var tokensPerSecond: Double?
       for await generation in stream {
         try Task.checkCancellation()
         switch generation {
-        case .chunk(let text):
-          generatedText += text
-          output = generatedText
+        case .chunk:
+          break
         case .info(let info):
-          status =
-            "Finished \(info.generationTokenCount) tokens at "
-            + "\(info.tokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tokens/s."
-        case .toolCall(let toolCall):
-          generatedText += "\n\n[Tool call: \(toolCall.function.name)]"
-          output = generatedText
+          tokenCount = info.generationTokenCount
+          tokensPerSecond = info.tokensPerSecond
+        case .toolCall:
+          break
         }
       }
+
+      if let tokensPerSecond {
+        let formattedTPS = tokensPerSecond.formatted(.number.precision(.fractionLength(1)))
+        let modelId = loadedModelId ?? activeModelId
+        status = "Benchmark complete for \(modelId): \(tokenCount) tokens at \(formattedTPS) TPS."
+      } else {
+        status = "Benchmark complete, but MLX did not report TPS."
+      }
     } catch is CancellationError {
-      status = "Generation cancelled."
+      status = "Benchmark cancelled."
     } catch {
-      showFailure(error, action: "Generation", modelId: loadedModelId ?? activeModelId)
+      showFailure(error, action: "Benchmark", modelId: loadedModelId ?? activeModelId)
+    }
+  }
+
+  func refreshCachedModels() {
+    cachedModels = LocalMLXModelCache.listModels()
+  }
+
+  func deleteCachedModel(_ model: CachedMLXModel) {
+    do {
+      try LocalMLXModelCache.delete(model)
+      if loadedModelId == model.repoID {
+        container = nil
+        loadedModelId = nil
+        isReady = false
+      }
+      refreshCachedModels()
+      status = "Deleted cached model: \(model.repoID)"
+    } catch {
+      status = "Could not delete \(model.repoID): \(error.localizedDescription)"
     }
   }
 
@@ -144,7 +168,6 @@ final class LocalLLMViewModel: ObservableObject {
     let message = Self.message(for: error, action: action, modelId: modelId)
     isReady = container != nil && loadedModelId != nil
     status = message
-    output = message
   }
 
   private static func message(for error: Error, action: String, modelId: String) -> String {
@@ -201,9 +224,140 @@ final class LocalLLMViewModel: ObservableObject {
   }
 }
 
+struct CachedMLXModel: Identifiable, Equatable {
+  let repoID: String
+  let cacheDirectoryName: String
+  let directoryURL: URL
+  let sizeInBytes: Int64
+  let modifiedAt: Date?
+
+  var id: String { directoryURL.path }
+
+  var sizeText: String {
+    ByteCountFormatter.string(fromByteCount: sizeInBytes, countStyle: .file)
+  }
+
+  var detailText: String {
+    guard let modifiedAt else { return sizeText }
+    return "\(sizeText) - \(modifiedAt.formatted(date: .abbreviated, time: .shortened))"
+  }
+}
+
+private enum LocalMLXModelCache {
+  private static let modelDirectoryPrefix = "models--"
+
+  static func listModels() -> [CachedMLXModel] {
+    let root = HubClient.default.cache.cacheDirectory
+    let fileManager = FileManager.default
+    guard
+      let urls = try? fileManager.contentsOfDirectory(
+        at: root,
+        includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return []
+    }
+
+    return urls.compactMap { url in
+      let directoryName = url.lastPathComponent
+      guard let repoID = repoID(fromCacheDirectoryName: directoryName) else { return nil }
+      guard
+        let resourceValues = try? url.resourceValues(forKeys: [
+          .isDirectoryKey, .contentModificationDateKey,
+        ]),
+        resourceValues.isDirectory == true
+      else {
+        return nil
+      }
+
+      return CachedMLXModel(
+        repoID: repoID,
+        cacheDirectoryName: directoryName,
+        directoryURL: url,
+        sizeInBytes: directorySize(url),
+        modifiedAt: resourceValues.contentModificationDate
+      )
+    }
+    .sorted {
+      $0.repoID.localizedCaseInsensitiveCompare($1.repoID) == .orderedAscending
+    }
+  }
+
+  static func delete(_ model: CachedMLXModel) throws {
+    let root = HubClient.default.cache.cacheDirectory
+    let cacheEntries = [
+      root.appendingPathComponent(model.cacheDirectoryName),
+      root.appendingPathComponent(".metadata").appendingPathComponent(model.cacheDirectoryName),
+      root.appendingPathComponent(".locks").appendingPathComponent(model.cacheDirectoryName),
+    ]
+
+    for url in cacheEntries {
+      try removeItemIfPresent(url, under: root)
+    }
+  }
+
+  private static func repoID(fromCacheDirectoryName name: String) -> String? {
+    guard name.hasPrefix(modelDirectoryPrefix) else { return nil }
+    let rawRepoID = String(name.dropFirst(modelDirectoryPrefix.count))
+    let parts = rawRepoID.components(separatedBy: "--")
+    guard parts.count == 2 else { return nil }
+
+    let repoID = "\(parts[0])/\(parts[1])"
+    return RepoIDValidator.isValid(repoID) ? repoID : nil
+  }
+
+  private static func directorySize(_ url: URL) -> Int64 {
+    let keys: Set<URLResourceKey> = [
+      .isRegularFileKey,
+      .isSymbolicLinkKey,
+      .fileAllocatedSizeKey,
+      .totalFileAllocatedSizeKey,
+    ]
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: url,
+        includingPropertiesForKeys: Array(keys),
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return 0
+    }
+
+    var total: Int64 = 0
+    for case let fileURL as URL in enumerator {
+      guard let values = try? fileURL.resourceValues(forKeys: keys) else { continue }
+      if values.isRegularFile == true || values.isSymbolicLink == true {
+        total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+      }
+    }
+    return total
+  }
+
+  private static func removeItemIfPresent(_ url: URL, under root: URL) throws {
+    let rootPath = root.standardizedFileURL.path
+    let itemURL = url.standardizedFileURL
+    guard itemURL.path.hasPrefix(rootPath + "/") else {
+      throw LocalMLXModelCacheError.invalidCachePath
+    }
+    guard FileManager.default.fileExists(atPath: itemURL.path) else { return }
+    try FileManager.default.removeItem(at: itemURL)
+  }
+}
+
+private enum LocalMLXModelCacheError: LocalizedError {
+  case invalidCachePath
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidCachePath:
+      return "Refusing to delete a path outside the Hugging Face cache."
+    }
+  }
+}
+
 private enum LocalLLMError: LocalizedError {
   case invalidModelID(String)
-  case emptyPrompt
 
   var errorDescription: String? {
     switch self {
@@ -212,8 +366,6 @@ private enum LocalLLMError: LocalizedError {
         return "Enter a Hugging Face repo id in the form org/model-name."
       }
       return "Invalid model id: \(id). Use a Hugging Face repo id in the form org/model-name, not a URL or local path."
-    case .emptyPrompt:
-      return "Enter a prompt before generating."
     }
   }
 }
@@ -243,6 +395,7 @@ private enum RepoIDValidator {
 
 struct LocalLLMView: View {
   @StateObject private var vm = LocalLLMViewModel()
+  @State private var pendingModelDeletion: CachedMLXModel?
 
   var body: some View {
     Form {
@@ -273,42 +426,93 @@ struct LocalLLMView: View {
           Task { await vm.loadModel() }
         } label: {
           Label(
-            vm.isReady ? "Reload Model" : "Download / Load Model",
-            systemImage: vm.isReady ? "arrow.clockwise" : "arrow.down.circle"
+            vm.isActiveModelReady ? "Reload Model" : "Download / Load Model",
+            systemImage: vm.isActiveModelReady ? "arrow.clockwise" : "arrow.down.circle"
           )
         }
         .disabled(vm.isLoading)
 
         Text(vm.status)
           .font(.caption)
-          .foregroundStyle(vm.isReady ? Color.secondary : Color.primary)
+          .foregroundStyle(vm.isActiveModelReady ? Color.secondary : Color.primary)
       } header: {
         Text("Model")
       } footer: {
         Text("Only MLX-ready Hugging Face repositories are supported. Model weights are downloaded after selection and cached locally by the Hugging Face downloader.")
       }
 
-      Section("Prompt") {
-        TextEditor(text: $vm.prompt)
-          .frame(minHeight: 120)
-
+      Section {
         Button {
-          Task { await vm.generate() }
+          Task { await vm.runTest() }
         } label: {
-          Label("Generate", systemImage: "text.bubble")
+          Label("Test", systemImage: "speedometer")
         }
-        .disabled(!vm.canGenerate)
+        .disabled(!vm.canTest)
+      } header: {
+        Text("Benchmark")
+      } footer: {
+        Text("Runs a fixed prompt and reports MLX throughput in TPS.")
       }
 
-      Section("Output") {
-        ScrollView {
-          Text(vm.output)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+      Section {
+        if vm.cachedModels.isEmpty {
+          Text("No downloaded models")
+            .foregroundStyle(.secondary)
+        } else {
+          ForEach(vm.cachedModels) { model in
+            cachedModelRow(model)
+          }
         }
-        .frame(minHeight: 220)
+
+        Button {
+          vm.refreshCachedModels()
+        } label: {
+          Label("Refresh", systemImage: "arrow.clockwise")
+        }
+        .disabled(vm.isLoading)
+      } header: {
+        Text("Downloaded Models")
       }
     }
     .navigationTitle("Local MLX LLM")
+    .alert(item: $pendingModelDeletion) { model in
+      Alert(
+        title: Text("Delete Downloaded Model?"),
+        message: Text(
+          "\(model.repoID) will be removed from the local Hugging Face cache and must be downloaded again before use."
+        ),
+        primaryButton: .destructive(Text("Delete")) {
+          vm.deleteCachedModel(model)
+        },
+        secondaryButton: .cancel()
+      )
+    }
+  }
+
+  private func cachedModelRow(_ model: CachedMLXModel) -> some View {
+    let isCurrentModel = vm.isActiveModelReady && model.repoID == vm.activeModelId
+
+    return HStack(spacing: 12) {
+      Image(systemName: isCurrentModel ? "checkmark.circle.fill" : "shippingbox")
+        .foregroundStyle(isCurrentModel ? Color.green : Color.secondary)
+        .frame(width: 20)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(model.repoID)
+          .font(.body)
+          .lineLimit(2)
+        Text(model.detailText)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .swipeActions(edge: .trailing) {
+      Button(role: .destructive) {
+        pendingModelDeletion = model
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+      .disabled(vm.isLoading)
+    }
   }
 }
