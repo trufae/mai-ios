@@ -27,6 +27,7 @@ final class ChatScreenshotService: NSObject, ObservableObject, UIScreenshotServi
         conversation: store.currentConversation,
         toolSettings: store.settings.toolSettings,
         appearance: store.settings.appearance,
+        renderMarkdown: store.settings.renderMarkdownInChat,
         streamingTextStore: store.streamingTextStore,
         scale: installedScene?.screen.scale ?? 1
       )
@@ -87,6 +88,7 @@ private enum FullChatScreenshotRenderer {
     conversation: Conversation?,
     toolSettings: NativeToolSettings,
     appearance: AppearanceSettings,
+    renderMarkdown: Bool,
     streamingTextStore: StreamingTextStore,
     scale: CGFloat
   ) -> FullChatScreenshotDocument? {
@@ -96,6 +98,7 @@ private enum FullChatScreenshotRenderer {
       conversation: conversation,
       toolSettings: toolSettings,
       appearance: appearance,
+      renderMarkdown: renderMarkdown,
       streamingTextStore: streamingTextStore
     )
     .frame(width: width)
@@ -128,6 +131,7 @@ private struct FullChatScreenshotView: View {
   let conversation: Conversation
   let toolSettings: NativeToolSettings
   let appearance: AppearanceSettings
+  let renderMarkdown: Bool
   let streamingTextStore: StreamingTextStore
 
   var body: some View {
@@ -140,6 +144,7 @@ private struct FullChatScreenshotView: View {
             toolSettings: toolSettings,
             openAIEndpoints: [],
             appearance: appearance,
+            renderMarkdown: renderMarkdown,
             onDelete: {},
             showThinking: conversation.showThinking
           )

@@ -391,6 +391,7 @@ struct ChatView: View {
                 toolSettings: store.settings.toolSettings,
                 openAIEndpoints: store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
+                renderMarkdown: store.settings.renderMarkdownInChat,
                 onDelete: { messagePendingDeletion = message },
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }

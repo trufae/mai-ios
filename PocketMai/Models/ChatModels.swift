@@ -841,6 +841,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
   var appearance: AppearanceSettings = .defaults
+  var renderMarkdownInChat: Bool = true
 
   static let defaults = AppSettings()
 
@@ -878,7 +879,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, toolCallingMode
-    case useToolProxy, contextWindowMode, appearance
+    case useToolProxy, contextWindowMode, appearance, renderMarkdownInChat
   }
 
   init(from decoder: Decoder) throws {
@@ -914,6 +915,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
     appearance =
       (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
+    renderMarkdownInChat =
+      (try? c.decode(Bool.self, forKey: .renderMarkdownInChat)) ?? true
   }
 }
 

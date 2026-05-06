@@ -352,6 +352,8 @@ struct SettingsView: View {
       }
       .pickerStyle(.menu)
 
+      Toggle("Render Markdown in Chat", isOn: settingsBinding(\.renderMarkdownInChat))
+
       DisclosureGroup {
         fontOptionsContent
       } label: {

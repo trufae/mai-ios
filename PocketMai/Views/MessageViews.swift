@@ -8,6 +8,7 @@ struct MessageBubble: View {
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
+  var renderMarkdown: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -24,6 +25,7 @@ struct MessageBubble: View {
       toolSettings: toolSettings,
       openAIEndpoints: openAIEndpoints,
       appearance: appearance,
+      renderMarkdown: renderMarkdown,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -42,6 +44,7 @@ private struct StreamingMessageBubble: View {
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
+  var renderMarkdown: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -58,6 +61,7 @@ private struct StreamingMessageBubble: View {
       toolSettings: toolSettings,
       openAIEndpoints: openAIEndpoints,
       appearance: appearance,
+      renderMarkdown: renderMarkdown,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -80,6 +84,7 @@ private struct MessageBubbleContent: View, Equatable {
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
   let appearance: AppearanceSettings
+  var renderMarkdown: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -100,6 +105,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.toolSettings == rhs.toolSettings
       && lhs.openAIEndpoints == rhs.openAIEndpoints
       && lhs.appearance == rhs.appearance
+      && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.showThinking == rhs.showThinking
   }
 
@@ -108,7 +114,8 @@ private struct MessageBubbleContent: View, Equatable {
       messageID: message.id,
       text: displayText
     )
-    let usesMarkdown = !isStreaming && MarkdownParser.mayContainMarkdown(prepared.visibleText)
+    let usesMarkdown =
+      renderMarkdown && !isStreaming && MarkdownParser.mayContainMarkdown(prepared.visibleText)
     let markdownBlocks =
       !usesMarkdown || prepared.visibleText.isEmpty
       ? []
