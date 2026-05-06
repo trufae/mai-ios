@@ -199,6 +199,17 @@ final class AppStore: ObservableObject {
     }
   }
 
+  func loadStoredConversationsForSearch() async {
+    guard !hasLoadedPersistedConversations else { return }
+    let generation = dataGeneration
+    let persistence = self.persistence
+    let loadedConversations = await Task.detached(priority: .userInitiated) {
+      persistence.loadConversations()
+    }.value
+    guard generation == dataGeneration, !hasLoadedPersistedConversations else { return }
+    mergeLoadedConversations(loadedConversations)
+  }
+
   func toggleArchive(id: UUID) async {
     await ensureConversationLoaded(id)
     guard let index = indexedConversationIndex(for: id) else { return }

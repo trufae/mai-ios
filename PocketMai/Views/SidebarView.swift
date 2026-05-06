@@ -6,9 +6,12 @@ struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
   @State private var showingArchive = false
+  @State private var isSearchActive = false
+  @State private var searchText = ""
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
+  @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
 
   var body: some View {
@@ -38,14 +41,21 @@ struct SidebarView: View {
   }
 
   private var visibleConversations: [ConversationSummary] {
-    store.conversationSummaries.filter { $0.isArchived == showingArchive }
+    if searchQuery.isEmpty {
+      return store.conversationSummaries.filter { $0.isArchived == showingArchive }
+    }
+    return store.conversationSummaries.filter { conversationMatchesSearch($0) }
+  }
+
+  private var searchQuery: String {
+    searchText.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private var conversationList: some View {
     GeometryReader { proxy in
       List {
-        if showingArchive, visibleConversations.isEmpty {
-          Text("No archived conversations.")
+        if visibleConversations.isEmpty, let emptyMessage {
+          Text(emptyMessage)
             .font(.callout)
             .foregroundStyle(.secondary)
             .padding(.vertical, 12)
@@ -86,6 +96,30 @@ struct SidebarView: View {
       .scrollIndicators(.hidden)
       .coordinateSpace(name: sidebarListCoordinateSpace)
     }
+  }
+
+  private var emptyMessage: String? {
+    if !searchQuery.isEmpty {
+      return "No matching conversations."
+    }
+    if showingArchive {
+      return "No archived conversations."
+    }
+    return nil
+  }
+
+  private func conversationMatchesSearch(_ summary: ConversationSummary) -> Bool {
+    let query = searchQuery
+    guard !query.isEmpty else { return true }
+    if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query) {
+      return true
+    }
+    guard let conversation = store.conversation(withID: summary.id) else { return false }
+    return conversation.messages.contains { text($0.text, contains: query) }
+  }
+
+  private func text(_ text: String, contains query: String) -> Bool {
+    text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
   }
 
   @ViewBuilder
@@ -136,38 +170,78 @@ struct SidebarView: View {
   }
 
   private var floatingActions: some View {
-    HStack(spacing: 10) {
-      if isSelectionMode {
-        selectionFloatingActions
-      } else {
-        defaultFloatingActions
+    GeometryReader { proxy in
+      HStack(spacing: 10) {
+        if isSelectionMode {
+          selectionFloatingActions
+        } else {
+          defaultFloatingActions(searchWidth: searchFieldWidth(containerWidth: proxy.size.width))
+        }
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
     }
   }
 
   @ViewBuilder
-  private var defaultFloatingActions: some View {
-    FloatingActionPill(
-      title: "New Chat",
-      systemImage: "square.and.pencil",
-      prominent: true
-    ) {
-      store.newConversation()
-      onSelectConversation()
+  private func defaultFloatingActions(searchWidth: CGFloat) -> some View {
+    if isSearchActive {
+      FloatingSearchField(
+        text: $searchText,
+        isFocused: $isSearchFieldFocused,
+        width: searchWidth,
+        onCancel: cancelSearch
+      )
+      .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
+    } else {
+      FloatingActionPill(
+        title: "New Chat",
+        systemImage: "square.and.pencil",
+        prominent: true
+      ) {
+        store.newConversation()
+        onSelectConversation()
+      }
+      FloatingActionIcon(
+        systemImage: showingArchive ? "tray.full.fill" : "archivebox",
+        accessibilityLabel: showingArchive
+          ? "Show active conversations" : "Show archived conversations",
+        isActive: showingArchive
+      ) {
+        showingArchive.toggle()
+      }
+      FloatingActionIcon(
+        systemImage: "magnifyingglass",
+        accessibilityLabel: "Search conversations"
+      ) {
+        activateSearch()
+      }
+      FloatingActionIcon(
+        systemImage: "gearshape",
+        accessibilityLabel: "Settings"
+      ) {
+        showingSettings = true
+      }
+      .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
     }
-    FloatingActionIcon(
-      systemImage: showingArchive ? "tray.full.fill" : "archivebox",
-      accessibilityLabel: showingArchive
-        ? "Show active conversations" : "Show archived conversations",
-      isActive: showingArchive
-    ) {
-      showingArchive.toggle()
+  }
+
+  private func searchFieldWidth(containerWidth: CGFloat) -> CGFloat {
+    min(max(containerWidth - 4, 276), 320)
+  }
+
+  private func activateSearch() {
+    withAnimation(.snappy) {
+      isSearchActive = true
     }
-    FloatingActionIcon(
-      systemImage: "gearshape",
-      accessibilityLabel: "Settings"
-    ) {
-      showingSettings = true
+    isSearchFieldFocused = true
+    Task { await store.loadStoredConversationsForSearch() }
+  }
+
+  private func cancelSearch() {
+    withAnimation(.snappy) {
+      searchText = ""
+      isSearchActive = false
+      isSearchFieldFocused = false
     }
   }
 
@@ -354,6 +428,43 @@ private struct FloatingActionIcon: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+  }
+}
+
+private struct FloatingSearchField: View {
+  @Binding var text: String
+  let isFocused: FocusState<Bool>.Binding
+  let width: CGFloat
+  let onCancel: () -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .frame(width: 22, height: 22)
+
+      TextField("Search messages", text: $text)
+        .textFieldStyle(.plain)
+        .disableAutocorrection(true)
+        .textInputAutocapitalization(.never)
+        .submitLabel(.search)
+        .focused(isFocused)
+
+      Button(action: onCancel) {
+        Image(systemName: "xmark.circle.fill")
+          .font(.body.weight(.semibold))
+          .frame(width: 22, height: 22)
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Cancel search")
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .frame(width: width)
+    .modifier(FloatingChrome(prominent: false, shape: Capsule()))
+    .accessibilityElement(children: .contain)
   }
 }
 
