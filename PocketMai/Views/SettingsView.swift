@@ -282,7 +282,7 @@ struct SettingsView: View {
   private var advancedOptionsContent: some View {
     Toggle("Show thinking", isOn: settingsBinding(\.showThinkingByDefault))
     Toggle("Stream responses", isOn: settingsBinding(\.streamByDefault))
-    Picker("Context", selection: settingsBinding(\.contextWindowMode)) {
+    Picker("Conversation Context", selection: settingsBinding(\.contextWindowMode)) {
       ForEach(ContextWindowMode.allCases) { mode in
         Text(mode.displayName).tag(mode)
       }
@@ -342,20 +342,11 @@ struct SettingsView: View {
 
   private var appearanceSection: some View {
     Section {
-      Picker("Accent Tint", selection: settingsBinding(\.appearance.tint)) {
-        ForEach(AppearanceTint.allCases) { tint in
-          HStack {
-            Circle()
-              .fill(tint.swatchColor)
-              .frame(width: 12, height: 12)
-            Text(tint.displayName)
-          }
-          .tag(tint)
-        }
+      DisclosureGroup {
+        appearanceOptionsContent
+      } label: {
+        Label("Appearance", systemImage: "paintpalette")
       }
-      .pickerStyle(.menu)
-
-      Toggle("Render Markdown in Chat", isOn: settingsBinding(\.renderMarkdownInChat))
 
       DisclosureGroup {
         fontOptionsContent
@@ -369,8 +360,33 @@ struct SettingsView: View {
         Label("Voices", systemImage: "speaker.wave.2")
       }
     } header: {
-      Text("Appearance")
+      Text("Look and Feel")
     }
+  }
+
+  @ViewBuilder
+  private var appearanceOptionsContent: some View {
+    Picker("Accent", selection: settingsBinding(\.appearance.tint)) {
+      ForEach(AppearanceTint.allCases) { tint in
+        HStack {
+          Circle()
+            .fill(tint.swatchColor)
+            .frame(width: 12, height: 12)
+          Text(tint.displayName)
+        }
+        .tag(tint)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Picker("App Theme", selection: settingsBinding(\.appearance.theme)) {
+      ForEach(AppearanceTheme.allCases) { theme in
+        Text(theme.displayName).tag(theme)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
   }
 
   @ViewBuilder
@@ -764,7 +780,7 @@ struct SettingsView: View {
         deleteTodos(at: offsets)
       }
     case .textToSpeech:
-      Text("Configure user and assistant voices in Appearance.")
+      Text("Configure user and assistant voices in Look and Feel.")
         .font(.footnote)
         .foregroundStyle(.secondary)
     case .files:

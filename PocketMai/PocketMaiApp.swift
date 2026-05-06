@@ -11,6 +11,7 @@ struct PocketMaiApp: App {
         .environmentObject(store)
         .environmentObject(store.streamingTextStore)
         .environmentObject(ttsPlayer)
+        .preferredColorScheme(store.settings.appearance.theme.colorScheme)
     }
   }
 }

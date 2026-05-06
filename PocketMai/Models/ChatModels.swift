@@ -167,18 +167,35 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
+  case system
+  case light
+  case dark
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .system: "System"
+    case .light: "Light"
+    case .dark: "Dark"
+    }
+  }
+}
+
 struct AppearanceSettings: Codable, Equatable, Sendable {
   var userFontFamily: AppearanceFontFamily = .rounded
   var assistantFontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
   var tint: AppearanceTint = .system
+  var theme: AppearanceTheme = .system
 
   static let defaults = AppearanceSettings()
 
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint
+    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint, theme
   }
 
   init(from decoder: Decoder) throws {
@@ -191,6 +208,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
       ?? legacyFamily ?? .serif
     fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
+    theme = (try? c.decode(AppearanceTheme.self, forKey: .theme)) ?? .system
   }
 
   func encode(to encoder: Encoder) throws {
@@ -199,6 +217,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(assistantFontFamily, forKey: .assistantFontFamily)
     try c.encode(fontSize, forKey: .fontSize)
     try c.encode(tint, forKey: .tint)
+    try c.encode(theme, forKey: .theme)
   }
 }
 
