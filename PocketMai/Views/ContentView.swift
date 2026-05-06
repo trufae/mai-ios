@@ -23,6 +23,7 @@ struct ContentView: View {
           .frame(width: panelWidth)
           .frame(maxHeight: .infinity)
           .background(.regularMaterial)
+          .modifier(SidebarRevealModifier(progress: revealProgress))
           .zIndex(0)
         }
 
@@ -37,12 +38,6 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(PanelClipModifier(cornerRadius: panelOffset > 0 ? 28 : 0))
-        .shadow(
-          color: .black.opacity(Double(revealProgress) * 0.2),
-          radius: 24 * revealProgress,
-          x: -8 * revealProgress,
-          y: 0
-        )
         .allowsHitTesting(panelOffset == 0)
         .overlay {
           if panelOffset > 0 {
@@ -140,5 +135,27 @@ private struct PanelClipModifier: ViewModifier {
     } else {
       content
     }
+  }
+}
+
+private struct SidebarRevealModifier: ViewModifier {
+  let progress: CGFloat
+
+  func body(content: Content) -> some View {
+    content
+      .scaleEffect(scale, anchor: .leading)
+  }
+
+  private var clampedProgress: CGFloat {
+    min(max(progress, 0), 1)
+  }
+
+  private var easedProgress: CGFloat {
+    let progress = clampedProgress
+    return progress * progress * (3 - 2 * progress)
+  }
+
+  private var scale: CGFloat {
+    0.88 + easedProgress * 0.12
   }
 }
