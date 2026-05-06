@@ -38,6 +38,7 @@ final class AppStore: ObservableObject {
   @Published var respondingConversationIDs: Set<UUID> = []
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
+  private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
 
   var isResponding: Bool { !respondingConversationIDs.isEmpty }
 
@@ -273,6 +274,7 @@ final class AppStore: ObservableObject {
     for id in removedIDs {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
+      endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
     }
     let archivedIDs = Set(archived.map(\.id))
@@ -293,6 +295,7 @@ final class AppStore: ObservableObject {
       task.cancel()
     }
     responseTasks.removeAll()
+    endAllResponseBackgroundTasks()
     respondingConversationIDs.removeAll()
     conversationDrafts.removeAll()
     streamingTextStore.removeAll()
@@ -389,6 +392,7 @@ final class AppStore: ObservableObject {
     for id in ids {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
+      endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
       conversationDrafts.removeValue(forKey: id)
     }
@@ -540,6 +544,7 @@ final class AppStore: ObservableObject {
       defer {
         respondingConversationIDs.remove(conversationID)
         responseTasks[conversationID] = nil
+        endResponseBackgroundTask(for: conversationID)
         saveConversations()
       }
       await AssistantTurnRunner.run(
@@ -549,6 +554,41 @@ final class AppStore: ObservableObject {
       )
     }
     responseTasks[conversationID] = task
+    beginResponseBackgroundTask(for: conversationID)
+  }
+
+  private func beginResponseBackgroundTask(for conversationID: UUID) {
+    endResponseBackgroundTask(for: conversationID)
+    let taskID = UIApplication.shared.beginBackgroundTask(withName: "PocketMai assistant response") {
+      [weak self] in
+      Task { @MainActor [weak self] in
+        self?.handleResponseBackgroundTaskExpired(for: conversationID)
+      }
+    }
+    guard taskID != .invalid else { return }
+    responseBackgroundTasks[conversationID] = taskID
+  }
+
+  private func handleResponseBackgroundTaskExpired(for conversationID: UUID) {
+    responseTasks[conversationID]?.cancel()
+    endResponseBackgroundTask(for: conversationID)
+  }
+
+  private func endResponseBackgroundTask(for conversationID: UUID) {
+    guard let taskID = responseBackgroundTasks.removeValue(forKey: conversationID),
+      taskID != .invalid
+    else {
+      return
+    }
+    UIApplication.shared.endBackgroundTask(taskID)
+  }
+
+  private func endAllResponseBackgroundTasks() {
+    let taskIDs = responseBackgroundTasks.values.filter { $0 != .invalid }
+    responseBackgroundTasks.removeAll()
+    for taskID in taskIDs {
+      UIApplication.shared.endBackgroundTask(taskID)
+    }
   }
 
   func markAssistantStopped(id: UUID) {
@@ -963,6 +1003,7 @@ final class AppStore: ObservableObject {
     removeSummaries(for: [removedID])
     responseTasks[removedID]?.cancel()
     responseTasks[removedID] = nil
+    endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
     conversationDrafts.removeValue(forKey: removedID)
     if !hasLoadedPersistedConversations {
