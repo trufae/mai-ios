@@ -114,7 +114,9 @@ actor LocalMLXProvider {
       throw LocalMLXError.emptyPrompt
     }
 
-    let input = try await container.prepare(input: UserInput(chat: messages))
+    let input = try await container.prepare(
+      input: UserInput(chat: messages, tools: Self.mlxToolSpecs(from: request.nativeTools))
+    )
     let stream = try await container.generate(
       input: input,
       parameters: GenerateParameters(maxTokens: 1_200, temperature: 0.7)
@@ -132,7 +134,12 @@ actor LocalMLXProvider {
       case .info:
         break
       case .toolCall(let toolCall):
-        output += "\n\n[Tool call: \(toolCall.function.name)]"
+        let block = Self.toolCallTextBlock(toolCall)
+        if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          output = block
+        } else {
+          output += "\n\n\(block)"
+        }
         if request.conversation.usesStreaming {
           await onUpdate(output)
         }
@@ -249,6 +256,56 @@ actor LocalMLXProvider {
     }
 
     return messages
+  }
+
+  private static func mlxToolSpecs(from tools: [OpenAITool]?) -> [ToolSpec]? {
+    guard let tools, !tools.isEmpty else { return nil }
+    return tools.map { tool in
+      let properties: [String: any Sendable] = Dictionary(
+        uniqueKeysWithValues: tool.function.parameters.properties.map { name, property in
+          (
+            name,
+            [
+              "type": property.type,
+              "description": property.description,
+            ] as [String: any Sendable]
+          )
+        })
+      let parameters: [String: any Sendable] = [
+        "type": tool.function.parameters.type,
+        "properties": properties,
+        "required": tool.function.parameters.required,
+      ]
+      let function: [String: any Sendable] = [
+        "name": tool.function.name,
+        "description": tool.function.description,
+        "parameters": parameters,
+      ]
+      return [
+        "type": tool.type,
+        "function": function,
+      ] as ToolSpec
+    }
+  }
+
+  private static func toolCallTextBlock(_ toolCall: ToolCall) -> String {
+    let argsObject = toolCall.function.arguments.mapValues { $0.anyValue }
+    let rawArguments = jsonString(from: argsObject)
+    return AgentTooling.makeNativeToolCall(
+      id: nil,
+      name: toolCall.function.name,
+      rawArguments: rawArguments
+    ).textBlock
+  }
+
+  private static func jsonString(from object: [String: Any]) -> String {
+    guard JSONSerialization.isValidJSONObject(object),
+      let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+      let string = String(data: data, encoding: .utf8)
+    else {
+      return "{}"
+    }
+    return string
   }
 
   private static func normalizedModelID(_ modelID: String) -> String {

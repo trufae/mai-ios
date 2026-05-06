@@ -270,7 +270,7 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   var displayName: String {
     switch self {
     case .text: "Text protocol"
-    case .native: "Native (OpenAI tools)"
+    case .native: "Native tools"
     }
   }
 
@@ -281,7 +281,7 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
         "Works with any model. Tools are described in the system prompt; calls and results travel as <tool_call> / <tool_run> XML blocks."
     case .native:
       return
-        "Adds OpenAI's structured tools array to each request so capable models can return tool_calls directly. Falls back to the text protocol on Apple Intelligence."
+        "Adds the provider's structured tools field for OpenAI-compatible and MLX requests so capable models can return tool calls directly. Falls back to the text protocol on Apple Intelligence."
     }
   }
 }

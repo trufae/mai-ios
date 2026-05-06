@@ -225,7 +225,7 @@ enum AssistantTurnRunner {
   ) -> [OpenAITool]? {
     guard
       settings.toolCallingMode == .native,
-      conversation.provider == .openAICompatible,
+      conversation.provider == .openAICompatible || conversation.provider == .mlx,
       !definitions.isEmpty
     else {
       return nil
