@@ -1009,6 +1009,7 @@ private struct ConversationModelSettingsView: View {
 
           Section {
             Toggle("Show thinking", isOn: showThinkingBinding)
+            Toggle("Use memory", isOn: useMemoryBinding)
             Toggle("Stream responses", isOn: streamingBinding)
           }
 
@@ -1296,6 +1297,21 @@ private struct ConversationModelSettingsView: View {
       set: { showThinking in
         store.updateCurrentConversation { conversation in
           conversation.showThinking = showThinking
+        }
+      }
+    )
+  }
+
+  private var useMemoryBinding: Binding<Bool> {
+    Binding(
+      get: { store.currentConversation?.enabledTools.contains(.memory) ?? false },
+      set: { useMemory in
+        store.updateCurrentConversation { conversation in
+          if useMemory {
+            conversation.enabledTools.insert(.memory)
+          } else {
+            conversation.enabledTools.remove(.memory)
+          }
         }
       }
     )
