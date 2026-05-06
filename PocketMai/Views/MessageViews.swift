@@ -92,6 +92,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
+  @State private var showingTextSelection = false
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
@@ -210,95 +211,31 @@ private struct MessageBubbleContent: View, Equatable {
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-    if isStreaming {
-      bubbleView
-    } else {
-      bubbleView.contextMenu {
-        messageContextMenu(visibleText: visibleText, rawText: rawText)
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func messageContextMenu(visibleText: String, rawText: String) -> some View {
-    Button {
-      UIPasteboard.general.string = visibleText
-    } label: {
-      Label("Copy Message", systemImage: "doc.on.doc")
-    }
-    Button {
-      UIPasteboard.general.string = rawText
-    } label: {
-      Label("Copy Raw Message", systemImage: "doc.text")
-    }
-    Divider()
-    Button {
-      _ = TextToSpeechTool.speak(
-        arguments: ["text": .string(visibleText)],
-        settings: toolSettings,
-        openAIEndpoints: openAIEndpoints,
-        role: isUser ? .user : .assistant,
-        title: message.role.displayName,
-        messageID: message.id)
-    } label: {
-      Label("Speak Message", systemImage: "speaker.wave.2")
-    }
-    if let onSpeakFromHere {
-      Button {
-        onSpeakFromHere()
-      } label: {
-        Label("Speak From Here", systemImage: "speaker.wave.2.fill")
-      }
-    }
-    if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
-      Divider()
-      Button {
-        resend()
-      } label: {
-        Label("Resend From Here", systemImage: "arrow.clockwise")
-      }
-      if let onRestartFresh {
-        Button {
-          onRestartFresh()
-        } label: {
-          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+    bubbleView
+      .overlay {
+        if !isStreaming {
+          MessageContextMenuOverlay(
+            visibleText: visibleText,
+            rawText: rawText,
+            messageID: message.id,
+            role: message.role,
+            toolSettings: toolSettings,
+            openAIEndpoints: openAIEndpoints,
+            onSelectText: {
+              showingTextSelection = true
+            },
+            onDelete: onDelete,
+            onResubmit: isUser ? onResubmit : nil,
+            onTrimFromHere: onTrimFromHere,
+            onRestartFresh: onRestartFresh,
+            onNewChatWithMessage: onNewChatWithMessage,
+            onSpeakFromHere: onSpeakFromHere
+          )
         }
       }
-      if let onNewChatWithMessage {
-        Button {
-          onNewChatWithMessage()
-        } label: {
-          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
-        }
+      .sheet(isPresented: $showingTextSelection) {
+        MessageTextSelectionSheet(title: message.role.displayName, text: visibleText)
       }
-      Divider()
-    } else if let onRestartFresh {
-      Divider()
-      Button {
-        onRestartFresh()
-      } label: {
-        Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
-      }
-      if let onNewChatWithMessage {
-        Button {
-          onNewChatWithMessage()
-        } label: {
-          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
-        }
-      }
-      Divider()
-    } else if let onNewChatWithMessage {
-      Divider()
-      Button {
-        onNewChatWithMessage()
-      } label: {
-        Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
-      }
-      Divider()
-    }
-    Button(role: .destructive, action: onDelete) {
-      Label("Delete Message", systemImage: "trash")
-    }
   }
 
   private var iconName: String {
@@ -341,6 +278,195 @@ private struct MessageBubbleContent: View, Equatable {
       return text
     }
     return "…" + text[start...]
+  }
+}
+
+@MainActor
+private struct MessageContextMenuOverlay: UIViewRepresentable {
+  let visibleText: String
+  let rawText: String
+  let messageID: UUID
+  let role: ChatRole
+  let toolSettings: NativeToolSettings
+  let openAIEndpoints: [OpenAIEndpoint]
+  let onSelectText: () -> Void
+  let onDelete: () -> Void
+  let onResubmit: (() -> Void)?
+  let onTrimFromHere: (() -> Void)?
+  let onRestartFresh: (() -> Void)?
+  let onNewChatWithMessage: (() -> Void)?
+  let onSpeakFromHere: (() -> Void)?
+
+  func makeUIView(context: Context) -> UIView {
+    let view = UIView()
+    view.backgroundColor = .clear
+    view.isOpaque = false
+    view.isAccessibilityElement = false
+    view.addInteraction(UIContextMenuInteraction(delegate: context.coordinator))
+    return view
+  }
+
+  func updateUIView(_ uiView: UIView, context: Context) {
+    context.coordinator.overlay = self
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(overlay: self)
+  }
+
+  private func makeMenu() -> UIMenu {
+    var sections: [UIMenuElement] = [
+      inlineMenu([
+        action("Select Text", systemImage: "text.cursor", handler: onSelectText),
+        action("Copy Message", systemImage: "doc.on.doc") {
+          UIPasteboard.general.string = visibleText
+        },
+        action("Copy Raw Message", systemImage: "doc.text") {
+          UIPasteboard.general.string = rawText
+        },
+      ]),
+      inlineMenu([
+        action("Speak Message", systemImage: "speaker.wave.2") {
+          _ = TextToSpeechTool.speak(
+            arguments: ["text": .string(visibleText)],
+            settings: toolSettings,
+            openAIEndpoints: openAIEndpoints,
+            role: role == .user ? .user : .assistant,
+            title: role.displayName,
+            messageID: messageID)
+        }
+      ]),
+    ]
+
+    if let onSpeakFromHere {
+      sections.append(
+        inlineMenu([
+          action(
+            "Speak From Here",
+            systemImage: "speaker.wave.2.fill",
+            handler: onSpeakFromHere)
+        ]))
+    }
+
+    var restartActions: [UIMenuElement] = []
+    if let resend = onTrimFromHere ?? onResubmit {
+      restartActions.append(
+        action("Resend From Here", systemImage: "arrow.clockwise", handler: resend))
+    }
+    if let onRestartFresh {
+      restartActions.append(
+        action(
+          "Restart From Here",
+          systemImage: "arrow.triangle.2.circlepath",
+          handler: onRestartFresh))
+    }
+    if let onNewChatWithMessage {
+      restartActions.append(
+        action(
+          "New Chat With This",
+          systemImage: "bubble.left.and.bubble.right",
+          handler: onNewChatWithMessage))
+    }
+    if !restartActions.isEmpty {
+      sections.append(inlineMenu(restartActions))
+    }
+
+    sections.append(
+      inlineMenu([
+        action(
+          "Delete Message",
+          systemImage: "trash",
+          attributes: .destructive,
+          handler: onDelete)
+      ]))
+    return UIMenu(title: "", children: sections)
+  }
+
+  private func inlineMenu(_ children: [UIMenuElement]) -> UIMenu {
+    UIMenu(title: "", options: .displayInline, children: children)
+  }
+
+  private func action(
+    _ title: String,
+    systemImage: String,
+    attributes: UIMenuElement.Attributes = [],
+    handler: @escaping () -> Void
+  ) -> UIAction {
+    UIAction(
+      title: title,
+      image: UIImage(systemName: systemImage),
+      attributes: attributes
+    ) { _ in
+      handler()
+    }
+  }
+
+  final class Coordinator: NSObject, UIContextMenuInteractionDelegate {
+    var overlay: MessageContextMenuOverlay
+
+    init(overlay: MessageContextMenuOverlay) {
+      self.overlay = overlay
+    }
+
+    func contextMenuInteraction(
+      _ interaction: UIContextMenuInteraction,
+      configurationForMenuAtLocation location: CGPoint
+    ) -> UIContextMenuConfiguration? {
+      UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+        self?.overlay.makeMenu()
+      }
+    }
+  }
+}
+
+private struct MessageTextSelectionSheet: View {
+  @Environment(\.dismiss) private var dismiss
+
+  let title: String
+  let text: String
+
+  var body: some View {
+    NavigationStack {
+      SelectableMessageTextView(text: text)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("Done") {
+              dismiss()
+            }
+          }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              UIPasteboard.general.string = text
+            } label: {
+              Label("Copy All", systemImage: "doc.on.doc")
+            }
+          }
+        }
+    }
+  }
+}
+
+private struct SelectableMessageTextView: UIViewRepresentable {
+  let text: String
+
+  func makeUIView(context: Context) -> UITextView {
+    let textView = UITextView()
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.backgroundColor = .clear
+    textView.font = UIFont.preferredFont(forTextStyle: .body)
+    textView.adjustsFontForContentSizeCategory = true
+    textView.textContainerInset = UIEdgeInsets(top: 18, left: 14, bottom: 18, right: 14)
+    textView.text = text
+    return textView
+  }
+
+  func updateUIView(_ textView: UITextView, context: Context) {
+    if textView.text != text {
+      textView.text = text
+    }
   }
 }
 
