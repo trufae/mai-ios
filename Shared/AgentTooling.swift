@@ -277,7 +277,10 @@ enum AgentTooling {
     return nil
   }
 
-  static func promptDescription(for definitions: [ToolDefinition]) -> String {
+  static func promptDescription(
+    for definitions: [ToolDefinition],
+    mode: ToolCallingMode = .text
+  ) -> String {
     guard !definitions.isEmpty else { return "" }
     let resolver = AgentToolNameResolver(tools: definitions)
     let toolDescriptions = definitions.map { def -> String in
@@ -306,6 +309,7 @@ enum AgentTooling {
       let name = api == def.name ? def.name : "\(def.name) (API/native alias: \(api))"
       return "- \(name): \(def.description) Arguments: \(params)."
     }.joined(separator: "\n")
+    let toolCalling = promptInstructions(for: mode)
 
     return """
       ## Available Tools
@@ -314,16 +318,64 @@ enum AgentTooling {
 
       ## Tool Calling
 
-      When a tool is needed, reply with exactly one block and no other text:
-      <tool_call>{"name":"tool_name","arguments":{"required_arg":"value"}}</tool_call>
+      \(toolCalling)
 
-      Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, and keep JSON values typed correctly. After a tool call, stop.
-
-      When the host returns a `<tool_run>` result, use that result as ground truth. If more tool work is needed, emit the next single `<tool_call>` block; otherwise answer normally with no `<tool_call>`.
+      When the host returns a `<tool_run>` result, use that result as ground truth. If more tool work is needed, emit the next single tool call in the same format; otherwise answer normally with no tool call.
       """
   }
 
-  static func parseCalls(in text: String, tools: [ToolDefinition]) -> [ParsedToolCall] {
+  private static func promptInstructions(for mode: ToolCallingMode) -> String {
+    switch mode.textProtocolFallback {
+    case .text:
+      return """
+        When a tool is needed, reply with exactly one plain text block and no other text:
+        TOOL_CALL
+        tool: tool_name
+        required_arg: value
+        END_TOOL_CALL
+
+        Use only listed tool names or aliases. Put one argument per line as `argument_name: value`. Include required arguments, omit unused optional arguments, use true/false for booleans, and stop after the block.
+        """
+    case .xml:
+      return """
+        When a tool is needed, reply with exactly one XML block and no other text:
+        <tool_call name="tool_name">
+        <arg name="required_arg">value</arg>
+        </tool_call>
+
+        Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, escape XML special characters, and stop after the block.
+        """
+    case .json:
+      return """
+        When a tool is needed, reply with exactly one JSON object and no other text:
+        {"name":"tool_name","arguments":{"required_arg":"value"}}
+
+        Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, keep JSON valid, and stop after the JSON object.
+        """
+    case .native:
+      return promptInstructions(for: .text)
+    }
+  }
+
+  static func parseCalls(
+    in text: String,
+    tools: [ToolDefinition],
+    mode: ToolCallingMode = .text
+  ) -> [ParsedToolCall] {
+    switch mode {
+    case .text:
+      let calls = parsePlainTextCalls(in: text, tools: tools)
+      return calls.isEmpty ? [] : calls
+    case .xml:
+      return parseXMLCalls(in: text, tools: tools)
+    case .json:
+      return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
+    case .native:
+      return parseXMLCalls(in: text, tools: tools)
+    }
+  }
+
+  private static func parseXMLCalls(in text: String, tools: [ToolDefinition]) -> [ParsedToolCall] {
     let pattern = "<tool_call\\b([^>]*)>([\\s\\S]*?)(?:</tool_call\\s*>|$)"
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     else { return [] }
@@ -345,25 +397,153 @@ enum AgentTooling {
     return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
   }
 
-  static func containsToolCallMarker(in text: String) -> Bool {
-    text.range(
-      of: "<\\s*/?\\s*tool_call\\b",
-      options: [.regularExpression, .caseInsensitive]) != nil
+  private static func parsePlainTextCalls(
+    in text: String,
+    tools: [ToolDefinition]
+  ) -> [ParsedToolCall] {
+    let pattern = "(?im)^\\s*TOOL_CALL\\s*$([\\s\\S]*?)(?:^\\s*END_TOOL_CALL\\s*$|\\z)"
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+    let nsText = text as NSString
+    let matches = regex.matches(
+      in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+
+    return matches.compactMap { match in
+      guard match.numberOfRanges == 2 else { return nil }
+      let raw = nsText.substring(with: match.range(at: 0))
+      let body = nsText.substring(with: match.range(at: 1))
+      return parsePlainTextToolCallBlock(body, rawBlock: raw, tools: tools)
+    }
   }
 
-  static func malformedToolCallFeedback(from text: String) -> String {
+  private static func parsePlainTextToolCallBlock(
+    _ body: String,
+    rawBlock: String,
+    tools: [ToolDefinition]
+  ) -> ParsedToolCall? {
+    let lines = body.components(separatedBy: .newlines)
+    let nameKeys = Set(["tool", "name", "function"])
+    let name = lines.compactMap { line -> String? in
+      guard let pair = lineKeyValue(line), nameKeys.contains(pair.key.lowercased()) else {
+        return nil
+      }
+      let trimmed = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }.first
+    guard let name else { return nil }
+
+    let resolver = AgentToolNameResolver(tools: tools)
+    let canonical = resolver.canonicalName(for: name) ?? name
+    let tool = tools.first { $0.name == canonical }
+    let parameterNames = Set(tool?.parameters.map(\.name) ?? [])
+    var arguments: [String: String] = [:]
+    var currentKey: String?
+    var currentValue: [String] = []
+
+    func flush() {
+      guard let currentKey else { return }
+      arguments[currentKey] = currentValue.joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    for line in lines {
+      guard let pair = lineKeyValue(line) else {
+        if currentKey != nil { currentValue.append(line) }
+        continue
+      }
+      let key = pair.key
+      if nameKeys.contains(key.lowercased()) {
+        continue
+      }
+      let isKnownArgument = parameterNames.isEmpty || parameterNames.contains(key)
+      if isKnownArgument {
+        flush()
+        currentKey = key
+        currentValue = [pair.value]
+      } else if currentKey != nil {
+        currentValue.append(line)
+      }
+    }
+    flush()
+
+    return ParsedToolCall(
+      name: name,
+      arguments: [:],
+      argumentValues: arguments.mapValues { AgentToolArgumentValue.string($0) },
+      rawBlock: rawBlock)
+  }
+
+  private static func lineKeyValue(_ line: String) -> (key: String, value: String)? {
+    guard let colon = line.firstIndex(of: ":") else { return nil }
+    let key = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !key.isEmpty, key.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+    else {
+      return nil
+    }
+    let value = String(line[line.index(after: colon)...])
+      .trimmingCharacters(in: .whitespaces)
+    return (key, String(value))
+  }
+
+  static func containsToolCallMarker(
+    in text: String,
+    mode: ToolCallingMode? = nil
+  ) -> Bool {
+    let modes = mode.map { [$0] } ?? [.text, .xml, .native]
+    return modes.contains { mode in
+      switch mode {
+      case .text:
+        return text.range(
+          of: "(?m)^\\s*TOOL_CALL\\s*$",
+          options: [.regularExpression, .caseInsensitive]) != nil
+      case .xml, .native:
+        return text.range(
+          of: "<\\s*/?\\s*tool_call\\b",
+          options: [.regularExpression, .caseInsensitive]) != nil
+      case .json:
+        let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.hasPrefix("{")
+          && (visible.contains("\"name\"") || visible.contains("\"tool\"")
+            || visible.contains("\"function\""))
+      }
+    }
+  }
+
+  static func malformedToolCallFeedback(
+    from text: String,
+    mode: ToolCallingMode = .text
+  ) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let preview = trimmed.count > 500 ? String(trimmed.prefix(500)) + "..." : trimmed
+    let example: String
+    switch mode.textProtocolFallback {
+    case .text:
+      example = """
+        TOOL_CALL
+        tool: tool_name
+        END_TOOL_CALL
+        """
+    case .xml:
+      example = #"<tool_call name="tool_name"></tool_call>"#
+    case .json:
+      example = #"{"name":"tool_name","arguments":{}}"#
+    case .native:
+      example = """
+        TOOL_CALL
+        tool: tool_name
+        END_TOOL_CALL
+        """
+    }
     return """
       <tool_run>
       invalid_tool_call tool ({}):
-      Error: the assistant emitted a `<tool_call>` marker, but the host could not parse an executable tool call.
+      Error: the assistant emitted a tool call marker, but the host could not parse an executable tool call.
 
       Received:
       \(preview)
 
-      Emit exactly one valid block with real JSON, or answer normally without any `<tool_call>` marker:
-      <tool_call>{"name":"tool_name","arguments":{}}</tool_call>
+      Emit exactly one valid tool call in the configured \(mode.displayName) format, or answer normally without any tool call marker:
+      \(example)
       </tool_run>
       """
   }
@@ -582,10 +762,101 @@ enum AgentTooling {
       }
     }
 
+    if let xmlCall = xmlToolCallPayload(normalizedPayload, attrName: attrName, rawBlock: rawBlock) {
+      return xmlCall
+    }
+
     if let attrName {
       return ParsedToolCall(name: attrName, arguments: [:], argumentValues: [:], rawBlock: rawBlock)
     }
     return nil
+  }
+
+  private static func xmlToolCallPayload(
+    _ payload: String,
+    attrName: String?,
+    rawBlock: String
+  ) -> ParsedToolCall? {
+    let name =
+      attrName
+      ?? firstXMLValue(named: "name", in: payload)
+      ?? firstXMLValue(named: "tool", in: payload)
+      ?? firstXMLValue(named: "function", in: payload)
+    guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+      return nil
+    }
+    return ParsedToolCall(
+      name: name,
+      arguments: [:],
+      argumentValues: argumentValues(xmlArguments(from: payload)),
+      rawBlock: rawBlock)
+  }
+
+  private static func xmlArguments(from payload: String) -> [String: Any] {
+    var arguments: [String: Any] = [:]
+    let nsPayload = payload as NSString
+
+    if let argRegex = try? NSRegularExpression(
+      pattern: #"<\s*arg\s+name\s*=\s*("[^"]*"|'[^']*'|[^\s"'>/]+)\s*>([\s\S]*?)<\s*/\s*arg\s*>"#,
+      options: [.caseInsensitive])
+    {
+      let matches = argRegex.matches(
+        in: payload, options: [], range: NSRange(location: 0, length: nsPayload.length))
+      for match in matches where match.numberOfRanges == 3 {
+        var name = nsPayload.substring(with: match.range(at: 1))
+        if name.count >= 2,
+          (name.hasPrefix("\"") && name.hasSuffix("\""))
+            || (name.hasPrefix("'") && name.hasSuffix("'"))
+        {
+          name.removeFirst()
+          name.removeLast()
+        }
+        arguments[name] = xmlUnescaped(nsPayload.substring(with: match.range(at: 2)))
+      }
+    }
+
+    if let tagRegex = try? NSRegularExpression(
+      pattern: #"<\s*([A-Za-z_][A-Za-z0-9_-]*)\s*>([\s\S]*?)<\s*/\s*\1\s*>"#,
+      options: [.caseInsensitive])
+    {
+      let matches = tagRegex.matches(
+        in: payload, options: [], range: NSRange(location: 0, length: nsPayload.length))
+      let reserved = Set(["name", "tool", "function", "arguments", "args", "params", "input"])
+      for match in matches where match.numberOfRanges == 3 {
+        let name = nsPayload.substring(with: match.range(at: 1))
+        guard !reserved.contains(name.lowercased()), arguments[name] == nil else { continue }
+        arguments[name] = xmlUnescaped(nsPayload.substring(with: match.range(at: 2)))
+      }
+    }
+
+    return arguments
+  }
+
+  private static func firstXMLValue(named name: String, in payload: String) -> String? {
+    guard let regex = try? NSRegularExpression(
+      pattern: #"<\s*\#(name)\s*>([\s\S]*?)<\s*/\s*\#(name)\s*>"#,
+      options: [.caseInsensitive])
+    else {
+      return nil
+    }
+    let nsPayload = payload as NSString
+    guard let match = regex.firstMatch(
+      in: payload, options: [], range: NSRange(location: 0, length: nsPayload.length)),
+      match.numberOfRanges == 2
+    else {
+      return nil
+    }
+    return xmlUnescaped(nsPayload.substring(with: match.range(at: 1)))
+  }
+
+  private static func xmlUnescaped(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "&lt;", with: "<")
+      .replacingOccurrences(of: "&gt;", with: ">")
+      .replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&apos;", with: "'")
+      .replacingOccurrences(of: "&amp;", with: "&")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private static func jsonObject(from text: String) -> [String: Any]? {
@@ -714,7 +985,8 @@ enum AgentTooling {
 
   private static func inferBareToolCall(in text: String, tools: [ToolDefinition]) -> ParsedToolCall?
   {
-    let visible = stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+    let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     guard visible.hasPrefix("{"), visible.hasSuffix("}"),
       let data = visible.data(using: .utf8),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

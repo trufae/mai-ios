@@ -266,14 +266,18 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case text
+  case xml
+  case json
   case native
 
   var id: String { rawValue }
 
   var displayName: String {
     switch self {
-    case .text: "Text protocol"
-    case .native: "Native tools"
+    case .text: "Text"
+    case .xml: "XML"
+    case .json: "JSON"
+    case .native: "Native"
     }
   }
 
@@ -281,10 +285,38 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .text:
       return
-        "Works with any model. Tools are described in the system prompt; calls and results travel as <tool_call> / <tool_run> XML blocks."
+        "Default. Uses a plain TOOL_CALL block with one argument per line. Most portable for small or local models."
+    case .xml:
+      return
+        "Uses <tool_call> XML blocks with one <arg> element per argument. More structured, but more fragile for small models."
+    case .json:
+      return
+        "Uses one JSON object with name and arguments. Compact and easy to parse when the model emits strict JSON."
     case .native:
       return
-        "Adds the provider's structured tools field for OpenAI-compatible and MLX requests so capable models can return tool calls directly. Falls back to the text protocol on Apple Intelligence."
+        "Uses provider-native structured tools for OpenAI-compatible and MLX requests. Apple Intelligence falls back to Text."
+    }
+  }
+
+  var textProtocolFallback: ToolCallingMode {
+    self == .native ? .text : self
+  }
+
+  func appleInstruction(hasToolResults: Bool) -> String {
+    if hasToolResults {
+      return
+        "Continue from the latest host tool result. Either emit one more \(callReference) if needed, or write the final answer."
+    }
+    return
+      "Reply to the latest user message. If you need a tool, emit one \(callReference) and stop; otherwise answer directly."
+  }
+
+  private var callReference: String {
+    switch self {
+    case .text: "TOOL_CALL block"
+    case .xml: "<tool_call> block"
+    case .json: "tool-call JSON object"
+    case .native: "TOOL_CALL block"
     }
   }
 }

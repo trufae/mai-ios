@@ -63,13 +63,20 @@ enum ToolAgentRegistry {
     return defs
   }
 
-  static func promptDescription(for definitions: [ToolDefinition]) -> String {
-    AgentTooling.promptDescription(for: definitions)
+  static func promptDescription(
+    for definitions: [ToolDefinition],
+    mode: ToolCallingMode
+  ) -> String {
+    AgentTooling.promptDescription(for: definitions, mode: mode)
   }
 
-  static func parseCalls(in text: String, definitions: [ToolDefinition]) -> [ParsedToolCall] {
+  static func parseCalls(
+    in text: String,
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode
+  ) -> [ParsedToolCall] {
     guard !definitions.isEmpty else { return [] }
-    return AgentTooling.parseCalls(in: text, tools: definitions)
+    return AgentTooling.parseCalls(in: text, tools: definitions, mode: mode)
   }
 
   static func shouldEnterAgentLoop(for prompt: String, definitions: [ToolDefinition]) -> Bool {

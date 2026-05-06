@@ -1062,6 +1062,7 @@ final class AppStore: ObservableObject {
       "<\\s*tool_call\\b[^>]*>[\\s\\S]*?<\\s*/\\s*tool_call\\s*>",
       "<\\s*tool_call\\b[^>]*>[\\s\\S]*$",
       "<\\s*/\\s*tool_call\\s*>",
+      "(?im)^\\s*TOOL_CALL\\s*$[\\s\\S]*?(?:^\\s*END_TOOL_CALL\\s*$|\\z)",
     ]
     var result = text
     for pattern in patterns {

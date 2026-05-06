@@ -315,6 +315,20 @@ struct SettingsView: View {
       }
     }
     .pickerStyle(.menu)
+    toolCallingContent
+  }
+
+  @ViewBuilder
+  private var toolCallingContent: some View {
+    Picker("Tool Calling", selection: settingsBinding(\.toolCallingMode)) {
+      ForEach(ToolCallingMode.allCases) { mode in
+        Text(mode.displayName).tag(mode)
+      }
+    }
+    .pickerStyle(.menu)
+    Text(store.settings.toolCallingMode.summary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   private var providerSection: some View {
@@ -356,7 +370,7 @@ struct SettingsView: View {
   }
 
   private var toolProxySummary: String {
-    "Off: every enabled tool is described in each request. On: only `list-tools` and `call-tool` wrappers go to the model — it lists matching tools by keyword, then calls the chosen one. Saves prompt context with many tools, adds one extra round-trip per call. Combines with both Text and Native modes."
+    "Off: every enabled tool is described in each request. On: only `list-tools` and `call-tool` wrappers go to the model — it lists matching tools by keyword, then calls the chosen one. Saves prompt context with many tools, adds one extra round-trip per call. Combines with all tool calling modes."
   }
 
   private var providerFooterText: String {
@@ -882,15 +896,6 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var externalToolsContent: some View {
-    Picker("Tool Calling", selection: settingsBinding(\.toolCallingMode)) {
-      ForEach(ToolCallingMode.allCases) { mode in
-        Text(mode.displayName).tag(mode)
-      }
-    }
-    .pickerStyle(.menu)
-    Text(store.settings.toolCallingMode.summary)
-      .font(.caption)
-      .foregroundStyle(.secondary)
     Toggle("Use tool proxy (list / call)", isOn: settingsBinding(\.useToolProxy))
     Text(toolProxySummary)
       .font(.caption)

@@ -187,10 +187,8 @@ enum PromptComposer {
       instruction = "Reply to the latest user message. Plain text only; no XML tags."
     } else {
       let hasToolResults = transcript.range(of: "<tool_run", options: [.caseInsensitive]) != nil
-      instruction =
-        hasToolResults
-        ? "Continue from the latest tool results. Either emit one more <tool_call> if needed, or write the final answer."
-        : "Reply to the latest user message. If you need a tool, emit one <tool_call> and stop; otherwise answer directly."
+      instruction = settings.toolCallingMode.textProtocolFallback.appleInstruction(
+        hasToolResults: hasToolResults)
     }
     sections.append(
       """
@@ -1258,7 +1256,7 @@ enum OpenAICompatibleProvider {
     var pieces: [String] = []
     if stoppedEmpty {
       pieces.append(
-        "The model stopped without producing any text or tool calls. If you're using Native tool calling, the server may not fully support it for this model — switch Settings → MCP Servers → Tool Calling to Text protocol and try again."
+        "The model stopped without producing any text or tool calls. If you're using Native tool calling, the provider may not fully support it for this model. Switch Settings → Inference → Advanced Options → Tool Calling to Text and try again."
       )
     }
     if !streamTrace.isEmpty {

@@ -65,9 +65,12 @@ enum AssistantTurnRunner {
       settings: store.settings,
       definitions: agentDefinitions
     )
+    let activeToolCallingMode =
+      nativeTools == nil ? store.settings.toolCallingMode.textProtocolFallback : .native
     let requestContext = augmentedContext(
       base: context,
-      definitions: nativeTools == nil ? agentDefinitions : []
+      definitions: nativeTools == nil ? agentDefinitions : [],
+      mode: activeToolCallingMode
     )
 
     if agentDefinitions.isEmpty {
@@ -112,10 +115,15 @@ enum AssistantTurnRunner {
 
       try Task.checkCancellation()
 
-      let calls = ToolAgentRegistry.parseCalls(in: response, definitions: agentDefinitions)
+      let calls = ToolAgentRegistry.parseCalls(
+        in: response,
+        definitions: agentDefinitions,
+        mode: activeToolCallingMode)
       if calls.isEmpty {
-        if AgentTooling.containsToolCallMarker(in: response) {
-          let feedback = AgentTooling.malformedToolCallFeedback(from: response)
+        if AgentTooling.containsToolCallMarker(in: response, mode: activeToolCallingMode) {
+          let feedback = AgentTooling.malformedToolCallFeedback(
+            from: response,
+            mode: activeToolCallingMode)
           let turnText = [response, feedback]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -204,9 +212,10 @@ enum AssistantTurnRunner {
 
   private static func augmentedContext(
     base: String,
-    definitions: [ToolDefinition]
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode
   ) -> String {
-    let agentToolPrompt = ToolAgentRegistry.promptDescription(for: definitions)
+    let agentToolPrompt = ToolAgentRegistry.promptDescription(for: definitions, mode: mode)
     guard !agentToolPrompt.isEmpty else { return base }
     return base.isEmpty ? agentToolPrompt : "\(base)\n\n\(agentToolPrompt)"
   }
