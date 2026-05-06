@@ -54,7 +54,6 @@ struct ContentView: View {
           }
         }
         .offset(x: panelOffset)
-        .scaleEffect(x: 1 - (revealProgress * 0.03), y: 1, anchor: .trailing)
         .zIndex(1)
       }
       .background(Color(uiColor: .systemGroupedBackground))
