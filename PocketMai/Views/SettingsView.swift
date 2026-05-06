@@ -26,7 +26,7 @@ private enum SettingsDeletionKind {
 
   var title: String {
     switch self {
-    case .endpoint: "Delete endpoint?"
+    case .endpoint: "Delete provider?"
     case .systemPrompt: "Delete system prompt?"
     case .file: "Delete file?"
     case .mcpServer: "Delete MCP server?"
@@ -35,7 +35,7 @@ private enum SettingsDeletionKind {
 
   func buttonTitle(count: Int) -> String {
     switch self {
-    case .endpoint: "Delete \(itemName("Endpoint", count: count))"
+    case .endpoint: "Delete \(itemName("Provider", count: count))"
     case .systemPrompt: "Delete \(itemName("Prompt", count: count))"
     case .file: "Delete \(itemName("File", count: count))"
     case .mcpServer: "Delete \(itemName("Server", count: count))"
@@ -45,7 +45,7 @@ private enum SettingsDeletionKind {
   func message(count: Int) -> String {
     switch self {
     case .endpoint:
-      "\(count) endpoint\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+      "\(count) provider\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .systemPrompt:
       "\(count) system prompt\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .file:
@@ -230,7 +230,7 @@ struct SettingsView: View {
         }
       } message: {
         Text(
-          "All conversations, settings, endpoints, API keys, memory, tools, and local app data will be removed from this device. This cannot be undone."
+          "All conversations, settings, providers, API keys, memory, tools, and local app data will be removed from this device. This cannot be undone."
         )
       }
       .alert(
@@ -304,7 +304,7 @@ struct SettingsView: View {
       DisclosureGroup {
         endpointContent
       } label: {
-        Label("Endpoints", systemImage: "network")
+        Label("Providers", systemImage: "network")
       }
 
       DisclosureGroup {
@@ -332,7 +332,7 @@ struct SettingsView: View {
   private var providerFooterText: String {
     if store.settings.openAIEndpoints.isEmpty {
       return
-        "Apple Intelligence runs on-device. Expand Endpoints to add OpenAI-compatible providers."
+        "Apple Intelligence runs on-device. Expand Providers to add OpenAI-compatible providers."
     }
     return "Choose which provider answers new chats. Apple Intelligence runs on-device."
   }
@@ -437,9 +437,9 @@ struct SettingsView: View {
       Task { await store.refreshEndpoint(endpoint) }
       endpointPath.append(endpoint.id)
     } label: {
-      Label("Add Endpoint", systemImage: "plus")
+      Label("Add Provider", systemImage: "plus")
     }
-    Text("Tap an endpoint to edit credentials and pick a default model.")
+    Text("Tap a provider to edit credentials and pick a default model.")
       .font(.caption)
       .foregroundStyle(.secondary)
   }
@@ -873,7 +873,7 @@ struct SettingsView: View {
     } header: {
       Text("Danger Zone")
     } footer: {
-      Text("Clear conversations removes chats. Factory Reset removes chats, settings, endpoints, API keys, memory, tools, and local app data from this device.")
+      Text("Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device.")
     }
   }
 
@@ -1279,10 +1279,10 @@ private enum EndpointNameResolution {
     let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmedName.isEmpty else { return nil }
     guard let fallbackName = providerName(for: endpoint) else {
-      return "Specify a name for this endpoint."
+      return "Specify a name for this provider."
     }
     if hasDuplicateName(fallbackName, excluding: endpoint.id, in: endpoints) {
-      return "Another endpoint is already named \"\(fallbackName)\". Specify a name."
+      return "Another provider is already named \"\(fallbackName)\". Specify a name."
     }
     return nil
   }

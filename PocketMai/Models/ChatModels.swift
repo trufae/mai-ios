@@ -559,7 +559,7 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
 }
 
 extension OpenAIEndpoint {
-  static let defaultDisplayName = "New Endpoint"
+  static let defaultDisplayName = "New Provider"
 
   var displayName: String {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)

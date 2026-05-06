@@ -717,12 +717,13 @@ struct MarkdownContentView: View {
   }
 
   private func headingFont(level: Int) -> Font {
-    let clampedLevel = min(max(level, 1), 3)
+    let clampedLevel = min(max(level, 1), 4)
     let scale: Double =
       switch clampedLevel {
       case 1: 1.55
       case 2: 1.32
-      default: 1.16
+      case 3: 1.16
+      default: 1.04
       }
     return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
       .weight(clampedLevel == 1 ? .bold : .semibold)
@@ -1075,7 +1076,7 @@ enum MarkdownParser {
   private static func heading(_ trimmed: String) -> (level: Int, text: String)? {
     guard trimmed.hasPrefix("#") else { return nil }
     let level = trimmed.prefix(while: { $0 == "#" }).count
-    guard (1...3).contains(level), trimmed.count > level else { return nil }
+    guard (1...4).contains(level), trimmed.count > level else { return nil }
     let separatorIndex = trimmed.index(trimmed.startIndex, offsetBy: level)
     guard trimmed[separatorIndex] == " " else { return nil }
     let text = trimmed[trimmed.index(after: separatorIndex)...]
