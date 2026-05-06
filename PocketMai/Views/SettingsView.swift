@@ -387,6 +387,7 @@ struct SettingsView: View {
     .pickerStyle(.menu)
 
     Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
+    Toggle("Live Markdown", isOn: settingsBinding(\.appearance.liveMarkdown))
   }
 
   @ViewBuilder

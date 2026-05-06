@@ -189,13 +189,14 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   var fontSize: Double = 17
   var tint: AppearanceTint = .system
   var theme: AppearanceTheme = .system
+  var liveMarkdown: Bool = false
 
   static let defaults = AppearanceSettings()
 
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint, theme
+    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint, theme, liveMarkdown
   }
 
   init(from decoder: Decoder) throws {
@@ -209,6 +210,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
     theme = (try? c.decode(AppearanceTheme.self, forKey: .theme)) ?? .system
+    liveMarkdown = (try? c.decode(Bool.self, forKey: .liveMarkdown)) ?? false
   }
 
   func encode(to encoder: Encoder) throws {
@@ -218,6 +220,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(fontSize, forKey: .fontSize)
     try c.encode(tint, forKey: .tint)
     try c.encode(theme, forKey: .theme)
+    try c.encode(liveMarkdown, forKey: .liveMarkdown)
   }
 }
 

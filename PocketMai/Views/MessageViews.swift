@@ -115,8 +115,9 @@ private struct MessageBubbleContent: View, Equatable {
       messageID: message.id,
       text: displayText
     )
+    let canRenderMarkdown = renderMarkdown && (!isStreaming || appearance.liveMarkdown)
     let usesMarkdown =
-      renderMarkdown && !isStreaming && MarkdownParser.mayContainMarkdown(prepared.visibleText)
+      canRenderMarkdown && MarkdownParser.mayContainMarkdown(prepared.visibleText)
     let markdownBlocks =
       !usesMarkdown || prepared.visibleText.isEmpty
       ? []
@@ -187,11 +188,6 @@ private struct MessageBubbleContent: View, Equatable {
           .font(messageFont)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
-      } else if isStreaming {
-        Text(visibleText)
-          .font(messageFont)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
       } else if usesMarkdown {
         MarkdownContentView(
           blocks: markdownBlocks,
