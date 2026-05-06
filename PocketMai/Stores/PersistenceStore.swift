@@ -23,10 +23,9 @@ final class PersistenceStore: @unchecked Sendable {
 
   init(fileManager: FileManager = .default) {
     self.fileManager = fileManager
-    let documents =
-      fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSTemporaryDirectory())
-    baseURL = documents.appendingPathComponent("PocketMai", isDirectory: true)
+    PocketMaiDirectories.prepareStorage(fileManager: fileManager)
+    baseURL = PocketMaiDirectories.appDataURL
+    try? fileManager.createDirectory(at: baseURL, withIntermediateDirectories: true)
   }
 
   private var conversationsURL: URL {

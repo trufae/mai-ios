@@ -31,6 +31,11 @@ enum ToolAgentRegistry {
     if conversation.enabledTools.contains(.weather) {
       defs.append(contentsOf: WeatherTool.definitions)
     }
+    if conversation.enabledTools.contains(.files)
+      && settings.toolSettings.filesWorkspaceAccessEnabled
+    {
+      defs.append(contentsOf: FileWorkspaceTool.definitions)
+    }
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidScheme {
       let tools = mcpTools[server.id] ?? []
@@ -118,6 +123,20 @@ enum ToolAgentRegistry {
         return true
       }
     }
+    if names.contains(FileWorkspaceTool.listName) || names.contains(FileWorkspaceTool.readName)
+      || names.contains(FileWorkspaceTool.writeName)
+    {
+      if containsAny(
+        text,
+        [
+          "file", "files", "folder", "directory", "directories", "read file", "write file",
+          "append to", "save to", "create folder", "create directory", "list folder",
+          "list files",
+        ])
+      {
+        return true
+      }
+    }
     if containsAny(text, ["use a tool", "use the tool", "call a tool", "call the tool", "mcp"]) {
       return true
     }
@@ -190,7 +209,8 @@ enum ToolAgentRegistry {
   private static func isBuiltInTool(_ name: String) -> Bool {
     switch name {
     case WebSearchTool.name, WebSearchTool.fetchName, WeatherTool.name,
-      TodoTool.listName, TodoTool.addName, TodoTool.doneName, TextToSpeechTool.name:
+      TodoTool.listName, TodoTool.addName, TodoTool.doneName, TextToSpeechTool.name,
+      FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName:
       return true
     default:
       return false
@@ -254,9 +274,29 @@ enum ToolAgentRegistry {
     case WeatherTool.name:
       return await WeatherTool.run(
         settings: store.settings.toolSettings, locationService: { store.locationService })
+    case FileWorkspaceTool.listName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.list(arguments: normalizedCall.argumentValues)
+    case FileWorkspaceTool.readName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.read(arguments: normalizedCall.argumentValues)
+    case FileWorkspaceTool.writeName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.write(arguments: normalizedCall.argumentValues)
     default:
       return await dispatchMCP(call: normalizedCall, store: store)
     }
+  }
+
+  private static func fileWorkspaceToolsEnabled(store: AppStore) -> Bool {
+    (store.currentConversation?.enabledTools.contains(.files) ?? false)
+      && store.settings.toolSettings.filesWorkspaceAccessEnabled
   }
 
   private static func dispatchMCP(call: ParsedToolCall, store: AppStore) async -> String {
@@ -423,6 +463,73 @@ enum ToolProxy {
       return [:]
     }
   }
+}
+
+@MainActor
+enum FileWorkspaceTool {
+  static let listName = "files_list"
+  static let readName = "files_read"
+  static let writeName = "files_write"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: listName,
+      description:
+        "List files in FilesData. Use relative folder paths only.",
+      parameters: [
+        ToolParameterDef(
+          name: "directory", type: "string",
+          description: "Folder path inside FilesData. Use . for the top folder. Default: .",
+          required: false),
+        ToolParameterDef(
+          name: "include_hidden", type: "boolean",
+          description: "Show hidden files. Default: false.",
+          required: false),
+      ]
+    ),
+    ToolDefinition(
+      name: readName,
+      description:
+        "Read a text file from FilesData. Use a relative file path.",
+      parameters: [
+        ToolParameterDef(
+          name: "path", type: "string",
+          description: "File path inside FilesData.",
+          required: true),
+        ToolParameterDef(
+          name: "max_bytes", type: "integer",
+          description: "Maximum bytes to read. Default: 120000.",
+          required: false),
+      ]
+    ),
+    ToolDefinition(
+      name: writeName,
+      description:
+        "Write text to FilesData, append text, or create a folder. Use relative paths only.",
+      parameters: [
+        ToolParameterDef(
+          name: "path", type: "string",
+          description: "File or folder path inside FilesData.",
+          required: true),
+        ToolParameterDef(
+          name: "content", type: "string",
+          description: "Text to write.",
+          required: false),
+        ToolParameterDef(
+          name: "append", type: "boolean",
+          description: "Add to the end of the file. Default: false.",
+          required: false),
+        ToolParameterDef(
+          name: "create_dirs", type: "boolean",
+          description: "Create missing parent folders. Default: false.",
+          required: false),
+        ToolParameterDef(
+          name: "create_directory", type: "boolean",
+          description: "Create path as a folder. Default: false.",
+          required: false),
+      ]
+    ),
+  ]
 }
 
 @MainActor

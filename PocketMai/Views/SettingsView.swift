@@ -819,6 +819,14 @@ struct SettingsView: View {
         .font(.footnote)
         .foregroundStyle(.secondary)
     case .files:
+      Toggle(
+        "Enable FilesData tools",
+        isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
+      Text(
+        "The callable Files tools are limited to the FilesData folder in Files app and USB file sharing."
+      )
+        .font(.caption)
+        .foregroundStyle(.secondary)
       Button {
         showingToolFileImporter = true
       } label: {

@@ -879,6 +879,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webSearchFetchingEnabled: Bool = false
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
+  var filesWorkspaceAccessEnabled: Bool = false
   var voices: VoiceSettings = .defaults
 
   static let defaults = NativeToolSettings()
@@ -890,6 +891,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case manualLocation, weatherLocation, webSearchProvider
     case webSearchSearXNGURL, webSearchSearXNGUsername, webSearchSearXNGPassword
     case webSearchFetchingEnabled, todos, files
+    case filesWorkspaceAccessEnabled
     case voices
   }
 
@@ -929,6 +931,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
       ?? defaults.webSearchFetchingEnabled
     todos = (try? c.decode([TodoItem].self, forKey: .todos)) ?? defaults.todos
     files = (try? c.decode([ToolFile].self, forKey: .files)) ?? defaults.files
+    filesWorkspaceAccessEnabled =
+      (try? c.decode(Bool.self, forKey: .filesWorkspaceAccessEnabled))
+      ?? defaults.filesWorkspaceAccessEnabled
 
     if let decoded = try? c.decode(VoiceSettings.self, forKey: .voices) {
       voices = decoded
@@ -964,6 +969,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(webSearchFetchingEnabled, forKey: .webSearchFetchingEnabled)
     try c.encode(todos, forKey: .todos)
     try c.encode(files, forKey: .files)
+    try c.encode(filesWorkspaceAccessEnabled, forKey: .filesWorkspaceAccessEnabled)
     try c.encode(voices, forKey: .voices)
   }
 }
