@@ -579,6 +579,11 @@ struct SystemPrompt: Identifiable, Codable, Equatable, Sendable {
     self.name = name
     self.text = text
   }
+
+  var displayName: String {
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedName.isEmpty ? "Untitled" : trimmedName
+  }
 }
 
 struct TodoItem: Identifiable, Codable, Equatable, Sendable {

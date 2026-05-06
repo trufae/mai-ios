@@ -145,9 +145,9 @@ struct ChatView: View {
             }
           } label: {
             if prompt.id == currentSystemPromptID {
-              Label(prompt.name.isEmpty ? "Untitled" : prompt.name, systemImage: "checkmark")
+              Label(prompt.displayName, systemImage: "checkmark")
             } else {
-              Text(prompt.name.isEmpty ? "Untitled" : prompt.name)
+              Text(prompt.displayName)
             }
           }
         }
@@ -208,8 +208,7 @@ struct ChatView: View {
     guard let id = currentSystemPromptID,
       let prompt = store.settings.systemPrompts.first(where: { $0.id == id })
     else { return nil }
-    let name = prompt.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    return name.isEmpty ? "Untitled" : name
+    return prompt.displayName
   }
 
   private var canCompactCurrentChat: Bool {

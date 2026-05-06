@@ -577,15 +577,11 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var promptContent: some View {
-    Picker("Default Prompt", selection: settingsBinding(\.defaultSystemPromptID)) {
-      ForEach(store.settings.systemPrompts) { prompt in
-        Text(prompt.name.isEmpty ? "Untitled" : prompt.name).tag(prompt.id)
-      }
-    }
-    .pickerStyle(.menu)
-    ForEach($store.settings.systemPrompts) { $prompt in
+    ForEach(store.settings.systemPrompts) { prompt in
       NavigationLink {
-        SystemPromptDetailView(prompt: $prompt)
+        SystemPromptDetailView(
+          prompt: prompt,
+          isDefault: prompt.id == store.settings.defaultSystemPromptID)
       } label: {
         promptRow(prompt)
       }
@@ -593,15 +589,14 @@ struct SettingsView: View {
     .onDelete { offsets in
       pendingDeletion = PendingSettingsDeletion(kind: .systemPrompt, offsets: offsets)
     }
-    Button {
-      let prompt = SystemPrompt(name: "Custom prompt", text: "You are a helpful assistant.")
-      store.settings.systemPrompts.append(prompt)
-      store.settings.defaultSystemPromptID = prompt.id
-      store.saveSettings()
+    NavigationLink {
+      SystemPromptDetailView()
     } label: {
       Label("Add Prompt", systemImage: "plus")
     }
-    Text("Tap a prompt to edit. The default is sent to the model at the start of every chat.")
+    Text(
+      "Tap a prompt to edit. Use the star in the editor to choose the default prompt sent to the model at the start of every chat."
+    )
       .font(.caption)
       .foregroundStyle(.secondary)
   }
@@ -611,12 +606,12 @@ struct SettingsView: View {
     let trimmed = prompt.text.trimmingCharacters(in: .whitespacesAndNewlines)
     let preview = trimmed.split(separator: "\n").first.map(String.init) ?? ""
     return HStack(spacing: 12) {
-      Image(systemName: isDefault ? "checkmark.circle.fill" : "text.bubble")
+      Image(systemName: isDefault ? "star.fill" : "text.bubble")
         .imageScale(.medium)
         .foregroundStyle(isDefault ? Color.accentColor : .secondary)
         .frame(width: 18)
       VStack(alignment: .leading, spacing: 2) {
-        Text(prompt.name.isEmpty ? "Untitled" : prompt.name)
+        Text(prompt.displayName)
           .font(.body)
         Text(preview.isEmpty ? "Empty" : preview)
           .font(.caption)
@@ -1649,18 +1644,85 @@ private struct EndpointDetailView: View {
   }
 }
 
+private enum SystemPromptNameResolution {
+  static func savedName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func validationMessage(
+    forName name: String,
+    excluding promptID: UUID?,
+    in prompts: [SystemPrompt]
+  ) -> String? {
+    let savedName = savedName(name)
+    guard !savedName.isEmpty else {
+      return "Specify a prompt name."
+    }
+    if hasDuplicateDisplayName(savedName, excluding: promptID, in: prompts) {
+      return "A prompt named \"\(savedName)\" already exists."
+    }
+    return nil
+  }
+
+  private static func hasDuplicateDisplayName(
+    _ name: String,
+    excluding promptID: UUID?,
+    in prompts: [SystemPrompt]
+  ) -> Bool {
+    let normalized = normalizedName(name)
+    return prompts.contains { prompt in
+      guard prompt.id != promptID else { return false }
+      return normalizedName(prompt.displayName) == normalized
+    }
+  }
+
+  private static func normalizedName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+}
+
 private struct SystemPromptDetailView: View {
-  @Binding var prompt: SystemPrompt
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+  @FocusState private var isNameFocused: Bool
+
+  private static let newPromptText = "You are a helpful assistant."
+
+  private let promptID: UUID?
+  private let originalName: String
+  private let originalText: String
+  private let originalIsDefault: Bool
+
+  @State private var draftName: String
+  @State private var draftText: String
+  @State private var draftIsDefault: Bool
+  @State private var showingLeaveConfirmation = false
+  @State private var toastMessage: String?
+
+  init(prompt: SystemPrompt? = nil, isDefault: Bool = false) {
+    let initialName = prompt?.name ?? ""
+    let initialText = prompt?.text ?? Self.newPromptText
+
+    promptID = prompt?.id
+    originalName = initialName
+    originalText = initialText
+    originalIsDefault = isDefault
+
+    _draftName = State(initialValue: initialName)
+    _draftText = State(initialValue: initialText)
+    _draftIsDefault = State(initialValue: isDefault)
+  }
 
   var body: some View {
     Form {
       Section {
-        TextField("Name", text: $prompt.name)
+        TextField("Name", text: $draftName)
+          .focused($isNameFocused)
       } footer: {
         Text("Shown in the prompt picker.")
       }
       Section {
-        TextEditor(text: $prompt.text)
+        TextEditor(text: $draftText)
           .frame(minHeight: 220)
           .font(.callout)
       } header: {
@@ -1669,8 +1731,111 @@ private struct SystemPromptDetailView: View {
         Text("Sent to the model at the start of each chat.")
       }
     }
-    .navigationTitle(prompt.name.isEmpty ? "Prompt" : prompt.name)
+    .navigationTitle(navigationTitle)
     .navigationBarTitleDisplayMode(.inline)
+    .navigationBarBackButtonHidden(true)
+    .toolbar {
+      ToolbarItem(placement: .cancellationAction) {
+        Button {
+          requestDismiss()
+        } label: {
+          Label(isNewPrompt ? "Cancel" : "Back", systemImage: "chevron.left")
+        }
+      }
+      ToolbarItemGroup(placement: .confirmationAction) {
+        Button {
+          draftIsDefault = true
+        } label: {
+          Image(systemName: draftIsDefault ? "star.fill" : "star")
+        }
+        .accessibilityLabel(draftIsDefault ? "Default Prompt" : "Make Default Prompt")
+        .foregroundStyle(draftIsDefault ? Color.accentColor : .primary)
+        Button("Save") {
+          savePromptAndDismiss()
+        }
+      }
+    }
+    .alert("Save changes?", isPresented: $showingLeaveConfirmation) {
+      Button("Cancel", role: .cancel) {}
+      Button("Discard Changes", role: .destructive) {
+        dismiss()
+      }
+      Button("Save") {
+        savePromptAndDismiss()
+      }
+    } message: {
+      Text("Save or discard changes before leaving this prompt.")
+    }
+    .settingsToast($toastMessage)
+    .onAppear {
+      if isNewPrompt {
+        isNameFocused = true
+      }
+    }
+  }
+
+  private var isNewPrompt: Bool {
+    promptID == nil
+  }
+
+  private var navigationTitle: String {
+    let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty { return trimmed }
+    return isNewPrompt ? "New Prompt" : "Prompt"
+  }
+
+  private var hasUnsavedChanges: Bool {
+    draftName != originalName
+      || draftText != originalText
+      || draftIsDefault != originalIsDefault
+  }
+
+  private func requestDismiss() {
+    guard hasUnsavedChanges else {
+      dismiss()
+      return
+    }
+    showingLeaveConfirmation = true
+  }
+
+  private func savePromptAndDismiss() {
+    if let message = SystemPromptNameResolution.validationMessage(
+      forName: draftName,
+      excluding: promptID,
+      in: store.settings.systemPrompts)
+    {
+      showToast(message)
+      return
+    }
+
+    let savedName = SystemPromptNameResolution.savedName(draftName)
+    if let promptID {
+      guard let index = store.settings.systemPrompts.firstIndex(where: { $0.id == promptID })
+      else {
+        showToast("This prompt no longer exists.")
+        return
+      }
+      store.settings.systemPrompts[index].name = savedName
+      store.settings.systemPrompts[index].text = draftText
+      if draftIsDefault {
+        store.settings.defaultSystemPromptID = promptID
+      }
+    } else {
+      let prompt = SystemPrompt(name: savedName, text: draftText)
+      store.settings.systemPrompts.append(prompt)
+      if draftIsDefault {
+        store.settings.defaultSystemPromptID = prompt.id
+      }
+    }
+
+    store.saveSettings()
+    dismiss()
+  }
+
+  private func showToast(_ message: String) {
+    withAnimation(.snappy) {
+      toastMessage = message
+    }
   }
 }
 
