@@ -32,6 +32,7 @@ enum ConversationPromptBuilder {
         let m = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !m.isEmpty { return m }
         if conversation.provider == .apple { return settings.appleModelID }
+        if conversation.provider == .mlx { return settings.localMLXModelID }
         if let endpoint = OpenAICompatibleProvider.selectedEndpoint(
           for: conversation, settings: settings)
         {

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
   @EnvironmentObject private var store: AppStore
+  @Environment(\.scenePhase) private var scenePhase
   @StateObject private var screenshotService = ChatScreenshotService()
   @State private var showingSettings = false
   @State private var showingHistory = false
@@ -72,6 +73,11 @@ struct ContentView: View {
     .background(ChatScreenshotServiceInstaller(service: screenshotService))
     .onAppear {
       screenshotService.store = store
+    }
+    .onChange(of: scenePhase) { _, phase in
+      if phase == .active {
+        store.refreshAppleIntelligenceAvailabilityInBackground()
+      }
     }
     .tint(store.settings.appearance.tintColor)
     .accentColor(store.settings.appearance.tintColor)

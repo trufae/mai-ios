@@ -75,7 +75,8 @@ struct ChatView: View {
       AudioExportPresentations(
         exporter: audioExporter,
         showingAudioExport: $showingAudioExport,
-        audioExportError: $audioExportError))
+        audioExportError: $audioExportError)
+    )
     .alert(
       "Delete this message?",
       isPresented: deleteMessageConfirmationBinding,
@@ -242,6 +243,8 @@ struct ChatView: View {
     switch conversation.provider {
     case .apple:
       return "Apple Intelligence"
+    case .mlx:
+      return "MLX Local"
     case .openAICompatible:
       let endpoint = conversation.endpointID.flatMap { id in
         store.settings.openAIEndpoints.first(where: { $0.id == id })
@@ -330,7 +333,8 @@ struct ChatView: View {
       "PocketMaiExports",
       isDirectory: true
     )
-    let url = directory
+    let url =
+      directory
       .appendingPathComponent(store.exportFilename(for: conversation))
       .appendingPathExtension(ConversationExportFormat.audio.fileExtension)
     showingAudioExport = true
@@ -348,7 +352,8 @@ struct ChatView: View {
       return nil
     } catch {
       showingAudioExport = false
-      audioExportError = (error as? LocalizedError)?.errorDescription
+      audioExportError =
+        (error as? LocalizedError)?.errorDescription
         ?? error.localizedDescription
       return nil
     }
@@ -961,6 +966,8 @@ private struct ConversationModelSettingsView: View {
             Picker("Provider", selection: providerSelectionBinding) {
               Label("Apple Intelligence", systemImage: "apple.logo")
                 .tag(DefaultProviderSelection.apple)
+              Label("MLX Local", systemImage: "cpu")
+                .tag(DefaultProviderSelection.mlx)
               ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
                 Label(endpoint.displayName, systemImage: "network")
                   .tag(DefaultProviderSelection.endpoint(endpoint.id))
@@ -1026,6 +1033,8 @@ private struct ConversationModelSettingsView: View {
   private var providerModelControls: some View {
     if provider == .apple {
       EmptyView()
+    } else if provider == .mlx {
+      mlxModelControls
     } else if let endpoint = selectedEndpoint {
       let models = store.endpointModels[endpoint.id] ?? []
       if models.isEmpty {
@@ -1055,6 +1064,29 @@ private struct ConversationModelSettingsView: View {
     }
   }
 
+  @ViewBuilder
+  private var mlxModelControls: some View {
+    Picker("Preset", selection: mlxPresetBinding) {
+      ForEach(LocalMLXModels.presets, id: \.self) { modelID in
+        Text(modelID).tag(modelID)
+      }
+    }
+    .pickerStyle(.menu)
+
+    TextField(
+      "Hugging Face MLX repo id", text: modelBinding(default: AppSettings.localMLXDefaultModelID)
+    )
+    .textInputAutocapitalization(.never)
+    .autocorrectionDisabled()
+    .font(.callout.monospaced())
+
+    Text(
+      "MLX downloads the selected Hugging Face repo on demand and caches it locally. Use MLX-ready repos only."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+  }
+
   private var selectedEndpoint: OpenAIEndpoint? {
     guard let conversation = store.currentConversation else { return nil }
     return OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: store.settings)
@@ -1065,6 +1097,8 @@ private struct ConversationModelSettingsView: View {
     if isCurrentProviderModelDefault { return false }
     switch conversation.provider {
     case .apple:
+      return true
+    case .mlx:
       return true
     case .openAICompatible:
       return selectedEndpoint != nil
@@ -1078,6 +1112,10 @@ private struct ConversationModelSettingsView: View {
     case .apple:
       return defaults.provider == .apple
         && normalizedModel(conversation.modelID) == normalizedModel(defaults.modelID)
+    case .mlx:
+      let model = effectiveMLXModel(conversation)
+      return defaults.provider == .mlx
+        && normalizedModel(model) == normalizedModel(defaults.modelID)
     case .openAICompatible:
       guard let endpoint = selectedEndpoint else { return false }
       let model = effectiveConversationModel(conversation, endpoint: endpoint)
@@ -1111,6 +1149,12 @@ private struct ConversationModelSettingsView: View {
     case .apple:
       store.settings.defaultProvider = .apple
       store.settings.appleModelID = conversation.modelID
+    case .mlx:
+      let model = effectiveMLXModel(conversation)
+      store.settings.defaultProvider = .mlx
+      if !model.isEmpty {
+        store.settings.localMLXModelID = model
+      }
     case .openAICompatible:
       guard let endpoint = selectedEndpoint,
         let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id })
@@ -1133,6 +1177,11 @@ private struct ConversationModelSettingsView: View {
     return model.isEmpty ? normalizedModel(endpoint.defaultModel) : model
   }
 
+  private func effectiveMLXModel(_ conversation: Conversation) -> String {
+    let model = normalizedModel(conversation.modelID)
+    return model.isEmpty ? normalizedModel(store.settings.localMLXModelID) : model
+  }
+
   private func normalizedModel(_ model: String) -> String {
     model.trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -1144,6 +1193,8 @@ private struct ConversationModelSettingsView: View {
         switch conversation.provider {
         case .apple:
           return .apple
+        case .mlx:
+          return .mlx
         case .openAICompatible:
           if let id = conversation.endpointID,
             store.settings.openAIEndpoints.contains(where: { $0.id == id })
@@ -1164,6 +1215,11 @@ private struct ConversationModelSettingsView: View {
             conversation.endpointID = nil
             conversation.modelID = store.settings.appleModelID
             didSaveDefaults = false
+          case .mlx:
+            conversation.provider = .mlx
+            conversation.endpointID = nil
+            conversation.modelID = store.settings.localMLXModelID
+            didSaveDefaults = false
           case .endpoint(let id):
             conversation.provider = .openAICompatible
             conversation.endpointID = id
@@ -1175,6 +1231,24 @@ private struct ConversationModelSettingsView: View {
             didSaveDefaults = false
           }
         }
+      }
+    )
+  }
+
+  private var mlxPresetBinding: Binding<String> {
+    Binding(
+      get: {
+        let model = normalizedModel(store.currentConversation?.modelID ?? "")
+        guard LocalMLXModels.presets.contains(model) else {
+          return LocalMLXModels.presets.first ?? AppSettings.localMLXDefaultModelID
+        }
+        return model
+      },
+      set: { model in
+        store.updateCurrentConversation { conversation in
+          conversation.modelID = model
+        }
+        didSaveDefaults = false
       }
     )
   }

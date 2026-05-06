@@ -1,0 +1,257 @@
+import Foundation
+import HFAPI
+import MLX
+import MLXLLM
+import MLXLMCommon
+import MLXLMHFAPI
+import MLXLMTokenizers
+
+enum LocalMLXModels {
+  static let presets = [
+    AppSettings.localMLXDefaultModelID,
+    "mlx-community/LFM2-350M-MLX",
+    "mlx-community/LFM2-2.6B-4bit",
+    "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+  ]
+}
+
+enum LocalMLXError: LocalizedError {
+  case invalidModelID(String)
+  case emptyPrompt
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidModelID(let id):
+      if id.isEmpty {
+        return "Enter a Hugging Face repo id in the form org/model-name."
+      }
+      return
+        "Invalid MLX model id: \(id). Use a Hugging Face repo id in the form org/model-name, not a URL or local path."
+    case .emptyPrompt:
+      return "Enter a prompt before generating."
+    }
+  }
+}
+
+enum LocalMLXRepoIDValidator {
+  private static let allowed = CharacterSet(
+    charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+  )
+
+  static func isValid(_ repoID: String) -> Bool {
+    let parts = repoID.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 2 else { return false }
+    return parts.allSatisfy { part in
+      isValidRepoComponent(String(part))
+    }
+  }
+
+  private static func isValidRepoComponent(_ component: String) -> Bool {
+    guard !component.isEmpty, component.count <= 96 else { return false }
+    guard component.rangeOfCharacter(from: allowed.inverted) == nil else { return false }
+    guard !component.hasPrefix("."), !component.hasPrefix("-") else { return false }
+    guard !component.hasSuffix("."), !component.hasSuffix("-") else { return false }
+    guard !component.contains(".."), !component.contains("--") else { return false }
+    return true
+  }
+}
+
+actor LocalMLXProvider {
+  static let shared = LocalMLXProvider()
+
+  private var container: ModelContainer?
+  private var loadedModelID: String?
+
+  private init() {}
+
+  func load(
+    modelID rawModelID: String,
+    progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
+  ) async throws {
+    let modelID = Self.normalizedModelID(rawModelID)
+    guard LocalMLXRepoIDValidator.isValid(modelID) else {
+      throw LocalMLXError.invalidModelID(modelID)
+    }
+
+    if container != nil, loadedModelID == modelID {
+      return
+    }
+
+    let config = ModelConfiguration(id: modelID)
+    container = try await loadModelContainer(
+      from: HubClient.default,
+      using: TokenizersLoader(),
+      configuration: config,
+      progressHandler: progressHandler
+    )
+    loadedModelID = modelID
+  }
+
+  func complete(
+    request: ChatCompletionRequest,
+    onUpdate: @escaping @MainActor (String) -> Void
+  ) async throws -> String {
+    let modelID = Self.effectiveModelID(
+      conversation: request.conversation,
+      settings: request.settings
+    )
+    guard LocalMLXRepoIDValidator.isValid(modelID) else {
+      throw LocalMLXError.invalidModelID(modelID)
+    }
+
+    try await load(modelID: modelID)
+    guard let container else {
+      throw ChatProviderError.providerRequestFailed("MLX model did not finish loading.")
+    }
+
+    let messages = Self.chatMessages(
+      conversation: request.conversation,
+      settings: request.settings,
+      context: request.context,
+      messageLimitOverride: request.messageLimitOverride
+    )
+    guard messages.contains(where: { $0.role == .user }) else {
+      throw LocalMLXError.emptyPrompt
+    }
+
+    let input = try await container.prepare(input: UserInput(chat: messages))
+    let stream = try await container.generate(
+      input: input,
+      parameters: GenerateParameters(maxTokens: 1_200, temperature: 0.7)
+    )
+
+    var output = ""
+    for await generation in stream {
+      try Task.checkCancellation()
+      switch generation {
+      case .chunk(let text):
+        output += text
+        if request.conversation.usesStreaming {
+          await onUpdate(output)
+        }
+      case .info:
+        break
+      case .toolCall(let toolCall):
+        output += "\n\n[Tool call: \(toolCall.function.name)]"
+        if request.conversation.usesStreaming {
+          await onUpdate(output)
+        }
+      }
+    }
+
+    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      throw ChatProviderError.emptyResponse
+    }
+    await onUpdate(output)
+    return output
+  }
+
+  static func effectiveModelID(conversation: Conversation, settings: AppSettings) -> String {
+    let model = normalizedModelID(conversation.modelID)
+    return model.isEmpty ? normalizedModelID(settings.localMLXModelID) : model
+  }
+
+  static func message(for error: Error, action: String, modelID: String) -> String {
+    if let localError = error as? LocalMLXError {
+      return localError.localizedDescription
+    }
+
+    if let factoryError = error as? ModelFactoryError {
+      switch factoryError {
+      case .unsupportedModelType:
+        return
+          "Unsupported model format for \(modelID). Use a Hugging Face repo that is already converted to MLX and supported by mlx-swift-lm."
+      case .noModelFactoryAvailable:
+        return "MLX LLM support is not available in this build. Check that MLXLLM is linked."
+      case .configurationFileError, .configurationDecodingError, .unsupportedProcessorType:
+        return
+          "Unsupported MLX model configuration for \(modelID): \(factoryError.localizedDescription)"
+      }
+    }
+
+    let nsError = error as NSError
+    let detail = error.localizedDescription
+    let lowercasedDetail = detail.lowercased()
+
+    if nsError.domain == NSURLErrorDomain || error is URLError
+      || lowercasedDetail.contains("network")
+      || lowercasedDetail.contains("timed out")
+      || lowercasedDetail.contains("could not connect")
+    {
+      return "Download failed for \(modelID): \(detail)"
+    }
+
+    if lowercasedDetail.contains("out of memory")
+      || lowercasedDetail.contains("memory allocation")
+      || lowercasedDetail.contains("failed to allocate")
+      || lowercasedDetail.contains("resource exhausted")
+    {
+      return "Out of memory while using \(modelID). Try a smaller 4-bit MLX model."
+    }
+
+    if lowercasedDetail.contains("not found")
+      || lowercasedDetail.contains("404")
+      || lowercasedDetail.contains("repository")
+    {
+      return
+        "Invalid model id or unavailable Hugging Face repo: \(modelID). Use an MLX-ready repo id such as org/model-name."
+    }
+
+    if lowercasedDetail.contains("safetensor")
+      || lowercasedDetail.contains("config.json")
+      || lowercasedDetail.contains("unsupported")
+    {
+      return "Unsupported model format for \(modelID): \(detail)"
+    }
+
+    return "\(action) failed for \(modelID): \(detail)"
+  }
+
+  private static func chatMessages(
+    conversation: Conversation,
+    settings: AppSettings,
+    context: String,
+    messageLimitOverride: Int?
+  ) -> [Chat.Message] {
+    let baseSystem = PromptComposer.systemPrompt(settings: settings, conversation: conversation)
+    let systemContent =
+      context.isEmpty
+      ? baseSystem
+      : "\(baseSystem)\n\n## Context\n\(context)"
+    var messages: [Chat.Message] = [.system(systemContent)]
+
+    let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
+    let limited: [ChatMessage] = {
+      if let effectiveLimit {
+        return Array(conversation.messages.suffix(effectiveLimit))
+      }
+      return conversation.messages
+    }()
+
+    for message in limited {
+      let content = MessageContentFilter.conversationContextText(from: message.text)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !content.isEmpty else { continue }
+
+      switch message.role {
+      case .user:
+        messages.append(.user(content))
+      case .assistant:
+        let role: Chat.Message.Role =
+          content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
+          ? .assistant : .user
+        messages.append(Chat.Message(role: role, content: content))
+      case .system:
+        messages.append(.system(content))
+      case .tool, .error:
+        messages.append(.user(content))
+      }
+    }
+
+    return messages
+  }
+
+  private static func normalizedModelID(_ modelID: String) -> String {
+    modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}

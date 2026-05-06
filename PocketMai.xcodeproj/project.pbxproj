@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000011 /* MLX */; };
+		A10000000000000000000002 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000012 /* MLXLLM */; };
+		A10000000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* MLXLMCommon */; };
+		A10000000000000000000004 /* MLXLMHFAPI in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* MLXLMHFAPI */; };
+		A10000000000000000000005 /* MLXLMTokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000015 /* MLXLMTokenizers */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		A00000000000000000000007 /* PocketMai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PocketMai.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -41,6 +49,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000001 /* MLX in Frameworks */,
+				A10000000000000000000002 /* MLXLLM in Frameworks */,
+				A10000000000000000000003 /* MLXLMCommon in Frameworks */,
+				A10000000000000000000004 /* MLXLMHFAPI in Frameworks */,
+				A10000000000000000000005 /* MLXLMTokenizers in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,6 +98,11 @@
 			);
 			name = PocketMai;
 			packageProductDependencies = (
+				A10000000000000000000011 /* MLX */,
+				A10000000000000000000012 /* MLXLLM */,
+				A10000000000000000000013 /* MLXLMCommon */,
+				A10000000000000000000014 /* MLXLMHFAPI */,
+				A10000000000000000000015 /* MLXLMTokenizers */,
 			);
 			productName = PocketMai;
 			productReference = A00000000000000000000007 /* PocketMai.app */;
@@ -114,6 +132,12 @@
 			);
 			mainGroup = A00000000000000000000010;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+				A10000000000000000000023 /* XCRemoteSwiftPackageReference "swift-hf-api-mlx" */,
+				A10000000000000000000024 /* XCRemoteSwiftPackageReference "swift-tokenizers-mlx" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A00000000000000000000011 /* Products */;
 			projectDirPath = "";
@@ -270,6 +294,69 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.31.3;
+			};
+		};
+		A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.31.3;
+			};
+		};
+		A10000000000000000000023 /* XCRemoteSwiftPackageReference "swift-hf-api-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/DePasqualeOrg/swift-hf-api-mlx";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.2.0;
+			};
+		};
+		A10000000000000000000024 /* XCRemoteSwiftPackageReference "swift-tokenizers-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/DePasqualeOrg/swift-tokenizers-mlx";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A10000000000000000000011 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		A10000000000000000000012 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		A10000000000000000000013 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		A10000000000000000000014 /* MLXLMHFAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000023 /* XCRemoteSwiftPackageReference "swift-hf-api-mlx" */;
+			productName = MLXLMHFAPI;
+		};
+		A10000000000000000000015 /* MLXLMTokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000024 /* XCRemoteSwiftPackageReference "swift-tokenizers-mlx" */;
+			productName = MLXLMTokenizers;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A00000000000000000000004 /* Project object */;
 }

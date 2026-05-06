@@ -58,6 +58,7 @@ final class AppStore: ObservableObject {
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
+  @Published var appleAvailabilityReport: AppleFoundationAvailabilityReport
   @Published var appleAvailabilityMessage: String?
 
   let streamingTextStore: StreamingTextStore
@@ -79,6 +80,7 @@ final class AppStore: ObservableObject {
     self.streamingTextStore = streamingTextStore
     settings = persistence.loadSettings()
     conversations = []
+    appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
     startFreshConversationForLaunch()
     Task { await loadStartupData() }
@@ -129,7 +131,7 @@ final class AppStore: ObservableObject {
     mergeLoadedSummaries(summaries)
 
     let availabilityTask = Task.detached(priority: .utility) {
-      AppleFoundationProvider.unavailableMessage
+      AppleFoundationProvider.availabilityReport
     }
     let loadedConversations = await Task.detached(priority: .userInitiated) {
       persistence.loadConversations()
@@ -137,7 +139,9 @@ final class AppStore: ObservableObject {
 
     guard generation == dataGeneration else { return }
     mergeLoadedConversations(loadedConversations)
-    appleAvailabilityMessage = await availabilityTask.value
+    let availabilityReport = await availabilityTask.value
+    appleAvailabilityReport = availabilityReport
+    appleAvailabilityMessage = availabilityReport.unavailableMessage
   }
 
   private func makeNewConversation() -> Conversation {
@@ -721,6 +725,18 @@ final class AppStore: ObservableObject {
     endpointVoices[id] = nil
   }
 
+  func refreshAppleIntelligenceAvailabilityInBackground() {
+    Task { await refreshAppleIntelligenceAvailability() }
+  }
+
+  func refreshAppleIntelligenceAvailability() async {
+    let report = await Task.detached(priority: .utility) {
+      AppleFoundationProvider.availabilityReport
+    }.value
+    appleAvailabilityReport = report
+    appleAvailabilityMessage = report.unavailableMessage
+  }
+
   func resetMCPStatus(_ id: UUID) {
     mcpStatuses[id] = .unknown
     mcpTools[id] = nil
@@ -774,7 +790,9 @@ final class AppStore: ObservableObject {
     }
   }
 
-  private func fetchEndpointModelsResult(_ endpoint: OpenAIEndpoint) async -> Result<[String], Error> {
+  private func fetchEndpointModelsResult(_ endpoint: OpenAIEndpoint) async -> Result<
+    [String], Error
+  > {
     do {
       return .success(try await OpenAICompatibleProvider.fetchModels(endpoint: endpoint))
     } catch {
@@ -782,7 +800,9 @@ final class AppStore: ObservableObject {
     }
   }
 
-  private func fetchEndpointVoicesResult(_ endpoint: OpenAIEndpoint) async -> Result<[String], Error> {
+  private func fetchEndpointVoicesResult(_ endpoint: OpenAIEndpoint) async -> Result<
+    [String], Error
+  > {
     do {
       return .success(try await OpenAICompatibleProvider.fetchVoices(endpoint: endpoint))
     } catch {

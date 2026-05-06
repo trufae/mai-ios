@@ -22,6 +22,7 @@ enum ChatRole: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
   case apple
+  case mlx
   case openAICompatible
 
   var id: String { rawValue }
@@ -29,6 +30,7 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
   var displayName: String {
     switch self {
     case .apple: "Apple"
+    case .mlx: "MLX"
     case .openAICompatible: "OpenAI-compatible"
     }
   }
@@ -789,8 +791,8 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
       // point and can diverge them later.
       let legacyVoice = RoleVoiceSettings(
         language: (try? legacy.decode(String.self, forKey: .textToSpeechLanguage)) ?? "",
-        voiceIdentifier:
-          (try? legacy.decode(String.self, forKey: .textToSpeechVoiceIdentifier)) ?? "",
+        voiceIdentifier: (try? legacy.decode(String.self, forKey: .textToSpeechVoiceIdentifier))
+          ?? "",
         rate: (try? legacy.decode(Double.self, forKey: .textToSpeechRate))
           ?? RoleVoiceSettings.defaults.rate,
         pitch: (try? legacy.decode(Double.self, forKey: .textToSpeechPitch))
@@ -818,6 +820,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let appleDefaultModelID = ""
+  static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
   static let defaultTools: Set<NativeToolID> = []
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
@@ -827,6 +830,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
   var defaultProvider: ProviderKind = .apple
   var appleModelID: String = AppSettings.appleDefaultModelID
+  var localMLXModelID: String = AppSettings.localMLXDefaultModelID
   var selectedEndpointID: UUID? = nil
   var streamByDefault: Bool = true
   var showThinkingByDefault: Bool = false
@@ -861,12 +865,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     return openAIEndpoints.first(where: \.isEnabled)
   }
 
-  var defaultProviderConfiguration:
-    (provider: ProviderKind, endpointID: UUID?, modelID: String)
-  {
+  var defaultProviderConfiguration: (provider: ProviderKind, endpointID: UUID?, modelID: String) {
     switch defaultProvider {
     case .apple:
       return (.apple, nil, appleModelID)
+    case .mlx:
+      return (.mlx, nil, localMLXModelID)
     case .openAICompatible:
       guard let endpoint = defaultOpenAIEndpoint else {
         return (.apple, nil, appleModelID)
@@ -876,7 +880,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case defaultProvider, appleModelID, selectedEndpointID, streamByDefault, showThinkingByDefault
+    case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
+      showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, toolCallingMode
     case useToolProxy, contextWindowMode, appearance, renderMarkdownInChat
@@ -887,6 +892,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     defaultProvider =
       (try? c.decode(ProviderKind.self, forKey: .defaultProvider)) ?? .apple
     appleModelID = (try? c.decode(String.self, forKey: .appleModelID)) ?? ""
+    localMLXModelID =
+      (try? c.decode(String.self, forKey: .localMLXModelID))
+      ?? AppSettings.localMLXDefaultModelID
     selectedEndpointID = try? c.decode(UUID.self, forKey: .selectedEndpointID)
     streamByDefault = (try? c.decode(Bool.self, forKey: .streamByDefault)) ?? true
     showThinkingByDefault = (try? c.decode(Bool.self, forKey: .showThinkingByDefault)) ?? false

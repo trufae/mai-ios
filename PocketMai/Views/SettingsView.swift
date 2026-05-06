@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 enum DefaultProviderSelection: Hashable {
   case apple
+  case mlx
   case endpoint(UUID)
 }
 
@@ -294,6 +295,8 @@ struct SettingsView: View {
       Picker("Default", selection: defaultProviderBinding) {
         Label("Apple Intelligence", systemImage: "apple.logo")
           .tag(DefaultProviderSelection.apple)
+        Label("MLX Local", systemImage: "cpu")
+          .tag(DefaultProviderSelection.mlx)
         ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
           Label(endpoint.displayName, systemImage: "network")
             .tag(DefaultProviderSelection.endpoint(endpoint.id))
@@ -332,9 +335,9 @@ struct SettingsView: View {
   private var providerFooterText: String {
     if store.settings.openAIEndpoints.isEmpty {
       return
-        "Apple Intelligence runs on-device. Expand Providers to add OpenAI-compatible providers."
+        "Apple Intelligence and MLX run on-device. Expand Providers to inspect built-in providers or add OpenAI-compatible providers."
     }
-    return "Choose which provider answers new chats. Apple Intelligence runs on-device."
+    return "Choose which provider answers new chats. Apple Intelligence and MLX run on-device."
   }
 
   private var appearanceSection: some View {
@@ -421,6 +424,14 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var endpointContent: some View {
+    appleIntelligenceProviderRow
+
+    NavigationLink {
+      LocalLLMView()
+    } label: {
+      mlxProviderRow
+    }
+
     ForEach(store.settings.openAIEndpoints) { endpoint in
       NavigationLink(value: endpoint.id) {
         endpointRow(endpoint)
@@ -439,9 +450,86 @@ struct SettingsView: View {
     } label: {
       Label("Add Provider", systemImage: "plus")
     }
-    Text("Tap a provider to edit credentials and pick a default model.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
+    Text(
+      "Apple Intelligence and MLX are built in. OpenAI-compatible providers can be added, edited, or removed."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+  }
+
+  private var appleIntelligenceProviderRow: some View {
+    let report = store.appleAvailabilityReport
+    return providerStatusRow(
+      title: "Apple Intelligence",
+      subtitle: report.providerListSubtitle,
+      systemImage: appleIntelligenceStatusIcon(report.kind),
+      color: appleIntelligenceStatusColor(report.kind),
+      badge: report.statusLabel
+    )
+  }
+
+  private var mlxProviderRow: some View {
+    let modelID = store.settings.localMLXModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    return providerStatusRow(
+      title: "Local MLX LLM",
+      subtitle: modelID.isEmpty ? "Available. No model selected" : "Available. \(modelID)",
+      systemImage: "cpu",
+      color: .green,
+      badge: "Built-in"
+    )
+  }
+
+  private func providerStatusRow(
+    title: String,
+    subtitle: String,
+    systemImage: String,
+    color: Color,
+    badge: String
+  ) -> some View {
+    HStack(spacing: 12) {
+      Image(systemName: systemImage)
+        .imageScale(.medium)
+        .foregroundStyle(color)
+        .frame(width: 18)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.body)
+          .foregroundStyle(.primary)
+        Text(subtitle)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+      Spacer()
+      Text(badge)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(color)
+    }
+    .padding(.vertical, 2)
+  }
+
+  private func appleIntelligenceStatusIcon(_ kind: AppleFoundationAvailabilityKind) -> String {
+    switch kind {
+    case .checking:
+      return "arrow.triangle.2.circlepath"
+    case .available:
+      return "checkmark.circle.fill"
+    case .deviceNotEligible, .appleIntelligenceNotEnabled, .modelNotReady, .unavailable:
+      return "exclamationmark.circle.fill"
+    }
+  }
+
+  private func appleIntelligenceStatusColor(_ kind: AppleFoundationAvailabilityKind) -> Color {
+    switch kind {
+    case .checking:
+      return .orange
+    case .available:
+      return .green
+    case .modelNotReady:
+      return .orange
+    case .deviceNotEligible, .appleIntelligenceNotEnabled, .unavailable:
+      return .red
+    }
   }
 
   private func endpointRow(_ endpoint: OpenAIEndpoint) -> some View {
@@ -873,7 +961,9 @@ struct SettingsView: View {
     } header: {
       Text("Danger Zone")
     } footer: {
-      Text("Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device.")
+      Text(
+        "Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device."
+      )
     }
   }
 
@@ -986,6 +1076,8 @@ struct SettingsView: View {
         switch store.settings.defaultProvider {
         case .apple:
           return .apple
+        case .mlx:
+          return .mlx
         case .openAICompatible:
           if let id = store.settings.selectedEndpointID,
             store.settings.openAIEndpoints.contains(where: { $0.id == id && $0.isEnabled })
@@ -1002,6 +1094,8 @@ struct SettingsView: View {
         switch newValue {
         case .apple:
           store.settings.defaultProvider = .apple
+        case .mlx:
+          store.settings.defaultProvider = .mlx
         case .endpoint(let id):
           store.settings.defaultProvider = .openAICompatible
           store.settings.selectedEndpointID = id

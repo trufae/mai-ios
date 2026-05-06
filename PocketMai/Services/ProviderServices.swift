@@ -33,9 +33,14 @@ enum ChatProviderRouter {
   static func preflightMessage(conversation: Conversation, settings: AppSettings) -> String? {
     switch conversation.provider {
     case .apple:
-      AppleFoundationProvider.unavailableMessage
+      return AppleFoundationProvider.unavailableMessage
+    case .mlx:
+      let modelID = LocalMLXProvider.effectiveModelID(
+        conversation: conversation, settings: settings)
+      return LocalMLXRepoIDValidator.isValid(modelID)
+        ? nil : LocalMLXError.invalidModelID(modelID).errorDescription
     case .openAICompatible:
-      OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: settings) == nil
+      return OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: settings) == nil
         ? ChatProviderError.missingEndpoint.errorDescription : nil
     }
   }
@@ -72,6 +77,17 @@ enum ChatProviderRouter {
     switch request.conversation.provider {
     case .apple:
       return try await AppleFoundationProvider.complete(request: request, onUpdate: onUpdate)
+    case .mlx:
+      do {
+        return try await LocalMLXProvider.shared.complete(request: request, onUpdate: onUpdate)
+      } catch {
+        let modelID = LocalMLXProvider.effectiveModelID(
+          conversation: request.conversation,
+          settings: request.settings
+        )
+        throw ChatProviderError.providerRequestFailed(
+          LocalMLXProvider.message(for: error, action: "MLX generation", modelID: modelID))
+      }
     case .openAICompatible:
       return try await OpenAICompatibleProvider.complete(request: request, onUpdate: onUpdate)
     }
@@ -250,21 +266,83 @@ enum PromptComposer {
   }
 }
 
-enum AppleFoundationProvider {
-  // SystemLanguageModel.default.availability reads system prefs on every call.
-  // The result is effectively static for the app's lifetime, so resolve it
-  // once and let Swift's static-let lazy init memoize it for the session.
-  static let unavailableMessage: String? = {
-    switch SystemLanguageModel.default.availability {
+enum AppleFoundationAvailabilityKind: Equatable, Sendable {
+  case checking
+  case available
+  case deviceNotEligible
+  case appleIntelligenceNotEnabled
+  case modelNotReady
+  case unavailable
+}
+
+struct AppleFoundationAvailabilityReport: Equatable, Sendable {
+  let kind: AppleFoundationAvailabilityKind
+  let detail: String
+
+  static let checking = AppleFoundationAvailabilityReport(
+    kind: .checking,
+    detail: "Checking Apple Intelligence availability."
+  )
+
+  var unavailableMessage: String? {
+    switch kind {
+    case .checking:
+      return nil
     case .available:
       return nil
-    case .unavailable(let reason):
-      return "Apple Foundation Models are unavailable: \(message(for: reason))"
+    default:
+      return "Apple Foundation Models are unavailable: \(detail)"
     }
-  }()
+  }
+
+  var providerListSubtitle: String {
+    switch kind {
+    case .checking:
+      return "Checking support and system setting"
+    case .available:
+      return "Supported: Yes / Enabled: Yes"
+    case .deviceNotEligible:
+      return "Supported: No / Enabled: Unavailable"
+    case .appleIntelligenceNotEnabled:
+      return "Supported: Yes / Enabled: No"
+    case .modelNotReady:
+      return "Supported: Yes / Enabled: Yes / Model not ready"
+    case .unavailable:
+      return "Supported: Unknown / Enabled: Unknown"
+    }
+  }
+
+  var statusLabel: String {
+    switch kind {
+    case .checking: "Checking"
+    case .available: "Ready"
+    case .deviceNotEligible: "Unsupported"
+    case .appleIntelligenceNotEnabled: "Off"
+    case .modelNotReady: "Not Ready"
+    case .unavailable: "Unavailable"
+    }
+  }
+}
+
+enum AppleFoundationProvider {
+  static var availabilityReport: AppleFoundationAvailabilityReport {
+    switch SystemLanguageModel.default.availability {
+    case .available:
+      return AppleFoundationAvailabilityReport(
+        kind: .available,
+        detail: "Apple Intelligence is supported and enabled."
+      )
+    case .unavailable(let reason):
+      return report(for: reason)
+    }
+  }
+
+  static var unavailableMessage: String? {
+    availabilityReport.unavailableMessage
+  }
 
   static var availabilitySummary: String {
-    unavailableMessage ?? "Apple Foundation Models are ready."
+    availabilityReport.unavailableMessage ?? "Apple Foundation Models are ready."
   }
 
   static func complete(
@@ -326,6 +404,33 @@ enum AppleFoundationProvider {
         "the local model is not ready yet. Keep the device online until the model finishes downloading, or switch providers."
     @unknown default:
       return "the local model is not available on this device."
+    }
+  }
+
+  private static func report(
+    for reason: SystemLanguageModel.Availability.UnavailableReason
+  ) -> AppleFoundationAvailabilityReport {
+    switch reason {
+    case .deviceNotEligible:
+      return AppleFoundationAvailabilityReport(
+        kind: .deviceNotEligible,
+        detail: message(for: reason)
+      )
+    case .appleIntelligenceNotEnabled:
+      return AppleFoundationAvailabilityReport(
+        kind: .appleIntelligenceNotEnabled,
+        detail: message(for: reason)
+      )
+    case .modelNotReady:
+      return AppleFoundationAvailabilityReport(
+        kind: .modelNotReady,
+        detail: message(for: reason)
+      )
+    @unknown default:
+      return AppleFoundationAvailabilityReport(
+        kind: .unavailable,
+        detail: message(for: reason)
+      )
     }
   }
 }
@@ -955,8 +1060,7 @@ enum OpenAICompatibleProvider {
 
     var pathComponents = components.path.split(separator: "/").map(String.init)
     for removable in [["chat", "completions"], ["models"], ["voices"], ["audio", "speech"]] {
-      if pathComponents.suffix(removable.count) == removable[...]
-      {
+      if pathComponents.suffix(removable.count) == removable[...] {
         pathComponents.removeLast(removable.count)
       }
     }
