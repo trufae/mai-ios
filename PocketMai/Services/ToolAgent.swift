@@ -129,9 +129,8 @@ enum ToolAgentRegistry {
       if containsAny(
         text,
         [
-          "file", "files", "folder", "directory", "directories", "read file", "write file",
-          "append to", "save to", "create folder", "create directory", "list folder",
-          "list files",
+          "file", "files", "filesdata", "read file", "write file", "append to file",
+          "save file", "save to file", "list files",
         ])
       {
         return true
@@ -475,57 +474,36 @@ enum FileWorkspaceTool {
     ToolDefinition(
       name: listName,
       description:
-        "List files in FilesData. Use relative folder paths only.",
-      parameters: [
-        ToolParameterDef(
-          name: "directory", type: "string",
-          description: "Folder path inside FilesData. Use . for the top folder. Default: .",
-          required: false),
-        ToolParameterDef(
-          name: "include_hidden", type: "boolean",
-          description: "Show hidden files. Default: false.",
-          required: false),
-      ]
+        "List the top-level files in FilesData.",
+      parameters: []
     ),
     ToolDefinition(
       name: readName,
       description:
-        "Read a text file from FilesData. Use a relative file path.",
+        "Read a top-level text file from FilesData.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File path inside FilesData.",
+          description: "File name in FilesData. Do not use folders or slashes.",
           required: true),
-        ToolParameterDef(
-          name: "max_bytes", type: "integer",
-          description: "Maximum bytes to read. Default: 120000.",
-          required: false),
       ]
     ),
     ToolDefinition(
       name: writeName,
       description:
-        "Write text to FilesData, append text, or create a folder. Use relative paths only.",
+        "Write or append text to a top-level file in FilesData.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File or folder path inside FilesData.",
+          description: "File name in FilesData. Do not use folders or slashes.",
           required: true),
         ToolParameterDef(
           name: "content", type: "string",
           description: "Text to write.",
-          required: false),
+          required: true),
         ToolParameterDef(
           name: "append", type: "boolean",
           description: "Add to the end of the file. Default: false.",
-          required: false),
-        ToolParameterDef(
-          name: "create_dirs", type: "boolean",
-          description: "Create missing parent folders. Default: false.",
-          required: false),
-        ToolParameterDef(
-          name: "create_directory", type: "boolean",
-          description: "Create path as a folder. Default: false.",
           required: false),
       ]
     ),

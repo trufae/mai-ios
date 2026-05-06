@@ -149,7 +149,7 @@ enum FileWorkspaceService {
   private static let maxReadLimit = 500_000
   private static let maxWriteBytes = 1_000_000
 
-  static func list(arguments: [String: AgentToolArgumentValue]) -> String {
+  static func list(arguments _: [String: AgentToolArgumentValue]) -> String {
     do {
       let url = try PocketMaiDirectories.ensureFilesWorkspace()
       var isDirectory: ObjCBool = false
@@ -266,7 +266,10 @@ enum FileWorkspaceService {
       }
 
       let url = try validatedFileURL(path: path)
-      let content = arguments["content"]?.stringValue ?? ""
+      guard let contentValue = arguments["content"] ?? arguments["text"] else {
+        return "Error: content is required."
+      }
+      let content = contentValue.stringValue
       guard let data = content.data(using: .utf8) else {
         return "Error: content must be UTF-8 text."
       }
@@ -318,7 +321,7 @@ enum FileWorkspaceService {
     if trimmed.contains("/") || trimmed.contains("\\") {
       throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
     }
-    if (path as NSString).isAbsolutePath {
+    if (trimmed as NSString).isAbsolutePath {
       throw NSError.fileWorkspace("Absolute paths are not allowed.")
     }
     if trimmed.contains("\0") {

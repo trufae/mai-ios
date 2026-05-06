@@ -823,7 +823,7 @@ struct SettingsView: View {
         "Enable FilesData tools",
         isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
       Text(
-        "The callable Files tools are limited to the FilesData folder in Files app and USB file sharing."
+        "The callable Files tools can list, read, write, and append top-level text files in FilesData."
       )
         .font(.caption)
         .foregroundStyle(.secondary)

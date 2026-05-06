@@ -60,14 +60,14 @@ enum AssistantTurnRunner {
         mcpTools: store.mcpTools
       )
       : []
-    let requestContext = augmentedContext(
-      base: context,
-      definitions: agentDefinitions
-    )
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
       settings: store.settings,
       definitions: agentDefinitions
+    )
+    let requestContext = augmentedContext(
+      base: context,
+      definitions: nativeTools == nil ? agentDefinitions : []
     )
 
     if agentDefinitions.isEmpty {

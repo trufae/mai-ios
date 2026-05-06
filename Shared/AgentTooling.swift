@@ -249,7 +249,7 @@ struct AgentToolNameResolver {
     var lastWasUnderscore = false
     for scalar in name.unicodeScalars {
       let isAllowed =
-        CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-"
+        CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
       if isAllowed {
         out.unicodeScalars.append(scalar)
         lastWasUnderscore = false
