@@ -28,6 +28,32 @@ enum EndpointConnectionState: Equatable {
   }
 }
 
+private enum ConversationImportError: LocalizedError {
+  case unreadableFile
+  case invalidJSON
+  case titleRequired
+  case titleAlreadyExists(String)
+  case missingExistingConversation
+  case updateNotAvailable
+
+  var errorDescription: String? {
+    switch self {
+    case .unreadableFile:
+      return "Could not read the selected file."
+    case .invalidJSON:
+      return "The selected file is not a valid PocketMai conversation export."
+    case .titleRequired:
+      return "Specify a title for the imported conversation."
+    case .titleAlreadyExists(let title):
+      return "A conversation named \"\(title)\" already exists."
+    case .missingExistingConversation:
+      return "The matching conversation no longer exists."
+    case .updateNotAvailable:
+      return "This import cannot update an existing conversation."
+    }
+  }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
   @Published var conversations: [Conversation]
@@ -720,6 +746,85 @@ final class AppStore: ObservableObject {
     saveSettings()
   }
 
+  func previewConversationImport(from url: URL) async throws -> ConversationImportPreview {
+    let access = url.startAccessingSecurityScopedResource()
+    defer {
+      if access {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let data = try? Data(contentsOf: url) else {
+      throw ConversationImportError.unreadableFile
+    }
+    var envelope = try Self.decodeConversationImportEnvelope(from: data)
+    let importedTitle = envelope.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    if importedTitle.isEmpty {
+      envelope.title = envelope.conversation.displayTitle
+    } else {
+      envelope.conversation.title = importedTitle
+    }
+    envelope.createdAt = envelope.conversation.createdAt
+    envelope.model = envelope.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? envelope.conversation.modelID : envelope.model
+    envelope.provider = envelope.provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? envelope.conversation.provider.rawValue : envelope.provider
+
+    await loadStoredConversationsForSearch()
+    return ConversationImportPreview(
+      envelope: envelope,
+      conflict: conversationImportConflict(for: envelope.conversation),
+      existingTitles: existingConversationImportTitles()
+    )
+  }
+
+  func importConversation(
+    _ preview: ConversationImportPreview,
+    resolution: ConversationImportResolution
+  ) throws {
+    switch resolution {
+    case .create(let rawTitle):
+      let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !title.isEmpty else { throw ConversationImportError.titleRequired }
+      if let existing = conversationWithTitle(title) {
+        throw ConversationImportError.titleAlreadyExists(existing.displayTitle)
+      }
+
+      discardSelectedDisposableConversation()
+      var conversation = preview.conversation
+      conversation.id = uniqueConversationID()
+      conversation.title = title
+      conversation.isPinned = false
+      conversation.updatedAt = Date()
+      conversations.insert(conversation, at: 0)
+      sortConversations()
+      selectedConversationID = conversation.id
+      selectedConversationIDs.removeAll()
+      saveConversations()
+    case .updateExisting:
+      guard let conflict = preview.conflict, !conflict.contentsMatch else {
+        throw ConversationImportError.updateNotAvailable
+      }
+      if selectedConversationID != conflict.existingID {
+        discardSelectedDisposableConversation()
+      }
+      guard let index = indexedConversationIndex(for: conflict.existingID) else {
+        throw ConversationImportError.missingExistingConversation
+      }
+
+      var conversation = preview.conversation
+      conversation.id = conflict.existingID
+      conversation.title = conversations[index].title
+      conversation.isPinned = conversations[index].isPinned
+      conversation.isArchived = conversations[index].isArchived
+      conversation.updatedAt = Date()
+      conversations[index] = conversation
+      sortConversations()
+      selectedConversationID = conversation.id
+      selectedConversationIDs.removeAll()
+      saveConversations()
+    }
+  }
+
   func exportCurrentConversationEPUB() -> URL? {
     guard let conversation = currentConversation else { return nil }
     let data = EPUBExporter.makeEPUB(conversation: conversation)
@@ -1129,6 +1234,99 @@ final class AppStore: ObservableObject {
     streamingTextStore.enqueue(text, for: id)
   }
 
+  private static func decodeConversationImportEnvelope(
+    from data: Data
+  ) throws -> ConversationExportEnvelope {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    if let envelope = try? decoder.decode(ConversationExportEnvelope.self, from: data) {
+      return envelope
+    }
+    if let conversation = try? decoder.decode(Conversation.self, from: data) {
+      return ConversationExportEnvelope(
+        conversation: conversation,
+        exportedAt: Date(),
+        pocketMaiVersion: "Legacy JSON"
+      )
+    }
+    throw ConversationImportError.invalidJSON
+  }
+
+  private func conversationImportConflict(
+    for importedConversation: Conversation
+  ) -> ConversationImportConflict? {
+    let title = importedConversation.displayTitle
+    let matchingTitleConversations = conversations.filter {
+      !isDisposableNewConversation($0)
+        && normalizedConversationTitle($0.displayTitle) == normalizedConversationTitle(title)
+    }
+    guard !matchingTitleConversations.isEmpty else { return nil }
+    if let sameContents = matchingTitleConversations.first(where: {
+      conversationContentsMatch($0, importedConversation)
+    }) {
+      return ConversationImportConflict(
+        existingID: sameContents.id,
+        existingTitle: sameContents.displayTitle,
+        contentsMatch: true
+      )
+    }
+    guard let differentContents = matchingTitleConversations.first else { return nil }
+    return ConversationImportConflict(
+      existingID: differentContents.id,
+      existingTitle: differentContents.displayTitle,
+      contentsMatch: false
+    )
+  }
+
+  private func conversationWithTitle(_ title: String) -> Conversation? {
+    let normalizedTitle = normalizedConversationTitle(title)
+    return conversations.first {
+      !isDisposableNewConversation($0)
+        && normalizedConversationTitle($0.displayTitle) == normalizedTitle
+    }
+  }
+
+  private func existingConversationImportTitles() -> [String] {
+    conversations.filter { !isDisposableNewConversation($0) }.map(\.displayTitle)
+  }
+
+  private func normalizedConversationTitle(_ title: String) -> String {
+    title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private func conversationContentsMatch(_ lhs: Conversation, _ rhs: Conversation) -> Bool {
+    normalizedConversationTitle(lhs.displayTitle) == normalizedConversationTitle(rhs.displayTitle)
+      && lhs.createdAt == rhs.createdAt
+      && lhs.provider == rhs.provider
+      && lhs.modelID == rhs.modelID
+      && lhs.endpointID == rhs.endpointID
+      && lhs.systemPromptID == rhs.systemPromptID
+      && lhs.enabledTools == rhs.enabledTools
+      && lhs.usesStreaming == rhs.usesStreaming
+      && lhs.disabledMCPTools == rhs.disabledMCPTools
+      && lhs.reasoningLevel == rhs.reasoningLevel
+      && lhs.showThinking == rhs.showThinking
+      && lhs.lastContextSignature == rhs.lastContextSignature
+      && messageContentsMatch(lhs.messages, rhs.messages)
+  }
+
+  private func messageContentsMatch(_ lhs: [ChatMessage], _ rhs: [ChatMessage]) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    return zip(lhs, rhs).allSatisfy { lhsMessage, rhsMessage in
+      lhsMessage.role == rhsMessage.role
+        && lhsMessage.text == rhsMessage.text
+        && lhsMessage.createdAt == rhsMessage.createdAt
+    }
+  }
+
+  private func uniqueConversationID() -> UUID {
+    var id = UUID()
+    while conversationIndexByID[id] != nil {
+      id = UUID()
+    }
+    return id
+  }
+
   private func export(conversation: Conversation, format: ConversationExportFormat) -> String {
     switch format {
     case .markdown:
@@ -1139,7 +1337,8 @@ final class AppStore: ObservableObject {
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
       encoder.dateEncodingStrategy = .iso8601
-      guard let data = try? encoder.encode(conversation),
+      let envelope = ConversationExportEnvelope(conversation: conversation)
+      guard let data = try? encoder.encode(envelope),
         let json = String(data: data, encoding: .utf8)
       else {
         return "{}"

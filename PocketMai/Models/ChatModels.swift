@@ -584,6 +584,110 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct ConversationExportEnvelope: Codable, Equatable, Sendable {
+  static let format = "pocketmai.conversation"
+  static let currentFormatVersion = 1
+
+  var format: String
+  var formatVersion: Int
+  var title: String
+  var model: String
+  var provider: String
+  var exportedAt: Date
+  var createdAt: Date
+  var pocketMaiVersion: String
+  var conversation: Conversation
+
+  init(
+    conversation: Conversation,
+    exportedAt: Date = Date(),
+    pocketMaiVersion: String = Self.currentPocketMaiVersion
+  ) {
+    self.format = Self.format
+    self.formatVersion = Self.currentFormatVersion
+    self.title = conversation.displayTitle
+    self.model = conversation.modelID
+    self.provider = conversation.provider.rawValue
+    self.exportedAt = exportedAt
+    self.createdAt = conversation.createdAt
+    self.pocketMaiVersion = pocketMaiVersion
+    self.conversation = conversation
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case format
+    case formatVersion
+    case title
+    case model
+    case provider
+    case exportedAt
+    case createdAt
+    case pocketMaiVersion
+    case conversation
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    conversation = try container.decode(Conversation.self, forKey: .conversation)
+    format = (try? container.decode(String.self, forKey: .format)) ?? Self.format
+    formatVersion =
+      (try? container.decode(Int.self, forKey: .formatVersion)) ?? Self.currentFormatVersion
+    title = (try? container.decode(String.self, forKey: .title)) ?? conversation.displayTitle
+    model = (try? container.decode(String.self, forKey: .model)) ?? conversation.modelID
+    provider =
+      (try? container.decode(String.self, forKey: .provider)) ?? conversation.provider.rawValue
+    exportedAt = (try? container.decode(Date.self, forKey: .exportedAt)) ?? Date()
+    createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? conversation.createdAt
+    pocketMaiVersion =
+      (try? container.decode(String.self, forKey: .pocketMaiVersion)) ?? "Unknown"
+  }
+
+  var providerDisplayName: String {
+    ProviderKind(rawValue: provider)?.displayName ?? provider
+  }
+
+  static var currentPocketMaiVersion: String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "Unknown"
+    guard let build = info?["CFBundleVersion"] as? String,
+      !build.isEmpty,
+      build != short
+    else {
+      return short
+    }
+    return "\(short) (\(build))"
+  }
+}
+
+struct ConversationImportConflict: Equatable, Sendable {
+  var existingID: UUID
+  var existingTitle: String
+  var contentsMatch: Bool
+}
+
+struct ConversationImportPreview: Identifiable, Sendable {
+  let id = UUID()
+  var envelope: ConversationExportEnvelope
+  var conflict: ConversationImportConflict?
+  var existingTitles: [String] = []
+
+  var conversation: Conversation {
+    envelope.conversation
+  }
+
+  var suggestedRenameTitle: String {
+    let title = envelope.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = title.isEmpty ? "Imported conversation" : title
+    guard conflict != nil else { return base }
+    return "\(base) (Imported)"
+  }
+}
+
+enum ConversationImportResolution: Sendable {
+  case create(title: String)
+  case updateExisting
+}
+
 extension OpenAIEndpoint {
   static let defaultDisplayName = "New Provider"
 

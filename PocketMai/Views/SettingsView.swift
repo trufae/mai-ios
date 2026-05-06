@@ -186,7 +186,9 @@ private enum VoiceProviderSelection: Hashable {
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
-  @State private var showingFileImporter = false
+  @State private var showingToolFileImporter = false
+  @State private var showingConversationImporter = false
+  @State private var pendingConversationImport: ConversationImportPreview?
   @State private var newTodoTitle = ""
   @State private var showingClearAllConfirmation = false
   @State private var showingFactoryResetConfirmation = false
@@ -268,12 +270,37 @@ struct SettingsView: View {
       }
       .settingsToast($toastMessage)
       .fileImporter(
-        isPresented: $showingFileImporter,
+        isPresented: $showingToolFileImporter,
         allowedContentTypes: [.text, .plainText, .json, .sourceCode]
       ) { result in
         if case .success(let url) = result {
           store.importToolFile(from: url)
         }
+      }
+      .fileImporter(
+        isPresented: $showingConversationImporter,
+        allowedContentTypes: [.json]
+      ) { result in
+        switch result {
+        case .success(let url):
+          Task { await prepareConversationImport(from: url) }
+        case .failure(let error):
+          showToast(error.localizedDescription)
+        }
+      }
+      .sheet(item: $pendingConversationImport) { preview in
+        ConversationImportConfirmationView(
+          preview: preview,
+          onCancel: {
+            pendingConversationImport = nil
+          },
+          onImportAsNew: { title in
+            finishConversationImport(preview, resolution: .create(title: title))
+          },
+          onUpdateExisting: {
+            finishConversationImport(preview, resolution: .updateExisting)
+          }
+        )
       }
     }
   }
@@ -793,7 +820,7 @@ struct SettingsView: View {
         .foregroundStyle(.secondary)
     case .files:
       Button {
-        showingFileImporter = true
+        showingToolFileImporter = true
       } label: {
         Label("Import Text File", systemImage: "doc.badge.plus")
       }
@@ -964,6 +991,12 @@ struct SettingsView: View {
   private var dangerSection: some View {
     Section {
       Button {
+        showingConversationImporter = true
+      } label: {
+        Label("Import Conversation", systemImage: "square.and.arrow.down")
+      }
+
+      Button {
         showingClearAllConfirmation = true
       } label: {
         Label("Clear All Conversations", systemImage: "trash")
@@ -981,7 +1014,7 @@ struct SettingsView: View {
       Text("Danger Zone")
     } footer: {
       Text(
-        "Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device."
+        "Import adds or updates chats from PocketMai JSON. Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device."
       )
     }
   }
@@ -1062,6 +1095,29 @@ struct SettingsView: View {
     store.settings.toolSettings.todos.append(TodoItem(title: trimmed))
     newTodoTitle = ""
     store.saveSettings()
+  }
+
+  @MainActor
+  private func prepareConversationImport(from url: URL) async {
+    do {
+      pendingConversationImport = try await store.previewConversationImport(from: url)
+    } catch {
+      showToast(error.localizedDescription)
+    }
+  }
+
+  private func finishConversationImport(
+    _ preview: ConversationImportPreview,
+    resolution: ConversationImportResolution
+  ) -> String? {
+    do {
+      try store.importConversation(preview, resolution: resolution)
+      pendingConversationImport = nil
+      dismiss()
+      return nil
+    } catch {
+      return error.localizedDescription
+    }
   }
 
   private func saveAndDismiss() {
@@ -1429,6 +1485,167 @@ private enum EndpointNameResolution {
 
   private static func normalizedName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+}
+
+private struct ConversationImportConfirmationView: View {
+  let preview: ConversationImportPreview
+  let onCancel: () -> Void
+  let onImportAsNew: (String) -> String?
+  let onUpdateExisting: () -> String?
+
+  @State private var title: String
+  @State private var errorMessage: String?
+
+  init(
+    preview: ConversationImportPreview,
+    onCancel: @escaping () -> Void,
+    onImportAsNew: @escaping (String) -> String?,
+    onUpdateExisting: @escaping () -> String?
+  ) {
+    self.preview = preview
+    self.onCancel = onCancel
+    self.onImportAsNew = onImportAsNew
+    self.onUpdateExisting = onUpdateExisting
+    _title = State(initialValue: preview.suggestedRenameTitle)
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        importDetailsSection
+        conflictSection
+        errorSection
+        importActionSection
+      }
+      .navigationTitle("Import Conversation")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") {
+            onCancel()
+          }
+        }
+      }
+    }
+    .presentationDetents([.medium, .large])
+  }
+
+  @ViewBuilder
+  private var errorSection: some View {
+    if let errorMessage {
+      Section {
+        Label(errorMessage, systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.red)
+      }
+    }
+  }
+
+  private var importDetailsSection: some View {
+    Section {
+      infoRow("Title", preview.envelope.title)
+      infoRow("Provider", preview.envelope.providerDisplayName)
+      infoRow("Model", preview.envelope.model)
+      infoRow("Exported", formattedDate(preview.envelope.exportedAt))
+      infoRow("Created", formattedDate(preview.envelope.createdAt))
+      infoRow("PocketMai", preview.envelope.pocketMaiVersion)
+      infoRow("Messages", "\(preview.conversation.messages.count)")
+    } header: {
+      Text("Contents")
+    }
+  }
+
+  @ViewBuilder
+  private var conflictSection: some View {
+    if let conflict = preview.conflict {
+      Section {
+        Label(
+          conflictTitle(conflict),
+          systemImage: conflict.contentsMatch ? "doc.on.doc" : "exclamationmark.triangle"
+        )
+        .foregroundStyle(conflict.contentsMatch ? Color.secondary : Color.orange)
+        Text(conflictMessage(conflict))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      } header: {
+        Text("Name Conflict")
+      }
+    }
+  }
+
+  private var importActionSection: some View {
+    Section {
+      if preview.conflict != nil {
+        TextField("New title", text: $title)
+          .textInputAutocapitalization(.sentences)
+        Button {
+          errorMessage = onImportAsNew(titleForImport)
+        } label: {
+          Label("Import Renamed Copy", systemImage: "plus.bubble")
+        }
+        .disabled(!canImportAsNew)
+      } else {
+        Button {
+          errorMessage = onImportAsNew(titleForImport)
+        } label: {
+          Label("Import Conversation", systemImage: "square.and.arrow.down")
+        }
+      }
+
+      if let conflict = preview.conflict, !conflict.contentsMatch {
+        Button(role: .destructive) {
+          errorMessage = onUpdateExisting()
+        } label: {
+          Label("Update Existing", systemImage: "arrow.triangle.2.circlepath")
+        }
+      }
+    }
+  }
+
+  private var titleForImport: String {
+    title.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var canImportAsNew: Bool {
+    guard !titleForImport.isEmpty else { return false }
+    let normalized = normalizedTitle(titleForImport)
+    return !preview.existingTitles.contains {
+      normalizedTitle($0) == normalized
+    }
+  }
+
+  private func conflictTitle(_ conflict: ConversationImportConflict) -> String {
+    conflict.contentsMatch ? "Already imported" : "Title already exists"
+  }
+
+  private func conflictMessage(_ conflict: ConversationImportConflict) -> String {
+    if conflict.contentsMatch {
+      return "\"\(conflict.existingTitle)\" has the same conversation contents."
+    }
+    return "\"\(conflict.existingTitle)\" uses this title with different conversation contents."
+  }
+
+  private func infoRow(_ title: String, _ value: String) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+      Text(title)
+      Spacer(minLength: 12)
+      Text(displayValue(value))
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.trailing)
+    }
+  }
+
+  private func displayValue(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Not specified" : trimmed
+  }
+
+  private func formattedDate(_ date: Date) -> String {
+    date.formatted(date: .abbreviated, time: .shortened)
+  }
+
+  private func normalizedTitle(_ title: String) -> String {
+    title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   }
 }
 
