@@ -59,6 +59,9 @@ struct ChatView: View {
     }
     .alert("Change Title", isPresented: $showingRenameAlert) {
       TextField("Chat title", text: $renameDraft)
+        .onSubmit {
+          renameCurrentConversation()
+        }
       Button("Cancel", role: .cancel) {}
       Button("Save") {
         renameCurrentConversation()
@@ -278,6 +281,7 @@ struct ChatView: View {
     store.updateCurrentConversation { conversation in
       conversation.title = trimmed.isEmpty ? "New chat" : trimmed
     }
+    showingRenameAlert = false
   }
 
   private var trailingMenu: some View {
@@ -561,7 +565,7 @@ private struct ChatComposer: View, Equatable {
   }
 
   private var canSubmitDraft: Bool {
-    !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    !isResponding && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private var sendButtonColor: Color {
@@ -577,9 +581,13 @@ private struct ChatComposer: View, Equatable {
         .font(appearance.userSwiftUIFont)
         .textFieldStyle(.plain)
         .lineLimit(1...3)
+        .submitLabel(.send)
         .padding(.vertical, 5)
         .frame(minHeight: 32, alignment: .center)
         .focused($composerFocused)
+        .onSubmit {
+          submitDraft()
+        }
 
       Button {
         if let id = conversationID, isResponding {
@@ -614,6 +622,10 @@ private struct ChatComposer: View, Equatable {
     Binding(
       get: { draftText },
       set: { newText in
+        if newText == draftText + "\n" {
+          submitDraft()
+          return
+        }
         draftText = newText
         store.setDraftText(newText, for: conversationID)
       }
@@ -621,7 +633,7 @@ private struct ChatComposer: View, Equatable {
   }
 
   private func submitDraft() {
-    guard !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    guard canSubmitDraft else { return }
     let submitted = draftText
     let submittedConversationID = conversationID
     draftText = ""

@@ -750,12 +750,12 @@ struct SettingsView: View {
     case .todo:
       HStack {
         TextField("New todo", text: $newTodoTitle)
+          .submitLabel(.done)
+          .onSubmit {
+            addTodo()
+          }
         Button {
-          let trimmed = newTodoTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-          guard !trimmed.isEmpty else { return }
-          store.settings.toolSettings.todos.append(TodoItem(title: trimmed))
-          newTodoTitle = ""
-          store.saveSettings()
+          addTodo()
         } label: {
           Image(systemName: "plus.circle.fill")
         }
@@ -1045,6 +1045,14 @@ struct SettingsView: View {
       return
     }
     store.settings.toolSettings.todos.remove(atOffsets: offsets)
+    store.saveSettings()
+  }
+
+  private func addTodo() {
+    let trimmed = newTodoTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    store.settings.toolSettings.todos.append(TodoItem(title: trimmed))
+    newTodoTitle = ""
     store.saveSettings()
   }
 

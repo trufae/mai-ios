@@ -450,6 +450,9 @@ private struct FloatingSearchField: View {
         .textInputAutocapitalization(.never)
         .submitLabel(.search)
         .focused(isFocused)
+        .onSubmit {
+          isFocused.wrappedValue = false
+        }
 
       Button(action: onCancel) {
         Image(systemName: "xmark.circle.fill")
