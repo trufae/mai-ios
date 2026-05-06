@@ -380,7 +380,7 @@ struct ChatView: View {
   private var messages: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(spacing: 14) {
+        VStack(spacing: 14) {
           if currentConversationIsEmpty {
             emptyState
               .containerRelativeFrame(.vertical, alignment: .center)
@@ -415,7 +415,6 @@ struct ChatView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .center)
-        .scrollTargetLayout()
       }
       .id(store.selectedConversationID)
       .defaultScrollAnchor(.bottom)
@@ -433,10 +432,6 @@ struct ChatView: View {
           return
         }
         guard old.text != new.text, !userScrolledAfterLastMessage else { return }
-        // The final text swap flips the bubble from plain Text to the markdown
-        // renderer, which can be substantially taller. Defer one runloop so
-        // the new layout is measured before we anchor, otherwise we land on
-        // the old bubble height and the content overshoots the viewport.
         DispatchQueue.main.async {
           scrollToBottom(proxy, animated: false)
         }

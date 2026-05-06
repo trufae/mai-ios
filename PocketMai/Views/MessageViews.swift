@@ -124,42 +124,41 @@ private struct MessageBubbleContent: View, Equatable {
         text: prepared.visibleText
       )
 
-    HStack(alignment: .top, spacing: 0) {
-      if isUser { Spacer(minLength: 36) }
-      VStack(alignment: .leading, spacing: 6) {
-        ForEach(prepared.toolEntries) { entry in
-          ToolCallRow(entry: entry)
-        }
-        ForEach(prepared.reasoningSections) { section in
-          FoldableMetaSection(
-            title: "Reasoning",
-            systemImage: "brain",
-            content: isStreaming ? Self.tailWindow(section.content) : section.content,
-            monospaced: false,
-            dimmedContent: true,
-            initiallyExpanded: showThinking
-          )
-        }
-        ForEach(prepared.transcriptSections) { section in
-          FoldableMetaSection(
-            title: "Prompt Transcript",
-            systemImage: "text.bubble",
-            content: section.content,
-            monospaced: true,
-            initiallyExpanded: false
-          )
-        }
-        if !prepared.hideBubble {
-          bubble(
-            visibleText: prepared.visibleText,
-            rawText: displayText,
-            markdownBlocks: markdownBlocks,
-            usesMarkdown: usesMarkdown
-          )
-        }
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(prepared.toolEntries) { entry in
+        ToolCallRow(entry: entry)
       }
-      if !isUser { Spacer(minLength: 36) }
+      ForEach(prepared.reasoningSections) { section in
+        FoldableMetaSection(
+          title: "Reasoning",
+          systemImage: "brain",
+          content: isStreaming ? Self.tailWindow(section.content) : section.content,
+          monospaced: false,
+          dimmedContent: true,
+          initiallyExpanded: showThinking
+        )
+      }
+      ForEach(prepared.transcriptSections) { section in
+        FoldableMetaSection(
+          title: "Prompt Transcript",
+          systemImage: "text.bubble",
+          content: section.content,
+          monospaced: true,
+          initiallyExpanded: false
+        )
+      }
+      if !prepared.hideBubble {
+        bubble(
+          visibleText: prepared.visibleText,
+          rawText: displayText,
+          markdownBlocks: markdownBlocks,
+          usesMarkdown: usesMarkdown
+        )
+      }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: 720, alignment: .leading)
+    .padding(isUser ? .leading : .trailing, 36)
     .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
   }
 
@@ -198,6 +197,7 @@ private struct MessageBubbleContent: View, Equatable {
           appearance: appearance,
           fontFamily: messageFontFamily
         )
+        .fixedSize(horizontal: false, vertical: true)
       } else {
         Text(visibleText)
           .font(messageFont)
@@ -206,7 +206,7 @@ private struct MessageBubbleContent: View, Equatable {
       }
     }
     .padding(14)
-    .frame(maxWidth: 720, alignment: .leading)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
