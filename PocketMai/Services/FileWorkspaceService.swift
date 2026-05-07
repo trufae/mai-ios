@@ -148,9 +148,27 @@ enum FileWorkspaceService {
   private static let defaultReadLimit = 120_000
   private static let maxReadLimit = 500_000
   private static let maxWriteBytes = 1_000_000
+  private static let modelsFolderName = "Models"
+  private static let listResourceKeys: [URLResourceKey] = [
+    .contentModificationDateKey,
+    .fileSizeKey,
+    .isDirectoryKey,
+    .isRegularFileKey,
+    .isSymbolicLinkKey,
+  ]
 
-  static func list(arguments _: [String: AgentToolArgumentValue]) -> String {
+  static func list(arguments: [String: AgentToolArgumentValue]) -> String {
     do {
+      if let path = optionalPathArgument(arguments) {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPath.isEmpty, trimmedPath != ".", trimmedPath != "FilesData" {
+          guard isModelsPath(trimmedPath) else {
+            return "Error: only FilesData and the read-only Models folder can be listed."
+          }
+          return try listModelsPath(trimmedPath)
+        }
+      }
+
       let url = try workspaceRootURL()
       var isDirectory: ObjCBool = false
       guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
@@ -160,36 +178,17 @@ enum FileWorkspaceService {
         return "Error: FilesData is not a folder."
       }
 
-      let keys: [URLResourceKey] = [
-        .contentModificationDateKey,
-        .fileSizeKey,
-        .isDirectoryKey,
-        .isRegularFileKey,
-        .isSymbolicLinkKey,
-      ]
       let entries = try FileManager.default.contentsOfDirectory(
-        at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        at: url, includingPropertiesForKeys: listResourceKeys, options: [.skipsHiddenFiles]
       )
+      .filter { $0.lastPathComponent != modelsFolderName }
       .sorted {
         $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
       }
 
-      if entries.isEmpty {
-        return "FilesData files:\n(no files)"
-      }
-
-      var lines = ["FilesData files:"]
+      var lines = ["FilesData files:", "- \(modelsFolderName) directory read-only"]
       for entry in entries.prefix(maxListEntries) {
-        let values = try? entry.resourceValues(forKeys: Set(keys))
-        let type =
-          values?.isDirectory == true ? "directory"
-          : values?.isSymbolicLink == true ? "symlink"
-          : values?.isRegularFile == true ? "file" : "other"
-        let size = values?.fileSize.map { " \($0) bytes" } ?? ""
-        let modified = values?.contentModificationDate.map {
-          " modified \(ISO8601DateFormatter().string(from: $0))"
-        } ?? ""
-        lines.append("- \(relativePath(for: entry)) \(type)\(size)\(modified)")
+        lines.append(entryLine(for: entry, path: relativePath(for: entry)))
       }
       if entries.count > maxListEntries {
         lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
@@ -206,45 +205,15 @@ enum FileWorkspaceService {
       guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return "Error: path is required."
       }
-      let url = try validatedFileURL(path: path)
-      var isDirectory: ObjCBool = false
-      guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-        return "Error: file '\(displayPath(path))' does not exist."
-      }
-      guard !isDirectory.boolValue else {
-        return "Error: '\(displayPath(path))' is a directory."
-      }
-
-      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-      if looksBinary(data) {
-        return "Error: '\(displayPath(path))' appears to be binary; text files only."
-      }
+      let url =
+        isModelsPath(path)
+        ? try validatedModelsFileURL(path: path)
+        : try validatedFileURL(path: path)
       let requestedLimit = arguments["max_bytes"]?.numberValue.map(Int.init) ?? defaultReadLimit
-      let limit = min(max(requestedLimit, 1), maxReadLimit)
-      let truncated = data.count > limit
-      var prefix = Data(data.prefix(limit))
-      var text: String?
-      while text == nil && !prefix.isEmpty {
-        text = String(data: prefix, encoding: .utf8)
-        if text == nil {
-          prefix.removeLast()
-        }
-      }
-      guard let text else {
-        return "Error: '\(displayPath(path))' is not valid UTF-8 text."
-      }
-
-      var lines = [
-        "File: \(displayPath(path))",
-        "Bytes: \(data.count)\(truncated ? " (truncated to \(prefix.count))" : "")",
-        "",
-        text,
-      ]
-      if truncated {
-        lines.append("")
-        lines.append("Truncated to \(limit) bytes.")
-      }
-      return lines.joined(separator: "\n")
+      return try readTextFile(
+        at: url,
+        displayPath: displayPath(path),
+        requestedLimit: requestedLimit)
     } catch {
       return "Error: \(error.localizedDescription)"
     }
@@ -365,6 +334,182 @@ enum FileWorkspaceService {
     AgentTooling.firstNonEmpty(arguments[primary]?.stringValue, arguments[fallback]?.stringValue)
   }
 
+  private static func optionalPathArgument(_ arguments: [String: AgentToolArgumentValue]) -> String? {
+    AgentTooling.firstNonEmpty(
+      arguments["path"]?.stringValue,
+      arguments["directory"]?.stringValue,
+      arguments["folder"]?.stringValue)
+  }
+
+  private static func readTextFile(
+    at url: URL,
+    displayPath: String,
+    requestedLimit: Int
+  ) throws -> String {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      return "Error: file '\(displayPath)' does not exist."
+    }
+    guard !isDirectory.boolValue else {
+      return "Error: '\(displayPath)' is a directory."
+    }
+
+    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+    if looksBinary(data) {
+      return "Error: '\(displayPath)' appears to be binary; text files only."
+    }
+    let limit = min(max(requestedLimit, 1), maxReadLimit)
+    let truncated = data.count > limit
+    var prefix = Data(data.prefix(limit))
+    var text: String?
+    while text == nil && !prefix.isEmpty {
+      text = String(data: prefix, encoding: .utf8)
+      if text == nil {
+        prefix.removeLast()
+      }
+    }
+    guard let text else {
+      return "Error: '\(displayPath)' is not valid UTF-8 text."
+    }
+
+    var lines = [
+      "File: \(displayPath)",
+      "Bytes: \(data.count)\(truncated ? " (truncated to \(prefix.count))" : "")",
+      "",
+      text,
+    ]
+    if truncated {
+      lines.append("")
+      lines.append("Truncated to \(limit) bytes.")
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func isModelsPath(_ path: String) -> Bool {
+    let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed == modelsFolderName || trimmed.hasPrefix(modelsFolderName + "/")
+  }
+
+  private static func listModelsPath(_ rawPath: String) throws -> String {
+    let components = try modelsPathComponents(rawPath)
+    if components.count == 1 {
+      let models = LocalMLXModelCache.listModels()
+      var lines = ["FilesData/\(modelsFolderName) files:"]
+      if models.isEmpty {
+        lines.append("(no downloaded models)")
+        return lines.joined(separator: "\n")
+      }
+
+      for model in models.prefix(maxListEntries) {
+        let modified = model.modifiedAt.map {
+          " modified \(ISO8601DateFormatter().string(from: $0))"
+        } ?? ""
+        lines.append(
+          "- \(modelsFolderName)/\(model.cacheDirectoryName) directory \(model.sizeText)\(modified)"
+        )
+      }
+      if models.count > maxListEntries {
+        lines.append("Truncated: showing \(maxListEntries) of \(models.count) entries.")
+      }
+      return lines.joined(separator: "\n")
+    }
+
+    let url = try validatedModelsURL(components: components)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      throw NSError.fileWorkspace("Folder '\(components.joined(separator: "/"))' does not exist.")
+    }
+    guard isDirectory.boolValue else {
+      throw NSError.fileWorkspace("'\(components.joined(separator: "/"))' is not a folder.")
+    }
+
+    let entries = try FileManager.default.contentsOfDirectory(
+      at: url,
+      includingPropertiesForKeys: listResourceKeys,
+      options: [.skipsHiddenFiles]
+    )
+    .sorted {
+      $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+    }
+
+    var lines = ["FilesData/\(components.joined(separator: "/")) files:"]
+    if entries.isEmpty {
+      lines.append("(no files)")
+      return lines.joined(separator: "\n")
+    }
+    for entry in entries.prefix(maxListEntries) {
+      lines.append(entryLine(for: entry, path: modelsRelativePath(for: entry)))
+    }
+    if entries.count > maxListEntries {
+      lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func validatedModelsFileURL(path rawPath: String) throws -> URL {
+    let components = try modelsPathComponents(rawPath)
+    guard components.count >= 2 else {
+      throw NSError.fileWorkspace("Path must name a file under Models.")
+    }
+    return try validatedModelsURL(components: components)
+  }
+
+  private static func validatedModelsURL(components: [String]) throws -> URL {
+    guard components.count >= 2 else {
+      throw NSError.fileWorkspace("Path must name a downloaded model under Models.")
+    }
+    let cacheDirectoryName = components[1]
+    guard let modelRoot = LocalMLXModelCache.cacheDirectoryURL(named: cacheDirectoryName) else {
+      throw NSError.fileWorkspace("Unknown downloaded model '\(cacheDirectoryName)'.")
+    }
+
+    var url = modelRoot
+    for component in components.dropFirst(2) {
+      url.appendPathComponent(component)
+    }
+    try validateInsideDirectory(
+      url,
+      root: modelRoot,
+      message: "Path must stay inside Models/\(cacheDirectoryName).",
+      resolvingSymlinks: false)
+    if FileManager.default.fileExists(atPath: url.path) {
+      try validateInsideDirectory(
+        url,
+        root: modelRoot,
+        message: "Path must stay inside Models/\(cacheDirectoryName).")
+    }
+    return url
+  }
+
+  private static func modelsPathComponents(_ rawPath: String) throws -> [String] {
+    let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw NSError.fileWorkspace("Path is required.")
+    }
+    guard isModelsPath(trimmed) else {
+      throw NSError.fileWorkspace("Path must start with Models.")
+    }
+    if (trimmed as NSString).isAbsolutePath {
+      throw NSError.fileWorkspace("Models paths must be relative.")
+    }
+    if trimmed.contains("\0") {
+      throw NSError.fileWorkspace("Path contains an invalid character.")
+    }
+    if trimmed.contains("\\") {
+      throw NSError.fileWorkspace("Use forward slashes inside Models paths.")
+    }
+
+    let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+      .map(String.init)
+    guard components.first == modelsFolderName else {
+      throw NSError.fileWorkspace("Path must start with Models.")
+    }
+    guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+      throw NSError.fileWorkspace("Models path contains an invalid component.")
+    }
+    return components
+  }
+
   private static func validatedFileURL(path rawPath: String) throws -> URL {
     let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
@@ -375,6 +520,9 @@ enum FileWorkspaceService {
     }
     if trimmed.contains("\\") {
       throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
+    }
+    if isModelsPath(trimmed) {
+      throw NSError.fileWorkspace("Models is read-only. Use files_list or files_read for Models.")
     }
 
     let root = try workspaceRootURL()
@@ -423,6 +571,19 @@ enum FileWorkspaceService {
     root: URL,
     resolvingSymlinks: Bool = true
   ) throws {
+    try validateInsideDirectory(
+      url,
+      root: root,
+      message: "Path must be inside FilesData.",
+      resolvingSymlinks: resolvingSymlinks)
+  }
+
+  private static func validateInsideDirectory(
+    _ url: URL,
+    root: URL,
+    message: String,
+    resolvingSymlinks: Bool = true
+  ) throws {
     let rootURL =
       resolvingSymlinks
       ? root.resolvingSymlinksInPath().standardizedFileURL
@@ -434,8 +595,21 @@ enum FileWorkspaceService {
     let rootPath = rootURL.path
     let path = candidateURL.path
     guard path == rootPath || path.hasPrefix(rootPath + "/") else {
-      throw NSError.fileWorkspace("Path must be inside FilesData.")
+      throw NSError.fileWorkspace(message)
     }
+  }
+
+  private static func entryLine(for entry: URL, path: String) -> String {
+    let values = try? entry.resourceValues(forKeys: Set(listResourceKeys))
+    let type =
+      values?.isDirectory == true ? "directory"
+      : values?.isSymbolicLink == true ? "symlink"
+      : values?.isRegularFile == true ? "file" : "other"
+    let size = values?.fileSize.map { " \($0) bytes" } ?? ""
+    let modified = values?.contentModificationDate.map {
+      " modified \(ISO8601DateFormatter().string(from: $0))"
+    } ?? ""
+    return "- \(path) \(type)\(size)\(modified)"
   }
 
   private static func relativePath(for url: URL) -> String {
@@ -443,6 +617,15 @@ enum FileWorkspaceService {
     let path = url.standardizedFileURL.path
     guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
     return String(path.dropFirst(rootPath.count + 1))
+  }
+
+  private static func modelsRelativePath(for url: URL) -> String {
+    let rootPath = LocalMLXModelCache.cacheRootURL.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    guard path.hasPrefix(rootPath + "/") else {
+      return "\(modelsFolderName)/\(url.lastPathComponent)"
+    }
+    return "\(modelsFolderName)/\(String(path.dropFirst(rootPath.count + 1)))"
   }
 
   private static func displayPath(_ path: String) -> String {

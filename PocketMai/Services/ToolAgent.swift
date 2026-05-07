@@ -488,17 +488,22 @@ enum FileWorkspaceTool {
     ToolDefinition(
       name: listName,
       description:
-        "List files in FilesData.",
-      parameters: []
+        "List files in FilesData, or list downloaded MLX models under the read-only Models folder.",
+      parameters: [
+        ToolParameterDef(
+          name: "path", type: "string",
+          description: "Optional folder to list. Use Models to inspect downloaded MLX models.",
+          required: false),
+      ]
     ),
     ToolDefinition(
       name: readName,
       description:
-        "Read a text file from FilesData.",
+        "Read a text file from FilesData, or a text file under the read-only Models folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File name in FilesData.",
+          description: "File name in FilesData, or a Models/... path.",
           required: true),
       ]
     ),

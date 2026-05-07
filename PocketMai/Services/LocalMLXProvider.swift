@@ -77,14 +77,25 @@ actor LocalMLXProvider {
       return
     }
 
-    let config = ModelConfiguration(id: modelID)
-    container = try await loadModelContainer(
-      from: HubClient.default,
-      using: TokenizersLoader(),
-      configuration: config,
-      progressHandler: progressHandler
-    )
-    loadedModelID = modelID
+    let wasCachedBeforeLoad = LocalMLXModelCache.containsRepository(modelID)
+    do {
+      try Task.checkCancellation()
+      let config = ModelConfiguration(id: modelID)
+      let loadedContainer = try await loadModelContainer(
+        from: HubClient.default,
+        using: TokenizersLoader(),
+        configuration: config,
+        progressHandler: progressHandler
+      )
+      try Task.checkCancellation()
+      container = loadedContainer
+      loadedModelID = modelID
+    } catch {
+      if !wasCachedBeforeLoad {
+        try? LocalMLXModelCache.deleteRepository(modelID)
+      }
+      throw error
+    }
   }
 
   func complete(
