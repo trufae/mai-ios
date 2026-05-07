@@ -59,6 +59,11 @@ struct ContentView: View {
       SettingsView()
         .environmentObject(store)
     }
+    .sheet(item: toolCallApprovalBinding) { request in
+      ToolCallApprovalView(request: request)
+        .environmentObject(store)
+        .interactiveDismissDisabled()
+    }
     .alert("Error", isPresented: errorBinding) {
       Button("OK") { store.errorMessage = nil }
     } message: {
@@ -118,11 +123,76 @@ struct ContentView: View {
       }
   }
 
+  private var toolCallApprovalBinding: Binding<ToolCallApprovalRequest?> {
+    Binding(
+      get: { store.activeToolCallApprovalRequest },
+      set: { _ in }
+    )
+  }
+
   private var errorBinding: Binding<Bool> {
     Binding(
       get: { store.errorMessage != nil },
       set: { if !$0 { store.errorMessage = nil } }
     )
+  }
+}
+
+private struct ToolCallApprovalView: View {
+  @EnvironmentObject private var store: AppStore
+  let request: ToolCallApprovalRequest
+  @State private var toolCallText: String
+  @State private var validationError: String?
+
+  init(request: ToolCallApprovalRequest) {
+    self.request = request
+    _toolCallText = State(initialValue: request.originalText)
+  }
+
+  var body: some View {
+    NavigationStack {
+      VStack(alignment: .leading, spacing: 14) {
+        Label(request.callName, systemImage: "wrench.and.screwdriver")
+          .font(.headline)
+          .lineLimit(2)
+        if let conversationTitle = request.conversationTitle {
+          Text(conversationTitle)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        }
+        TextEditor(text: $toolCallText)
+          .font(.system(.body, design: .monospaced))
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .scrollContentBackground(.hidden)
+          .padding(8)
+          .frame(minHeight: 260)
+          .background(Color(uiColor: .secondarySystemGroupedBackground))
+          .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        if let validationError {
+          Text(validationError)
+            .font(.footnote)
+            .foregroundStyle(.red)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding()
+      .navigationTitle("Confirm Tool Call")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel", role: .cancel) {
+            store.cancelToolCallApproval(id: request.id)
+          }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Run") {
+            validationError = store.approveToolCall(id: request.id, editedText: toolCallText)
+          }
+        }
+      }
+    }
   }
 }
 

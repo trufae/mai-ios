@@ -1030,6 +1030,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var mcpServers: [MCPServer] = []
   var memory: String = ""
   var toolCallingMode: ToolCallingMode = .text
+  var yoloModeEnabled: Bool = true
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
   var appearance: AppearanceSettings = .defaults
@@ -1072,7 +1073,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, toolCallingMode
-    case useToolProxy, contextWindowMode, appearance, renderMarkdownInChat
+    case yoloModeEnabled, useToolProxy, contextWindowMode, appearance, renderMarkdownInChat
   }
 
   init(from decoder: Decoder) throws {
@@ -1105,6 +1106,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     let migratedFromLegacyProxy = (storedMode == "proxy")
     toolCallingMode =
       ToolCallingMode(rawValue: storedMode) ?? .text
+    yoloModeEnabled =
+      (try? c.decode(Bool.self, forKey: .yoloModeEnabled)) ?? true
     useToolProxy =
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
     contextWindowMode =

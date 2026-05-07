@@ -143,6 +143,8 @@ enum AssistantTurnRunner {
         response: response,
         calls: calls,
         definitions: agentDefinitions,
+        mode: activeToolCallingMode,
+        conversationID: conversationID,
         store: store
       )
       assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
@@ -193,6 +195,8 @@ enum AssistantTurnRunner {
     response: String,
     calls: [ParsedToolCall],
     definitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversationID: UUID,
     store: AppStore
   ) async throws -> String {
     var transformed = response
@@ -200,8 +204,27 @@ enum AssistantTurnRunner {
     for call in calls {
       try Task.checkCancellation()
       let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
-      let result = await ToolAgentRegistry.execute(call: normalizedCall, store: store)
-      let runBlock = ToolAgentRegistry.makeRunBlock(call: normalizedCall, result: result)
+      let approvedCall: ParsedToolCall
+      let shouldExecute: Bool
+      switch await store.requestToolCallApproval(
+        call: normalizedCall,
+        definitions: definitions,
+        mode: mode,
+        conversationID: conversationID
+      ) {
+      case .approved(let call):
+        approvedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+        shouldExecute = true
+      case .cancelled:
+        approvedCall = normalizedCall
+        shouldExecute = false
+      }
+      try Task.checkCancellation()
+      let result =
+        shouldExecute
+        ? await ToolAgentRegistry.execute(call: approvedCall, store: store)
+        : "Error: tool call cancelled by user."
+      let runBlock = ToolAgentRegistry.makeRunBlock(call: approvedCall, result: result)
       transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
       runBlocks.append(runBlock)
     }

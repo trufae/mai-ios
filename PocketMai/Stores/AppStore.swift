@@ -54,6 +54,44 @@ private enum ConversationImportError: LocalizedError {
   }
 }
 
+enum ToolCallApprovalDecision: Sendable {
+  case approved(ParsedToolCall)
+  case cancelled
+}
+
+struct ToolCallApprovalRequest: Identifiable {
+  let id: UUID
+  let callName: String
+  let originalText: String
+  let mode: ToolCallingMode
+  let definitions: [ToolDefinition]
+  let conversationTitle: String?
+
+  private let continuation: CheckedContinuation<ToolCallApprovalDecision, Never>
+
+  init(
+    id: UUID,
+    callName: String,
+    originalText: String,
+    mode: ToolCallingMode,
+    definitions: [ToolDefinition],
+    conversationTitle: String?,
+    continuation: CheckedContinuation<ToolCallApprovalDecision, Never>
+  ) {
+    self.id = id
+    self.callName = callName
+    self.originalText = originalText
+    self.mode = mode
+    self.definitions = definitions
+    self.conversationTitle = conversationTitle
+    self.continuation = continuation
+  }
+
+  func resume(returning decision: ToolCallApprovalDecision) {
+    continuation.resume(returning: decision)
+  }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
   @Published var conversations: [Conversation]
@@ -65,6 +103,7 @@ final class AppStore: ObservableObject {
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
+  private var cancelledToolCallApprovalIDs: Set<UUID> = []
 
   var isResponding: Bool { !respondingConversationIDs.isEmpty }
 
@@ -83,6 +122,7 @@ final class AppStore: ObservableObject {
   @Published var endpointVoices: [UUID: [String]] = [:]
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+  @Published private(set) var toolCallApprovalRequests: [ToolCallApprovalRequest] = []
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityReport: AppleFoundationAvailabilityReport
@@ -873,6 +913,129 @@ final class AppStore: ObservableObject {
 
   func saveSettings() {
     persistence.saveSettings(settings)
+  }
+
+  var activeToolCallApprovalRequest: ToolCallApprovalRequest? {
+    toolCallApprovalRequests.first
+  }
+
+  func requestToolCallApproval(
+    call: ParsedToolCall,
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversationID: UUID
+  ) async -> ToolCallApprovalDecision {
+    guard !settings.yoloModeEnabled else { return .approved(call) }
+
+    let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+    let requestID = UUID()
+    let conversationTitle = conversation(withID: conversationID)?.displayTitle
+    let originalText = AgentTooling.editableToolCallText(for: normalizedCall, mode: mode)
+
+    return await withTaskCancellationHandler(
+      operation: {
+        await withCheckedContinuation { continuation in
+          if cancelledToolCallApprovalIDs.remove(requestID) != nil {
+            continuation.resume(returning: .cancelled)
+            return
+          }
+          let request = ToolCallApprovalRequest(
+            id: requestID,
+            callName: normalizedCall.name,
+            originalText: originalText,
+            mode: mode,
+            definitions: definitions,
+            conversationTitle: conversationTitle,
+            continuation: continuation
+          )
+          toolCallApprovalRequests.append(request)
+        }
+      },
+      onCancel: {
+        Task { @MainActor [weak self] in
+          guard let self else { return }
+          if !self.resolveToolCallApproval(id: requestID, decision: .cancelled) {
+            self.cancelledToolCallApprovalIDs.insert(requestID)
+          }
+        }
+      }
+    )
+  }
+
+  @discardableResult
+  func approveToolCall(id: UUID, editedText: String) -> String? {
+    guard let request = toolCallApprovalRequests.first(where: { $0.id == id }) else {
+      return "This tool call is no longer pending."
+    }
+    switch parseApprovedToolCall(editedText, request: request) {
+    case .success(let call):
+      resolveToolCallApproval(id: id, decision: .approved(call))
+      return nil
+    case .failure(let message):
+      return message
+    }
+  }
+
+  func cancelToolCallApproval(id: UUID) {
+    _ = resolveToolCallApproval(id: id, decision: .cancelled)
+  }
+
+  @discardableResult
+  private func resolveToolCallApproval(id: UUID, decision: ToolCallApprovalDecision) -> Bool {
+    guard let index = toolCallApprovalRequests.firstIndex(where: { $0.id == id }) else {
+      return false
+    }
+    let request = toolCallApprovalRequests.remove(at: index)
+    request.resume(returning: decision)
+    return true
+  }
+
+  private func parseApprovedToolCall(
+    _ text: String,
+    request: ToolCallApprovalRequest
+  ) -> Result<ParsedToolCall, String> {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      return .failure("Tool call text cannot be empty.")
+    }
+    let calls = approvalToolCalls(in: trimmed, request: request)
+    guard calls.count == 1 else {
+      if calls.isEmpty {
+        return .failure("Tool call text must contain one valid tool call.")
+      }
+      return .failure("Tool call text must contain only one tool call.")
+    }
+
+    let normalizedCall = ToolAgentRegistry.normalized(
+      call: calls[0],
+      definitions: request.definitions
+    )
+    guard request.definitions.contains(where: { $0.name == normalizedCall.name }) else {
+      return .failure("Unknown tool '\(normalizedCall.name)'.")
+    }
+    return .success(normalizedCall)
+  }
+
+  private func approvalToolCalls(
+    in text: String,
+    request: ToolCallApprovalRequest
+  ) -> [ParsedToolCall] {
+    let preferredCalls = ToolAgentRegistry.parseCalls(
+      in: text,
+      definitions: request.definitions,
+      mode: request.mode
+    )
+    if !preferredCalls.isEmpty { return preferredCalls }
+
+    for mode in ToolCallingMode.allCases where mode != request.mode {
+      let calls = ToolAgentRegistry.parseCalls(
+        in: text,
+        definitions: request.definitions,
+        mode: mode
+      )
+      if !calls.isEmpty { return calls }
+    }
+    return []
   }
 
   func resetEndpointStatus(_ id: UUID) {

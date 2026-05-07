@@ -591,6 +591,26 @@ enum AgentTooling {
     return "<tool_run>\n\(toolName) tool (\(argumentsJSON)):\n\(body)\n</tool_run>"
   }
 
+  static func editableToolCallText(for call: ParsedToolCall, mode: ToolCallingMode) -> String {
+    let raw = call.rawBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !raw.isEmpty { return raw }
+
+    switch mode {
+    case .text:
+      var lines = ["TOOL_CALL", "tool: \(call.name)"]
+      for key in call.argumentValues.keys.sorted() {
+        guard let value = call.argumentValues[key] else { continue }
+        lines.append("\(key): \(value.stringValue)")
+      }
+      lines.append("END_TOOL_CALL")
+      return lines.joined(separator: "\n")
+    case .xml, .native:
+      return "<tool_call>\(toolCallObjectJSON(for: call))</tool_call>"
+    case .json:
+      return toolCallObjectJSON(for: call)
+    }
+  }
+
   static func compactJSON(_ args: [String: String]) -> String {
     compactJSON(args.mapValues { .string($0) })
   }
@@ -602,6 +622,18 @@ enum AgentTooling {
       let s = String(data: data, encoding: .utf8)
     else { return "{}" }
     return s
+  }
+
+  private static func toolCallObjectJSON(for call: ParsedToolCall) -> String {
+    let payload: [String: Any] = [
+      "arguments": call.argumentValues.mapValues(\.jsonObject),
+      "name": call.name,
+    ]
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+      let json = String(data: data, encoding: .utf8)
+    else { return #"{"arguments":{},"name":"\#(call.name)"}"# }
+    return json
   }
 
   static func argumentValues(_ args: [String: Any]) -> [String: AgentToolArgumentValue] {

@@ -316,6 +316,7 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
     toolCallingContent
+    yoloModeContent
   }
 
   @ViewBuilder
@@ -329,6 +330,16 @@ struct SettingsView: View {
     Text(store.settings.toolCallingMode.summary)
       .font(.caption)
       .foregroundStyle(.secondary)
+  }
+
+  @ViewBuilder
+  private var yoloModeContent: some View {
+    Toggle("YOLO mode", isOn: settingsBinding(\.yoloModeEnabled))
+    Text(
+      "On: tool calls run immediately. Off: review, edit, confirm, or cancel each tool call before it runs."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   private var providerSection: some View {
