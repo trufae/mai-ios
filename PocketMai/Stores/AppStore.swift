@@ -59,6 +59,11 @@ enum ToolCallApprovalDecision: Sendable {
   case cancelled
 }
 
+private enum ToolCallApprovalParseResult {
+  case success(ParsedToolCall)
+  case failure(String)
+}
+
 struct ToolCallApprovalRequest: Identifiable {
   let id: UUID
   let callName: String
@@ -993,7 +998,7 @@ final class AppStore: ObservableObject {
   private func parseApprovedToolCall(
     _ text: String,
     request: ToolCallApprovalRequest
-  ) -> Result<ParsedToolCall, String> {
+  ) -> ToolCallApprovalParseResult {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
       return .failure("Tool call text cannot be empty.")
