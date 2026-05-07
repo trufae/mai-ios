@@ -207,31 +207,74 @@ private struct MessageBubbleContent: View, Equatable {
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-    bubbleView
-      .overlay {
-        if !isStreaming {
-          MessageContextMenuOverlay(
-            visibleText: visibleText,
-            rawText: rawText,
-            messageID: message.id,
-            role: message.role,
-            toolSettings: toolSettings,
-            openAIEndpoints: openAIEndpoints,
-            onSelectText: {
-              showingTextSelection = true
-            },
-            onDelete: onDelete,
-            onResubmit: isUser ? onResubmit : nil,
-            onTrimFromHere: onTrimFromHere,
-            onRestartFresh: onRestartFresh,
-            onNewChatWithMessage: onNewChatWithMessage,
-            onSpeakFromHere: onSpeakFromHere
-          )
-        }
-      }
+    let bubbleWithSheet = bubbleView
       .sheet(isPresented: $showingTextSelection) {
         MessageTextSelectionSheet(title: message.role.displayName, text: visibleText)
       }
+    if !isStreaming {
+      bubbleWithSheet
+        .contextMenu {
+          messageContextMenu(visibleText: visibleText, rawText: rawText)
+        }
+    } else {
+      bubbleWithSheet
+    }
+  }
+
+  @ViewBuilder
+  private func messageContextMenu(visibleText: String, rawText: String) -> some View {
+    Button {
+      showingTextSelection = true
+    } label: {
+      Label("Select Text", systemImage: "text.cursor")
+    }
+    Button {
+      UIPasteboard.general.string = visibleText
+    } label: {
+      Label("Copy Message", systemImage: "doc.on.doc")
+    }
+    Button {
+      UIPasteboard.general.string = rawText
+    } label: {
+      Label("Copy Raw Message", systemImage: "doc.text")
+    }
+    Button {
+      _ = TextToSpeechTool.speak(
+        arguments: ["text": .string(visibleText)],
+        settings: toolSettings,
+        openAIEndpoints: openAIEndpoints,
+        role: message.role == .user ? .user : .assistant,
+        title: message.role.displayName,
+        messageID: message.id)
+    } label: {
+      Label("Speak Message", systemImage: "speaker.wave.2")
+    }
+
+    if let onSpeakFromHere {
+      Button(action: onSpeakFromHere) {
+        Label("Speak From Here", systemImage: "speaker.wave.2.fill")
+      }
+    }
+
+    if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
+      Button(action: resend) {
+        Label("Resend From Here", systemImage: "arrow.clockwise")
+      }
+    }
+    if let onRestartFresh {
+      Button(action: onRestartFresh) {
+        Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+      }
+    }
+    if let onNewChatWithMessage {
+      Button(action: onNewChatWithMessage) {
+        Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
+      }
+    }
+
+    Button(role: .destructive, action: onDelete) {
+      Label("Delete Message", systemImage: "trash")
+    }
   }
 
   private var iconName: String {
@@ -274,144 +317,6 @@ private struct MessageBubbleContent: View, Equatable {
       return text
     }
     return "…" + text[start...]
-  }
-}
-
-@MainActor
-private struct MessageContextMenuOverlay: UIViewRepresentable {
-  let visibleText: String
-  let rawText: String
-  let messageID: UUID
-  let role: ChatRole
-  let toolSettings: NativeToolSettings
-  let openAIEndpoints: [OpenAIEndpoint]
-  let onSelectText: () -> Void
-  let onDelete: () -> Void
-  let onResubmit: (() -> Void)?
-  let onTrimFromHere: (() -> Void)?
-  let onRestartFresh: (() -> Void)?
-  let onNewChatWithMessage: (() -> Void)?
-  let onSpeakFromHere: (() -> Void)?
-
-  func makeUIView(context: Context) -> UIView {
-    let view = UIView()
-    view.backgroundColor = .clear
-    view.isOpaque = false
-    view.isAccessibilityElement = false
-    view.addInteraction(UIContextMenuInteraction(delegate: context.coordinator))
-    return view
-  }
-
-  func updateUIView(_ uiView: UIView, context: Context) {
-    context.coordinator.overlay = self
-  }
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(overlay: self)
-  }
-
-  private func makeMenu() -> UIMenu {
-    var sections: [UIMenuElement] = [
-      inlineMenu([
-        action("Select Text", systemImage: "text.cursor", handler: onSelectText),
-        action("Copy Message", systemImage: "doc.on.doc") {
-          UIPasteboard.general.string = visibleText
-        },
-        action("Copy Raw Message", systemImage: "doc.text") {
-          UIPasteboard.general.string = rawText
-        },
-      ]),
-      inlineMenu([
-        action("Speak Message", systemImage: "speaker.wave.2") {
-          _ = TextToSpeechTool.speak(
-            arguments: ["text": .string(visibleText)],
-            settings: toolSettings,
-            openAIEndpoints: openAIEndpoints,
-            role: role == .user ? .user : .assistant,
-            title: role.displayName,
-            messageID: messageID)
-        }
-      ]),
-    ]
-
-    if let onSpeakFromHere {
-      sections.append(
-        inlineMenu([
-          action(
-            "Speak From Here",
-            systemImage: "speaker.wave.2.fill",
-            handler: onSpeakFromHere)
-        ]))
-    }
-
-    var restartActions: [UIMenuElement] = []
-    if let resend = onTrimFromHere ?? onResubmit {
-      restartActions.append(
-        action("Resend From Here", systemImage: "arrow.clockwise", handler: resend))
-    }
-    if let onRestartFresh {
-      restartActions.append(
-        action(
-          "Restart From Here",
-          systemImage: "arrow.triangle.2.circlepath",
-          handler: onRestartFresh))
-    }
-    if let onNewChatWithMessage {
-      restartActions.append(
-        action(
-          "New Chat With This",
-          systemImage: "bubble.left.and.bubble.right",
-          handler: onNewChatWithMessage))
-    }
-    if !restartActions.isEmpty {
-      sections.append(inlineMenu(restartActions))
-    }
-
-    sections.append(
-      inlineMenu([
-        action(
-          "Delete Message",
-          systemImage: "trash",
-          attributes: .destructive,
-          handler: onDelete)
-      ]))
-    return UIMenu(title: "", children: sections)
-  }
-
-  private func inlineMenu(_ children: [UIMenuElement]) -> UIMenu {
-    UIMenu(title: "", options: .displayInline, children: children)
-  }
-
-  private func action(
-    _ title: String,
-    systemImage: String,
-    attributes: UIMenuElement.Attributes = [],
-    handler: @escaping () -> Void
-  ) -> UIAction {
-    UIAction(
-      title: title,
-      image: UIImage(systemName: systemImage),
-      attributes: attributes
-    ) { _ in
-      handler()
-    }
-  }
-
-  final class Coordinator: NSObject, UIContextMenuInteractionDelegate {
-    var overlay: MessageContextMenuOverlay
-
-    init(overlay: MessageContextMenuOverlay) {
-      self.overlay = overlay
-    }
-
-    func contextMenuInteraction(
-      _ interaction: UIContextMenuInteraction,
-      configurationForMenuAtLocation location: CGPoint
-    ) -> UIContextMenuConfiguration? {
-      UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-        self?.overlay.makeMenu()
-      }
-    }
   }
 }
 
@@ -940,6 +845,8 @@ struct CodeBlockView: View {
   let code: String
   let appearance: AppearanceSettings
 
+  @State private var showingCodePreview = false
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
@@ -947,6 +854,13 @@ struct CodeBlockView: View {
           .font(.caption.monospaced().weight(.semibold))
           .foregroundStyle(.secondary)
         Spacer()
+        Button {
+          showingCodePreview = true
+        } label: {
+          Image(systemName: "eye")
+        }
+        .buttonStyle(.glass)
+        .help("View code")
         Button {
           UIPasteboard.general.string = code
         } label: {
@@ -965,12 +879,20 @@ struct CodeBlockView: View {
           .padding(12)
       }
     }
+    .sheet(isPresented: $showingCodePreview) {
+      MessageTextSelectionSheet(title: codePreviewTitle, text: code)
+    }
     .background(.thinMaterial)
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(.secondary.opacity(0.18), lineWidth: 1)
     }
+  }
+
+  private var codePreviewTitle: String {
+    let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Code" : trimmed
   }
 }
 
