@@ -364,21 +364,11 @@ struct SettingsView: View {
       }
     } header: {
       Text("Inference")
-    } footer: {
-      Text(providerFooterText)
     }
   }
 
   private var toolProxySummary: String {
     "Off: every enabled tool is described in each request. On: only `list-tools` and `call-tool` wrappers go to the model — it lists matching tools by keyword, then calls the chosen one. Saves prompt context with many tools, adds one extra round-trip per call. Combines with all tool calling modes."
-  }
-
-  private var providerFooterText: String {
-    if store.settings.openAIEndpoints.isEmpty {
-      return
-        "Apple Intelligence and MLX run on-device. Expand Providers to inspect built-in providers or add OpenAI-compatible providers."
-    }
-    return "Choose which provider answers new chats. Apple Intelligence and MLX run on-device."
   }
 
   private var appearanceSection: some View {
