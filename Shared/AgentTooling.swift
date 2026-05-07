@@ -588,11 +588,7 @@ enum AgentTooling {
 
   static func makeRunBlock(toolName: String, argumentsJSON: String, result: String) -> String {
     let body = result.trimmingCharacters(in: .whitespacesAndNewlines)
-    let guidance =
-      isErrorResult(body)
-      ? "\n\nHost note: this tool result is an error. Use it to choose the next corrective tool call. If it reports a missing prerequisite, call that prerequisite next and retry only after the prerequisite succeeds."
-      : ""
-    return "<tool_run>\n\(toolName) tool (\(argumentsJSON)):\n\(body)\(guidance)\n</tool_run>"
+    return "<tool_run>\n\(toolName) tool (\(argumentsJSON)):\n\(body)\n</tool_run>"
   }
 
   static func compactJSON(_ args: [String: String]) -> String {
@@ -610,17 +606,6 @@ enum AgentTooling {
 
   static func argumentValues(_ args: [String: Any]) -> [String: AgentToolArgumentValue] {
     args.mapValues { AgentToolArgumentValue(json: $0) }
-  }
-
-  static func isErrorResult(_ result: String) -> Bool {
-    let text = result.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return text.hasPrefix("error:")
-      || text.hasPrefix("error ")
-      || text.contains("you have to ")
-      || text.contains("must ")
-      || text.contains("missing prerequisite")
-      || text.contains("not opened")
-      || text.contains("open file first")
   }
 
   private static func normalizeValues(
