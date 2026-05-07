@@ -837,7 +837,7 @@ struct SettingsView: View {
         "Enable FilesData tools",
         isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
       Text(
-        "The callable Files tools can list, read, write, and append top-level text files in FilesData."
+        "The callable Files tools can list, read, write, append, rename, and delete top-level text files in FilesData."
       )
         .font(.caption)
         .foregroundStyle(.secondary)

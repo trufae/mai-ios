@@ -131,13 +131,13 @@ enum ToolAgentRegistry {
       }
     }
     if names.contains(FileWorkspaceTool.listName) || names.contains(FileWorkspaceTool.readName)
-      || names.contains(FileWorkspaceTool.writeName)
+      || names.contains(FileWorkspaceTool.writeName) || names.contains(FileWorkspaceTool.renameName)
     {
       if containsAny(
         text,
         [
           "file", "files", "filesdata", "read file", "write file", "append to file",
-          "save file", "save to file", "list files",
+          "save file", "save to file", "list files", "delete file", "rename file",
         ])
       {
         return true
@@ -216,7 +216,8 @@ enum ToolAgentRegistry {
     switch name {
     case WebSearchTool.name, WebSearchTool.fetchName, WeatherTool.name,
       TodoTool.listName, TodoTool.addName, TodoTool.doneName, TextToSpeechTool.name,
-      FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName:
+      FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName,
+      FileWorkspaceTool.renameName:
       return true
     default:
       return false
@@ -295,6 +296,11 @@ enum ToolAgentRegistry {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.write(arguments: normalizedCall.argumentValues)
+    case FileWorkspaceTool.renameName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.rename(arguments: normalizedCall.argumentValues)
     default:
       return await dispatchMCP(call: normalizedCall, store: store)
     }
@@ -476,42 +482,58 @@ enum FileWorkspaceTool {
   static let listName = "files_list"
   static let readName = "files_read"
   static let writeName = "files_write"
+  static let renameName = "files_rename"
 
   static let definitions: [ToolDefinition] = [
     ToolDefinition(
       name: listName,
       description:
-        "List the top-level files in FilesData.",
+        "List files in FilesData.",
       parameters: []
     ),
     ToolDefinition(
       name: readName,
       description:
-        "Read a top-level text file from FilesData.",
+        "Read a text file from FilesData.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File name in FilesData. Do not use folders or slashes.",
+          description: "File name in FilesData.",
           required: true),
       ]
     ),
     ToolDefinition(
       name: writeName,
       description:
-        "Write or append text to a top-level file in FilesData.",
+        "Write or append text to a file in FilesData. To delete a file, write an empty string with append omitted or false.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File name in FilesData. Do not use folders or slashes.",
+          description: "File name in FilesData.",
           required: true),
         ToolParameterDef(
           name: "content", type: "string",
-          description: "Text to write.",
+          description: "Text to write. Empty string deletes the file when append is omitted or false.",
           required: true),
         ToolParameterDef(
           name: "append", type: "boolean",
           description: "Add to the end of the file. Default: false.",
           required: false),
+      ]
+    ),
+    ToolDefinition(
+      name: renameName,
+      description:
+        "Rename a file in FilesData.",
+      parameters: [
+        ToolParameterDef(
+          name: "path", type: "string",
+          description: "Current file name in FilesData.",
+          required: true),
+        ToolParameterDef(
+          name: "new_path", type: "string",
+          description: "New file name in FilesData.",
+          required: true),
       ]
     ),
   ]

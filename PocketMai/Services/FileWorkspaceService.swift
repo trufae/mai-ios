@@ -151,7 +151,7 @@ enum FileWorkspaceService {
 
   static func list(arguments _: [String: AgentToolArgumentValue]) -> String {
     do {
-      let url = try PocketMaiDirectories.ensureFilesWorkspace()
+      let url = try workspaceRootURL()
       var isDirectory: ObjCBool = false
       guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
         return "Error: FilesData folder does not exist."
@@ -284,6 +284,14 @@ enum FileWorkspaceService {
         return "Error: '\(displayPath(path))' is a directory."
       }
 
+      if content.isEmpty && !append {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+          return "Error: file '\(displayPath(path))' does not exist."
+        }
+        try FileManager.default.removeItem(at: url)
+        return "Deleted \(displayPath(path))"
+      }
+
       if append, FileManager.default.fileExists(atPath: url.path) {
         let handle = try FileHandle(forWritingTo: url)
         handle.seekToEndOfFile()
@@ -302,6 +310,53 @@ enum FileWorkspaceService {
     }
   }
 
+  static func rename(arguments: [String: AgentToolArgumentValue]) -> String {
+    do {
+      let path =
+        AgentTooling.firstNonEmpty(
+          arguments["path"]?.stringValue,
+          arguments["file"]?.stringValue,
+          arguments["old_path"]?.stringValue,
+          arguments["from_path"]?.stringValue,
+          arguments["source"]?.stringValue) ?? ""
+      let newPath =
+        AgentTooling.firstNonEmpty(
+          arguments["new_path"]?.stringValue,
+          arguments["new_file"]?.stringValue,
+          arguments["new_name"]?.stringValue,
+          arguments["to_path"]?.stringValue,
+          arguments["destination"]?.stringValue) ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      guard !newPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: new_path is required."
+      }
+
+      let url = try validatedFileURL(path: path)
+      let newURL = try validatedFileURL(path: newPath)
+      if url.path == newURL.path {
+        return "File is already named \(displayPath(newPath))"
+      }
+
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        return "Error: file '\(displayPath(path))' does not exist."
+      }
+      guard !isDirectory.boolValue else {
+        return "Error: '\(displayPath(path))' is a directory."
+      }
+      guard !FileManager.default.fileExists(atPath: newURL.path) else {
+        return "Error: file '\(displayPath(newPath))' already exists."
+      }
+
+      try FileManager.default.moveItem(at: url, to: newURL)
+      return "Renamed \(displayPath(path)) to \(displayPath(newPath))"
+    } catch {
+      return "Error: \(error.localizedDescription)"
+    }
+  }
+
   private static func pathArgument(
     _ arguments: [String: AgentToolArgumentValue],
     primary: String,
@@ -315,33 +370,71 @@ enum FileWorkspaceService {
     guard !trimmed.isEmpty else {
       throw NSError.fileWorkspace("Path is required.")
     }
-    if trimmed == "." || trimmed == ".." {
-      throw NSError.fileWorkspace("Path must be a file name.")
-    }
-    if trimmed.contains("/") || trimmed.contains("\\") {
-      throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
-    }
-    if (trimmed as NSString).isAbsolutePath {
-      throw NSError.fileWorkspace("Absolute paths are not allowed.")
-    }
     if trimmed.contains("\0") {
       throw NSError.fileWorkspace("Path contains an invalid character.")
     }
+    if trimmed.contains("\\") {
+      throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
+    }
 
-    let root = try PocketMaiDirectories.ensureFilesWorkspace().standardizedFileURL
-    let url = root.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
-    try validateInsideWorkspace(url.deletingLastPathComponent(), root: root)
+    let root = try workspaceRootURL()
+    let url: URL
+    if (trimmed as NSString).isAbsolutePath {
+      url = URL(fileURLWithPath: trimmed, isDirectory: false).standardizedFileURL
+      try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
+      try validateTopLevelFileURL(url, root: root)
+    } else {
+      if trimmed == "." || trimmed == ".." {
+        throw NSError.fileWorkspace("Path must be a file name.")
+      }
+      if trimmed.contains("/") {
+        throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
+      }
+      url = root.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
+      try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
+      try validateTopLevelFileURL(url, root: root)
+    }
+
     if FileManager.default.fileExists(atPath: url.path) {
       try validateInsideWorkspace(url, root: root)
     }
     return url
   }
 
-  private static func validateInsideWorkspace(_ url: URL, root: URL) throws {
-    let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
-    let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
-    guard resolvedPath == rootPath || resolvedPath.hasPrefix(rootPath + "/") else {
-      throw NSError.fileWorkspace("Path escapes the FilesData folder.")
+  private static func workspaceRootURL() throws -> URL {
+    let root = try PocketMaiDirectories.ensureFilesWorkspace().standardizedFileURL
+    try validateInsideWorkspace(root, root: root, resolvingSymlinks: false)
+    return root
+  }
+
+  private static func validateTopLevelFileURL(_ url: URL, root: URL) throws {
+    let rootPath = root.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    guard path != rootPath else {
+      throw NSError.fileWorkspace("Path must be a file name.")
+    }
+    guard url.deletingLastPathComponent().standardizedFileURL.path == rootPath else {
+      throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
+    }
+  }
+
+  private static func validateInsideWorkspace(
+    _ url: URL,
+    root: URL,
+    resolvingSymlinks: Bool = true
+  ) throws {
+    let rootURL =
+      resolvingSymlinks
+      ? root.resolvingSymlinksInPath().standardizedFileURL
+      : root.standardizedFileURL
+    let candidateURL =
+      resolvingSymlinks
+      ? url.resolvingSymlinksInPath().standardizedFileURL
+      : url.standardizedFileURL
+    let rootPath = rootURL.path
+    let path = candidateURL.path
+    guard path == rootPath || path.hasPrefix(rootPath + "/") else {
+      throw NSError.fileWorkspace("Path must be inside FilesData.")
     }
   }
 
