@@ -428,6 +428,9 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
 
+    Toggle(
+      "Colorize Response Bubbles",
+      isOn: settingsBinding(\.appearance.colorizeResponseBubbles))
     Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
     Toggle("Live Markdown", isOn: settingsBinding(\.appearance.liveMarkdown))
   }

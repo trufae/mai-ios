@@ -298,6 +298,9 @@ private struct MessageBubbleContent: View, Equatable {
     if isUser {
       return AnyShapeStyle(Color.accentColor.opacity(0.22))
     }
+    if message.role == .assistant && appearance.colorizeResponseBubbles {
+      return AnyShapeStyle(Color.accentColor.opacity(0.12))
+    }
     return AnyShapeStyle(.regularMaterial)
   }
 
