@@ -202,18 +202,18 @@ struct SidebarView: View {
         onSelectConversation()
       }
       FloatingActionIcon(
+        systemImage: "magnifyingglass",
+        accessibilityLabel: "Search conversations"
+      ) {
+        activateSearch()
+      }
+      FloatingActionIcon(
         systemImage: showingArchive ? "tray.full.fill" : "archivebox",
         accessibilityLabel: showingArchive
           ? "Show active conversations" : "Show archived conversations",
         isActive: showingArchive
       ) {
         showingArchive.toggle()
-      }
-      FloatingActionIcon(
-        systemImage: "magnifyingglass",
-        accessibilityLabel: "Search conversations"
-      ) {
-        activateSearch()
       }
       FloatingActionIcon(
         systemImage: "gearshape",
