@@ -773,11 +773,60 @@ private struct MarkdownHorizontalRuleView: View {
 
 private func attributedInlineMarkdown(_ value: String) -> AttributedString {
   let normalized = MarkdownInlineSymbols.displayString(value)
-  return (try? AttributedString(
-    markdown: normalized,
-    options: AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+  let attributed =
+    (try? AttributedString(
+      markdown: normalized,
+      options: AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .inlineOnlyPreservingWhitespace)))
     ?? AttributedString(normalized)
+  return MarkdownInlineTokenColorizer.colorized(attributed)
+}
+
+private enum MarkdownInlineTokenColorizer {
+  static func colorized(_ attributed: AttributedString) -> AttributedString {
+    var result = attributed
+    var cursor = result.characters.startIndex
+
+    while cursor != result.characters.endIndex {
+      let character = result.characters[cursor]
+      guard isMarker(character), isTokenStart(in: result, at: cursor) else {
+        cursor = result.characters.index(after: cursor)
+        continue
+      }
+
+      let next = result.characters.index(after: cursor)
+      guard next != result.characters.endIndex, isTokenBody(result.characters[next]) else {
+        cursor = next
+        continue
+      }
+
+      var end = result.characters.index(after: next)
+      while end != result.characters.endIndex, isTokenBody(result.characters[end]) {
+        end = result.characters.index(after: end)
+      }
+
+      result[cursor..<end].foregroundColor = Color.accentColor
+      cursor = end
+    }
+
+    return result
+  }
+
+  private static func isMarker(_ character: Character) -> Bool {
+    character == "@" || character == "#"
+  }
+
+  private static func isTokenStart(in attributed: AttributedString, at index: AttributedString.Index)
+    -> Bool
+  {
+    guard index != attributed.characters.startIndex else { return true }
+    let previous = attributed.characters.index(before: index)
+    return !isTokenBody(attributed.characters[previous])
+  }
+
+  private static func isTokenBody(_ character: Character) -> Bool {
+    character.isLetter || character.isNumber || character == "_" || character == "-"
+  }
 }
 
 enum MarkdownInlineSymbols {
