@@ -3,7 +3,7 @@ import SwiftUI
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
-  @State private var showingArchive = false
+  @Binding var showingArchive: Bool
   @State private var isSearchActive = false
   @State private var searchText = ""
   @State private var isSelectionMode = false

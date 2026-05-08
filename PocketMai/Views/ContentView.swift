@@ -8,6 +8,7 @@ struct ContentView: View {
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
   @State private var historyDragIsActive = false
+  @State private var sidebarShowingArchive = false
 
   var body: some View {
     GeometryReader { proxy in
@@ -17,17 +18,19 @@ struct ContentView: View {
       let revealProgress = panelOffset / panelWidth
 
       ZStack(alignment: .leading) {
-        if showingHistory || historyDragOffset > 0 {
-          SidebarView(
-            showingSettings: $showingSettings,
-            onSelectConversation: closeHistoryPanel,
-            revealProgress: revealProgress
-          )
-          .frame(width: panelWidth)
-          .frame(maxHeight: .infinity)
-          .background(.regularMaterial)
-          .zIndex(0)
-        }
+        SidebarView(
+          showingSettings: $showingSettings,
+          showingArchive: $sidebarShowingArchive,
+          onSelectConversation: closeHistoryPanel,
+          revealProgress: revealProgress
+        )
+        .frame(width: panelWidth)
+        .frame(maxHeight: .infinity)
+        .background(.regularMaterial)
+        .opacity(panelOffset > 0 ? 1 : 0)
+        .allowsHitTesting(panelOffset > 0)
+        .accessibilityHidden(panelOffset == 0)
+        .zIndex(0)
 
         NavigationStack {
           ChatView(
