@@ -726,6 +726,8 @@ struct MarkdownContentView: View {
             .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
           BlockquoteView(text: value, appearance: appearance, fontFamily: fontFamily)
+        case .horizontalRule:
+          MarkdownHorizontalRuleView()
         case .code(let language, let code):
           CodeBlockView(language: language, code: code, appearance: appearance)
         case .table(let headers, let rows, let alignments):
@@ -756,6 +758,16 @@ struct MarkdownContentView: View {
       }
     return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
       .weight(clampedLevel == 1 ? .bold : .semibold)
+  }
+}
+
+private struct MarkdownHorizontalRuleView: View {
+  var body: some View {
+    Divider()
+      .overlay(Color.secondary.opacity(0.35))
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 4)
+      .accessibilityHidden(true)
   }
 }
 
@@ -1299,6 +1311,7 @@ struct MarkdownBlock: Identifiable {
     case heading(level: Int, text: String)
     case text(String)
     case blockquote(String)
+    case horizontalRule
     case code(language: String, code: String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
     case taskList(items: [TaskListItem])
@@ -1312,7 +1325,9 @@ struct MarkdownBlock: Identifiable {
 enum MarkdownParser {
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
-    if containsBlockquoteLine(text) || (text.contains("$") && text.contains("\\")) {
+    if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
+      || (text.contains("$") && text.contains("\\"))
+    {
       return true
     }
     let markers = ["```", "`", "**", "__", "- ", "* ", "+ ", "- [", "* [", "|", "[", "#"]
@@ -1387,6 +1402,13 @@ enum MarkdownParser {
       if let heading = heading(trimmed) {
         flushText()
         blocks.append(MarkdownBlock(kind: .heading(level: heading.level, text: heading.text)))
+        index += 1
+        continue
+      }
+
+      if isHorizontalRule(trimmed) {
+        flushText()
+        blocks.append(MarkdownBlock(kind: .horizontalRule))
         index += 1
         continue
       }
@@ -1467,6 +1489,12 @@ enum MarkdownParser {
     }
   }
 
+  private static func containsHorizontalRuleLine(_ text: String) -> Bool {
+    text.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+      isHorizontalRule(String(line).trimmingCharacters(in: .whitespaces))
+    }
+  }
+
   private static func blockquoteLine(_ line: String) -> String? {
     var text = line.drop(while: { $0 == " " || $0 == "\t" })
     guard text.first == ">" else { return nil }
@@ -1486,6 +1514,10 @@ enum MarkdownParser {
     let text = trimmed[trimmed.index(after: separatorIndex)...]
       .trimmingCharacters(in: .whitespaces)
     return text.isEmpty ? nil : (level, text)
+  }
+
+  private static func isHorizontalRule(_ trimmed: String) -> Bool {
+    trimmed.count >= 3 && trimmed.allSatisfy { $0 == "-" }
   }
 
   private static func taskListItem(_ trimmed: String) -> TaskListItem? {

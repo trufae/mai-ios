@@ -227,7 +227,7 @@ enum EPUBExporter {
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first.text))
         }
-      case .table, .code:
+      case .horizontalRule, .table, .code:
         continue
       }
     }
@@ -280,6 +280,8 @@ enum EPUBExporter {
       return paragraphsHTML(value)
     case .blockquote(let value):
       return "<blockquote>\(paragraphsHTML(value))</blockquote>"
+    case .horizontalRule:
+      return "<hr/>"
     case .code(let language, let code):
       let attr = language.isEmpty ? "" : " class=\"language-\(xmlEscaped(language))\""
       return "<pre><code\(attr)>\(xmlEscaped(code))</code></pre>"
