@@ -196,7 +196,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   var tint: AppearanceTint = .system
   var theme: AppearanceTheme = .system
   var solidResponseBubbles: Bool = true
-  var liveMarkdown: Bool = false
+  var liveMarkdown: Bool = true
 
   static let defaults = AppearanceSettings()
 
@@ -231,7 +231,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     solidResponseBubbles =
       (try? c.decode(Bool.self, forKey: .solidResponseBubbles))
       ?? (try? c.decode(Bool.self, forKey: .colorizeResponseBubbles)) ?? true
-    liveMarkdown = (try? c.decode(Bool.self, forKey: .liveMarkdown)) ?? false
+    liveMarkdown = (try? c.decode(Bool.self, forKey: .liveMarkdown)) ?? true
   }
 
   func encode(to encoder: Encoder) throws {
