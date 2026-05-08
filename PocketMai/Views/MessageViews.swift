@@ -309,8 +309,8 @@ private struct MessageBubbleContent: View, Equatable {
     if isUser {
       return AnyShapeStyle(Color.accentColor.opacity(0.22))
     }
-    if message.role == .assistant && appearance.colorizeResponseBubbles {
-      return AnyShapeStyle(Color.accentColor.opacity(0.12))
+    if message.role == .assistant && !appearance.solidResponseBubbles {
+      return AnyShapeStyle(Color.clear)
     }
     return AnyShapeStyle(.regularMaterial)
   }
@@ -793,7 +793,35 @@ private func attributedInlineMarkdown(_ value: String) -> AttributedString {
       options: AttributedString.MarkdownParsingOptions(
         interpretedSyntax: .inlineOnlyPreservingWhitespace)))
     ?? AttributedString(normalized)
-  return MarkdownInlineTokenColorizer.colorized(attributed)
+  return MarkdownInlineStyleApplier.styled(
+    MarkdownInlineTokenColorizer.colorized(attributed)
+  )
+}
+
+private enum MarkdownInlineStyleApplier {
+  static func styled(_ attributed: AttributedString) -> AttributedString {
+    var result = attributed
+    let runs = result.runs.map { ($0.range, $0.inlinePresentationIntent) }
+
+    for (range, intent) in runs {
+      guard let intent else { continue }
+      if intent.contains(.code) {
+        result[range].foregroundColor = inlineCodeColor
+      }
+      if intent.contains(.strikethrough) {
+        result[range].strikethroughStyle = .single
+      }
+    }
+
+    return result
+  }
+
+  private static let inlineCodeColor = Color(
+    uiColor: UIColor { traits in
+      traits.userInterfaceStyle == .dark
+        ? UIColor(red: 1.0, green: 0.48, blue: 0.62, alpha: 1)
+        : UIColor(red: 0.70, green: 0.08, blue: 0.24, alpha: 1)
+    })
 }
 
 private enum MarkdownInlineTokenColorizer {
@@ -848,19 +876,74 @@ enum MarkdownInlineSymbols {
     rewriteDelimitedMath(in: raw)
   }
 
+  static func containsMathSyntax(_ raw: String) -> Bool {
+    let chars = Array(raw)
+    var index = 0
+
+    while index < chars.count {
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        index = end + 1
+        continue
+      }
+
+      if chars[index] == "$", !isEscaped(chars, at: index) {
+        if index + 1 < chars.count, chars[index + 1] == "$",
+          let end = findUnescapedDoubleDollar(in: chars, start: index + 2),
+          rewrittenMathContent(String(chars[(index + 2)..<end])) != nil
+        {
+          return true
+        }
+        if let end = findUnescapedDollar(in: chars, start: index + 1),
+          rewrittenMathContent(String(chars[(index + 1)..<end])) != nil
+        {
+          return true
+        }
+      }
+
+      if chars[index] == "\\", index + 1 < chars.count {
+        let opener = chars[index + 1]
+        if (opener == "(" || opener == "["),
+          let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
+          rewrittenMathContent(String(chars[(index + 2)..<end])) != nil
+        {
+          return true
+        }
+      }
+
+      index += 1
+    }
+
+    return false
+  }
+
   private static func rewriteDelimitedMath(in raw: String) -> String {
     let chars = Array(raw)
     var result = ""
     var index = 0
 
     while index < chars.count {
-      if chars[index] == "$", !isEscaped(chars, at: index),
-        let end = findUnescapedDollar(in: chars, start: index + 1),
-        let rewritten = rewrittenMathContent(String(chars[(index + 1)..<end]))
-      {
-        result += rewritten
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        result += String(chars[index...end])
         index = end + 1
         continue
+      }
+
+      if chars[index] == "$", !isEscaped(chars, at: index) {
+        if index + 1 < chars.count, chars[index + 1] == "$",
+          let end = findUnescapedDoubleDollar(in: chars, start: index + 2),
+          let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
+        {
+          result += markdownEscaped(rewritten)
+          index = end + 2
+          continue
+        }
+        if let end = findUnescapedDollar(in: chars, start: index + 1),
+          let rewritten = rewrittenMathContent(String(chars[(index + 1)..<end]))
+        {
+          result += markdownEscaped(rewritten)
+          index = end + 1
+          continue
+        }
       }
 
       if chars[index] == "\\", index + 1 < chars.count {
@@ -869,7 +952,7 @@ enum MarkdownInlineSymbols {
           let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
           let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
         {
-          result += rewritten
+          result += markdownEscaped(rewritten)
           index = end + 2
           continue
         }
@@ -883,9 +966,83 @@ enum MarkdownInlineSymbols {
   }
 
   private static func rewrittenMathContent(_ raw: String) -> String? {
-    let rewritten = replacingLatexCommands(in: raw)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return rewritten == raw.trimmingCharacters(in: .whitespacesAndNewlines) ? nil : rewritten
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard looksLikeLatexMath(trimmed) else { return nil }
+    let rewritten = normalizedLatexMath(trimmed)
+    return rewritten.isEmpty ? nil : rewritten
+  }
+
+  private static func looksLikeLatexMath(_ raw: String) -> Bool {
+    guard !raw.isEmpty else { return false }
+    if raw.contains("\\") || raw.contains("^") || raw.contains("_")
+      || raw.contains("{") || raw.contains("}")
+    {
+      return true
+    }
+    if raw.count == 1, raw.first?.isLetter == true {
+      return true
+    }
+
+    let chars = Array(raw)
+    let operators: Set<Character> = ["=", "+", "*", "/", "<", ">", "|", "±", "×", "÷"]
+    for (index, char) in chars.enumerated() {
+      if operators.contains(char) {
+        return true
+      }
+      if char == "-", hasNonNumericNeighbor(in: chars, at: index) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  private static func hasNonNumericNeighbor(in chars: [Character], at index: Int) -> Bool {
+    let previous = nearestNonWhitespace(in: chars, before: index)
+    let next = nearestNonWhitespace(in: chars, after: index)
+    guard let previous, let next else { return false }
+    return !previous.isNumber || !next.isNumber
+  }
+
+  private static func nearestNonWhitespace(in chars: [Character], before index: Int) -> Character? {
+    guard index > 0 else { return nil }
+    var cursor = index - 1
+    while cursor >= 0 {
+      if !chars[cursor].isWhitespace {
+        return chars[cursor]
+      }
+      cursor -= 1
+    }
+    return nil
+  }
+
+  private static func nearestNonWhitespace(in chars: [Character], after index: Int) -> Character? {
+    var cursor = index + 1
+    while cursor < chars.count {
+      if !chars[cursor].isWhitespace {
+        return chars[cursor]
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
+  private static func normalizedLatexMath(_ raw: String) -> String {
+    var output = raw
+    output = replacingLatexTextCommands(in: output)
+    output = replacingLatexFractions(in: output)
+    output = replacingLatexSquareRoots(in: output)
+    output = replacingLatexSpacing(in: output)
+    output = replacingLatexCommands(in: output)
+    output = removingStandaloneLatexCommands(
+      in: output,
+      commands: textCommandNames.union(["left", "right", "middle"])
+    )
+    output = replacingLatexScripts(in: output)
+    output = unescapingLatexPunctuation(in: output)
+    output = output.replacingOccurrences(of: "{", with: "")
+      .replacingOccurrences(of: "}", with: "")
+    return output.split(whereSeparator: \.isWhitespace).joined(separator: " ")
   }
 
   private static func replacingLatexCommands(in raw: String) -> String {
@@ -896,10 +1053,340 @@ enum MarkdownInlineSymbols {
     return output
   }
 
+  private static func replacingLatexTextCommands(in raw: String) -> String {
+    replacingSingleArgumentCommands(in: raw, commands: textCommandNames) { content in
+      normalizedLatexText(content)
+    }
+  }
+
+  private static func normalizedLatexText(_ raw: String) -> String {
+    var output = raw
+    output = replacingLatexTextCommands(in: output)
+    output = replacingLatexSpacing(in: output)
+    output = replacingLatexCommands(in: output)
+    output = unescapingLatexPunctuation(in: output)
+    return output.replacingOccurrences(of: "{", with: "")
+      .replacingOccurrences(of: "}", with: "")
+  }
+
+  private static func replacingSingleArgumentCommands(
+    in raw: String,
+    commands: Set<String>,
+    transform: (String) -> String
+  ) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      guard chars[index] == "\\", let command = commandName(in: chars, at: index) else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      var cursor = index + command.count + 1
+      while cursor < chars.count, chars[cursor].isWhitespace {
+        cursor += 1
+      }
+
+      if commands.contains(command), cursor < chars.count, chars[cursor] == "{",
+        let close = findBalancedClose(in: chars, start: cursor, open: "{", close: "}")
+      {
+        output += transform(String(chars[(cursor + 1)..<close]))
+        index = close + 1
+        continue
+      }
+
+      output.append(chars[index])
+      index += 1
+    }
+
+    return output
+  }
+
+  private static func replacingLatexFractions(in raw: String) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+    let fractionCommands: Set<String> = ["frac", "dfrac", "tfrac"]
+
+    while index < chars.count {
+      guard chars[index] == "\\", let command = commandName(in: chars, at: index),
+        fractionCommands.contains(command)
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      var cursor = index + command.count + 1
+      while cursor < chars.count, chars[cursor].isWhitespace {
+        cursor += 1
+      }
+      guard cursor < chars.count, chars[cursor] == "{",
+        let numeratorEnd = findBalancedClose(in: chars, start: cursor, open: "{", close: "}")
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      var denominatorStart = numeratorEnd + 1
+      while denominatorStart < chars.count, chars[denominatorStart].isWhitespace {
+        denominatorStart += 1
+      }
+      guard denominatorStart < chars.count, chars[denominatorStart] == "{",
+        let denominatorEnd = findBalancedClose(
+          in: chars,
+          start: denominatorStart,
+          open: "{",
+          close: "}"
+        )
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      let numerator = normalizedLatexMath(String(chars[(cursor + 1)..<numeratorEnd]))
+      let denominator = normalizedLatexMath(
+        String(chars[(denominatorStart + 1)..<denominatorEnd])
+      )
+      output += "\(parenthesizedIfNeeded(numerator))/\(parenthesizedIfNeeded(denominator))"
+      index = denominatorEnd + 1
+    }
+
+    return output
+  }
+
+  private static func replacingLatexSquareRoots(in raw: String) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      guard chars[index] == "\\", commandName(in: chars, at: index) == "sqrt" else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      var cursor = index + 5
+      var degree = ""
+      if cursor < chars.count, chars[cursor] == "[",
+        let close = findBalancedClose(in: chars, start: cursor, open: "[", close: "]")
+      {
+        degree = normalizedLatexMath(String(chars[(cursor + 1)..<close]))
+        cursor = close + 1
+      }
+      while cursor < chars.count, chars[cursor].isWhitespace {
+        cursor += 1
+      }
+      guard cursor < chars.count, chars[cursor] == "{",
+        let close = findBalancedClose(in: chars, start: cursor, open: "{", close: "}")
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      let radicand = normalizedLatexMath(String(chars[(cursor + 1)..<close]))
+      output += "\(scripted(degree, superscript: true) ?? degree)√\(radicand)"
+      index = close + 1
+    }
+
+    return output
+  }
+
+  private static func replacingLatexSpacing(in raw: String) -> String {
+    let replacements = [
+      ("\\qquad", "  "),
+      ("\\quad", " "),
+      ("\\,", " "),
+      ("\\;", " "),
+      ("\\:", " "),
+      ("\\ ", " "),
+      ("\\!", ""),
+      ("~", " "),
+    ]
+    var output = raw
+    for (marker, value) in replacements {
+      output = output.replacingOccurrences(of: marker, with: value)
+    }
+    return output
+  }
+
+  private static func removingStandaloneLatexCommands(
+    in raw: String,
+    commands: Set<String>
+  ) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      if chars[index] == "\\", let command = commandName(in: chars, at: index),
+        commands.contains(command)
+      {
+        index += command.count + 1
+        continue
+      }
+
+      output.append(chars[index])
+      index += 1
+    }
+
+    return output
+  }
+
+  private static func replacingLatexScripts(in raw: String) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      let char = chars[index]
+      if (char == "^" || char == "_"),
+        let body = scriptBody(in: chars, start: index + 1)
+      {
+        let superscript = char == "^"
+        if let scripted = scripted(body.value, superscript: superscript) {
+          output += scripted
+        } else {
+          output.append(char)
+          output += body.value
+        }
+        index = body.end
+        continue
+      }
+
+      output.append(char)
+      index += 1
+    }
+
+    return output
+  }
+
+  private static func scriptBody(in chars: [Character], start: Int) -> (value: String, end: Int)? {
+    guard start < chars.count else { return nil }
+    if chars[start] == "{",
+      let close = findBalancedClose(in: chars, start: start, open: "{", close: "}")
+    {
+      return (String(chars[(start + 1)..<close]), close + 1)
+    }
+    return (String(chars[start]), start + 1)
+  }
+
+  private static func scripted(_ raw: String, superscript: Bool) -> String? {
+    guard !raw.isEmpty else { return "" }
+    let table = superscript ? superscriptCharacters : subscriptCharacters
+    var output = ""
+    for char in raw {
+      guard let mapped = table[char] else { return nil }
+      output.append(mapped)
+    }
+    return output
+  }
+
+  private static func unescapingLatexPunctuation(in raw: String) -> String {
+    let replacements = [
+      ("\\{", "{"),
+      ("\\}", "}"),
+      ("\\$", "$"),
+      ("\\%", "%"),
+      ("\\_", "_"),
+      ("\\#", "#"),
+      ("\\&", "&"),
+    ]
+    var output = raw
+    for (marker, value) in replacements {
+      output = output.replacingOccurrences(of: marker, with: value)
+    }
+    return output
+  }
+
+  private static func markdownEscaped(_ raw: String) -> String {
+    var output = ""
+    for char in raw {
+      if "\\`*_{}[]()#+-.!".contains(char) {
+        output.append("\\")
+      }
+      output.append(char)
+    }
+    return output
+  }
+
+  private static func parenthesizedIfNeeded(_ raw: String) -> String {
+    let needsParens = raw.contains { char in
+      char.isWhitespace || char == "+" || char == "-" || char == "="
+    }
+    return needsParens ? "(\(raw))" : raw
+  }
+
+  private static func commandName(in chars: [Character], at index: Int) -> String? {
+    guard index < chars.count, chars[index] == "\\", index + 1 < chars.count,
+      chars[index + 1].isLetter
+    else {
+      return nil
+    }
+
+    var cursor = index + 1
+    while cursor < chars.count, chars[cursor].isLetter {
+      cursor += 1
+    }
+    return String(chars[(index + 1)..<cursor])
+  }
+
+  private static func findBalancedClose(
+    in chars: [Character],
+    start: Int,
+    open: Character,
+    close: Character
+  ) -> Int? {
+    guard start < chars.count, chars[start] == open else { return nil }
+    var depth = 0
+    var cursor = start
+    while cursor < chars.count {
+      if chars[cursor] == open, !isEscaped(chars, at: cursor) {
+        depth += 1
+      } else if chars[cursor] == close, !isEscaped(chars, at: cursor) {
+        depth -= 1
+        if depth == 0 {
+          return cursor
+        }
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
   private static func findUnescapedDollar(in chars: [Character], start: Int) -> Int? {
     var cursor = start
     while cursor < chars.count {
       if chars[cursor] == "$", !isEscaped(chars, at: cursor) {
+        return cursor
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
+  private static func findUnescapedDoubleDollar(in chars: [Character], start: Int) -> Int? {
+    var cursor = start
+    while cursor + 1 < chars.count {
+      if chars[cursor] == "$", chars[cursor + 1] == "$", !isEscaped(chars, at: cursor) {
+        return cursor
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
+  private static func findUnescapedBacktick(in chars: [Character], start: Int) -> Int? {
+    var cursor = start
+    while cursor < chars.count {
+      if chars[cursor] == "`", !isEscaped(chars, at: cursor) {
         return cursor
       }
       cursor += 1
@@ -931,6 +1418,28 @@ enum MarkdownInlineSymbols {
     }
     return !slashCount.isMultiple(of: 2)
   }
+
+  private static let textCommandNames: Set<String> = [
+    "text", "textrm", "textnormal", "textit", "textbf", "texttt", "mathrm", "mathit",
+    "mathbf", "mathsf", "mathtt", "operatorname",
+  ]
+
+  private static let superscriptCharacters: [Character: Character] = [
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷",
+    "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+    "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ",
+    "h": "ʰ", "i": "ⁱ", "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ",
+    "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ", "t": "ᵗ", "u": "ᵘ", "v": "ᵛ",
+    "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ",
+  ]
+
+  private static let subscriptCharacters: [Character: Character] = [
+    "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇",
+    "8": "₈", "9": "₉", "+": "₊", "-": "₋", "=": "₌", "(": "₍", ")": "₎",
+    "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ", "k": "ₖ", "l": "ₗ",
+    "m": "ₘ", "n": "ₙ", "o": "ₒ", "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ",
+    "u": "ᵤ", "v": "ᵥ", "x": "ₓ",
+  ]
 
   private static let symbolsByLength = symbols.sorted { $0.marker.count > $1.marker.count }
 
@@ -1401,7 +1910,7 @@ enum MarkdownParser {
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
     if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
-      || (text.contains("$") && text.contains("\\"))
+      || MarkdownInlineSymbols.containsMathSyntax(text)
     {
       return true
     }
