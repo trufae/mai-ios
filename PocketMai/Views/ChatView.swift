@@ -710,8 +710,7 @@ struct ChatView: View {
       store: store,
       placeholder: composerPlaceholder,
       conversationID: store.currentConversation?.id,
-      isResponding: currentChatIsResponding,
-      appearance: store.settings.appearance
+      isResponding: currentChatIsResponding
     )
     .equatable()
   }
@@ -722,7 +721,6 @@ private struct ChatComposer: View, Equatable {
   let placeholder: String
   let conversationID: UUID?
   let isResponding: Bool
-  let appearance: AppearanceSettings
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
@@ -731,7 +729,6 @@ private struct ChatComposer: View, Equatable {
     lhs.placeholder == rhs.placeholder
       && lhs.conversationID == rhs.conversationID
       && lhs.isResponding == rhs.isResponding
-      && lhs.appearance == rhs.appearance
   }
 
   private var canSubmitDraft: Bool {
@@ -748,7 +745,6 @@ private struct ChatComposer: View, Equatable {
       toolMenu
 
       TextField(placeholder, text: draftBinding, axis: .vertical)
-        .font(appearance.userSwiftUIFont)
         .textFieldStyle(.plain)
         .lineLimit(1...3)
         .submitLabel(.send)

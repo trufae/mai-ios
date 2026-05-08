@@ -184,10 +184,10 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct AppearanceSettings: Codable, Equatable, Sendable {
-  static let fontSizeRange: ClosedRange<Double> = 6...32
-  static let fontSizeStep: Double = 0.1
-  static let lineSpacingRange: ClosedRange<Double> = 0...12
-  static let lineSpacingStep: Double = 0.5
+  static let fontSizeRange: ClosedRange<Double> = 6...43
+  static let fontSizeStep: Double = 0.05
+  static let lineSpacingRange: ClosedRange<Double> = 0...14
+  static let lineSpacingStep: Double = 0.25
 
   var userFontFamily: AppearanceFontFamily = .rounded
   var assistantFontFamily: AppearanceFontFamily = .serif
