@@ -198,19 +198,18 @@ private struct MessageBubbleContent: View, Equatable {
         Text("...")
           .font(messageFont)
           .foregroundStyle(.secondary)
-          .textSelection(.enabled)
       } else if usesMarkdown {
         MarkdownContentView(
           blocks: markdownBlocks,
           appearance: appearance,
-          fontFamily: messageFontFamily
+          fontFamily: messageFontFamily,
+          allowsTextSelection: false
         )
         .fixedSize(horizontal: false, vertical: true)
       } else {
         Text(visibleText)
           .font(messageFont)
           .lineSpacing(CGFloat(appearance.lineSpacing))
-          .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -232,6 +231,10 @@ private struct MessageBubbleContent: View, Equatable {
       bubbleWithSheet
         .contextMenu {
           messageContextMenu(visibleText: visibleText, rawText: rawText)
+        } preview: {
+          Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityHidden(true)
         }
     } else {
       bubbleWithSheet
@@ -633,6 +636,17 @@ private struct TextViewPinchAnchor {
   let fallbackContentHeight: CGFloat
 }
 
+private extension View {
+  @ViewBuilder
+  func textSelectionIfEnabled(_ enabled: Bool) -> some View {
+    if enabled {
+      textSelection(.enabled)
+    } else {
+      self
+    }
+  }
+}
+
 private struct PreparedMessageContent {
   let visibleText: String
   let toolEntries: [ToolEntry]
@@ -950,25 +964,30 @@ struct MarkdownContentView: View {
   let blocks: [MarkdownBlock]
   let appearance: AppearanceSettings
   let fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     text: String,
     appearance: AppearanceSettings = .defaults,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.blocks = MarkdownParser.blocks(from: text)
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   init(
     blocks: [MarkdownBlock],
     appearance: AppearanceSettings = .defaults,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.blocks = blocks
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -980,34 +999,55 @@ struct MarkdownContentView: View {
           Text(attributedInlineMarkdown(value))
             .font(headingFont(level: level))
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
           Text(attributedInlineMarkdown(value))
             .font(bodyFont)
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
-          BlockquoteView(text: value, appearance: appearance, fontFamily: fontFamily)
+          BlockquoteView(
+            text: value,
+            appearance: appearance,
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection)
         case .horizontalRule:
           MarkdownHorizontalRuleView(appearance: appearance)
         case .code(let language, let code):
-          CodeBlockView(language: language, code: code, appearance: appearance)
+          CodeBlockView(
+            language: language,
+            code: code,
+            appearance: appearance,
+            allowsTextSelection: allowsTextSelection)
         case .table(let headers, let rows, let alignments):
           MarkdownTableView(
             headers: headers,
             rows: rows,
             alignments: alignments,
             appearance: appearance,
-            fontFamily: fontFamily
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection
           )
         case .taskList(let items):
-          TaskListView(items: items, appearance: appearance, fontFamily: fontFamily)
+          TaskListView(
+            items: items,
+            appearance: appearance,
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection)
         case .bulletList(let items):
-          BulletListView(items: items, appearance: appearance, fontFamily: fontFamily)
+          BulletListView(
+            items: items,
+            appearance: appearance,
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection)
         case .orderedList(let items):
-          OrderedListView(items: items, appearance: appearance, fontFamily: fontFamily)
+          OrderedListView(
+            items: items,
+            appearance: appearance,
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection)
         }
       }
     }
@@ -1920,19 +1960,22 @@ struct MarkdownTableView: View {
   let alignments: [TextAlignment]
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     headers: [String],
     rows: [[String]],
     alignments: [TextAlignment],
     appearance: AppearanceSettings,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.headers = headers
     self.rows = rows
     self.alignments = alignments
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -1982,7 +2025,7 @@ struct MarkdownTableView: View {
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
       .padding(.horizontal, appearance.markdownMetric(10))
       .padding(.vertical, appearance.markdownMetric(8))
-      .textSelection(.enabled)
+      .textSelectionIfEnabled(allowsTextSelection)
   }
 
   private func frameAlignment(_ alignment: TextAlignment) -> Alignment {
@@ -2000,6 +2043,7 @@ struct CodeBlockView: View {
   let language: String
   let code: String
   let appearance: AppearanceSettings
+  let allowsTextSelection: Bool
 
   @State private var showingCodePreview = false
 
@@ -2042,7 +2086,7 @@ struct CodeBlockView: View {
           Text(SyntaxHighlighter.highlight(code, language: language))
             .font(appearance.codeFont)
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .padding(appearance.markdownMetric(12))
         }
       }
@@ -2090,15 +2134,18 @@ struct TaskListView: View {
   let items: [TaskListItem]
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     items: [TaskListItem],
     appearance: AppearanceSettings,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -2116,7 +2163,7 @@ struct TaskListView: View {
           Text(attributedInlineMarkdown(item.text))
             .font(textFont)
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .strikethrough(item.checked, color: .secondary)
             .foregroundStyle(item.checked ? Color.secondary : Color.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2132,15 +2179,18 @@ struct BulletListView: View {
   let items: [String]
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     items: [String],
     appearance: AppearanceSettings,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -2156,7 +2206,7 @@ struct BulletListView: View {
           Text(attributedInlineMarkdown(item))
             .font(textFont)
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2170,15 +2220,18 @@ struct OrderedListView: View {
   let items: [OrderedListItem]
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     items: [OrderedListItem],
     appearance: AppearanceSettings,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -2196,7 +2249,7 @@ struct OrderedListView: View {
           Text(attributedInlineMarkdown(item.text))
             .font(textFont)
             .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelection(.enabled)
+            .textSelectionIfEnabled(allowsTextSelection)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2210,15 +2263,18 @@ struct BlockquoteView: View {
   let text: String
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
 
   init(
     text: String,
     appearance: AppearanceSettings,
-    fontFamily: AppearanceFontFamily? = nil
+    fontFamily: AppearanceFontFamily? = nil,
+    allowsTextSelection: Bool = true
   ) {
     self.text = text
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+    self.allowsTextSelection = allowsTextSelection
   }
 
   var body: some View {
@@ -2226,7 +2282,11 @@ struct BlockquoteView: View {
       RoundedRectangle(cornerRadius: 1.5, style: .continuous)
         .fill(Color.secondary.opacity(0.45))
         .frame(width: appearance.markdownMetric(3))
-      MarkdownContentView(text: text, appearance: appearance, fontFamily: fontFamily)
+      MarkdownContentView(
+        text: text,
+        appearance: appearance,
+        fontFamily: fontFamily,
+        allowsTextSelection: allowsTextSelection)
         .foregroundStyle(.secondary)
     }
     .padding(.vertical, appearance.markdownMetric(2))
