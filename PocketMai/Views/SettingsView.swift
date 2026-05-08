@@ -451,8 +451,14 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
 
-    Stepper(value: settingsBinding(\.appearance.fontSize), in: 13...24, step: 1) {
-      Text("Size \(Int(store.settings.appearance.fontSize)) pt")
+    Stepper(
+      value: settingsBinding(\.appearance.fontSize),
+      in: AppearanceSettings.fontSizeRange,
+      step: AppearanceSettings.fontSizeStep
+    ) {
+      Text(
+        "Size \(store.settings.appearance.fontSize.formatted(.number.precision(.fractionLength(0...1)))) pt"
+      )
     }
 
     VStack(alignment: .leading, spacing: 4) {

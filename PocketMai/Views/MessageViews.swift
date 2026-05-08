@@ -725,7 +725,7 @@ struct MarkdownContentView: View {
 
   var body: some View {
     let bodyFont = fontFamily.swiftUIFont(size: appearance.fontSize)
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: appearance.markdownMetric(10)) {
       ForEach(blocks) { block in
         switch block.kind {
         case .heading(let level, let value):
@@ -741,7 +741,7 @@ struct MarkdownContentView: View {
         case .blockquote(let value):
           BlockquoteView(text: value, appearance: appearance, fontFamily: fontFamily)
         case .horizontalRule:
-          MarkdownHorizontalRuleView()
+          MarkdownHorizontalRuleView(appearance: appearance)
         case .code(let language, let code):
           CodeBlockView(language: language, code: code, appearance: appearance)
         case .table(let headers, let rows, let alignments):
@@ -776,12 +776,24 @@ struct MarkdownContentView: View {
 }
 
 private struct MarkdownHorizontalRuleView: View {
+  let appearance: AppearanceSettings
+
   var body: some View {
     Divider()
       .overlay(Color.secondary.opacity(0.35))
       .frame(maxWidth: .infinity)
-      .padding(.vertical, 4)
+      .padding(.vertical, appearance.markdownMetric(4))
       .accessibilityHidden(true)
+  }
+}
+
+private extension AppearanceSettings {
+  var markdownMetricScale: CGFloat {
+    CGFloat(fontSize / AppearanceSettings.defaults.fontSize)
+  }
+
+  func markdownMetric(_ value: CGFloat) -> CGFloat {
+    value * markdownMetricScale
   }
 }
 
@@ -1668,7 +1680,11 @@ struct MarkdownTableView: View {
   }
 
   var body: some View {
-    Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+    Grid(
+      alignment: .topLeading,
+      horizontalSpacing: 0,
+      verticalSpacing: 0
+    ) {
       GridRow {
         ForEach(Array(headers.enumerated()), id: \.offset) { idx, header in
           cellView(header, columnIndex: idx, isHeader: true)
@@ -1707,8 +1723,8 @@ struct MarkdownTableView: View {
       )
       .multilineTextAlignment(alignment)
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
+      .padding(.horizontal, appearance.markdownMetric(10))
+      .padding(.vertical, appearance.markdownMetric(8))
       .textSelection(.enabled)
   }
 
@@ -1754,21 +1770,21 @@ struct CodeBlockView: View {
           .help("Copy code")
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
+      .padding(.horizontal, appearance.markdownMetric(10))
+      .padding(.vertical, appearance.markdownMetric(7))
       Divider()
       if isFullChatScreenshotRendering {
         Text(SyntaxHighlighter.highlight(code, language: language))
           .font(appearance.codeFont)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(12)
+          .padding(appearance.markdownMetric(12))
       } else {
         ScrollView(.horizontal, showsIndicators: true) {
           Text(SyntaxHighlighter.highlight(code, language: language))
             .font(appearance.codeFont)
             .textSelection(.enabled)
-            .padding(12)
+            .padding(appearance.markdownMetric(12))
         }
       }
     }
@@ -1812,10 +1828,11 @@ struct TaskListView: View {
 
   var body: some View {
     let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: appearance.markdownMetric(6)) {
       ForEach(items) { item in
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
           Image(systemName: item.checked ? "checkmark.square.fill" : "square")
+            .font(.system(size: appearance.fontSize * 0.95))
             .foregroundStyle(item.checked ? Color.accentColor : Color.secondary)
             .imageScale(.medium)
             .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
@@ -1848,10 +1865,11 @@ struct BulletListView: View {
 
   var body: some View {
     let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: appearance.markdownMetric(6)) {
       ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
           Text("•")
+            .font(textFont)
             .foregroundStyle(.secondary)
           Text(attributedInlineMarkdown(item))
             .font(textFont)
@@ -1879,14 +1897,14 @@ struct BlockquoteView: View {
   }
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
+    HStack(alignment: .top, spacing: appearance.markdownMetric(10)) {
       RoundedRectangle(cornerRadius: 1.5, style: .continuous)
         .fill(Color.secondary.opacity(0.45))
-        .frame(width: 3)
+        .frame(width: appearance.markdownMetric(3))
       MarkdownContentView(text: text, appearance: appearance, fontFamily: fontFamily)
         .foregroundStyle(.secondary)
     }
-    .padding(.vertical, 2)
+    .padding(.vertical, appearance.markdownMetric(2))
   }
 }
 

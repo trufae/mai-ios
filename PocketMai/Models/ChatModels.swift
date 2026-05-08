@@ -184,6 +184,9 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct AppearanceSettings: Codable, Equatable, Sendable {
+  static let fontSizeRange: ClosedRange<Double> = 6...32
+  static let fontSizeStep: Double = 0.1
+
   var userFontFamily: AppearanceFontFamily = .rounded
   var assistantFontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
@@ -195,6 +198,10 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   static let defaults = AppearanceSettings()
 
   init() {}
+
+  static func clampedFontSize(_ size: Double) -> Double {
+    min(max(size, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+  }
 
   enum CodingKeys: String, CodingKey {
     case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint, theme
@@ -209,7 +216,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     assistantFontFamily =
       (try? c.decode(AppearanceFontFamily.self, forKey: .assistantFontFamily))
       ?? legacyFamily ?? .serif
-    fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 17
+    fontSize = Self.clampedFontSize((try? c.decode(Double.self, forKey: .fontSize)) ?? 17)
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
     theme = (try? c.decode(AppearanceTheme.self, forKey: .theme)) ?? .system
     solidResponseBubbles =
