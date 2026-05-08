@@ -160,7 +160,7 @@ private struct MessageBubbleContent: View, Equatable {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .frame(maxWidth: 720, alignment: .leading)
-    .padding(isUser ? .leading : .trailing, 36)
+    .padding(.leading, isUser ? 36 : 0)
     .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
   }
 
