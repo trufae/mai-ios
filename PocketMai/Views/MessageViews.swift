@@ -209,6 +209,7 @@ private struct MessageBubbleContent: View, Equatable {
       } else {
         Text(visibleText)
           .font(messageFont)
+          .lineSpacing(CGFloat(appearance.lineSpacing))
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -224,6 +225,7 @@ private struct MessageBubbleContent: View, Equatable {
           title: message.role.displayName,
           text: visibleText,
           initialFontSize: appearance.fontSize,
+          initialLineSpacing: appearance.lineSpacing,
           fontFamily: appearance.fontFamily(for: message.role))
       }
     if !isStreaming {
@@ -344,23 +346,30 @@ private struct MessageTextSelectionSheet: View {
   let title: String
   let text: String
   let fontFamily: AppearanceFontFamily
+  let lineSpacing: Double
   @State private var fontSize: Double
 
   init(
     title: String,
     text: String,
     initialFontSize: Double = AppearanceSettings.defaults.fontSize,
+    initialLineSpacing: Double = AppearanceSettings.defaults.lineSpacing,
     fontFamily: AppearanceFontFamily = .system
   ) {
     self.title = title
     self.text = text
     self.fontFamily = fontFamily
+    self.lineSpacing = AppearanceSettings.clampedLineSpacing(initialLineSpacing)
     _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
   }
 
   var body: some View {
     NavigationStack {
-      SelectableMessageTextView(text: text, fontSize: $fontSize, fontFamily: fontFamily)
+      SelectableMessageTextView(
+        text: text,
+        fontSize: $fontSize,
+        lineSpacing: lineSpacing,
+        fontFamily: fontFamily)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -384,10 +393,11 @@ private struct MessageTextSelectionSheet: View {
 private struct SelectableMessageTextView: UIViewRepresentable {
   let text: String
   @Binding var fontSize: Double
+  let lineSpacing: Double
   let fontFamily: AppearanceFontFamily
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(fontSize: $fontSize, fontFamily: fontFamily)
+    Coordinator(fontSize: $fontSize, fontFamily: fontFamily, lineSpacing: lineSpacing)
   }
 
   func makeUIView(context: Context) -> UITextView {
@@ -400,21 +410,24 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     textView.textContainerInset = UIEdgeInsets(top: 18, left: 14, bottom: 18, right: 14)
     textView.text = text
     context.coordinator.installPinchGesture(in: textView)
+    context.coordinator.applyTextStyle(to: textView, size: fontSize)
     return textView
   }
 
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.fontSize = $fontSize
     context.coordinator.fontFamily = fontFamily
+    context.coordinator.lineSpacing = lineSpacing
     if textView.text != text {
       textView.text = text
     }
-    context.coordinator.applyFont(to: textView, size: fontSize)
+    context.coordinator.applyTextStyle(to: textView, size: fontSize)
   }
 
   final class Coordinator: NSObject, UIGestureRecognizerDelegate {
     var fontSize: Binding<Double>
     var fontFamily: AppearanceFontFamily
+    var lineSpacing: Double
 
     private weak var textView: UITextView?
     private var pinchGesture: UIPinchGestureRecognizer?
@@ -422,9 +435,10 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     private var originalShowsVerticalScrollIndicator: Bool?
     private var originalShowsHorizontalScrollIndicator: Bool?
 
-    init(fontSize: Binding<Double>, fontFamily: AppearanceFontFamily) {
+    init(fontSize: Binding<Double>, fontFamily: AppearanceFontFamily, lineSpacing: Double) {
       self.fontSize = fontSize
       self.fontFamily = fontFamily
+      self.lineSpacing = lineSpacing
     }
 
     func installPinchGesture(in textView: UITextView) {
@@ -439,11 +453,21 @@ private struct SelectableMessageTextView: UIViewRepresentable {
       pinchGesture = gesture
     }
 
-    func applyFont(to textView: UITextView, size: Double) {
+    func applyTextStyle(to textView: UITextView, size: Double) {
       let nextFont = fontFamily.uiFont(size: size)
-      guard textView.font != nextFont else { return }
+      let paragraphStyle = NSMutableParagraphStyle()
+      paragraphStyle.lineSpacing = CGFloat(lineSpacing)
       textView.font = nextFont
       textView.typingAttributes[.font] = nextFont
+      textView.typingAttributes[.paragraphStyle] = paragraphStyle
+      if textView.textStorage.length > 0 {
+        textView.textStorage.addAttributes(
+          [
+            .font: nextFont,
+            .paragraphStyle: paragraphStyle,
+          ],
+          range: NSRange(location: 0, length: textView.textStorage.length))
+      }
       textView.setNeedsLayout()
     }
 
@@ -482,7 +506,7 @@ private struct SelectableMessageTextView: UIViewRepresentable {
       let anchor = makePinchAnchor(in: textView, at: contentPoint)
 
       fontSize.wrappedValue = clampedSize
-      applyFont(to: textView, size: clampedSize)
+      applyTextStyle(to: textView, size: clampedSize)
       preservePinchPosition(in: textView, anchor: anchor, viewportY: viewportY)
     }
 
@@ -955,11 +979,13 @@ struct MarkdownContentView: View {
         case .heading(let level, let value):
           Text(attributedInlineMarkdown(value))
             .font(headingFont(level: level))
+            .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
           Text(attributedInlineMarkdown(value))
             .font(bodyFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
@@ -980,6 +1006,8 @@ struct MarkdownContentView: View {
           TaskListView(items: items, appearance: appearance, fontFamily: fontFamily)
         case .bulletList(let items):
           BulletListView(items: items, appearance: appearance, fontFamily: fontFamily)
+        case .orderedList(let items):
+          OrderedListView(items: items, appearance: appearance, fontFamily: fontFamily)
         }
       }
     }
@@ -1018,6 +1046,10 @@ private extension AppearanceSettings {
 
   func markdownMetric(_ value: CGFloat) -> CGFloat {
     value * markdownMetricScale
+  }
+
+  func markdownListMarkerWidth(markerLength: Int, minimum: CGFloat = 18) -> CGFloat {
+    max(markdownMetric(minimum), CGFloat(markerLength) * CGFloat(fontSize) * 0.64)
   }
 }
 
@@ -1945,6 +1977,7 @@ struct MarkdownTableView: View {
           ? fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
           : fontFamily.swiftUIFont(size: appearance.fontSize)
       )
+      .lineSpacing(CGFloat(appearance.lineSpacing))
       .multilineTextAlignment(alignment)
       .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
       .padding(.horizontal, appearance.markdownMetric(10))
@@ -2000,6 +2033,7 @@ struct CodeBlockView: View {
       if isFullChatScreenshotRendering {
         Text(SyntaxHighlighter.highlight(code, language: language))
           .font(appearance.codeFont)
+          .lineSpacing(CGFloat(appearance.lineSpacing))
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(appearance.markdownMetric(12))
@@ -2007,6 +2041,7 @@ struct CodeBlockView: View {
         ScrollView(.horizontal, showsIndicators: true) {
           Text(SyntaxHighlighter.highlight(code, language: language))
             .font(appearance.codeFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelection(.enabled)
             .padding(appearance.markdownMetric(12))
         }
@@ -2017,6 +2052,7 @@ struct CodeBlockView: View {
         title: codePreviewTitle,
         text: code,
         initialFontSize: AppearanceSettings.clampedFontSize(appearance.fontSize - 1),
+        initialLineSpacing: appearance.lineSpacing,
         fontFamily: .monospaced)
     }
     .background(.thinMaterial)
@@ -2039,6 +2075,17 @@ struct TaskListItem: Identifiable {
   let checked: Bool
 }
 
+struct OrderedListItem: Identifiable {
+  let id = UUID()
+  let number: Int
+  let delimiter: String
+  let text: String
+}
+
+extension OrderedListItem {
+  var marker: String { "\(number)\(delimiter)" }
+}
+
 struct TaskListView: View {
   let items: [TaskListItem]
   let appearance: AppearanceSettings
@@ -2056,6 +2103,7 @@ struct TaskListView: View {
 
   var body: some View {
     let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
+    let markerWidth = appearance.markdownListMarkerWidth(markerLength: 1, minimum: 20)
     VStack(alignment: .leading, spacing: appearance.markdownMetric(6)) {
       ForEach(items) { item in
         HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
@@ -2063,14 +2111,18 @@ struct TaskListView: View {
             .font(.system(size: appearance.fontSize * 0.95))
             .foregroundStyle(item.checked ? Color.accentColor : Color.secondary)
             .imageScale(.medium)
+            .frame(width: markerWidth, alignment: .trailing)
             .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
           Text(attributedInlineMarkdown(item.text))
             .font(textFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelection(.enabled)
             .strikethrough(item.checked, color: .secondary)
             .foregroundStyle(item.checked ? Color.secondary : Color.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
   }
@@ -2093,17 +2145,62 @@ struct BulletListView: View {
 
   var body: some View {
     let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
+    let markerWidth = appearance.markdownListMarkerWidth(markerLength: 1)
     VStack(alignment: .leading, spacing: appearance.markdownMetric(6)) {
       ForEach(Array(items.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
           Text("•")
             .font(textFont)
             .foregroundStyle(.secondary)
+            .frame(width: markerWidth, alignment: .trailing)
           Text(attributedInlineMarkdown(item))
             .font(textFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+  }
+}
+
+struct OrderedListView: View {
+  let items: [OrderedListItem]
+  let appearance: AppearanceSettings
+  var fontFamily: AppearanceFontFamily
+
+  init(
+    items: [OrderedListItem],
+    appearance: AppearanceSettings,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
+    self.items = items
+    self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+  }
+
+  var body: some View {
+    let textFont = fontFamily.swiftUIFont(size: appearance.fontSize)
+    let markerLength = items.map { $0.marker.count }.max() ?? 2
+    let markerWidth = appearance.markdownListMarkerWidth(markerLength: markerLength)
+    VStack(alignment: .leading, spacing: appearance.markdownMetric(6)) {
+      ForEach(items) { item in
+        HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
+          Text(item.marker)
+            .font(textFont)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(width: markerWidth, alignment: .trailing)
+          Text(attributedInlineMarkdown(item.text))
+            .font(textFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
   }
@@ -2146,6 +2243,7 @@ struct MarkdownBlock: Identifiable {
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
     case taskList(items: [TaskListItem])
     case bulletList(items: [String])
+    case orderedList(items: [OrderedListItem])
   }
 
   let id = UUID()
@@ -2156,6 +2254,7 @@ enum MarkdownParser {
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
     if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
+      || containsOrderedListLine(text)
       || MarkdownInlineSymbols.containsMathSyntax(text)
     {
       return true
@@ -2258,6 +2357,21 @@ enum MarkdownParser {
         continue
       }
 
+      if let firstItem = orderedListItem(trimmed) {
+        flushText()
+        var items: [OrderedListItem] = [firstItem]
+        var cursor = index + 1
+        while cursor < lines.count {
+          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
+          guard let nextItem = orderedListItem(nextTrimmed) else { break }
+          items.append(nextItem)
+          cursor += 1
+        }
+        blocks.append(MarkdownBlock(kind: .orderedList(items: items)))
+        index = cursor
+        continue
+      }
+
       if let firstItem = bulletListItem(trimmed) {
         flushText()
         var items: [String] = [firstItem]
@@ -2325,6 +2439,12 @@ enum MarkdownParser {
     }
   }
 
+  private static func containsOrderedListLine(_ text: String) -> Bool {
+    text.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+      orderedListItem(String(line).trimmingCharacters(in: .whitespaces)) != nil
+    }
+  }
+
   private static func blockquoteLine(_ line: String) -> String? {
     var text = line.drop(while: { $0 == " " || $0 == "\t" })
     guard text.first == ">" else { return nil }
@@ -2380,6 +2500,23 @@ enum MarkdownParser {
     rest = rest.drop(while: { $0 == " " })
     guard !rest.isEmpty else { return nil }
     return String(rest)
+  }
+
+  private static func orderedListItem(_ trimmed: String) -> OrderedListItem? {
+    var cursor = trimmed.startIndex
+    var digits = ""
+    while cursor < trimmed.endIndex, trimmed[cursor].isNumber, digits.count < 9 {
+      digits.append(trimmed[cursor])
+      cursor = trimmed.index(after: cursor)
+    }
+    guard !digits.isEmpty, cursor < trimmed.endIndex else { return nil }
+    let delimiter = trimmed[cursor]
+    guard delimiter == "." || delimiter == ")" else { return nil }
+    cursor = trimmed.index(after: cursor)
+    guard cursor < trimmed.endIndex, trimmed[cursor].isWhitespace else { return nil }
+    let text = trimmed[cursor...].drop(while: \.isWhitespace)
+    guard !text.isEmpty, let number = Int(digits) else { return nil }
+    return OrderedListItem(number: number, delimiter: String(delimiter), text: String(text))
   }
 
   private static func splitTableRow(_ line: String) -> [String] {

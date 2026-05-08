@@ -186,10 +186,13 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
 struct AppearanceSettings: Codable, Equatable, Sendable {
   static let fontSizeRange: ClosedRange<Double> = 6...32
   static let fontSizeStep: Double = 0.1
+  static let lineSpacingRange: ClosedRange<Double> = 0...12
+  static let lineSpacingStep: Double = 0.5
 
   var userFontFamily: AppearanceFontFamily = .rounded
   var assistantFontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
+  var lineSpacing: Double = 3
   var tint: AppearanceTint = .system
   var theme: AppearanceTheme = .system
   var solidResponseBubbles: Bool = true
@@ -203,8 +206,12 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     min(max(size, fontSizeRange.lowerBound), fontSizeRange.upperBound)
   }
 
+  static func clampedLineSpacing(_ spacing: Double) -> Double {
+    min(max(spacing, lineSpacingRange.lowerBound), lineSpacingRange.upperBound)
+  }
+
   enum CodingKeys: String, CodingKey {
-    case userFontFamily, assistantFontFamily, fontFamily, fontSize, tint, theme
+    case userFontFamily, assistantFontFamily, fontFamily, fontSize, lineSpacing, tint, theme
     case solidResponseBubbles, colorizeResponseBubbles, liveMarkdown
   }
 
@@ -217,6 +224,8 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
       (try? c.decode(AppearanceFontFamily.self, forKey: .assistantFontFamily))
       ?? legacyFamily ?? .serif
     fontSize = Self.clampedFontSize((try? c.decode(Double.self, forKey: .fontSize)) ?? 17)
+    lineSpacing =
+      Self.clampedLineSpacing((try? c.decode(Double.self, forKey: .lineSpacing)) ?? 3)
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
     theme = (try? c.decode(AppearanceTheme.self, forKey: .theme)) ?? .system
     solidResponseBubbles =
@@ -230,6 +239,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(userFontFamily, forKey: .userFontFamily)
     try c.encode(assistantFontFamily, forKey: .assistantFontFamily)
     try c.encode(fontSize, forKey: .fontSize)
+    try c.encode(lineSpacing, forKey: .lineSpacing)
     try c.encode(tint, forKey: .tint)
     try c.encode(theme, forKey: .theme)
     try c.encode(solidResponseBubbles, forKey: .solidResponseBubbles)

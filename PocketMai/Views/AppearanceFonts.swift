@@ -29,16 +29,106 @@ extension AppearanceSettings {
 }
 
 extension AppearanceFontFamily {
-  static var pickerOptions: [AppearanceFontFamily] {
-    let builtIns: [AppearanceFontFamily] = [.system, .serif, .rounded, .monospaced]
-    let installed = UIFont.familyNames
+  static let builtInPickerOptions: [AppearanceFontFamily] = [.system, .serif, .rounded, .monospaced]
+
+  static var fontPickerGroups: [AppearanceFontPickerGroup] {
+    let builtIns = builtInPickerOptions.map {
+      AppearanceFontPickerGroup(id: $0.pickerGroupID, displayName: $0.displayName, faces: [])
+    }
+    return builtIns + installedFontPickerGroups
+  }
+
+  static var installedFontPickerGroups: [AppearanceFontPickerGroup] {
+    UIFont.familyNames
       .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-      .flatMap { familyName in
-        UIFont.fontNames(forFamilyName: familyName)
+      .compactMap { familyName in
+        let faces = UIFont.fontNames(forFamilyName: familyName)
           .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-          .map(AppearanceFontFamily.installed)
+          .map { fontName in
+            AppearanceFontPickerFace(
+              fontName: fontName,
+              displayName: Self.faceDisplayName(fontName: fontName, familyName: familyName))
+          }
+        guard !faces.isEmpty else { return nil }
+        return AppearanceFontPickerGroup(
+          id: installedPickerGroupID(familyName),
+          displayName: familyName,
+          faces: faces)
       }
-    return builtIns + installed
+  }
+
+  var pickerGroupID: String {
+    switch self {
+    case .system, .serif, .rounded, .monospaced:
+      return id
+    case .installed(let fontName):
+      if let group = Self.installedFontPickerGroups.first(where: {
+        $0.faces.contains { $0.fontName == fontName }
+      }) {
+        return group.id
+      }
+      if let familyName = UIFont(name: fontName, size: 12)?.familyName {
+        return Self.installedPickerGroupID(familyName)
+      }
+      return Self.installedPickerGroupID(fontName)
+    }
+  }
+
+  static func font(forPickerGroupID groupID: String, current: AppearanceFontFamily)
+    -> AppearanceFontFamily
+  {
+    switch groupID {
+    case AppearanceFontFamily.system.id:
+      return .system
+    case AppearanceFontFamily.serif.id:
+      return .serif
+    case AppearanceFontFamily.rounded.id:
+      return .rounded
+    case AppearanceFontFamily.monospaced.id:
+      return .monospaced
+    default:
+      guard let group = fontPickerGroups.first(where: { $0.id == groupID }),
+        let face = group.preferredFace(currentFontName: current.installedFontName)
+      else {
+        return current
+      }
+      return .installed(face.fontName)
+    }
+  }
+
+  static func installedPickerGroup(for groupID: String) -> AppearanceFontPickerGroup? {
+    installedFontPickerGroups.first { $0.id == groupID }
+  }
+
+  var installedFontName: String? {
+    guard case .installed(let fontName) = self else { return nil }
+    return fontName
+  }
+
+  private static func installedPickerGroupID(_ familyName: String) -> String {
+    "installed-family:\(familyName)"
+  }
+
+  private static func faceDisplayName(fontName: String, familyName: String) -> String {
+    if let face = UIFont(name: fontName, size: 12)?.fontDescriptor.object(forKey: .face) as? String,
+      !face.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      return face
+    }
+
+    let readableName = fontName.replacingOccurrences(of: "-", with: " ")
+    let prefixes = [
+      familyName,
+      familyName.replacingOccurrences(of: " ", with: ""),
+      familyName.replacingOccurrences(of: " ", with: "-"),
+    ]
+    for prefix in prefixes where readableName.localizedCaseInsensitiveContains(prefix) {
+      let value = readableName
+        .replacingOccurrences(of: prefix, with: "", options: [.caseInsensitive])
+        .trimmingCharacters(in: CharacterSet(charactersIn: " -_"))
+      if !value.isEmpty { return value }
+    }
+    return readableName == familyName ? "Regular" : readableName
   }
 
   func swiftUIFont(size: Double) -> Font {
@@ -83,6 +173,27 @@ extension AppearanceFontFamily {
     return UIFontMetrics(forTextStyle: textStyle)
       .scaledFont(for: UIFont(descriptor: descriptor, size: pointSize))
   }
+}
+
+struct AppearanceFontPickerGroup: Identifiable, Hashable {
+  let id: String
+  let displayName: String
+  let faces: [AppearanceFontPickerFace]
+
+  func preferredFace(currentFontName: String?) -> AppearanceFontPickerFace? {
+    if let currentFontName, let currentFace = faces.first(where: { $0.fontName == currentFontName }) {
+      return currentFace
+    }
+    return faces.first { $0.displayName.localizedCaseInsensitiveCompare("Regular") == .orderedSame }
+      ?? faces.first { $0.fontName == displayName }
+      ?? faces.first
+  }
+}
+
+struct AppearanceFontPickerFace: Identifiable, Hashable {
+  var id: String { fontName }
+  let fontName: String
+  let displayName: String
 }
 
 extension AppearanceTint {

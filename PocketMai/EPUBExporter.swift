@@ -223,6 +223,10 @@ enum EPUBExporter {
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first))
         }
+      case .orderedList(let items):
+        if let first = items.first {
+          return truncateSnippet(stripInlineMarkdown(first.text))
+        }
       case .taskList(let items):
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first.text))
@@ -296,6 +300,9 @@ enum EPUBExporter {
     case .bulletList(let items):
       let lis = items.map { "<li>\(inlineHTML($0))</li>" }.joined()
       return "<ul>\(lis)</ul>"
+    case .orderedList(let items):
+      let lis = items.map { "<li value=\"\($0.number)\">\(inlineHTML($0.text))</li>" }.joined()
+      return "<ol>\(lis)</ol>"
     }
   }
 

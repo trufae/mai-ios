@@ -437,19 +437,8 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var fontOptionsContent: some View {
-    Picker("User Font", selection: settingsBinding(\.appearance.userFontFamily)) {
-      ForEach(AppearanceFontFamily.pickerOptions) { font in
-        Text(font.displayName).tag(font)
-      }
-    }
-    .pickerStyle(.menu)
-
-    Picker("Assistant Font", selection: settingsBinding(\.appearance.assistantFontFamily)) {
-      ForEach(AppearanceFontFamily.pickerOptions) { font in
-        Text(font.displayName).tag(font)
-      }
-    }
-    .pickerStyle(.menu)
+    fontPickerContent("User", selection: \.appearance.userFontFamily)
+    fontPickerContent("Assistant", selection: \.appearance.assistantFontFamily)
 
     Stepper(
       value: settingsBinding(\.appearance.fontSize),
@@ -461,15 +450,51 @@ struct SettingsView: View {
       )
     }
 
+    Stepper(
+      value: settingsBinding(\.appearance.lineSpacing),
+      in: AppearanceSettings.lineSpacingRange,
+      step: AppearanceSettings.lineSpacingStep
+    ) {
+      Text(
+        "Line spacing \(store.settings.appearance.lineSpacing.formatted(.number.precision(.fractionLength(0...1)))) pt"
+      )
+    }
+
     VStack(alignment: .leading, spacing: 4) {
       Text("User: the quick brown fox jumps over the lazy dog.")
         .font(store.settings.appearance.userSwiftUIFont)
+        .lineSpacing(CGFloat(store.settings.appearance.lineSpacing))
         .foregroundStyle(.secondary)
       Text("Assistant: the quick brown fox jumps over the lazy dog.")
         .font(store.settings.appearance.assistantSwiftUIFont)
+        .lineSpacing(CGFloat(store.settings.appearance.lineSpacing))
         .foregroundStyle(.secondary)
     }
     .padding(.vertical, 2)
+  }
+
+  @ViewBuilder
+  private func fontPickerContent(
+    _ title: String,
+    selection keyPath: WritableKeyPath<AppSettings, AppearanceFontFamily>
+  ) -> some View {
+    Picker(title, selection: fontPickerGroupBinding(keyPath)) {
+      ForEach(AppearanceFontFamily.fontPickerGroups) { group in
+        Text(group.displayName).tag(group.id)
+      }
+    }
+    .pickerStyle(.menu)
+
+    if let group = AppearanceFontFamily.installedPickerGroup(
+      for: store.settings[keyPath: keyPath].pickerGroupID)
+    {
+      Picker("\(title) Style", selection: fontPickerFaceBinding(keyPath, group: group)) {
+        ForEach(group.faces) { face in
+          Text(face.displayName).tag(face.fontName)
+        }
+      }
+      .pickerStyle(.menu)
+    }
   }
 
   @ViewBuilder
@@ -1218,6 +1243,37 @@ struct SettingsView: View {
       get: { store.settings[keyPath: keyPath] },
       set: { value in
         store.settings[keyPath: keyPath] = value
+        store.saveSettings()
+      }
+    )
+  }
+
+  private func fontPickerGroupBinding(
+    _ keyPath: WritableKeyPath<AppSettings, AppearanceFontFamily>
+  ) -> Binding<String> {
+    Binding(
+      get: { store.settings[keyPath: keyPath].pickerGroupID },
+      set: { groupID in
+        store.settings[keyPath: keyPath] = AppearanceFontFamily.font(
+          forPickerGroupID: groupID,
+          current: store.settings[keyPath: keyPath])
+        store.saveSettings()
+      }
+    )
+  }
+
+  private func fontPickerFaceBinding(
+    _ keyPath: WritableKeyPath<AppSettings, AppearanceFontFamily>,
+    group: AppearanceFontPickerGroup
+  ) -> Binding<String> {
+    Binding(
+      get: {
+        let current = store.settings[keyPath: keyPath].installedFontName
+        return group.preferredFace(currentFontName: current)?.fontName ?? ""
+      },
+      set: { fontName in
+        guard group.faces.contains(where: { $0.fontName == fontName }) else { return }
+        store.settings[keyPath: keyPath] = .installed(fontName)
         store.saveSettings()
       }
     )
