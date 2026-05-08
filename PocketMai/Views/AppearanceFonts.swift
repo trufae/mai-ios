@@ -20,7 +20,7 @@ extension AppearanceSettings {
   var assistantUIFont: UIFont { uiFont(for: .assistant) }
 
   var codeFont: Font {
-    .system(size: max(11, fontSize - 1), design: .monospaced)
+    .system(size: Self.clampedFontSize(fontSize - 1), design: .monospaced)
   }
 
   var tintColor: Color? {

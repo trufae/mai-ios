@@ -220,7 +220,11 @@ private struct MessageBubbleContent: View, Equatable {
 
     let bubbleWithSheet = bubbleView
       .sheet(isPresented: $showingTextSelection) {
-        MessageTextSelectionSheet(title: message.role.displayName, text: visibleText)
+        MessageTextSelectionSheet(
+          title: message.role.displayName,
+          text: visibleText,
+          initialFontSize: appearance.fontSize,
+          fontFamily: appearance.fontFamily(for: message.role))
       }
     if !isStreaming {
       bubbleWithSheet
@@ -339,10 +343,24 @@ private struct MessageTextSelectionSheet: View {
 
   let title: String
   let text: String
+  let fontFamily: AppearanceFontFamily
+  @State private var fontSize: Double
+
+  init(
+    title: String,
+    text: String,
+    initialFontSize: Double = AppearanceSettings.defaults.fontSize,
+    fontFamily: AppearanceFontFamily = .system
+  ) {
+    self.title = title
+    self.text = text
+    self.fontFamily = fontFamily
+    _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
+  }
 
   var body: some View {
     NavigationStack {
-      SelectableMessageTextView(text: text)
+      SelectableMessageTextView(text: text, fontSize: $fontSize, fontFamily: fontFamily)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -365,24 +383,230 @@ private struct MessageTextSelectionSheet: View {
 
 private struct SelectableMessageTextView: UIViewRepresentable {
   let text: String
+  @Binding var fontSize: Double
+  let fontFamily: AppearanceFontFamily
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(fontSize: $fontSize, fontFamily: fontFamily)
+  }
 
   func makeUIView(context: Context) -> UITextView {
     let textView = UITextView()
     textView.isEditable = false
     textView.isSelectable = true
     textView.backgroundColor = .clear
-    textView.font = UIFont.preferredFont(forTextStyle: .body)
+    textView.font = fontFamily.uiFont(size: fontSize)
     textView.adjustsFontForContentSizeCategory = true
     textView.textContainerInset = UIEdgeInsets(top: 18, left: 14, bottom: 18, right: 14)
     textView.text = text
+    context.coordinator.installPinchGesture(in: textView)
     return textView
   }
 
   func updateUIView(_ textView: UITextView, context: Context) {
+    context.coordinator.fontSize = $fontSize
+    context.coordinator.fontFamily = fontFamily
     if textView.text != text {
       textView.text = text
     }
+    context.coordinator.applyFont(to: textView, size: fontSize)
   }
+
+  final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    var fontSize: Binding<Double>
+    var fontFamily: AppearanceFontFamily
+
+    private weak var textView: UITextView?
+    private var pinchGesture: UIPinchGestureRecognizer?
+    private var pinchBaseFontSize: Double?
+    private var originalShowsVerticalScrollIndicator: Bool?
+    private var originalShowsHorizontalScrollIndicator: Bool?
+
+    init(fontSize: Binding<Double>, fontFamily: AppearanceFontFamily) {
+      self.fontSize = fontSize
+      self.fontFamily = fontFamily
+    }
+
+    func installPinchGesture(in textView: UITextView) {
+      guard pinchGesture == nil else { return }
+      let gesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+      gesture.cancelsTouchesInView = false
+      gesture.delaysTouchesBegan = false
+      gesture.delaysTouchesEnded = false
+      gesture.delegate = self
+      textView.addGestureRecognizer(gesture)
+      self.textView = textView
+      pinchGesture = gesture
+    }
+
+    func applyFont(to textView: UITextView, size: Double) {
+      let nextFont = fontFamily.uiFont(size: size)
+      guard textView.font != nextFont else { return }
+      textView.font = nextFont
+      textView.typingAttributes[.font] = nextFont
+      textView.setNeedsLayout()
+    }
+
+    @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+      guard let textView else { return }
+
+      switch recognizer.state {
+      case .began:
+        pinchBaseFontSize = fontSize.wrappedValue
+        hideScrollIndicators(in: textView)
+        updateFontSize(for: recognizer, in: textView)
+      case .changed:
+        updateFontSize(for: recognizer, in: textView)
+      case .ended, .cancelled, .failed:
+        pinchBaseFontSize = nil
+        restoreScrollIndicators()
+      default:
+        break
+      }
+    }
+
+    private func updateFontSize(
+      for recognizer: UIPinchGestureRecognizer,
+      in textView: UITextView
+    ) {
+      let baseSize = pinchBaseFontSize ?? fontSize.wrappedValue
+      pinchBaseFontSize = baseSize
+      let rawSize = baseSize * max(Double(recognizer.scale), 0.1)
+      let steppedSize =
+        (rawSize / AppearanceSettings.fontSizeStep).rounded() * AppearanceSettings.fontSizeStep
+      let clampedSize = AppearanceSettings.clampedFontSize(steppedSize)
+      guard fontSize.wrappedValue != clampedSize else { return }
+
+      let contentPoint = recognizer.location(in: textView)
+      let viewportY = contentPoint.y - textView.contentOffset.y
+      let anchor = makePinchAnchor(in: textView, at: contentPoint)
+
+      fontSize.wrappedValue = clampedSize
+      applyFont(to: textView, size: clampedSize)
+      preservePinchPosition(in: textView, anchor: anchor, viewportY: viewportY)
+    }
+
+    private func preservePinchPosition(
+      in textView: UITextView,
+      anchor: TextViewPinchAnchor,
+      viewportY: CGFloat
+    ) {
+      textView.layoutIfNeeded()
+      let targetContentY = resolvedContentY(for: anchor, in: textView)
+      let targetY = targetContentY - viewportY
+      textView.setContentOffset(
+        CGPoint(x: textView.contentOffset.x, y: clampedScrollOffsetY(targetY, in: textView)),
+        animated: false)
+    }
+
+    private func makePinchAnchor(
+      in textView: UITextView,
+      at contentPoint: CGPoint
+    ) -> TextViewPinchAnchor {
+      textView.layoutIfNeeded()
+      let fallbackContentHeight = max(textView.contentSize.height, 1)
+      guard textView.textStorage.length > 0 else {
+        return TextViewPinchAnchor(
+          characterIndex: nil,
+          unitY: 0,
+          fallbackContentY: contentPoint.y,
+          fallbackContentHeight: fallbackContentHeight)
+      }
+
+      let textContainerPoint = CGPoint(
+        x: contentPoint.x - textView.textContainerInset.left,
+        y: contentPoint.y - textView.textContainerInset.top)
+      let layoutManager = textView.layoutManager
+      layoutManager.ensureLayout(for: textView.textContainer)
+      let characterIndex = layoutManager.characterIndex(
+        for: textContainerPoint,
+        in: textView.textContainer,
+        fractionOfDistanceBetweenInsertionPoints: nil)
+      let clampedIndex = min(max(characterIndex, 0), textView.textStorage.length - 1)
+      let glyphIndex = layoutManager.glyphIndexForCharacter(at: clampedIndex)
+      var lineRange = NSRange()
+      let lineRect = layoutManager.lineFragmentUsedRect(
+        forGlyphAt: glyphIndex,
+        effectiveRange: &lineRange)
+      let unitY =
+        lineRect.height > 1
+        ? min(max((textContainerPoint.y - lineRect.minY) / lineRect.height, 0), 1)
+        : 0
+
+      return TextViewPinchAnchor(
+        characterIndex: clampedIndex,
+        unitY: unitY,
+        fallbackContentY: contentPoint.y,
+        fallbackContentHeight: fallbackContentHeight)
+    }
+
+    private func resolvedContentY(
+      for anchor: TextViewPinchAnchor,
+      in textView: UITextView
+    ) -> CGFloat {
+      if let characterIndex = anchor.characterIndex, textView.textStorage.length > 0 {
+        let layoutManager = textView.layoutManager
+        layoutManager.ensureLayout(for: textView.textContainer)
+        let clampedIndex = min(max(characterIndex, 0), textView.textStorage.length - 1)
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: clampedIndex)
+        let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        return textView.textContainerInset.top + lineRect.minY + lineRect.height * anchor.unitY
+      }
+
+      let newContentHeight = max(textView.contentSize.height, 1)
+      return anchor.fallbackContentY * newContentHeight / anchor.fallbackContentHeight
+    }
+
+    private func clampedScrollOffsetY(_ y: CGFloat, in textView: UITextView) -> CGFloat {
+      let minimumY = -textView.adjustedContentInset.top
+      let maximumY = max(
+        minimumY,
+        textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom)
+      return min(max(y, minimumY), maximumY)
+    }
+
+    private func hideScrollIndicators(in textView: UITextView) {
+      if originalShowsVerticalScrollIndicator == nil {
+        originalShowsVerticalScrollIndicator = textView.showsVerticalScrollIndicator
+      }
+      if originalShowsHorizontalScrollIndicator == nil {
+        originalShowsHorizontalScrollIndicator = textView.showsHorizontalScrollIndicator
+      }
+      textView.showsVerticalScrollIndicator = false
+      textView.showsHorizontalScrollIndicator = false
+    }
+
+    private func restoreScrollIndicators() {
+      guard let textView else { return }
+      if let originalShowsVerticalScrollIndicator {
+        textView.showsVerticalScrollIndicator = originalShowsVerticalScrollIndicator
+      }
+      if let originalShowsHorizontalScrollIndicator {
+        textView.showsHorizontalScrollIndicator = originalShowsHorizontalScrollIndicator
+      }
+      originalShowsVerticalScrollIndicator = nil
+      originalShowsHorizontalScrollIndicator = nil
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+      guard let pinch = gestureRecognizer as? UIPinchGestureRecognizer else { return true }
+      return pinch.numberOfTouches >= 2
+    }
+
+    func gestureRecognizer(
+      _ gestureRecognizer: UIGestureRecognizer,
+      shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+      true
+    }
+  }
+}
+
+private struct TextViewPinchAnchor {
+  let characterIndex: Int?
+  let unitY: CGFloat
+  let fallbackContentY: CGFloat
+  let fallbackContentHeight: CGFloat
 }
 
 private struct PreparedMessageContent {
@@ -1789,7 +2013,11 @@ struct CodeBlockView: View {
       }
     }
     .sheet(isPresented: $showingCodePreview) {
-      MessageTextSelectionSheet(title: codePreviewTitle, text: code)
+      MessageTextSelectionSheet(
+        title: codePreviewTitle,
+        text: code,
+        initialFontSize: AppearanceSettings.clampedFontSize(appearance.fontSize - 1),
+        fontFamily: .monospaced)
     }
     .background(.thinMaterial)
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

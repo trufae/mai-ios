@@ -920,7 +920,6 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
     private weak var scrollView: UIScrollView?
     private weak var hostView: UIView?
     private var pinchGesture: UIPinchGestureRecognizer?
-    private var originalPanMaximumNumberOfTouches: Int?
     private var originalShowsVerticalScrollIndicator: Bool?
     private var originalShowsHorizontalScrollIndicator: Bool?
 
@@ -945,32 +944,26 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       gesture.delaysTouchesEnded = false
       gesture.delegate = self
       target.addGestureRecognizer(gesture)
-      target.panGestureRecognizer.require(toFail: gesture)
-      originalPanMaximumNumberOfTouches = target.panGestureRecognizer.maximumNumberOfTouches
-      target.panGestureRecognizer.maximumNumberOfTouches = 1
       scrollView = target
       pinchGesture = gesture
     }
 
     func uninstall() {
       restoreScrollIndicators()
-      if let scrollView, let originalPanMaximumNumberOfTouches {
-        scrollView.panGestureRecognizer.maximumNumberOfTouches =
-          originalPanMaximumNumberOfTouches
-      }
       if let pinchGesture, let scrollView {
         scrollView.removeGestureRecognizer(pinchGesture)
       }
       pinchGesture = nil
       scrollView = nil
-      originalPanMaximumNumberOfTouches = nil
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
       guard let scrollView else { return }
       switch recognizer.state {
-      case .began, .changed:
+      case .began:
         hideScrollIndicators(in: scrollView)
+        onChanged(recognizer.scale, scrollView, recognizer.location(in: scrollView))
+      case .changed:
         onChanged(recognizer.scale, scrollView, recognizer.location(in: scrollView))
       case .ended, .cancelled, .failed:
         restoreScrollIndicators()
