@@ -20,12 +20,12 @@ struct ContentView: View {
         if showingHistory || historyDragOffset > 0 {
           SidebarView(
             showingSettings: $showingSettings,
-            onSelectConversation: closeHistoryPanel
+            onSelectConversation: closeHistoryPanel,
+            revealProgress: revealProgress
           )
           .frame(width: panelWidth)
           .frame(maxHeight: .infinity)
           .background(.regularMaterial)
-          .modifier(SidebarRevealModifier(progress: revealProgress))
           .zIndex(0)
         }
 
@@ -224,27 +224,5 @@ private struct PanelClipModifier: ViewModifier {
     } else {
       content
     }
-  }
-}
-
-private struct SidebarRevealModifier: ViewModifier {
-  let progress: CGFloat
-
-  func body(content: Content) -> some View {
-    content
-      .scaleEffect(scale, anchor: .leading)
-  }
-
-  private var clampedProgress: CGFloat {
-    min(max(progress, 0), 1)
-  }
-
-  private var easedProgress: CGFloat {
-    let progress = clampedProgress
-    return progress * progress * (3 - 2 * progress)
-  }
-
-  private var scale: CGFloat {
-    0.88 + easedProgress * 0.12
   }
 }
