@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+private struct FullChatScreenshotRenderingKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  var isFullChatScreenshotRendering: Bool {
+    get { self[FullChatScreenshotRenderingKey.self] }
+    set { self[FullChatScreenshotRenderingKey.self] = newValue }
+  }
+}
+
 struct MessageBubble: View {
   @EnvironmentObject private var streamingTextStore: StreamingTextStore
 
@@ -1202,6 +1213,8 @@ struct MarkdownTableView: View {
 }
 
 struct CodeBlockView: View {
+  @Environment(\.isFullChatScreenshotRendering) private var isFullChatScreenshotRendering
+
   let language: String
   let code: String
   let appearance: AppearanceSettings
@@ -1215,29 +1228,39 @@ struct CodeBlockView: View {
           .font(.caption.monospaced().weight(.semibold))
           .foregroundStyle(.secondary)
         Spacer()
-        Button {
-          showingCodePreview = true
-        } label: {
-          Image(systemName: "eye")
+        if !isFullChatScreenshotRendering {
+          Button {
+            showingCodePreview = true
+          } label: {
+            Image(systemName: "eye")
+          }
+          .buttonStyle(.glass)
+          .help("View code")
+          Button {
+            UIPasteboard.general.string = code
+          } label: {
+            Image(systemName: "doc.on.doc")
+          }
+          .buttonStyle(.glass)
+          .help("Copy code")
         }
-        .buttonStyle(.glass)
-        .help("View code")
-        Button {
-          UIPasteboard.general.string = code
-        } label: {
-          Image(systemName: "doc.on.doc")
-        }
-        .buttonStyle(.glass)
-        .help("Copy code")
       }
       .padding(.horizontal, 10)
       .padding(.vertical, 7)
       Divider()
-      ScrollView(.horizontal, showsIndicators: true) {
+      if isFullChatScreenshotRendering {
         Text(SyntaxHighlighter.highlight(code, language: language))
           .font(appearance.codeFont)
-          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
           .padding(12)
+      } else {
+        ScrollView(.horizontal, showsIndicators: true) {
+          Text(SyntaxHighlighter.highlight(code, language: language))
+            .font(appearance.codeFont)
+            .textSelection(.enabled)
+            .padding(12)
+        }
       }
     }
     .sheet(isPresented: $showingCodePreview) {

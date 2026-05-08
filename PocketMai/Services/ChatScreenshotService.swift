@@ -156,6 +156,7 @@ private struct FullChatScreenshotView: View {
     .frame(width: FullChatScreenshotRenderer.width, alignment: .topLeading)
     .background(Color(uiColor: .systemBackground))
     .environmentObject(streamingTextStore)
+    .environment(\.isFullChatScreenshotRendering, true)
     .tint(appearance.tintColor)
     .accentColor(appearance.tintColor)
   }
