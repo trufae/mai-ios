@@ -7,10 +7,12 @@ struct ContentView: View {
   @State private var showingSettings = false
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
+  @State private var historyDragIsActive = false
 
   var body: some View {
     GeometryReader { proxy in
       let panelWidth = min(max(proxy.size.width * 0.82, 300), 390)
+      let historyDragActivationWidth = proxy.size.width / 3
       let panelOffset = clampedHistoryOffset(panelWidth: panelWidth)
       let revealProgress = panelOffset / panelWidth
 
@@ -53,7 +55,11 @@ struct ContentView: View {
       }
       .background(Color(uiColor: .systemGroupedBackground))
       .contentShape(Rectangle())
-      .simultaneousGesture(historyPanelDragGesture(panelWidth: panelWidth))
+      .simultaneousGesture(
+        historyPanelDragGesture(
+          panelWidth: panelWidth,
+          activationWidth: historyDragActivationWidth)
+      )
     }
     .sheet(isPresented: $showingSettings) {
       SettingsView()
@@ -91,25 +97,26 @@ struct ContentView: View {
     withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
       showingHistory = false
       historyDragOffset = 0
+      historyDragIsActive = false
     }
   }
 
-  private func historyPanelDragGesture(panelWidth: CGFloat) -> some Gesture {
+  private func historyPanelDragGesture(panelWidth: CGFloat, activationWidth: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 12, coordinateSpace: .local)
       .onChanged { value in
-        let horizontal = value.translation.width
-        let vertical = abs(value.translation.height)
-        guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else { return }
+        if !historyDragIsActive {
+          guard shouldHandleHistoryDrag(value, activationWidth: activationWidth) else { return }
+          historyDragIsActive = true
+        }
 
         let baseOffset = showingHistory ? panelWidth : 0
-        let draggedOffset = min(max(baseOffset + horizontal, 0), panelWidth)
+        let draggedOffset = min(max(baseOffset + value.translation.width, 0), panelWidth)
         historyDragOffset = draggedOffset - baseOffset
       }
       .onEnded { value in
-        let horizontal = value.translation.width
-        let vertical = abs(value.translation.height)
-        guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else {
+        guard historyDragIsActive || shouldHandleHistoryDrag(value, activationWidth: activationWidth) else {
           historyDragOffset = 0
+          historyDragIsActive = false
           return
         }
 
@@ -119,8 +126,20 @@ struct ContentView: View {
         withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
           showingHistory = projectedOffset > panelWidth * 0.45
           historyDragOffset = 0
+          historyDragIsActive = false
         }
       }
+  }
+
+  private func shouldHandleHistoryDrag(_ value: DragGesture.Value, activationWidth: CGFloat) -> Bool {
+    let horizontal = value.translation.width
+    let vertical = abs(value.translation.height)
+    guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else { return false }
+
+    if showingHistory {
+      return true
+    }
+    return horizontal > 0 && value.startLocation.x <= activationWidth
   }
 
   private var toolCallApprovalBinding: Binding<ToolCallApprovalRequest?> {
