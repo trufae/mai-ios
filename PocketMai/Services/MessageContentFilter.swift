@@ -78,6 +78,15 @@ enum MessageContentFilter {
     return collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  static func previewText(from text: String, maxLength: Int = 160) -> String {
+    var result = render(text).visibleText
+    let plainToolCallPattern = "(?im)^\\s*TOOL_CALL\\s*$[\\s\\S]*?(?:^\\s*END_TOOL_CALL\\s*$|\\z)"
+    result = result.replacingOccurrences(
+      of: plainToolCallPattern, with: "", options: [.regularExpression, .caseInsensitive])
+    let trimmed = collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    return String(trimmed.prefix(maxLength))
+  }
+
   private static func nextOpening(in text: String, from start: String.Index) -> (
     tag: String, range: Range<String.Index>
   )? {

@@ -449,10 +449,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     isPinned = conversation.isPinned
     isArchived = conversation.isArchived
     hasMessages = !conversation.messages.isEmpty
-    preview =
-      conversation.messages.last.map {
-        String($0.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
-      } ?? ""
+    preview = Self.previewText(from: conversation.messages)
   }
 
   var displayTitle: String {
@@ -461,6 +458,17 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
 
   var displayPreview: String {
     preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No messages" : preview
+  }
+
+  private static func previewText(from messages: [ChatMessage]) -> String {
+    messages.reversed().compactMap(previewText(from:)).first ?? ""
+  }
+
+  private static func previewText(from message: ChatMessage) -> String? {
+    guard message.role == .user || message.role == .assistant else { return nil }
+    let text = MessageContentFilter.previewText(from: message.text)
+    guard !text.isEmpty else { return nil }
+    return text
   }
 }
 
