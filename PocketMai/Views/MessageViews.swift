@@ -724,6 +724,8 @@ struct MarkdownContentView: View {
             .font(bodyFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+        case .blockquote(let value):
+          BlockquoteView(text: value, appearance: appearance, fontFamily: fontFamily)
         case .code(let language, let code):
           CodeBlockView(language: language, code: code, appearance: appearance)
         case .table(let headers, let rows, let alignments):
@@ -758,11 +760,306 @@ struct MarkdownContentView: View {
 }
 
 private func attributedInlineMarkdown(_ value: String) -> AttributedString {
-  (try? AttributedString(
-    markdown: value,
+  let normalized = MarkdownInlineSymbols.displayString(value)
+  return (try? AttributedString(
+    markdown: normalized,
     options: AttributedString.MarkdownParsingOptions(
       interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-    ?? AttributedString(value)
+    ?? AttributedString(normalized)
+}
+
+enum MarkdownInlineSymbols {
+  static func displayString(_ raw: String) -> String {
+    rewriteDelimitedMath(in: raw)
+  }
+
+  private static func rewriteDelimitedMath(in raw: String) -> String {
+    let chars = Array(raw)
+    var result = ""
+    var index = 0
+
+    while index < chars.count {
+      if chars[index] == "$", !isEscaped(chars, at: index),
+        let end = findUnescapedDollar(in: chars, start: index + 1),
+        let rewritten = rewrittenMathContent(String(chars[(index + 1)..<end]))
+      {
+        result += rewritten
+        index = end + 1
+        continue
+      }
+
+      if chars[index] == "\\", index + 1 < chars.count {
+        let opener = chars[index + 1]
+        if opener == "(" || opener == "[",
+          let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
+          let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
+        {
+          result += rewritten
+          index = end + 2
+          continue
+        }
+      }
+
+      result.append(chars[index])
+      index += 1
+    }
+
+    return result
+  }
+
+  private static func rewrittenMathContent(_ raw: String) -> String? {
+    let rewritten = replacingLatexCommands(in: raw)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return rewritten == raw.trimmingCharacters(in: .whitespacesAndNewlines) ? nil : rewritten
+  }
+
+  private static func replacingLatexCommands(in raw: String) -> String {
+    var output = raw
+    for symbol in symbolsByLength {
+      output = output.replacingOccurrences(of: symbol.marker, with: symbol.value)
+    }
+    return output
+  }
+
+  private static func findUnescapedDollar(in chars: [Character], start: Int) -> Int? {
+    var cursor = start
+    while cursor < chars.count {
+      if chars[cursor] == "$", !isEscaped(chars, at: cursor) {
+        return cursor
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
+  private static func findEscapedMathClose(
+    in chars: [Character], start: Int, opener: Character
+  ) -> Int? {
+    let closer: Character = opener == "(" ? ")" : "]"
+    var cursor = start
+    while cursor + 1 < chars.count {
+      if chars[cursor] == "\\", chars[cursor + 1] == closer {
+        return cursor
+      }
+      cursor += 1
+    }
+    return nil
+  }
+
+  private static func isEscaped(_ chars: [Character], at index: Int) -> Bool {
+    guard index > 0 else { return false }
+    var slashCount = 0
+    var cursor = index - 1
+    while cursor >= 0, chars[cursor] == "\\" {
+      slashCount += 1
+      cursor -= 1
+    }
+    return !slashCount.isMultiple(of: 2)
+  }
+
+  private static let symbolsByLength = symbols.sorted { $0.marker.count > $1.marker.count }
+
+  private static let symbols: [(marker: String, value: String)] = [
+    ("\\Longleftrightarrow", "⟺"),
+    ("\\Longrightarrow", "⟹"),
+    ("\\Longleftarrow", "⟸"),
+    ("\\longleftrightarrow", "⟷"),
+    ("\\longrightarrow", "⟶"),
+    ("\\longleftarrow", "⟵"),
+    ("\\Leftrightarrow", "⇔"),
+    ("\\leftrightarrow", "↔"),
+    ("\\nleftrightarrow", "↮"),
+    ("\\hookrightarrow", "↪"),
+    ("\\hookleftarrow", "↩"),
+    ("\\rightharpoonup", "⇀"),
+    ("\\leftharpoonup", "↼"),
+    ("\\rightharpoondown", "⇁"),
+    ("\\leftharpoondown", "↽"),
+    ("\\rightleftharpoons", "⇌"),
+    ("\\leftrightharpoons", "⇋"),
+    ("\\rightarrow", "→"),
+    ("\\leftarrow", "←"),
+    ("\\Rightarrow", "⇒"),
+    ("\\Leftarrow", "⇐"),
+    ("\\nrightarrow", "↛"),
+    ("\\nleftarrow", "↚"),
+    ("\\uparrow", "↑"),
+    ("\\downarrow", "↓"),
+    ("\\updownarrow", "↕"),
+    ("\\Uparrow", "⇑"),
+    ("\\Downarrow", "⇓"),
+    ("\\Updownarrow", "⇕"),
+    ("\\mapsto", "↦"),
+    ("\\nearrow", "↗"),
+    ("\\searrow", "↘"),
+    ("\\swarrow", "↙"),
+    ("\\nwarrow", "↖"),
+    ("\\gets", "←"),
+    ("\\to", "→"),
+
+    ("\\varepsilon", "ϵ"),
+    ("\\vartheta", "ϑ"),
+    ("\\varkappa", "ϰ"),
+    ("\\varlambda", "λ"),
+    ("\\varrho", "ϱ"),
+    ("\\varsigma", "ς"),
+    ("\\varphi", "ϕ"),
+    ("\\varpi", "ϖ"),
+    ("\\Gamma", "Γ"),
+    ("\\Delta", "Δ"),
+    ("\\Theta", "Θ"),
+    ("\\Lambda", "Λ"),
+    ("\\Xi", "Ξ"),
+    ("\\Pi", "Π"),
+    ("\\Sigma", "Σ"),
+    ("\\Upsilon", "Υ"),
+    ("\\Phi", "Φ"),
+    ("\\Psi", "Ψ"),
+    ("\\Omega", "Ω"),
+    ("\\alpha", "α"),
+    ("\\beta", "β"),
+    ("\\gamma", "γ"),
+    ("\\delta", "δ"),
+    ("\\epsilon", "ε"),
+    ("\\zeta", "ζ"),
+    ("\\eta", "η"),
+    ("\\theta", "θ"),
+    ("\\iota", "ι"),
+    ("\\kappa", "κ"),
+    ("\\lambda", "λ"),
+    ("\\mu", "μ"),
+    ("\\nu", "ν"),
+    ("\\xi", "ξ"),
+    ("\\omicron", "ο"),
+    ("\\pi", "π"),
+    ("\\rho", "ρ"),
+    ("\\sigma", "σ"),
+    ("\\tau", "τ"),
+    ("\\upsilon", "υ"),
+    ("\\phi", "φ"),
+    ("\\chi", "χ"),
+    ("\\psi", "ψ"),
+    ("\\omega", "ω"),
+
+    ("\\nsubseteq", "⊈"),
+    ("\\nsupseteq", "⊉"),
+    ("\\subseteq", "⊆"),
+    ("\\supseteq", "⊇"),
+    ("\\subsetneq", "⊊"),
+    ("\\supsetneq", "⊋"),
+    ("\\subset", "⊂"),
+    ("\\supset", "⊃"),
+    ("\\notin", "∉"),
+    ("\\in", "∈"),
+    ("\\ni", "∋"),
+    ("\\owns", "∋"),
+    ("\\emptyset", "∅"),
+    ("\\varnothing", "∅"),
+    ("\\cup", "∪"),
+    ("\\cap", "∩"),
+    ("\\setminus", "∖"),
+    ("\\smallsetminus", "∖"),
+    ("\\forall", "∀"),
+    ("\\exists", "∃"),
+    ("\\nexists", "∄"),
+    ("\\therefore", "∴"),
+    ("\\because", "∵"),
+    ("\\land", "∧"),
+    ("\\wedge", "∧"),
+    ("\\lor", "∨"),
+    ("\\vee", "∨"),
+    ("\\neg", "¬"),
+    ("\\lnot", "¬"),
+    ("\\top", "⊤"),
+    ("\\bot", "⊥"),
+    ("\\models", "⊨"),
+    ("\\vdash", "⊢"),
+    ("\\dashv", "⊣"),
+
+    ("\\leq", "≤"),
+    ("\\le", "≤"),
+    ("\\geq", "≥"),
+    ("\\ge", "≥"),
+    ("\\neq", "≠"),
+    ("\\ne", "≠"),
+    ("\\equiv", "≡"),
+    ("\\not\\equiv", "≢"),
+    ("\\approx", "≈"),
+    ("\\approxeq", "≊"),
+    ("\\simeq", "≃"),
+    ("\\sim", "∼"),
+    ("\\cong", "≅"),
+    ("\\propto", "∝"),
+    ("\\ll", "≪"),
+    ("\\gg", "≫"),
+    ("\\prec", "≺"),
+    ("\\succ", "≻"),
+    ("\\preceq", "≼"),
+    ("\\succeq", "≽"),
+    ("\\parallel", "∥"),
+    ("\\nparallel", "∦"),
+    ("\\perp", "⟂"),
+    ("\\asymp", "≍"),
+
+    ("\\times", "×"),
+    ("\\div", "÷"),
+    ("\\pm", "±"),
+    ("\\mp", "∓"),
+    ("\\cdot", "·"),
+    ("\\circ", "∘"),
+    ("\\bullet", "•"),
+    ("\\ast", "∗"),
+    ("\\star", "★"),
+    ("\\oplus", "⊕"),
+    ("\\ominus", "⊖"),
+    ("\\otimes", "⊗"),
+    ("\\oslash", "⊘"),
+    ("\\odot", "⊙"),
+    ("\\sqrt", "√"),
+    ("\\partial", "∂"),
+    ("\\nabla", "∇"),
+    ("\\int", "∫"),
+    ("\\iint", "∬"),
+    ("\\iiint", "∭"),
+    ("\\oint", "∮"),
+    ("\\sum", "∑"),
+    ("\\prod", "∏"),
+    ("\\coprod", "∐"),
+    ("\\infty", "∞"),
+    ("\\prime", "′"),
+    ("\\doubleprime", "″"),
+    ("\\ldots", "…"),
+    ("\\dots", "…"),
+    ("\\cdots", "⋯"),
+    ("\\vdots", "⋮"),
+    ("\\ddots", "⋱"),
+    ("\\degree", "°"),
+
+    ("\\angle", "∠"),
+    ("\\measuredangle", "∡"),
+    ("\\triangle", "△"),
+    ("\\triangleleft", "◁"),
+    ("\\triangleright", "▷"),
+    ("\\diamond", "⋄"),
+    ("\\Diamond", "◇"),
+    ("\\square", "□"),
+    ("\\Box", "□"),
+    ("\\blacksquare", "■"),
+    ("\\langle", "⟨"),
+    ("\\rangle", "⟩"),
+    ("\\lfloor", "⌊"),
+    ("\\rfloor", "⌋"),
+    ("\\lceil", "⌈"),
+    ("\\rceil", "⌉"),
+    ("\\Re", "ℜ"),
+    ("\\Im", "ℑ"),
+    ("\\aleph", "ℵ"),
+    ("\\hbar", "ℏ"),
+    ("\\ell", "ℓ"),
+    ("\\wp", "℘"),
+    ("\\dagger", "†"),
+    ("\\ddagger", "‡"),
+  ]
 }
 
 struct MarkdownTableView: View {
@@ -970,10 +1267,38 @@ struct BulletListView: View {
   }
 }
 
+struct BlockquoteView: View {
+  let text: String
+  let appearance: AppearanceSettings
+  var fontFamily: AppearanceFontFamily
+
+  init(
+    text: String,
+    appearance: AppearanceSettings,
+    fontFamily: AppearanceFontFamily? = nil
+  ) {
+    self.text = text
+    self.appearance = appearance
+    self.fontFamily = fontFamily ?? appearance.assistantFontFamily
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+        .fill(Color.secondary.opacity(0.45))
+        .frame(width: 3)
+      MarkdownContentView(text: text, appearance: appearance, fontFamily: fontFamily)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 2)
+  }
+}
+
 struct MarkdownBlock: Identifiable {
   enum Kind {
     case heading(level: Int, text: String)
     case text(String)
+    case blockquote(String)
     case code(language: String, code: String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
     case taskList(items: [TaskListItem])
@@ -987,6 +1312,9 @@ struct MarkdownBlock: Identifiable {
 enum MarkdownParser {
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
+    if containsBlockquoteLine(text) || (text.contains("$") && text.contains("\\")) {
+      return true
+    }
     let markers = ["```", "`", "**", "__", "- ", "* ", "+ ", "- [", "* [", "|", "[", "#"]
     return markers.contains { text.contains($0) }
   }
@@ -1037,6 +1365,22 @@ enum MarkdownParser {
       if inCode {
         codeBuffer.append(line)
         index += 1
+        continue
+      }
+
+      if let firstLine = blockquoteLine(line) {
+        flushText()
+        var quoteLines: [String] = [firstLine]
+        var cursor = index + 1
+        while cursor < lines.count {
+          guard let quoteLine = blockquoteLine(lines[cursor]) else { break }
+          quoteLines.append(quoteLine)
+          cursor += 1
+        }
+        blocks.append(
+          MarkdownBlock(kind: .blockquote(quoteLines.joined(separator: "\n")))
+        )
+        index = cursor
         continue
       }
 
@@ -1115,6 +1459,22 @@ enum MarkdownParser {
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+  }
+
+  private static func containsBlockquoteLine(_ text: String) -> Bool {
+    text.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+      line.drop(while: { $0 == " " || $0 == "\t" }).first == ">"
+    }
+  }
+
+  private static func blockquoteLine(_ line: String) -> String? {
+    var text = line.drop(while: { $0 == " " || $0 == "\t" })
+    guard text.first == ">" else { return nil }
+    text = text.dropFirst()
+    if text.first == " " {
+      text = text.dropFirst()
+    }
+    return String(text)
   }
 
   private static func heading(_ trimmed: String) -> (level: Int, text: String)? {

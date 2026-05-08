@@ -210,6 +210,15 @@ enum EPUBExporter {
         if !stripped.isEmpty {
           return truncateSnippet(stripped)
         }
+      case .blockquote(let value):
+        let firstLine =
+          value
+          .components(separatedBy: .newlines)
+          .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? ""
+        let stripped = stripInlineMarkdown(firstLine.trimmingCharacters(in: .whitespaces))
+        if !stripped.isEmpty {
+          return truncateSnippet(stripped)
+        }
       case .bulletList(let items):
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first))
@@ -269,6 +278,8 @@ enum EPUBExporter {
       return "<\(tag)>\(inlineHTML(text))</\(tag)>"
     case .text(let value):
       return paragraphsHTML(value)
+    case .blockquote(let value):
+      return "<blockquote>\(paragraphsHTML(value))</blockquote>"
     case .code(let language, let code):
       let attr = language.isEmpty ? "" : " class=\"language-\(xmlEscaped(language))\""
       return "<pre><code\(attr)>\(xmlEscaped(code))</code></pre>"
@@ -345,7 +356,7 @@ enum EPUBExporter {
   // MARK: - Inline rendering
 
   private static func inlineHTML(_ raw: String) -> String {
-    let chars = Array(raw)
+    let chars = Array(MarkdownInlineSymbols.displayString(raw))
     var result = ""
     var index = 0
     while index < chars.count {
@@ -446,6 +457,7 @@ enum EPUBExporter {
   }
 
   private static func stripInlineMarkdown(_ raw: String) -> String {
+    let raw = MarkdownInlineSymbols.displayString(raw)
     var result = ""
     let chars = Array(raw)
     var index = 0
