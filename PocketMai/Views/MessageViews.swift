@@ -128,7 +128,8 @@ private struct MessageBubbleContent: View, Equatable {
     )
     let canRenderMarkdown = renderMarkdown && (!isStreaming || appearance.liveMarkdown)
     let usesMarkdown =
-      canRenderMarkdown && MarkdownParser.mayContainMarkdown(prepared.visibleText)
+      canRenderMarkdown
+      && (appearance.justifyText || MarkdownParser.mayContainMarkdown(prepared.visibleText))
     let markdownBlocks =
       !usesMarkdown || prepared.visibleText.isEmpty
       ? []
@@ -645,6 +646,15 @@ private extension View {
       self
     }
   }
+
+  @ViewBuilder
+  func foregroundStyleIfPresent(_ color: Color?) -> some View {
+    if let color {
+      foregroundStyle(color)
+    } else {
+      self
+    }
+  }
 }
 
 private struct PreparedMessageContent {
@@ -965,47 +975,64 @@ struct MarkdownContentView: View {
   let appearance: AppearanceSettings
   let fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
 
   init(
     text: String,
     appearance: AppearanceSettings = .defaults,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.blocks = MarkdownParser.blocks(from: text)
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   init(
     blocks: [MarkdownBlock],
     appearance: AppearanceSettings = .defaults,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.blocks = blocks
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   var body: some View {
-    let bodyFont = fontFamily.swiftUIFont(size: appearance.fontSize)
     VStack(alignment: .leading, spacing: appearance.markdownMetric(10)) {
       ForEach(blocks) { block in
         switch block.kind {
         case .heading(let level, let value):
-          Text(attributedInlineMarkdown(value))
-            .font(headingFont(level: level))
-            .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelectionIfEnabled(allowsTextSelection)
+          MarkdownInlineText(
+            value: value,
+            appearance: appearance,
+            font: headingFont(level: level),
+            uiFont: headingUIFont(level: level),
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
             .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
-          Text(attributedInlineMarkdown(value))
-            .font(bodyFont)
-            .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelectionIfEnabled(allowsTextSelection)
+          MarkdownInlineText(
+            value: value,
+            appearance: appearance,
+            font: fontFamily.swiftUIFont(size: appearance.fontSize),
+            uiFont: fontFamily.uiFont(size: appearance.fontSize),
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
             .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
           BlockquoteView(
@@ -1028,26 +1055,34 @@ struct MarkdownContentView: View {
             alignments: alignments,
             appearance: appearance,
             fontFamily: fontFamily,
-            allowsTextSelection: allowsTextSelection
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor
           )
         case .taskList(let items):
           TaskListView(
             items: items,
             appearance: appearance,
             fontFamily: fontFamily,
-            allowsTextSelection: allowsTextSelection)
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
         case .bulletList(let items):
           BulletListView(
             items: items,
             appearance: appearance,
             fontFamily: fontFamily,
-            allowsTextSelection: allowsTextSelection)
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
         case .orderedList(let items):
           OrderedListView(
             items: items,
             appearance: appearance,
             fontFamily: fontFamily,
-            allowsTextSelection: allowsTextSelection)
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
         }
       }
     }
@@ -1065,6 +1100,19 @@ struct MarkdownContentView: View {
     return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
       .weight(clampedLevel == 1 ? .bold : .semibold)
   }
+
+  private func headingUIFont(level: Int) -> UIFont {
+    let clampedLevel = min(max(level, 1), 4)
+    let scale: Double =
+      switch clampedLevel {
+      case 1: 1.55
+      case 2: 1.32
+      case 3: 1.16
+      default: 1.04
+      }
+    return fontFamily.uiFont(size: appearance.fontSize * scale)
+      .withWeight(clampedLevel == 1 ? .bold : .semibold)
+  }
 }
 
 private struct MarkdownHorizontalRuleView: View {
@@ -1076,6 +1124,105 @@ private struct MarkdownHorizontalRuleView: View {
       .frame(maxWidth: .infinity)
       .padding(.vertical, appearance.markdownMetric(4))
       .accessibilityHidden(true)
+  }
+}
+
+private struct MarkdownInlineText: View {
+  let value: String
+  let appearance: AppearanceSettings
+  let font: Font
+  let uiFont: UIFont
+  let allowsTextSelection: Bool
+  var textAlignment: TextAlignment = .leading
+  var foregroundStyle: Color? = nil
+  var uiForegroundColor: UIColor? = nil
+  var strikethrough: Bool = false
+  var allowsJustification: Bool = true
+
+  var body: some View {
+    if allowsJustification && appearance.justifyText && textAlignment.isLeading {
+      JustifiedMarkdownTextView(
+        value: value,
+        font: uiFont,
+        lineSpacing: appearance.lineSpacing,
+        allowsTextSelection: allowsTextSelection,
+        foregroundColor: uiForegroundColor ?? .label,
+        strikethrough: strikethrough
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .alignmentGuide(.firstTextBaseline) { dimensions in
+        dimensions[.top] + uiFont.ascender
+      }
+    } else {
+      Text(attributedInlineMarkdown(value))
+        .font(font)
+        .lineSpacing(CGFloat(appearance.lineSpacing))
+        .multilineTextAlignment(textAlignment)
+        .foregroundStyleIfPresent(foregroundStyle)
+        .strikethrough(strikethrough, color: .secondary)
+        .textSelectionIfEnabled(allowsTextSelection)
+    }
+  }
+}
+
+private extension TextAlignment {
+  var isLeading: Bool {
+    switch self {
+    case .leading: true
+    default: false
+    }
+  }
+}
+
+private struct JustifiedMarkdownTextView: UIViewRepresentable {
+  let value: String
+  let font: UIFont
+  let lineSpacing: Double
+  let allowsTextSelection: Bool
+  let foregroundColor: UIColor
+  let strikethrough: Bool
+
+  func makeUIView(context: Context) -> UITextView {
+    let textView = UITextView()
+    textView.backgroundColor = .clear
+    textView.isEditable = false
+    textView.isScrollEnabled = false
+    textView.textContainerInset = .zero
+    textView.textContainer.lineFragmentPadding = 0
+    textView.textContainer.lineBreakMode = .byWordWrapping
+    textView.adjustsFontForContentSizeCategory = true
+    textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+    return textView
+  }
+
+  func updateUIView(_ textView: UITextView, context: Context) {
+    configure(textView)
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, uiView textView: UITextView, context: Context)
+    -> CGSize?
+  {
+    configure(textView)
+    guard let width = proposal.width, width.isFinite, width > 0 else {
+      return nil
+    }
+    let height = textView.sizeThatFits(
+      CGSize(width: width, height: .greatestFiniteMagnitude)
+    ).height
+    return CGSize(width: width, height: ceil(height))
+  }
+
+  private func configure(_ textView: UITextView) {
+    textView.attributedText = nsAttributedInlineMarkdown(
+      value,
+      font: font,
+      lineSpacing: lineSpacing,
+      alignment: .justified,
+      foregroundColor: foregroundColor,
+      strikethrough: strikethrough)
+    textView.isSelectable = allowsTextSelection
+    textView.isUserInteractionEnabled = allowsTextSelection
   }
 }
 
@@ -1106,6 +1253,127 @@ private func attributedInlineMarkdown(_ value: String) -> AttributedString {
   )
 }
 
+private func nsAttributedInlineMarkdown(
+  _ value: String,
+  font: UIFont,
+  lineSpacing: Double,
+  alignment: NSTextAlignment,
+  foregroundColor: UIColor,
+  strikethrough: Bool
+) -> NSAttributedString {
+  let attributed = attributedInlineMarkdown(value)
+  let string = String(attributed.characters)
+  let result = NSMutableAttributedString(attributedString: NSAttributedString(attributed))
+  let fullRange = NSRange(location: 0, length: result.length)
+
+  let paragraphStyle = NSMutableParagraphStyle()
+  paragraphStyle.alignment = alignment
+  paragraphStyle.lineBreakMode = .byWordWrapping
+  paragraphStyle.lineSpacing = CGFloat(lineSpacing)
+
+  result.addAttributes(
+    [
+      .font: font,
+      .foregroundColor: foregroundColor,
+      .paragraphStyle: paragraphStyle,
+    ],
+    range: fullRange)
+
+  for run in attributed.runs {
+    guard let nsRange = nsAttributedRange(for: run.range, in: attributed, string: string),
+      nsRange.length > 0
+    else {
+      continue
+    }
+
+    if let intent = run.inlinePresentationIntent {
+      var runFont = font
+      if intent.contains(.code) {
+        runFont = UIFont.monospacedSystemFont(
+          ofSize: max(font.pointSize * 0.94, 1),
+          weight: .regular)
+        result.addAttribute(
+          .foregroundColor,
+          value: MarkdownInlineStyleApplier.inlineCodeUIColor,
+          range: nsRange)
+      } else {
+        if intent.contains(.stronglyEmphasized) {
+          runFont = runFont.withWeight(.bold)
+        }
+        if intent.contains(.emphasized) {
+          runFont = runFont.italicized()
+        }
+      }
+      result.addAttribute(.font, value: runFont, range: nsRange)
+
+      if intent.contains(.strikethrough) {
+        result.addAttribute(
+          .strikethroughStyle,
+          value: NSUnderlineStyle.single.rawValue,
+          range: nsRange)
+      }
+    }
+
+    if let color = run.foregroundColor {
+      result.addAttribute(.foregroundColor, value: UIColor(color), range: nsRange)
+    }
+  }
+
+  if strikethrough {
+    result.addAttribute(
+      .strikethroughStyle,
+      value: NSUnderlineStyle.single.rawValue,
+      range: fullRange)
+  }
+
+  return result
+}
+
+private func nsAttributedRange(
+  for range: Range<AttributedString.Index>,
+  in attributed: AttributedString,
+  string: String
+) -> NSRange? {
+  let lowerOffset = attributed.characters.distance(
+    from: attributed.characters.startIndex,
+    to: range.lowerBound)
+  let upperOffset = attributed.characters.distance(
+    from: attributed.characters.startIndex,
+    to: range.upperBound)
+  guard
+    let lowerBound = string.index(
+      string.startIndex,
+      offsetBy: lowerOffset,
+      limitedBy: string.endIndex),
+    let upperBound = string.index(
+      string.startIndex,
+      offsetBy: upperOffset,
+      limitedBy: string.endIndex)
+  else {
+    return nil
+  }
+  return NSRange(lowerBound..<upperBound, in: string)
+}
+
+private extension UIFont {
+  func withWeight(_ weight: UIFont.Weight) -> UIFont {
+    var traits =
+      fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any] ?? [:]
+    traits[.weight] = weight.rawValue
+    let descriptor = fontDescriptor.addingAttributes([.traits: traits])
+    return UIFont(descriptor: descriptor, size: pointSize)
+  }
+
+  func italicized() -> UIFont {
+    guard let descriptor = fontDescriptor.withSymbolicTraits(
+      fontDescriptor.symbolicTraits.union(.traitItalic))
+    else {
+      return self
+    }
+    return UIFont(descriptor: descriptor, size: pointSize)
+  }
+}
+
 private enum MarkdownInlineStyleApplier {
   static func styled(_ attributed: AttributedString) -> AttributedString {
     var result = attributed
@@ -1124,12 +1392,14 @@ private enum MarkdownInlineStyleApplier {
     return result
   }
 
+  static let inlineCodeUIColor = UIColor { traits in
+    traits.userInterfaceStyle == .dark
+      ? UIColor(red: 1.0, green: 0.48, blue: 0.62, alpha: 1)
+      : UIColor(red: 0.70, green: 0.08, blue: 0.24, alpha: 1)
+  }
+
   private static let inlineCodeColor = Color(
-    uiColor: UIColor { traits in
-      traits.userInterfaceStyle == .dark
-        ? UIColor(red: 1.0, green: 0.48, blue: 0.62, alpha: 1)
-        : UIColor(red: 0.70, green: 0.08, blue: 0.24, alpha: 1)
-    })
+    uiColor: inlineCodeUIColor)
 }
 
 private enum MarkdownInlineTokenColorizer {
@@ -1963,6 +2233,8 @@ struct MarkdownTableView: View {
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
 
   init(
     headers: [String],
@@ -1970,7 +2242,9 @@ struct MarkdownTableView: View {
     alignments: [TextAlignment],
     appearance: AppearanceSettings,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.headers = headers
     self.rows = rows
@@ -1978,6 +2252,8 @@ struct MarkdownTableView: View {
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   var body: some View {
@@ -2029,19 +2305,24 @@ struct MarkdownTableView: View {
   {
     let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
     let maxWidth: CGFloat? = unwrapped ? nil : .infinity
-    Text(attributedInlineMarkdown(value))
-      .font(
-        isHeader
-          ? fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
-          : fontFamily.swiftUIFont(size: appearance.fontSize)
-      )
-      .lineSpacing(CGFloat(appearance.lineSpacing))
-      .multilineTextAlignment(alignment)
+    MarkdownInlineText(
+      value: value,
+      appearance: appearance,
+      font: isHeader
+        ? fontFamily.swiftUIFont(size: appearance.fontSize).weight(.semibold)
+        : fontFamily.swiftUIFont(size: appearance.fontSize),
+      uiFont: isHeader
+        ? fontFamily.uiFont(size: appearance.fontSize).withWeight(.semibold)
+        : fontFamily.uiFont(size: appearance.fontSize),
+      allowsTextSelection: allowsTextSelection,
+      textAlignment: alignment,
+      foregroundStyle: foregroundStyle,
+      uiForegroundColor: uiForegroundColor,
+      allowsJustification: !unwrapped)
       .fixedSize(horizontal: unwrapped, vertical: false)
       .frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
       .padding(.horizontal, appearance.markdownMetric(10))
       .padding(.vertical, appearance.markdownMetric(8))
-      .textSelectionIfEnabled(allowsTextSelection)
   }
 
   private func frameAlignment(_ alignment: TextAlignment) -> Alignment {
@@ -2151,17 +2432,23 @@ struct TaskListView: View {
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
 
   init(
     items: [TaskListItem],
     appearance: AppearanceSettings,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   var body: some View {
@@ -2176,12 +2463,15 @@ struct TaskListView: View {
             .imageScale(.medium)
             .frame(width: markerWidth, alignment: .trailing)
             .accessibilityLabel(item.checked ? "Checked" : "Unchecked")
-          Text(attributedInlineMarkdown(item.text))
-            .font(textFont)
-            .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelectionIfEnabled(allowsTextSelection)
-            .strikethrough(item.checked, color: .secondary)
-            .foregroundStyle(item.checked ? Color.secondary : Color.primary)
+          MarkdownInlineText(
+            value: item.text,
+            appearance: appearance,
+            font: textFont,
+            uiFont: fontFamily.uiFont(size: appearance.fontSize),
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: item.checked ? .secondary : foregroundStyle,
+            uiForegroundColor: item.checked ? .secondaryLabel : uiForegroundColor,
+            strikethrough: item.checked)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2196,17 +2486,23 @@ struct BulletListView: View {
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
 
   init(
     items: [String],
     appearance: AppearanceSettings,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   var body: some View {
@@ -2219,10 +2515,14 @@ struct BulletListView: View {
             .font(textFont)
             .foregroundStyle(.secondary)
             .frame(width: markerWidth, alignment: .trailing)
-          Text(attributedInlineMarkdown(item))
-            .font(textFont)
-            .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelectionIfEnabled(allowsTextSelection)
+          MarkdownInlineText(
+            value: item,
+            appearance: appearance,
+            font: textFont,
+            uiFont: fontFamily.uiFont(size: appearance.fontSize),
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2237,17 +2537,23 @@ struct OrderedListView: View {
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
 
   init(
     items: [OrderedListItem],
     appearance: AppearanceSettings,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    foregroundStyle: Color? = nil,
+    uiForegroundColor: UIColor? = nil
   ) {
     self.items = items
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.foregroundStyle = foregroundStyle
+    self.uiForegroundColor = uiForegroundColor
   }
 
   var body: some View {
@@ -2262,10 +2568,14 @@ struct OrderedListView: View {
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .frame(width: markerWidth, alignment: .trailing)
-          Text(attributedInlineMarkdown(item.text))
-            .font(textFont)
-            .lineSpacing(CGFloat(appearance.lineSpacing))
-            .textSelectionIfEnabled(allowsTextSelection)
+          MarkdownInlineText(
+            value: item.text,
+            appearance: appearance,
+            font: textFont,
+            uiFont: fontFamily.uiFont(size: appearance.fontSize),
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2302,8 +2612,9 @@ struct BlockquoteView: View {
         text: text,
         appearance: appearance,
         fontFamily: fontFamily,
-        allowsTextSelection: allowsTextSelection)
-        .foregroundStyle(.secondary)
+        allowsTextSelection: allowsTextSelection,
+        foregroundStyle: .secondary,
+        uiForegroundColor: .secondaryLabel)
     }
     .padding(.vertical, appearance.markdownMetric(2))
   }
