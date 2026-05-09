@@ -2,6 +2,13 @@ import Foundation
 
 @MainActor
 enum AssistantTurnRunner {
+  private struct ToolRequestState {
+    let definitions: [ToolDefinition]
+    let nativeTools: [OpenAITool]?
+    let activeMode: ToolCallingMode
+    let context: String
+  }
+
   static func run(
     conversationID: UUID,
     context: String,
@@ -38,51 +45,6 @@ enum AssistantTurnRunner {
     context: String,
     store: AppStore
   ) async throws {
-    guard let conversation = store.conversation(withID: conversationID) else {
-      return
-    }
-
-    let concreteDefinitions = ToolAgentRegistry.definitions(
-      for: conversation,
-      settings: store.settings,
-      mcpTools: store.mcpTools
-    )
-    let latestPrompt = latestUserPrompt(in: conversation)
-    let shouldUseTools = ToolAgentRegistry.shouldEnterAgentLoop(
-      for: latestPrompt,
-      definitions: concreteDefinitions
-    )
-    let agentDefinitions =
-      shouldUseTools
-      ? ToolAgentRegistry.visibleDefinitions(
-        for: conversation,
-        settings: store.settings,
-        mcpTools: store.mcpTools
-      )
-      : []
-    let nativeTools = nativeToolsIfNeeded(
-      conversation: conversation,
-      settings: store.settings,
-      definitions: agentDefinitions
-    )
-    let activeToolCallingMode =
-      nativeTools == nil ? store.settings.toolCallingMode.textProtocolFallback : .native
-    let requestContext = augmentedContext(
-      base: context,
-      definitions: nativeTools == nil ? agentDefinitions : [],
-      mode: activeToolCallingMode
-    )
-
-    if agentDefinitions.isEmpty {
-      try await completeWithoutTools(
-        conversationID: conversationID,
-        assistantID: assistantID,
-        context: requestContext,
-        store: store
-      )
-      return
-    }
-
     var assistantText = ""
     var didFinish = false
     let maxIterations = 8
@@ -92,12 +54,26 @@ enum AssistantTurnRunner {
       guard let conversation = store.conversation(withID: conversationID) else {
         return
       }
+      let toolState = toolRequestState(
+        conversation: conversation,
+        baseContext: context,
+        store: store)
+      if toolState.definitions.isEmpty {
+        assistantText = try await completeWithoutTools(
+          conversationID: conversationID,
+          assistantID: assistantID,
+          context: toolState.context,
+          baseline: assistantText,
+          store: store)
+        didFinish = true
+        break
+      }
       let request = ChatCompletionRequest(
         conversation: conversation,
         settings: store.settings,
-        context: requestContext,
+        context: toolState.context,
         assistantMessageID: assistantID,
-        nativeTools: nativeTools,
+        nativeTools: toolState.nativeTools,
         hasToolCalling: true
       )
       let baseline = assistantText
@@ -117,13 +93,13 @@ enum AssistantTurnRunner {
 
       let calls = ToolAgentRegistry.parseCalls(
         in: response,
-        definitions: agentDefinitions,
-        mode: activeToolCallingMode)
+        definitions: toolState.definitions,
+        mode: toolState.activeMode)
       if calls.isEmpty {
-        if AgentTooling.containsToolCallMarker(in: response, mode: activeToolCallingMode) {
+        if AgentTooling.containsToolCallMarker(in: response, mode: toolState.activeMode) {
           let feedback = AgentTooling.malformedToolCallFeedback(
             from: response,
-            mode: activeToolCallingMode)
+            mode: toolState.activeMode)
           let turnText = [response, feedback]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -142,8 +118,8 @@ enum AssistantTurnRunner {
       let turnText = try await toolRunText(
         response: response,
         calls: calls,
-        definitions: agentDefinitions,
-        mode: activeToolCallingMode,
+        definitions: toolState.definitions,
+        mode: toolState.activeMode,
         conversationID: conversationID,
         store: store
       )
@@ -163,10 +139,11 @@ enum AssistantTurnRunner {
     conversationID: UUID,
     assistantID: UUID,
     context: String,
+    baseline: String = "",
     store: AppStore
-  ) async throws {
+  ) async throws -> String {
     guard let conversation = store.conversation(withID: conversationID) else {
-      return
+      return baseline
     }
     let request = ChatCompletionRequest(
       conversation: conversation,
@@ -178,9 +155,10 @@ enum AssistantTurnRunner {
     let response = try await ChatProviderRouter.complete(request: request) {
       [weak store] streamed in
       let cleaned = AppStore.strippedSpuriousToolCallText(streamed)
+      let combined = baseline.isEmpty ? cleaned : "\(baseline)\n\n\(cleaned)"
       store?.setAssistantMessage(
         id: assistantID,
-        text: cleaned,
+        text: combined,
         role: .assistant,
         touch: false,
         streaming: true
@@ -188,7 +166,9 @@ enum AssistantTurnRunner {
     }
     try Task.checkCancellation()
     let cleaned = AppStore.strippedSpuriousToolCallText(response)
-    store.setAssistantMessage(id: assistantID, text: cleaned, role: .assistant)
+    let combined = baseline.isEmpty ? cleaned : "\(baseline)\n\n\(cleaned)"
+    store.setAssistantMessage(id: assistantID, text: combined, role: .assistant)
+    return combined
   }
 
   private static func toolRunText(
@@ -241,6 +221,43 @@ enum AssistantTurnRunner {
     let agentToolPrompt = ToolAgentRegistry.promptDescription(for: definitions, mode: mode)
     guard !agentToolPrompt.isEmpty else { return base }
     return base.isEmpty ? agentToolPrompt : "\(base)\n\n\(agentToolPrompt)"
+  }
+
+  private static func toolRequestState(
+    conversation: Conversation,
+    baseContext: String,
+    store: AppStore
+  ) -> ToolRequestState {
+    let concreteDefinitions = ToolAgentRegistry.definitions(
+      for: conversation,
+      settings: store.settings,
+      mcpTools: store.mcpTools)
+    let latestPrompt = latestUserPrompt(in: conversation)
+    let shouldUseTools = ToolAgentRegistry.shouldEnterAgentLoop(
+      for: latestPrompt,
+      definitions: concreteDefinitions)
+    let visibleDefinitions =
+      shouldUseTools
+      ? ToolAgentRegistry.visibleDefinitions(
+        for: conversation,
+        settings: store.settings,
+        mcpTools: store.mcpTools)
+      : []
+    let nativeTools = nativeToolsIfNeeded(
+      conversation: conversation,
+      settings: store.settings,
+      definitions: visibleDefinitions)
+    let activeMode =
+      nativeTools == nil ? store.settings.toolCallingMode.textProtocolFallback : .native
+    let requestContext = augmentedContext(
+      base: baseContext,
+      definitions: nativeTools == nil ? visibleDefinitions : [],
+      mode: activeMode)
+    return ToolRequestState(
+      definitions: visibleDefinitions,
+      nativeTools: nativeTools,
+      activeMode: activeMode,
+      context: requestContext)
   }
 
   private static func latestUserPrompt(in conversation: Conversation) -> String {
