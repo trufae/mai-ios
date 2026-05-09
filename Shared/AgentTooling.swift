@@ -329,26 +329,27 @@ enum AgentTooling {
     for mode: ToolCallingMode,
     tools: [ToolDefinition] = []
   ) -> String {
-    let example = toolCallExample(for: mode, text: "", tools: tools)
+    let examples = toolCallExamples(for: mode, text: "", tools: tools)
+      .joined(separator: "\n\n")
     switch mode.textProtocolFallback {
     case .text:
       return """
-        When a tool is needed, reply with exactly one plain text block and no other text:
-        \(example)
+        When a tool is needed, reply with exactly one plain text block and no other text. Examples, output one call only:
+        \(examples)
 
         Use only listed tool names or aliases. Put one argument per line as `argument_name: value`. Include required arguments, omit unused optional arguments, use true/false for booleans, and stop after the block.
         """
     case .xml:
       return """
-        When a tool is needed, reply with exactly one XML block and no other text:
-        \(example)
+        When a tool is needed, reply with exactly one XML block and no other text. Examples, output one call only:
+        \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, escape XML special characters, and stop after the block.
         """
     case .json:
       return """
-        When a tool is needed, reply with exactly one JSON object and no other text:
-        \(example)
+        When a tool is needed, reply with exactly one JSON object and no other text. Examples, output one call only:
+        \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, keep JSON valid, and stop after the JSON object.
         """
@@ -567,8 +568,29 @@ enum AgentTooling {
     text: String,
     tools: [ToolDefinition]
   ) -> String {
-    let tool = exampleTool(matching: text, tools: tools)
     let resolver = AgentToolNameResolver(tools: tools)
+    let tool = exampleTool(matching: text, tools: tools)
+    return toolCallExample(for: mode, tool: tool, resolver: resolver)
+  }
+
+  private static func toolCallExamples(
+    for mode: ToolCallingMode,
+    text: String,
+    tools: [ToolDefinition]
+  ) -> [String] {
+    let resolver = AgentToolNameResolver(tools: tools)
+    let candidates = exampleToolCandidates(matching: text, tools: tools)
+    guard !candidates.isEmpty else {
+      return [toolCallExample(for: mode, tool: nil, resolver: resolver)]
+    }
+    return candidates.map { toolCallExample(for: mode, tool: $0, resolver: resolver) }
+  }
+
+  private static func toolCallExample(
+    for mode: ToolCallingMode,
+    tool: ToolDefinition?,
+    resolver: AgentToolNameResolver
+  ) -> String {
     let name = tool.map { resolver.apiName(for: $0.name) } ?? "tool_name"
     let arguments = tool.map { exampleArguments(for: $0) } ?? [:]
 
@@ -603,8 +625,26 @@ enum AgentTooling {
     case .json:
       return toolCallObjectJSON(name: name, arguments: arguments)
     case .native:
-      return toolCallExample(for: .text, text: text, tools: tools)
+      return toolCallExample(for: .text, tool: tool, resolver: resolver)
     }
+  }
+
+  private static func exampleToolCandidates(
+    matching text: String,
+    tools: [ToolDefinition]
+  ) -> [ToolDefinition] {
+    guard let primary = exampleTool(matching: text, tools: tools) else { return [] }
+    var result = [primary]
+    let primaryHasRequiredArguments = primary.parameters.contains { $0.required }
+    let secondary = tools.first { tool in
+      guard tool.name != primary.name else { return false }
+      let hasRequiredArguments = tool.parameters.contains { $0.required }
+      return primaryHasRequiredArguments ? !hasRequiredArguments : hasRequiredArguments
+    }
+    if let secondary {
+      result.append(secondary)
+    }
+    return result
   }
 
   private static func exampleTool(
