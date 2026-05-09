@@ -316,6 +316,8 @@ enum AssistantTurnRunner {
     case .cancelled:
       approvedCall = normalizedCall
       shouldExecute = false
+    case .interrupted:
+      throw CancellationError()
     }
 
     try Task.checkCancellation()

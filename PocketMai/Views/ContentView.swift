@@ -214,6 +214,11 @@ private struct ToolCallApprovalView: View {
             validationError = store.approveToolCall(id: request.id, editedText: toolCallText)
           }
         }
+        ToolbarItem(placement: .bottomBar) {
+          Button("Stop", role: .destructive) {
+            store.interruptToolCallApproval(id: request.id)
+          }
+        }
       }
     }
   }

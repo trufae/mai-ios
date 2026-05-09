@@ -57,6 +57,7 @@ private enum ConversationImportError: LocalizedError {
 enum ToolCallApprovalDecision: Sendable {
   case approved(ParsedToolCall)
   case cancelled
+  case interrupted
 }
 
 private enum ToolCallApprovalParseResult {
@@ -989,6 +990,10 @@ final class AppStore: ObservableObject {
 
   func cancelToolCallApproval(id: UUID) {
     _ = resolveToolCallApproval(id: id, decision: .cancelled)
+  }
+
+  func interruptToolCallApproval(id: UUID) {
+    _ = resolveToolCallApproval(id: id, decision: .interrupted)
   }
 
   @discardableResult
