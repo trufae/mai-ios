@@ -744,7 +744,7 @@ struct SettingsView: View {
       }
 
       DisclosureGroup {
-        nativeToolsContent
+        builtInToolsContent
       } label: {
         Label("Native", systemImage: "wrench.and.screwdriver")
       }
@@ -767,8 +767,8 @@ struct SettingsView: View {
   }
 
   @ViewBuilder
-  private var nativeToolsContent: some View {
-    ForEach(NativeToolID.allCases.filter { !contextToolIDs.contains($0) }) { tool in
+  private var builtInToolsContent: some View {
+    ForEach(BuiltInToolID.allCases.filter(\.isCallableTool)) { tool in
       toolRow(tool)
     }
     Text("Tap the checkbox to enable. Tap the row to expand options where available.")
@@ -778,7 +778,7 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var contextToolsContent: some View {
-    ForEach(Array(contextToolIDs)) { tool in
+    ForEach(BuiltInToolID.allCases.filter(\.isContextSource)) { tool in
       toolRow(tool)
     }
     Text(
@@ -788,11 +788,7 @@ struct SettingsView: View {
     .foregroundStyle(.secondary)
   }
 
-  private var contextToolIDs: [NativeToolID] {
-    [.datetime, .location, .memory]
-  }
-
-  private func toolRow(_ tool: NativeToolID) -> some View {
+  private func toolRow(_ tool: BuiltInToolID) -> some View {
     DisclosureGroup {
       toolOptions(tool)
     } label: {
@@ -800,7 +796,7 @@ struct SettingsView: View {
     }
   }
 
-  private func toolLabel(_ tool: NativeToolID) -> some View {
+  private func toolLabel(_ tool: BuiltInToolID) -> some View {
     HStack(spacing: 12) {
       Button {
         toggleTool(tool)
@@ -824,7 +820,7 @@ struct SettingsView: View {
   }
 
   @ViewBuilder
-  private func toolOptions(_ tool: NativeToolID) -> some View {
+  private func toolOptions(_ tool: BuiltInToolID) -> some View {
     switch tool {
     case .datetime:
       Toggle("Include time zone", isOn: settingsBinding(\.toolSettings.includeTimeZone))
@@ -1308,7 +1304,7 @@ struct SettingsView: View {
     }
   }
 
-  private func toggleTool(_ tool: NativeToolID) {
+  private func toggleTool(_ tool: BuiltInToolID) {
     if store.settings.defaultEnabledTools.contains(tool) {
       store.settings.defaultEnabledTools.remove(tool)
     } else {

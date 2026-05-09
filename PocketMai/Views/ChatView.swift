@@ -1120,15 +1120,15 @@ private struct ToolPickerPopover: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 4) {
-        ForEach(NativeToolID.allCases.filter { $0 != .memory }) { tool in
+        ForEach(BuiltInToolID.allCases.filter { $0 != .memory }) { tool in
           Button {
-            toggleNativeTool(tool)
+            toggleBuiltInTool(tool)
           } label: {
             HStack(spacing: 10) {
               Image(
-                systemName: isNativeEnabled(tool) ? "checkmark.circle.fill" : "circle"
+                systemName: isBuiltInToolEnabled(tool) ? "checkmark.circle.fill" : "circle"
               )
-              .foregroundStyle(isNativeEnabled(tool) ? Color.accentColor : Color.secondary)
+              .foregroundStyle(isBuiltInToolEnabled(tool) ? Color.accentColor : Color.secondary)
               Image(systemName: tool.systemImage)
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
@@ -1263,11 +1263,11 @@ private struct ToolPickerPopover: View {
 
   // MARK: - Native tool helpers
 
-  private func isNativeEnabled(_ tool: NativeToolID) -> Bool {
+  private func isBuiltInToolEnabled(_ tool: BuiltInToolID) -> Bool {
     store.currentConversation?.enabledTools.contains(tool) ?? false
   }
 
-  private func toggleNativeTool(_ tool: NativeToolID) {
+  private func toggleBuiltInTool(_ tool: BuiltInToolID) {
     store.updateCurrentConversation { conversation in
       if conversation.enabledTools.contains(tool) {
         conversation.enabledTools.remove(tool)

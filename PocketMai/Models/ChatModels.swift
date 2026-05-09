@@ -253,7 +253,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   }
 }
 
-enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
+enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case datetime
   case location
   case weather
@@ -264,6 +264,24 @@ enum NativeToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case memory
 
   var id: String { rawValue }
+
+  var isContextSource: Bool {
+    switch self {
+    case .datetime, .location, .memory:
+      return true
+    case .weather, .webSearch, .todo, .textToSpeech, .files:
+      return false
+    }
+  }
+
+  var isCallableTool: Bool {
+    switch self {
+    case .weather, .webSearch, .todo, .textToSpeech, .files:
+      return true
+    case .datetime, .location, .memory:
+      return false
+    }
+  }
 
   var displayName: String {
     switch self {
@@ -505,7 +523,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var modelID: String = AppSettings.appleDefaultModelID
   var endpointID: UUID? = nil
   var systemPromptID: UUID? = nil
-  var enabledTools: Set<NativeToolID> = AppSettings.defaultTools
+  var enabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var usesStreaming: Bool = true
   var isPinned: Bool = false
   var disabledMCPTools: Set<String> = []
@@ -548,7 +566,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     modelID = try container.decode(String.self, forKey: .modelID)
     endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)
     systemPromptID = try container.decodeIfPresent(UUID.self, forKey: .systemPromptID)
-    enabledTools = try container.decode(Set<NativeToolID>.self, forKey: .enabledTools)
+    enabledTools = try container.decode(Set<BuiltInToolID>.self, forKey: .enabledTools)
     usesStreaming = try container.decode(Bool.self, forKey: .usesStreaming)
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
     disabledMCPTools =
@@ -1046,7 +1064,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 struct AppSettings: Codable, Equatable, Sendable {
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
-  static let defaultTools: Set<NativeToolID> = []
+  static let defaultTools: Set<BuiltInToolID> = []
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
     text:
@@ -1062,7 +1080,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var openAIEndpoints: [OpenAIEndpoint] = []
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
-  var defaultEnabledTools: Set<NativeToolID> = AppSettings.defaultTools
+  var defaultEnabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var toolSettings: NativeToolSettings = .defaults
   var mcpServers: [MCPServer] = []
   var memory: String = ""
@@ -1133,7 +1151,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(UUID.self, forKey: .defaultSystemPromptID))
       ?? (systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)
     defaultEnabledTools =
-      (try? c.decode(Set<NativeToolID>.self, forKey: .defaultEnabledTools))
+      (try? c.decode(Set<BuiltInToolID>.self, forKey: .defaultEnabledTools))
       ?? AppSettings.defaultTools
     toolSettings =
       (try? c.decode(NativeToolSettings.self, forKey: .toolSettings)) ?? .defaults
