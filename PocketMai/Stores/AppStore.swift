@@ -1599,14 +1599,20 @@ final class AppStore: ObservableObject {
       mcpTools: mcpTools)
     let providerNativeToolCalling =
       settings.toolCallingMode == .native
-      && conversation.provider == .openAICompatible
+      && conversation.provider.supportsNativeToolCalling
       && !visibleDefinitions.isEmpty
     let effectiveMode =
       providerNativeToolCalling
       ? ToolCallingMode.native : settings.toolCallingMode.textProtocolFallback
-    let toolPrompt =
+    let textToolPrompt =
       providerNativeToolCalling
       ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
+    let toolPrompt = textToolPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    let nativeToolNames: [String] = {
+      guard providerNativeToolCalling else { return [] }
+      let resolver = AgentToolNameResolver(tools: visibleDefinitions)
+      return visibleDefinitions.map { resolver.apiName(for: $0.name) }
+    }()
     let contextPrompt = context?.text ?? ""
     let requestContext = [contextPrompt, toolPrompt]
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1635,6 +1641,7 @@ final class AppStore: ObservableObject {
       textProtocolFallback: settings.toolCallingMode.textProtocolFallback.rawValue,
       providerNativeToolCalling: providerNativeToolCalling,
       toolCatalogInlinedInPrompt: !providerNativeToolCalling && hasToolCalling,
+      nativeToolNames: nativeToolNames,
       yoloModeEnabled: settings.yoloModeEnabled,
       useToolProxy: settings.useToolProxy,
       contextWindowMode: settings.contextWindowMode.rawValue,

@@ -163,9 +163,6 @@ enum FileWorkspaceService {
       if let path = optionalPathArgument(arguments) {
         let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if !isWorkspaceRootPath(trimmedPath) {
-          if isModelsPath(trimmedPath) {
-            return try listModelsPath(trimmedPath)
-          }
           let url = try validatedWorkspaceURL(path: trimmedPath, allowRoot: true)
           return try listWorkspaceDirectory(at: url)
         }
@@ -198,9 +195,6 @@ enum FileWorkspaceService {
     }
 
     var lines = ["\(workspacePath(for: url)) files:"]
-    if url.standardizedFileURL.path == root.path {
-      lines.append("- \(modelsFolderName) directory read-only")
-    }
     if entries.isEmpty {
       lines.append("(no files)")
     }
@@ -219,10 +213,7 @@ enum FileWorkspaceService {
       guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return "Error: path is required."
       }
-      let url =
-        isModelsPath(path)
-        ? try validatedModelsFileURL(path: path)
-        : try validatedFileURL(path: path)
+      let url = try validatedFileURL(path: path)
       let requestedLimit = arguments["max_bytes"]?.numberValue.map(Int.init) ?? defaultReadLimit
       return try readTextFile(
         at: url,
@@ -434,126 +425,6 @@ enum FileWorkspaceService {
   private static func isModelsPath(_ path: String) -> Bool {
     let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed == modelsFolderName || trimmed.hasPrefix(modelsFolderName + "/")
-  }
-
-  private static func listModelsPath(_ rawPath: String) throws -> String {
-    let components = try modelsPathComponents(rawPath)
-    if components.count == 1 {
-      let models = LocalMLXModelCache.listModels()
-      var lines = ["FilesData/\(modelsFolderName) files:"]
-      if models.isEmpty {
-        lines.append("(no downloaded models)")
-        return lines.joined(separator: "\n")
-      }
-
-      for model in models.prefix(maxListEntries) {
-        let modified = model.modifiedAt.map {
-          " modified \(ISO8601DateFormatter().string(from: $0))"
-        } ?? ""
-        lines.append(
-          "- \(modelsFolderName)/\(model.cacheDirectoryName) directory \(model.sizeText)\(modified)"
-        )
-      }
-      if models.count > maxListEntries {
-        lines.append("Truncated: showing \(maxListEntries) of \(models.count) entries.")
-      }
-      return lines.joined(separator: "\n")
-    }
-
-    let url = try validatedModelsURL(components: components)
-    var isDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-      throw NSError.fileWorkspace("Folder '\(components.joined(separator: "/"))' does not exist.")
-    }
-    guard isDirectory.boolValue else {
-      throw NSError.fileWorkspace("'\(components.joined(separator: "/"))' is not a folder.")
-    }
-
-    let entries = try FileManager.default.contentsOfDirectory(
-      at: url,
-      includingPropertiesForKeys: listResourceKeys,
-      options: [.skipsHiddenFiles]
-    )
-    .sorted {
-      $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
-    }
-
-    var lines = ["FilesData/\(components.joined(separator: "/")) files:"]
-    if entries.isEmpty {
-      lines.append("(no files)")
-      return lines.joined(separator: "\n")
-    }
-    for entry in entries.prefix(maxListEntries) {
-      lines.append(entryLine(for: entry, path: modelsRelativePath(for: entry)))
-    }
-    if entries.count > maxListEntries {
-      lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
-    }
-    return lines.joined(separator: "\n")
-  }
-
-  private static func validatedModelsFileURL(path rawPath: String) throws -> URL {
-    let components = try modelsPathComponents(rawPath)
-    guard components.count >= 2 else {
-      throw NSError.fileWorkspace("Path must name a file under Models.")
-    }
-    return try validatedModelsURL(components: components)
-  }
-
-  private static func validatedModelsURL(components: [String]) throws -> URL {
-    guard components.count >= 2 else {
-      throw NSError.fileWorkspace("Path must name a downloaded model under Models.")
-    }
-    let cacheDirectoryName = components[1]
-    guard let modelRoot = LocalMLXModelCache.cacheDirectoryURL(named: cacheDirectoryName) else {
-      throw NSError.fileWorkspace("Unknown downloaded model '\(cacheDirectoryName)'.")
-    }
-
-    var url = modelRoot
-    for component in components.dropFirst(2) {
-      url.appendPathComponent(component)
-    }
-    try validateInsideDirectory(
-      url,
-      root: modelRoot,
-      message: "Path must stay inside Models/\(cacheDirectoryName).",
-      resolvingSymlinks: false)
-    if FileManager.default.fileExists(atPath: url.path) {
-      try validateInsideDirectory(
-        url,
-        root: modelRoot,
-        message: "Path must stay inside Models/\(cacheDirectoryName).")
-    }
-    return url
-  }
-
-  private static func modelsPathComponents(_ rawPath: String) throws -> [String] {
-    let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else {
-      throw NSError.fileWorkspace("Path is required.")
-    }
-    guard isModelsPath(trimmed) else {
-      throw NSError.fileWorkspace("Path must start with Models.")
-    }
-    if (trimmed as NSString).isAbsolutePath {
-      throw NSError.fileWorkspace("Models paths must be relative.")
-    }
-    if trimmed.contains("\0") {
-      throw NSError.fileWorkspace("Path contains an invalid character.")
-    }
-    if trimmed.contains("\\") {
-      throw NSError.fileWorkspace("Use forward slashes inside Models paths.")
-    }
-
-    let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
-      .map(String.init)
-    guard components.first == modelsFolderName else {
-      throw NSError.fileWorkspace("Path must start with Models.")
-    }
-    guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-      throw NSError.fileWorkspace("Models path contains an invalid component.")
-    }
-    return components
   }
 
   private static func shouldCreateDirectory(_ arguments: [String: AgentToolArgumentValue]) -> Bool {
@@ -770,15 +641,6 @@ enum FileWorkspaceService {
     }
     guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
     return "\(workspaceFolderName)/\(String(path.dropFirst(rootPath.count + 1)))"
-  }
-
-  private static func modelsRelativePath(for url: URL) -> String {
-    let rootPath = LocalMLXModelCache.cacheRootURL.standardizedFileURL.path
-    let path = url.standardizedFileURL.path
-    guard path.hasPrefix(rootPath + "/") else {
-      return "\(modelsFolderName)/\(url.lastPathComponent)"
-    }
-    return "\(modelsFolderName)/\(String(path.dropFirst(rootPath.count + 1)))"
   }
 
   private static func displayPath(_ path: String) -> String {

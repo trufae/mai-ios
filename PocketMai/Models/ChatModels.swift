@@ -34,6 +34,15 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case .openAICompatible: "OpenAI-compatible"
     }
   }
+
+  var supportsNativeToolCalling: Bool {
+    switch self {
+    case .openAICompatible:
+      return true
+    case .apple, .mlx:
+      return false
+    }
+  }
 }
 
 enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
@@ -729,6 +738,7 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var textProtocolFallback: String
   var providerNativeToolCalling: Bool
   var toolCatalogInlinedInPrompt: Bool
+  var nativeToolNames: [String]
   var yoloModeEnabled: Bool
   var useToolProxy: Bool
   var contextWindowMode: String

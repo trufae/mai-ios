@@ -369,7 +369,7 @@ enum AgentTooling {
     case .xml:
       return parseXMLCalls(in: text, tools: tools)
     case .json:
-      return parseJSONCall(in: text).map { [$0] } ?? []
+      return parseJSONCall(in: text, tools: tools).map { [$0] } ?? []
     case .native:
       return parseXMLCalls(in: text, tools: tools)
     }
@@ -396,7 +396,7 @@ enum AgentTooling {
     if !calls.isEmpty { return calls }
     let openerCalls = parseMalformedXMLCallOpeners(in: text, tools: tools)
     if !openerCalls.isEmpty { return openerCalls }
-    return parseJSONCall(in: text).map { [$0] } ?? []
+    return parseJSONCall(in: text, tools: tools).map { [$0] } ?? []
   }
 
   private static func parseMalformedXMLCallOpeners(
@@ -528,8 +528,8 @@ enum AgentTooling {
       case .json:
         let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
           .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let object = jsonObject(from: visible), strictToolCallObject(object) != nil {
-          return true
+        if let object = jsonObject(from: visible) {
+          return strictToolCallObject(object) != nil || isNamelessToolCallObject(object)
         }
         return visible.hasPrefix("{")
           && containsJSONKey(in: visible, keys: ["name", "tool", "function"])
@@ -737,6 +737,16 @@ enum AgentTooling {
     return s
   }
 
+  private static func jsonStringLiteral(_ value: String) -> String {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: [value], options: []),
+      let array = String(data: data, encoding: .utf8),
+      array.hasPrefix("["),
+      array.hasSuffix("]")
+    else { return "\"\"" }
+    return String(array.dropFirst().dropLast())
+  }
+
   private static func toolCallObjectJSON(for call: ParsedToolCall) -> String {
     toolCallObjectJSON(name: call.name, arguments: call.argumentValues)
   }
@@ -745,15 +755,7 @@ enum AgentTooling {
     name: String,
     arguments: [String: AgentToolArgumentValue]
   ) -> String {
-    let payload: [String: Any] = [
-      "arguments": arguments.mapValues(\.jsonObject),
-      "name": name,
-    ]
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
-      let json = String(data: data, encoding: .utf8)
-    else { return #"{"arguments":{},"name":"\#(name)"}"# }
-    return json
+    #"{"name":\#(jsonStringLiteral(name)),"arguments":\#(compactJSON(arguments))}"#
   }
 
   static func argumentValues(_ args: [String: Any]) -> [String: AgentToolArgumentValue] {
@@ -1157,20 +1159,52 @@ enum AgentTooling {
     return args
   }
 
-  private static func parseJSONCall(in text: String) -> ParsedToolCall? {
+  private static func parseJSONCall(in text: String, tools: [ToolDefinition]) -> ParsedToolCall? {
     let rawBlock = stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
     let visible = stripMarkdownFence(from: rawBlock)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard visible.hasPrefix("{"), visible.hasSuffix("}"),
       let data = visible.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let normalized = strictToolCallObject(object)
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
-    return ParsedToolCall(
-      name: normalized.name,
-      arguments: [:],
-      argumentValues: argumentValues(normalized.arguments),
-      rawBlock: rawBlock)
+    if let normalized = strictToolCallObject(object) {
+      return ParsedToolCall(
+        name: normalized.name,
+        arguments: [:],
+        argumentValues: argumentValues(normalized.arguments),
+        rawBlock: rawBlock)
+    }
+    if let recovered = recoverJSONToolCall(object, tools: tools) {
+      return ParsedToolCall(
+        name: recovered.name,
+        arguments: [:],
+        argumentValues: argumentValues(recovered.arguments),
+        rawBlock: rawBlock)
+    }
+    return nil
+  }
+
+  private static func recoverJSONToolCall(_ object: [String: Any], tools: [ToolDefinition])
+    -> (name: String, arguments: [String: Any])?
+  {
+    guard !tools.isEmpty else { return nil }
+    let resolver = AgentToolNameResolver(tools: tools)
+    if let name = nonEmptyString(object["name"])
+      ?? nonEmptyString(object["tool"])
+      ?? nonEmptyString(object["function"]),
+      let canonical = resolver.canonicalName(for: name),
+      let tool = tools.first(where: { $0.name == canonical }),
+      tool.parameters.filter(\.required).isEmpty
+    {
+      return (name, [:])
+    }
+
+    guard let arguments = explicitArgumentsObject(from: object),
+      isNamelessToolCallObject(object)
+    else { return nil }
+    let candidates = tools.filter { toolCanAccept(arguments: arguments, tool: $0) }
+    guard candidates.count == 1, let tool = candidates.first else { return nil }
+    return (tool.name, arguments)
   }
 
   private static func strictToolCallObject(_ object: [String: Any])
@@ -1198,6 +1232,34 @@ enum AgentTooling {
       return (name, toolArguments(from: arguments))
     }
     return nil
+  }
+
+  private static func isNamelessToolCallObject(_ object: [String: Any]) -> Bool {
+    guard explicitArgumentsObject(from: object) != nil else { return false }
+    return nonEmptyString(object["name"]) == nil
+      && nonEmptyString(object["tool"]) == nil
+      && nonEmptyString(object["function"]) == nil
+  }
+
+  private static func toolCanAccept(arguments: [String: Any], tool: ToolDefinition) -> Bool {
+    let parameterNames = Set(tool.parameters.map(\.name))
+    guard arguments.keys.allSatisfy({ parameterNames.contains($0) }) else { return false }
+    return tool.parameters.filter(\.required).allSatisfy { parameter in
+      argumentIsPresent(arguments[parameter.name])
+    }
+  }
+
+  private static func argumentIsPresent(_ value: Any?) -> Bool {
+    switch value {
+    case nil:
+      return false
+    case let string as String:
+      return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case is NSNull:
+      return false
+    default:
+      return true
+    }
   }
 
   private static func nonEmptyString(_ value: Any?) -> String? {

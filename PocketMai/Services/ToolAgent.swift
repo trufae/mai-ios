@@ -538,23 +538,21 @@ enum FileWorkspaceTool {
   static let definitions: [ToolDefinition] = [
     ToolDefinition(
       name: listName,
-      description:
-        "List a FilesData folder or the read-only Models folder.",
+      description: "List a FilesData folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "Folder path. Use nested FilesData paths, or Models for downloaded MLX models.",
+          description: "Folder path inside FilesData. Omit for the root folder.",
           required: false)
       ]
     ),
     ToolDefinition(
       name: readName,
-      description:
-        "Read text from FilesData or the read-only Models folder.",
+      description: "Read a UTF-8 text file from FilesData.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File path in FilesData, or a Models/... path.",
+          description: "File path inside FilesData.",
           required: true)
       ]
     ),
