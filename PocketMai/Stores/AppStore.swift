@@ -1031,22 +1031,11 @@ final class AppStore: ObservableObject {
     in text: String,
     request: ToolCallApprovalRequest
   ) -> [ParsedToolCall] {
-    let preferredCalls = ToolAgentRegistry.parseCalls(
+    ToolAgentRegistry.parseCalls(
       in: text,
       definitions: request.definitions,
       mode: request.mode
     )
-    if !preferredCalls.isEmpty { return preferredCalls }
-
-    for mode in ToolCallingMode.allCases where mode != request.mode {
-      let calls = ToolAgentRegistry.parseCalls(
-        in: text,
-        definitions: request.definitions,
-        mode: mode
-      )
-      if !calls.isEmpty { return calls }
-    }
-    return []
   }
 
   func resetEndpointStatus(_ id: UUID) {

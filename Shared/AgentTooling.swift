@@ -369,7 +369,7 @@ enum AgentTooling {
     case .xml:
       return parseXMLCalls(in: text, tools: tools)
     case .json:
-      return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
+      return parseJSONCall(in: text).map { [$0] } ?? []
     case .native:
       return parseXMLCalls(in: text, tools: tools)
     }
@@ -394,7 +394,7 @@ enum AgentTooling {
       }
     }
     if !calls.isEmpty { return calls }
-    return inferBareToolCall(in: text, tools: tools).map { [$0] } ?? []
+    return parseJSONCall(in: text).map { [$0] } ?? []
   }
 
   private static func parsePlainTextCalls(
@@ -502,9 +502,14 @@ enum AgentTooling {
       case .json:
         let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
           .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let object = jsonObject(from: visible), strictToolCallObject(object) != nil {
+          return true
+        }
         return visible.hasPrefix("{")
-          && (visible.contains("\"name\"") || visible.contains("\"tool\"")
-            || visible.contains("\"function\""))
+          && containsJSONKey(in: visible, keys: ["name", "tool", "function"])
+          && containsJSONKey(
+            in: visible,
+            keys: ["arguments", "args", "parameters", "params", "input"])
       }
     }
   }
@@ -1000,42 +1005,70 @@ enum AgentTooling {
     return args
   }
 
-  private static func inferBareToolCall(in text: String, tools: [ToolDefinition]) -> ParsedToolCall?
-  {
-    let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
+  private static func parseJSONCall(in text: String) -> ParsedToolCall? {
+    let rawBlock = stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+    let visible = stripMarkdownFence(from: rawBlock)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard visible.hasPrefix("{"), visible.hasSuffix("}"),
       let data = visible.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let normalized = strictToolCallObject(object)
     else { return nil }
-
-    if let normalized = normalizeToolCallObject(object),
-      let name = normalized["name"] as? String
-    {
-      return ParsedToolCall(
-        name: name,
-        arguments: [:],
-        argumentValues: argumentValues(argumentsObject(from: normalized["arguments"])),
-        rawBlock: visible)
-    }
-
-    let objectKeys = Set(object.keys)
-    guard !objectKeys.isEmpty else { return nil }
-    let candidates = tools.compactMap { tool -> (tool: ToolDefinition, score: Int)? in
-      let paramNames = Set(tool.parameters.map(\.name))
-      let required = Set(tool.parameters.filter(\.required).map(\.name))
-      guard !paramNames.isEmpty, objectKeys.isSubset(of: paramNames) else { return nil }
-      guard required.isEmpty || required.isSubset(of: objectKeys) else { return nil }
-      return (tool, objectKeys.intersection(paramNames).count + required.count)
-    }
-    let sorted = candidates.sorted { $0.score > $1.score }
-    guard let first = sorted.first else { return nil }
-    if sorted.count > 1, sorted[1].score == first.score { return nil }
     return ParsedToolCall(
-      name: first.tool.name,
+      name: normalized.name,
       arguments: [:],
-      argumentValues: argumentValues(object),
-      rawBlock: visible)
+      argumentValues: argumentValues(normalized.arguments),
+      rawBlock: rawBlock)
+  }
+
+  private static func strictToolCallObject(_ object: [String: Any])
+    -> (name: String, arguments: [String: Any])?
+  {
+    if let function = object["function"] as? [String: Any],
+      let name = nonEmptyString(function["name"]),
+      let arguments = explicitArgumentsObject(from: function)
+        ?? explicitArgumentsObject(from: object)
+    {
+      return (name, arguments)
+    }
+    if let name = nonEmptyString(object["name"])
+      ?? nonEmptyString(object["tool"])
+      ?? nonEmptyString(object["function"]),
+      let arguments = explicitArgumentsObject(from: object)
+    {
+      return (name, arguments)
+    }
+    return nil
+  }
+
+  private static func nonEmptyString(_ value: Any?) -> String? {
+    guard let string = value as? String else { return nil }
+    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private static func explicitArgumentsObject(from object: [String: Any]) -> [String: Any]? {
+    for key in ["arguments", "args", "parameters", "params", "input"]
+    where object.keys.contains(key) {
+      if let argumentObject = object[key] as? [String: Any] {
+        return argumentObject
+      }
+      if let string = object[key] as? String,
+        let data = string.data(using: .utf8),
+        let argumentObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+      {
+        return argumentObject
+      }
+    }
+    return nil
+  }
+
+  private static func containsJSONKey(in text: String, keys: [String]) -> Bool {
+    keys.contains { key in
+      text.range(
+        of: #""\#(NSRegularExpression.escapedPattern(for: key))"\s*:"#,
+        options: [.regularExpression]) != nil
+    }
   }
 
   private static func stripThinkBlocks(from text: String) -> String {
