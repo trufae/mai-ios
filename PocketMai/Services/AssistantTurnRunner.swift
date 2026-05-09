@@ -9,6 +9,11 @@ enum AssistantTurnRunner {
     let context: String
   }
 
+  private struct ToolRunOutput {
+    let text: String
+    let nativeMessages: [OpenAIMessage]
+  }
+
   static func run(
     conversationID: UUID,
     context: String,
@@ -46,6 +51,7 @@ enum AssistantTurnRunner {
     store: AppStore
   ) async throws {
     var assistantText = ""
+    var nativeContinuationMessages: [OpenAIMessage] = []
     var didFinish = false
     let maxIterations = 8
 
@@ -74,6 +80,10 @@ enum AssistantTurnRunner {
         context: toolState.context,
         assistantMessageID: assistantID,
         nativeTools: toolState.nativeTools,
+        nativeContinuationMessages: nativeContinuationMessagesIfNeeded(
+          nativeContinuationMessages,
+          conversation: conversation,
+          toolState: toolState),
         hasToolCalling: true
       )
       let baseline = assistantText
@@ -120,7 +130,7 @@ enum AssistantTurnRunner {
         break
       }
 
-      let turnText = try await toolRunText(
+      let turnOutput = try await toolRunText(
         response: response,
         calls: calls,
         parseDefinitions: parseDefinitions,
@@ -128,9 +138,17 @@ enum AssistantTurnRunner {
         conversationID: conversationID,
         store: store
       )
+      let turnText = turnOutput.text
       assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
       store.setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
       store.saveConversations()
+      if shouldUseNativeContinuation(conversation: conversation, toolState: toolState),
+        !turnOutput.nativeMessages.isEmpty
+      {
+        nativeContinuationMessages.append(contentsOf: turnOutput.nativeMessages)
+      } else {
+        nativeContinuationMessages.removeAll()
+      }
     }
 
     if !didFinish {
@@ -183,9 +201,10 @@ enum AssistantTurnRunner {
     mode: ToolCallingMode,
     conversationID: UUID,
     store: AppStore
-  ) async throws -> String {
+  ) async throws -> ToolRunOutput {
     var transformed = response
     var runBlocks: [String] = []
+    var nativeResults: [(call: ParsedToolCall, result: String)] = []
     for call in calls {
       try Task.checkCancellation()
       let currentDefinitions = currentVisibleDefinitions(
@@ -199,6 +218,7 @@ enum AssistantTurnRunner {
         let runBlock = ToolAgentRegistry.makeRunBlock(call: fallbackCall, result: result)
         transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
         runBlocks.append(runBlock)
+        nativeResults.append((fallbackCall, result))
         continue
       }
       let approvedCall: ParsedToolCall
@@ -246,10 +266,65 @@ enum AssistantTurnRunner {
       let runBlock = ToolAgentRegistry.makeRunBlock(call: resultCall, result: result)
       transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
       runBlocks.append(runBlock)
+      nativeResults.append((resultCall, result))
     }
-    return ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+    let text = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
+    return ToolRunOutput(
+      text: text,
+      nativeMessages: nativeMessages(
+        assistantContent: transformed,
+        results: nativeResults,
+        definitions: parseDefinitions,
+        mode: mode))
+  }
+
+  private static func nativeContinuationMessagesIfNeeded(
+    _ messages: [OpenAIMessage],
+    conversation: Conversation,
+    toolState: ToolRequestState
+  ) -> [OpenAIMessage] {
+    shouldUseNativeContinuation(conversation: conversation, toolState: toolState) ? messages : []
+  }
+
+  private static func shouldUseNativeContinuation(
+    conversation: Conversation,
+    toolState: ToolRequestState
+  ) -> Bool {
+    toolState.activeMode == .native
+      && conversation.provider == .openAICompatible
+      && toolState.nativeTools != nil
+  }
+
+  private static func nativeMessages(
+    assistantContent: String,
+    results: [(call: ParsedToolCall, result: String)],
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode
+  ) -> [OpenAIMessage] {
+    guard mode == .native, !results.isEmpty else { return [] }
+    let resolver = AgentToolNameResolver(tools: definitions)
+    let toolCalls = results.compactMap { item -> OpenAIMessageToolCall? in
+      guard let id = item.call.toolCallID else { return nil }
+      let canonical = resolver.canonicalName(for: item.call.name) ?? item.call.name
+      let apiName = item.call.apiName ?? resolver.apiName(for: canonical)
+      return OpenAIMessageToolCall(
+        id: id,
+        function: OpenAIMessageToolCallFunction(
+          name: apiName,
+          arguments: item.call.argsJSON))
+    }
+    guard toolCalls.count == results.count else { return [] }
+    let assistant = OpenAIMessage(
+      role: "assistant",
+      content: assistantContent.trimmingCharacters(in: .whitespacesAndNewlines),
+      toolCalls: toolCalls)
+    let toolMessages = results.compactMap { item -> OpenAIMessage? in
+      guard let id = item.call.toolCallID else { return nil }
+      return OpenAIMessage(role: "tool", content: item.result, toolCallID: id)
+    }
+    return [assistant] + toolMessages
   }
 
   private static func currentVisibleDefinitions(
@@ -351,15 +426,8 @@ enum AssistantTurnRunner {
             + (toolNameResolver.apiName(for: def.name) == def.name
               ? "" : " Original tool name: \(def.name)."),
           parameters: OpenAIFunctionSchema(
-            properties: Dictionary(
-              uniqueKeysWithValues: def.parameters.map { p in
-                (
-                  p.name,
-                  OpenAIPropertySpec(type: p.type, description: p.description)
-                )
-              }),
-            required: def.parameters.filter(\.required).map(\.name)
-          )
+            inputSchemaJSON: def.inputSchemaJSON,
+            parameters: def.parameters)
         )
       )
     }

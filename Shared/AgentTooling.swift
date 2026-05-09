@@ -160,7 +160,8 @@ struct AgentNativeToolCall: Sendable {
       let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
       let json = String(data: data, encoding: .utf8)
     else { return "" }
-    return "<tool_call>\(json)</tool_call>"
+    return
+      "<tool_call id=\"\(AgentTooling.xmlEscapedAttribute(id))\" api_name=\"\(AgentTooling.xmlEscapedAttribute(name))\">\(json)</tool_call>"
   }
 }
 
@@ -755,6 +756,8 @@ enum AgentTooling {
   ) -> ParsedToolCall? {
     let attrs = toolCallAttributes(from: attributes)
     let attrName = firstNonEmpty(attrs["name"], attrs["tool"], attrs["function"])
+    let attrID = firstNonEmpty(attrs["id"], attrs["tool_call_id"])
+    let attrAPIName = firstNonEmpty(attrs["api_name"], attrs["api"], attrs["native_name"])
     let attrArgs = firstNonEmpty(attrs["arguments"], attrs["args"], attrs["params"], attrs["input"])
     let normalizedPayload = stripMarkdownFence(from: payload)
     var candidates = [normalizedPayload]
@@ -773,23 +776,43 @@ enum AgentTooling {
         !name.isEmpty
       {
         let args = argumentValues(argumentsObject(from: normalized["arguments"]))
-        return ParsedToolCall(name: name, arguments: [:], argumentValues: args, rawBlock: rawBlock)
+        return ParsedToolCall(
+          name: name,
+          arguments: [:],
+          argumentValues: args,
+          rawBlock: rawBlock,
+          toolCallID: attrID,
+          apiName: attrAPIName ?? name)
       }
       if let attrName {
         return ParsedToolCall(
           name: attrName,
           arguments: [:],
           argumentValues: argumentValues(object),
-          rawBlock: rawBlock)
+          rawBlock: rawBlock,
+          toolCallID: attrID,
+          apiName: attrAPIName ?? attrName)
       }
     }
 
-    if let xmlCall = xmlToolCallPayload(normalizedPayload, attrName: attrName, rawBlock: rawBlock) {
+    if let xmlCall = xmlToolCallPayload(
+      normalizedPayload,
+      attrName: attrName,
+      attrID: attrID,
+      attrAPIName: attrAPIName,
+      rawBlock: rawBlock)
+    {
       return xmlCall
     }
 
     if let attrName {
-      return ParsedToolCall(name: attrName, arguments: [:], argumentValues: [:], rawBlock: rawBlock)
+      return ParsedToolCall(
+        name: attrName,
+        arguments: [:],
+        argumentValues: [:],
+        rawBlock: rawBlock,
+        toolCallID: attrID,
+        apiName: attrAPIName ?? attrName)
     }
     return nil
   }
@@ -797,6 +820,8 @@ enum AgentTooling {
   private static func xmlToolCallPayload(
     _ payload: String,
     attrName: String?,
+    attrID: String?,
+    attrAPIName: String?,
     rawBlock: String
   ) -> ParsedToolCall? {
     let name =
@@ -811,7 +836,9 @@ enum AgentTooling {
       name: name,
       arguments: [:],
       argumentValues: argumentValues(xmlArguments(from: payload)),
-      rawBlock: rawBlock)
+      rawBlock: rawBlock,
+      toolCallID: attrID,
+      apiName: attrAPIName ?? name)
   }
 
   private static func xmlArguments(from payload: String) -> [String: Any] {
@@ -855,15 +882,17 @@ enum AgentTooling {
   }
 
   private static func firstXMLValue(named name: String, in payload: String) -> String? {
-    guard let regex = try? NSRegularExpression(
-      pattern: #"<\s*\#(name)\s*>([\s\S]*?)<\s*/\s*\#(name)\s*>"#,
-      options: [.caseInsensitive])
+    guard
+      let regex = try? NSRegularExpression(
+        pattern: #"<\s*\#(name)\s*>([\s\S]*?)<\s*/\s*\#(name)\s*>"#,
+        options: [.caseInsensitive])
     else {
       return nil
     }
     let nsPayload = payload as NSString
-    guard let match = regex.firstMatch(
-      in: payload, options: [], range: NSRange(location: 0, length: nsPayload.length)),
+    guard
+      let match = regex.firstMatch(
+        in: payload, options: [], range: NSRange(location: 0, length: nsPayload.length)),
       match.numberOfRanges == 2
     else {
       return nil
@@ -879,6 +908,15 @@ enum AgentTooling {
       .replacingOccurrences(of: "&apos;", with: "'")
       .replacingOccurrences(of: "&amp;", with: "&")
       .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func xmlEscapedAttribute(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "\"", with: "&quot;")
+      .replacingOccurrences(of: "'", with: "&apos;")
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
   }
 
   private static func jsonObject(from text: String) -> [String: Any]? {
