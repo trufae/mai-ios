@@ -69,7 +69,11 @@ enum BuiltInToolCatalog {
     entry(containingToolName: name)?.approvalKind
   }
 
-  static func execute(call: ParsedToolCall, store: AppStore) async -> String? {
+  static func execute(
+    call: ParsedToolCall,
+    conversation: Conversation,
+    store: AppStore
+  ) async -> String? {
     switch call.name {
     case TodoTool.listName:
       return TodoTool.list(store: store)
@@ -100,22 +104,22 @@ enum BuiltInToolCatalog {
       return await WeatherTool.run(
         settings: store.settings.toolSettings, locationService: { store.locationService })
     case FileWorkspaceTool.listName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
+      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.list(arguments: call.argumentValues)
     case FileWorkspaceTool.readName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
+      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.read(arguments: call.argumentValues)
     case FileWorkspaceTool.writeName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
+      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.write(arguments: call.argumentValues)
     case FileWorkspaceTool.renameName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
+      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.rename(arguments: call.argumentValues)
@@ -153,9 +157,12 @@ enum BuiltInToolCatalog {
     entries.first { $0.toolNames.contains(name) }
   }
 
-  private static func fileWorkspaceToolsEnabled(store: AppStore) -> Bool {
-    (store.currentConversation?.enabledTools.contains(.files) ?? false)
-      && store.settings.toolSettings.filesWorkspaceAccessEnabled
+  private static func fileWorkspaceToolsEnabled(
+    conversation: Conversation,
+    settings: AppSettings
+  ) -> Bool {
+    conversation.enabledTools.contains(.files)
+      && settings.toolSettings.filesWorkspaceAccessEnabled
   }
 }
 
@@ -359,42 +366,77 @@ enum ToolAgentRegistry {
     BuiltInToolCatalog.isBuiltInToolName(name)
   }
 
-  static func execute(call: ParsedToolCall, store: AppStore) async -> String {
-    let fullDefinitions =
-      store.currentConversation.map {
-        ToolAgentRegistry.definitions(for: $0, settings: store.settings, mcpTools: store.mcpTools)
-      } ?? []
+  static func execute(
+    call: ParsedToolCall,
+    conversationID: UUID,
+    store: AppStore
+  ) async -> String {
+    guard let conversation = store.conversation(withID: conversationID) else {
+      return "Error: conversation is no longer available."
+    }
+    let fullDefinitions = ToolAgentRegistry.definitions(
+      for: conversation,
+      settings: store.settings,
+      mcpTools: store.mcpTools)
+    let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
+      for: conversation,
+      settings: store.settings,
+      mcpTools: store.mcpTools)
+    let visibleCall = normalized(call: call, definitions: visibleDefinitions)
+    guard definitionExists(named: visibleCall.name, in: visibleDefinitions) else {
+      return unavailableToolError(name: visibleCall.name)
+    }
+
     if store.settings.useToolProxy && !fullDefinitions.isEmpty {
-      let normalizedCall = normalized(call: call, definitions: ToolProxy.definitions)
-      switch normalizedCall.name {
+      switch visibleCall.name {
       case ToolProxy.listName:
         return ToolProxy.listTools(
-          arguments: normalizedCall.argumentValues, definitions: fullDefinitions)
+          arguments: visibleCall.argumentValues, definitions: fullDefinitions)
       case ToolProxy.callName:
         return await ToolProxy.callTool(
-          arguments: normalizedCall.argumentValues, definitions: fullDefinitions, store: store)
+          arguments: visibleCall.argumentValues,
+          definitions: fullDefinitions,
+          conversation: conversation,
+          store: store)
       default:
         return
           "Error: proxy mode only exposes '\(ToolProxy.listName)' and '\(ToolProxy.callName)'. Use '\(ToolProxy.callName)' to call enabled tools."
       }
     }
 
-    let normalizedCall = normalized(call: call, definitions: fullDefinitions)
-    return await executeConcrete(call: normalizedCall, store: store, definitions: fullDefinitions)
+    return await executeConcrete(
+      call: visibleCall,
+      conversation: conversation,
+      store: store,
+      definitions: fullDefinitions)
   }
 
   fileprivate static func executeConcrete(
-    call: ParsedToolCall, store: AppStore, definitions: [ToolDefinition]
+    call: ParsedToolCall,
+    conversation: Conversation,
+    store: AppStore,
+    definitions: [ToolDefinition]
   ) async -> String {
     let normalizedCall = normalized(call: call, definitions: definitions)
-    if let result = await BuiltInToolCatalog.execute(call: normalizedCall, store: store) {
+    guard definitionExists(named: normalizedCall.name, in: definitions) else {
+      return unavailableToolError(name: normalizedCall.name)
+    }
+    if let result = await BuiltInToolCatalog.execute(
+      call: normalizedCall,
+      conversation: conversation,
+      store: store)
+    {
       return result
     }
-    return await dispatchMCP(call: normalizedCall, store: store)
+    return await dispatchMCP(call: normalizedCall, conversation: conversation, store: store)
   }
 
-  private static func dispatchMCP(call: ParsedToolCall, store: AppStore) async -> String {
-    let conversationDisabled = store.currentConversation?.disabledMCPTools ?? []
+  private static func dispatchMCP(
+    call: ParsedToolCall,
+    conversation: Conversation,
+    store: AppStore
+  ) async -> String {
+    let conversationDisabled = conversation.disabledMCPTools
     for server in store.settings.mcpServers
     where server.isEnabled && server.hasValidScheme {
       let tools = store.mcpTools[server.id] ?? []
@@ -411,6 +453,14 @@ enum ToolAgentRegistry {
       }
     }
     return "Error: unknown tool '\(call.name)'. Refresh MCP tools in Settings if you expect it."
+  }
+
+  static func definitionExists(named name: String, in definitions: [ToolDefinition]) -> Bool {
+    definitions.contains { $0.name == name }
+  }
+
+  static func unavailableToolError(name: String) -> String {
+    "Error: tool '\(name)' is no longer enabled."
   }
 
   static func makeRunBlock(call: ParsedToolCall, result: String) -> String {
@@ -494,6 +544,7 @@ enum ToolProxy {
   static func callTool(
     arguments: [String: AgentToolArgumentValue],
     definitions: [ToolDefinition],
+    conversation: Conversation,
     store: AppStore
   ) async -> String {
     let requestedName =
@@ -516,7 +567,10 @@ enum ToolProxy {
       rawBlock: ""
     )
     return await ToolAgentRegistry.executeConcrete(
-      call: targetCall, store: store, definitions: definitions)
+      call: targetCall,
+      conversation: conversation,
+      store: store,
+      definitions: definitions)
   }
 
   private static func searchableText(for definition: ToolDefinition) -> String {

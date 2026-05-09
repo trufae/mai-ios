@@ -91,9 +91,14 @@ enum AssistantTurnRunner {
 
       try Task.checkCancellation()
 
+      let currentDefinitions = currentVisibleDefinitions(
+        conversationID: conversationID,
+        store: store)
+      let parseDefinitions =
+        currentDefinitions.isEmpty ? toolState.definitions : currentDefinitions
       let calls = ToolAgentRegistry.parseCalls(
         in: response,
-        definitions: toolState.definitions,
+        definitions: parseDefinitions,
         mode: toolState.activeMode)
       if calls.isEmpty {
         if AgentTooling.containsToolCallMarker(in: response, mode: toolState.activeMode) {
@@ -118,7 +123,7 @@ enum AssistantTurnRunner {
       let turnText = try await toolRunText(
         response: response,
         calls: calls,
-        definitions: toolState.definitions,
+        parseDefinitions: parseDefinitions,
         mode: toolState.activeMode,
         conversationID: conversationID,
         store: store
@@ -174,7 +179,7 @@ enum AssistantTurnRunner {
   private static func toolRunText(
     response: String,
     calls: [ParsedToolCall],
-    definitions: [ToolDefinition],
+    parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
     conversationID: UUID,
     store: AppStore
@@ -183,34 +188,90 @@ enum AssistantTurnRunner {
     var runBlocks: [String] = []
     for call in calls {
       try Task.checkCancellation()
-      let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+      let currentDefinitions = currentVisibleDefinitions(
+        conversationID: conversationID,
+        store: store)
+      let fallbackCall = ToolAgentRegistry.normalized(
+        call: call,
+        definitions: parseDefinitions)
+      guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
+        let result = ToolAgentRegistry.unavailableToolError(name: fallbackCall.name)
+        let runBlock = ToolAgentRegistry.makeRunBlock(call: fallbackCall, result: result)
+        transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
+        runBlocks.append(runBlock)
+        continue
+      }
       let approvedCall: ParsedToolCall
       let shouldExecute: Bool
       switch await store.requestToolCallApproval(
         call: normalizedCall,
-        definitions: definitions,
+        definitions: currentDefinitions,
         mode: mode,
         conversationID: conversationID
       ) {
       case .approved(let call):
-        approvedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+        approvedCall = call
         shouldExecute = true
       case .cancelled:
         approvedCall = normalizedCall
         shouldExecute = false
       }
       try Task.checkCancellation()
-      let result =
-        shouldExecute
-        ? await ToolAgentRegistry.execute(call: approvedCall, store: store)
-        : "Error: tool call cancelled by user."
-      let runBlock = ToolAgentRegistry.makeRunBlock(call: approvedCall, result: result)
+      let result: String
+      let resultCall: ParsedToolCall
+      if shouldExecute {
+        let executionDefinitions = currentVisibleDefinitions(
+          conversationID: conversationID,
+          store: store)
+        if let executableCall = availableCall(
+          approvedCall,
+          definitions: executionDefinitions)
+        {
+          resultCall = executableCall
+          result = await ToolAgentRegistry.execute(
+            call: executableCall,
+            conversationID: conversationID,
+            store: store)
+        } else {
+          let unavailableCall = ToolAgentRegistry.normalized(
+            call: approvedCall,
+            definitions: currentDefinitions)
+          resultCall = unavailableCall
+          result = ToolAgentRegistry.unavailableToolError(name: unavailableCall.name)
+        }
+      } else {
+        resultCall = approvedCall
+        result = "Error: tool call cancelled by user."
+      }
+      let runBlock = ToolAgentRegistry.makeRunBlock(call: resultCall, result: result)
       transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
       runBlocks.append(runBlock)
     }
     return ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
+  }
+
+  private static func currentVisibleDefinitions(
+    conversationID: UUID,
+    store: AppStore
+  ) -> [ToolDefinition] {
+    guard let conversation = store.conversation(withID: conversationID) else { return [] }
+    return ToolAgentRegistry.visibleDefinitions(
+      for: conversation,
+      settings: store.settings,
+      mcpTools: store.mcpTools)
+  }
+
+  private static func availableCall(
+    _ call: ParsedToolCall,
+    definitions: [ToolDefinition]
+  ) -> ParsedToolCall? {
+    let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+    guard ToolAgentRegistry.definitionExists(named: normalizedCall.name, in: definitions) else {
+      return nil
+    }
+    return normalizedCall
   }
 
   private static func augmentedContext(
