@@ -650,7 +650,8 @@ enum AssistantTurnRunner {
       settings: store.settings,
       definitions: visibleDefinitions)
     let activeMode =
-      nativeTools == nil ? store.settings.toolCallingMode.textProtocolFallback : .native
+      nativeTools == nil
+      ? store.settings.toolCallingMode.textProtocolFallback(for: conversation.provider) : .native
     let promptDefinitions = nativeTools == nil ? visibleDefinitions : []
     let toolPrompt = ToolAgentRegistry.promptDescription(
       for: promptDefinitions,

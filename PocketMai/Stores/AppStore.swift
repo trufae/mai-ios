@@ -1603,7 +1603,7 @@ final class AppStore: ObservableObject {
       && !visibleDefinitions.isEmpty
     let effectiveMode =
       providerNativeToolCalling
-      ? ToolCallingMode.native : settings.toolCallingMode.textProtocolFallback
+      ? ToolCallingMode.native : settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
     let textToolPrompt =
       providerNativeToolCalling
       ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
@@ -1638,7 +1638,8 @@ final class AppStore: ObservableObject {
       selectedModeDisplayName: settings.toolCallingMode.displayName,
       effectiveMode: effectiveMode.rawValue,
       effectiveModeDisplayName: effectiveMode.displayName,
-      textProtocolFallback: settings.toolCallingMode.textProtocolFallback.rawValue,
+      textProtocolFallback: settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
+        .rawValue,
       providerNativeToolCalling: providerNativeToolCalling,
       toolCatalogInlinedInPrompt: !providerNativeToolCalling && hasToolCalling,
       nativeToolNames: nativeToolNames,

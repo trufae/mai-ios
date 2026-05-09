@@ -630,7 +630,9 @@ enum AgentTooling {
         }
       }
     }
-    return tools.first
+    return tools.first { tool in
+      tool.parameters.allSatisfy { !$0.required }
+    } ?? tools.first
   }
 
   private static func exampleArguments(

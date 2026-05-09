@@ -353,12 +353,19 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
         "Uses one JSON object with name and arguments. Compact and easy to parse when the model emits strict JSON."
     case .native:
       return
-        "Uses provider-native structured tools for OpenAI-compatible requests. MLX and Apple Intelligence fall back to Text."
+        "Uses provider-native structured tools for OpenAI-compatible requests. MLX falls back to JSON; Apple Intelligence falls back to Text."
     }
   }
 
   var textProtocolFallback: ToolCallingMode {
     self == .native ? .text : self
+  }
+
+  func textProtocolFallback(for provider: ProviderKind) -> ToolCallingMode {
+    if self == .native, provider == .mlx {
+      return .json
+    }
+    return textProtocolFallback
   }
 
   func appleInstruction(hasToolResults: Bool) -> String {
