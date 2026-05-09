@@ -41,6 +41,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   case epub
   case audio
   case json
+  case debugJSON
 
   var id: String { rawValue }
 
@@ -48,6 +49,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .markdown: "Markdown"
     case .json: "JSON"
+    case .debugJSON: "Debug JSON"
     case .epub: "EPUB"
     case .audio: "Audio"
     }
@@ -57,6 +59,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .markdown: "doc.richtext"
     case .json: "curlybraces"
+    case .debugJSON: "ladybug"
     case .epub: "book"
     case .audio: "waveform"
     }
@@ -65,7 +68,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   var fileExtension: String {
     switch self {
     case .markdown: "md"
-    case .json: "json"
+    case .json, .debugJSON: "json"
     case .epub: "epub"
     case .audio: "m4a"
     }
@@ -673,10 +676,8 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
 
 struct ConversationExportEnvelope: Codable, Equatable, Sendable {
   static let format = "pocketmai.conversation"
-  static let currentFormatVersion = 1
 
   var format: String
-  var formatVersion: Int
   var title: String
   var model: String
   var provider: String
@@ -684,14 +685,15 @@ struct ConversationExportEnvelope: Codable, Equatable, Sendable {
   var createdAt: Date
   var pocketMaiVersion: String
   var conversation: Conversation
+  var toolCallingDebug: ConversationToolCallingDebug?
 
   init(
     conversation: Conversation,
     exportedAt: Date = Date(),
-    pocketMaiVersion: String = Self.currentPocketMaiVersion
+    pocketMaiVersion: String = Self.currentPocketMaiVersion,
+    toolCallingDebug: ConversationToolCallingDebug? = nil
   ) {
     self.format = Self.format
-    self.formatVersion = Self.currentFormatVersion
     self.title = conversation.displayTitle
     self.model = conversation.modelID
     self.provider = conversation.provider.rawValue
@@ -699,34 +701,7 @@ struct ConversationExportEnvelope: Codable, Equatable, Sendable {
     self.createdAt = conversation.createdAt
     self.pocketMaiVersion = pocketMaiVersion
     self.conversation = conversation
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case format
-    case formatVersion
-    case title
-    case model
-    case provider
-    case exportedAt
-    case createdAt
-    case pocketMaiVersion
-    case conversation
-  }
-
-  init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    conversation = try container.decode(Conversation.self, forKey: .conversation)
-    format = (try? container.decode(String.self, forKey: .format)) ?? Self.format
-    formatVersion =
-      (try? container.decode(Int.self, forKey: .formatVersion)) ?? Self.currentFormatVersion
-    title = (try? container.decode(String.self, forKey: .title)) ?? conversation.displayTitle
-    model = (try? container.decode(String.self, forKey: .model)) ?? conversation.modelID
-    provider =
-      (try? container.decode(String.self, forKey: .provider)) ?? conversation.provider.rawValue
-    exportedAt = (try? container.decode(Date.self, forKey: .exportedAt)) ?? Date()
-    createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? conversation.createdAt
-    pocketMaiVersion =
-      (try? container.decode(String.self, forKey: .pocketMaiVersion)) ?? "Unknown"
+    self.toolCallingDebug = toolCallingDebug
   }
 
   var providerDisplayName: String {
@@ -744,6 +719,72 @@ struct ConversationExportEnvelope: Codable, Equatable, Sendable {
     }
     return "\(short) (\(build))"
   }
+}
+
+struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
+  var selectedMode: String
+  var selectedModeDisplayName: String
+  var effectiveMode: String
+  var effectiveModeDisplayName: String
+  var textProtocolFallback: String
+  var providerNativeToolCalling: Bool
+  var toolCatalogInlinedInPrompt: Bool
+  var yoloModeEnabled: Bool
+  var useToolProxy: Bool
+  var contextWindowMode: String
+  var contextWindowMessageLimit: Int?
+  var enabledTools: [String]
+  var disabledMCPTools: [String]
+  var mcpServers: [ConversationDebugMCPServer]
+  var fullToolDefinitions: [ConversationDebugToolDefinition]
+  var visibleToolDefinitions: [ConversationDebugToolDefinition]
+  var toolPrompt: String
+  var contextPrompt: String
+  var contextSignature: String
+  var lastStoredContextSignature: String?
+  var systemPrompt: String
+  var providerSystemPrompt: String
+  var applePrompt: String?
+  var promptMessages: [ConversationDebugPromptMessage]
+  var iterations: [ConversationDebugToolIteration]
+  var notes: [String]
+}
+
+struct ConversationDebugMCPServer: Codable, Equatable, Sendable {
+  var id: UUID
+  var name: String
+  var isEnabled: Bool
+  var hasValidScheme: Bool
+}
+
+struct ConversationDebugToolDefinition: Codable, Equatable, Sendable {
+  var name: String
+  var description: String
+  var parameters: [ConversationDebugToolParameter]
+  var inputSchemaJSON: String?
+}
+
+struct ConversationDebugToolParameter: Codable, Equatable, Sendable {
+  var name: String
+  var type: String
+  var description: String
+  var required: Bool
+}
+
+struct ConversationDebugPromptMessage: Codable, Equatable, Sendable {
+  var role: String
+  var content: String
+}
+
+struct ConversationDebugToolIteration: Codable, Equatable, Sendable {
+  var assistantMessageID: UUID
+  var assistantMessageIndex: Int
+  var roundIndex: Int
+  var toolName: String
+  var argumentsJSON: String
+  var result: String
+  var isError: Bool
+  var rawBlock: String
 }
 
 struct ConversationImportConflict: Equatable, Sendable {

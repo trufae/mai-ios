@@ -808,18 +808,7 @@ final class AppStore: ObservableObject {
     guard let data = try? Data(contentsOf: url) else {
       throw ConversationImportError.unreadableFile
     }
-    var envelope = try Self.decodeConversationImportEnvelope(from: data)
-    let importedTitle = envelope.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    if importedTitle.isEmpty {
-      envelope.title = envelope.conversation.displayTitle
-    } else {
-      envelope.conversation.title = importedTitle
-    }
-    envelope.createdAt = envelope.conversation.createdAt
-    envelope.model = envelope.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? envelope.conversation.modelID : envelope.model
-    envelope.provider = envelope.provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? envelope.conversation.provider.rawValue : envelope.provider
+    let envelope = try Self.decodeConversationImportEnvelope(from: data)
 
     await loadStoredConversationsForSearch()
     return ConversationImportPreview(
@@ -899,29 +888,58 @@ final class AppStore: ObservableObject {
   func exportCurrentConversationFile(format: ConversationExportFormat) -> URL? {
     guard let conversation = currentConversation else { return nil }
     switch format {
-    case .markdown, .json:
-      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-        "PocketMaiExports",
-        isDirectory: true
-      )
-      do {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let filename = exportFilename(for: conversation)
-        let url = directory.appendingPathComponent(filename).appendingPathExtension(
-          format.fileExtension)
-        try export(conversation: conversation, format: format).write(
-          to: url, atomically: true, encoding: .utf8)
-        return url
-      } catch {
-        errorMessage = "Could not export \(format.displayName): \(error.localizedDescription)"
-        return nil
-      }
+    case .markdown, .json, .debugJSON:
+      return writeConversationExport(
+        conversation: conversation,
+        format: format,
+        content: export(conversation: conversation, format: format))
     case .epub:
       return exportCurrentConversationEPUB()
     case .audio:
       return nil
     }
   }
+
+  func exportCurrentConversationDebugJSONFile() async -> URL? {
+    guard let conversation = currentConversation else { return nil }
+    let latestPrompt =
+      conversation.messages.last(where: { $0.role == .user })
+      .map { MessageContentFilter.promptSafeText(from: $0.text) } ?? ""
+    let context = await ContextBuilder.build(
+      input: latestPrompt,
+      conversation: conversation,
+      settings: settings,
+      locationService: { self.locationService })
+    return writeConversationExport(
+      conversation: conversation,
+      format: .debugJSON,
+      content: export(conversation: conversation, format: .debugJSON, debugContext: context))
+  }
+
+  private func writeConversationExport(
+    conversation: Conversation,
+    format: ConversationExportFormat,
+    content: String
+  ) -> URL? {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "PocketMaiExports",
+      isDirectory: true
+    )
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let filename =
+        exportFilename(for: conversation)
+        + (format == .debugJSON ? "-debug" : "")
+      let url = directory.appendingPathComponent(filename).appendingPathExtension(
+        format.fileExtension)
+      try content.write(to: url, atomically: true, encoding: .utf8)
+      return url
+    } catch {
+      errorMessage = "Could not export \(format.displayName): \(error.localizedDescription)"
+      return nil
+    }
+  }
+
 
   func saveSettings() {
     persistence.saveSettings(settings)
@@ -1430,17 +1448,17 @@ final class AppStore: ObservableObject {
   ) throws -> ConversationExportEnvelope {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
-    if let envelope = try? decoder.decode(ConversationExportEnvelope.self, from: data) {
+    do {
+      let envelope = try decoder.decode(ConversationExportEnvelope.self, from: data)
+      guard envelope.format == ConversationExportEnvelope.format else {
+        throw ConversationImportError.invalidJSON
+      }
       return envelope
+    } catch let error as ConversationImportError {
+      throw error
+    } catch {
+      throw ConversationImportError.invalidJSON
     }
-    if let conversation = try? decoder.decode(Conversation.self, from: data) {
-      return ConversationExportEnvelope(
-        conversation: conversation,
-        exportedAt: Date(),
-        pocketMaiVersion: "Legacy JSON"
-      )
-    }
-    throw ConversationImportError.invalidJSON
   }
 
   private func conversationImportConflict(
@@ -1518,17 +1536,24 @@ final class AppStore: ObservableObject {
     return id
   }
 
-  private func export(conversation: Conversation, format: ConversationExportFormat) -> String {
+  private func export(
+    conversation: Conversation,
+    format: ConversationExportFormat,
+    debugContext: ContextBuilder.Output? = nil
+  ) -> String {
     switch format {
     case .markdown:
       return conversation.messages.map { message in
         "## \(message.role.displayName)\n\n\(message.text)"
       }.joined(separator: "\n\n")
-    case .json:
+    case .json, .debugJSON:
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
       encoder.dateEncodingStrategy = .iso8601
-      let envelope = ConversationExportEnvelope(conversation: conversation)
+      let envelope = ConversationExportEnvelope(
+        conversation: conversation,
+        toolCallingDebug: format == .debugJSON
+          ? toolCallingDebug(for: conversation, context: debugContext) : nil)
       guard let data = try? encoder.encode(envelope),
         let json = String(data: data, encoding: .utf8)
       else {
@@ -1538,6 +1563,203 @@ final class AppStore: ObservableObject {
     case .epub, .audio:
       return ""
     }
+  }
+
+  private func toolCallingDebug(
+    for conversation: Conversation,
+    context: ContextBuilder.Output?
+  ) -> ConversationToolCallingDebug {
+    let fullDefinitions = ToolAgentRegistry.definitions(
+      for: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+    let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
+      for: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+    let providerNativeToolCalling =
+      settings.toolCallingMode == .native
+      && (conversation.provider == .openAICompatible || conversation.provider == .mlx)
+      && !visibleDefinitions.isEmpty
+    let effectiveMode =
+      providerNativeToolCalling
+      ? ToolCallingMode.native : settings.toolCallingMode.textProtocolFallback
+    let toolPrompt =
+      providerNativeToolCalling
+      ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
+    let contextPrompt = context?.text ?? ""
+    let requestContext = [contextPrompt, toolPrompt]
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+    let systemPrompt = PromptComposer.systemPrompt(settings: settings, conversation: conversation)
+    let providerSystemPrompt =
+      requestContext.isEmpty ? systemPrompt : "\(systemPrompt)\n\n## Context\n\(requestContext)"
+    let hasToolCalling = !visibleDefinitions.isEmpty
+    let applePrompt = PromptComposer.applePrompt(
+      conversation: conversation,
+      settings: settings,
+      context: requestContext,
+      hasTools: hasToolCalling)
+
+    return ConversationToolCallingDebug(
+      selectedMode: settings.toolCallingMode.rawValue,
+      selectedModeDisplayName: settings.toolCallingMode.displayName,
+      effectiveMode: effectiveMode.rawValue,
+      effectiveModeDisplayName: effectiveMode.displayName,
+      textProtocolFallback: settings.toolCallingMode.textProtocolFallback.rawValue,
+      providerNativeToolCalling: providerNativeToolCalling,
+      toolCatalogInlinedInPrompt: !providerNativeToolCalling && hasToolCalling,
+      yoloModeEnabled: settings.yoloModeEnabled,
+      useToolProxy: settings.useToolProxy,
+      contextWindowMode: settings.contextWindowMode.rawValue,
+      contextWindowMessageLimit: settings.contextWindowMode.messageLimit,
+      enabledTools: conversation.enabledTools.map(\.rawValue).sorted(),
+      disabledMCPTools: Array(conversation.disabledMCPTools).sorted(),
+      mcpServers: settings.mcpServers.map { server in
+        ConversationDebugMCPServer(
+          id: server.id,
+          name: server.name,
+          isEnabled: server.isEnabled,
+          hasValidScheme: server.hasValidScheme)
+      },
+      fullToolDefinitions: debugDefinitions(fullDefinitions),
+      visibleToolDefinitions: debugDefinitions(visibleDefinitions),
+      toolPrompt: toolPrompt,
+      contextPrompt: contextPrompt,
+      contextSignature: context?.signature ?? "",
+      lastStoredContextSignature: conversation.lastContextSignature,
+      systemPrompt: systemPrompt,
+      providerSystemPrompt: providerSystemPrompt,
+      applePrompt: applePrompt,
+      promptMessages: debugPromptMessages(
+        conversation: conversation,
+        systemPrompt: providerSystemPrompt,
+        messageLimit: settings.contextWindowMode.messageLimit),
+      iterations: debugToolIterations(in: conversation),
+      notes: [
+        "Debug prompt data is reconstructed at export time from current settings.",
+        "Tool iterations are reconstructed from stored tool run blocks.",
+      ])
+  }
+
+  private func debugDefinitions(
+    _ definitions: [ToolDefinition]
+  ) -> [ConversationDebugToolDefinition] {
+    definitions.map { definition in
+      ConversationDebugToolDefinition(
+        name: definition.name,
+        description: definition.description,
+        parameters: definition.parameters.map { parameter in
+          ConversationDebugToolParameter(
+            name: parameter.name,
+            type: parameter.type,
+            description: parameter.description,
+            required: parameter.required)
+        },
+        inputSchemaJSON: definition.inputSchemaJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+          .isEmpty ? nil : definition.inputSchemaJSON)
+    }
+  }
+
+  private func debugPromptMessages(
+    conversation: Conversation,
+    systemPrompt: String,
+    messageLimit: Int?
+  ) -> [ConversationDebugPromptMessage] {
+    let limited: [ChatMessage] = {
+      if let messageLimit { return Array(conversation.messages.suffix(messageLimit)) }
+      return conversation.messages
+    }()
+    var messages = [ConversationDebugPromptMessage(role: "system", content: systemPrompt)]
+    messages.append(
+      contentsOf: limited.compactMap { message in
+        let content = MessageContentFilter.conversationContextText(from: message.text)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return nil }
+        let role: String
+        switch message.role {
+        case .user:
+          role = "user"
+        case .assistant:
+          role =
+            content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
+            ? "assistant" : "user"
+        case .system:
+          role = "system"
+        case .tool, .error:
+          role = "user"
+        }
+        return ConversationDebugPromptMessage(role: role, content: content)
+      })
+    return messages
+  }
+
+  private func debugToolIterations(in conversation: Conversation)
+    -> [ConversationDebugToolIteration]
+  {
+    var iterations: [ConversationDebugToolIteration] = []
+    for (messageIndex, message) in conversation.messages.enumerated()
+    where message.role == .assistant {
+      for rawBlock in toolRunBlocks(in: message.text) {
+        let parsed = parseToolRunBlock(rawBlock)
+        iterations.append(
+          ConversationDebugToolIteration(
+            assistantMessageID: message.id,
+            assistantMessageIndex: messageIndex,
+            roundIndex: iterations.count + 1,
+            toolName: parsed.toolName,
+            argumentsJSON: parsed.argumentsJSON,
+            result: parsed.result,
+            isError: parsed.result.trimmingCharacters(in: .whitespacesAndNewlines)
+              .lowercased()
+              .hasPrefix("error:"),
+            rawBlock: rawBlock))
+      }
+    }
+    return iterations
+  }
+
+  private func toolRunBlocks(in text: String) -> [String] {
+    let pattern = "<tool_run\\b[^>]*>[\\s\\S]*?</tool_run\\s*>"
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    else { return [] }
+    let nsText = text as NSString
+    return regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+      .map { nsText.substring(with: $0.range) }
+  }
+
+  private func parseToolRunBlock(_ rawBlock: String) -> (
+    toolName: String, argumentsJSON: String, result: String
+  ) {
+    let body =
+      rawBlock
+      .replacingOccurrences(
+        of: "^<tool_run\\b[^>]*>",
+        with: "",
+        options: [.regularExpression, .caseInsensitive]
+      )
+      .replacingOccurrences(
+        of: "</tool_run\\s*>$",
+        with: "",
+        options: [.regularExpression, .caseInsensitive]
+      )
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let nsBody = body as NSString
+    let headerPattern = #"^([^\n]+?) tool \((.*)\):\s*\n?"#
+    guard let regex = try? NSRegularExpression(pattern: headerPattern),
+      let match = regex.firstMatch(in: body, range: NSRange(location: 0, length: nsBody.length)),
+      match.numberOfRanges == 3
+    else {
+      return ("unknown", "{}", body)
+    }
+    let toolName = nsBody.substring(with: match.range(at: 1))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let argumentsJSON = nsBody.substring(with: match.range(at: 2))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let result = nsBody.substring(from: match.range.upperBound)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return (toolName, argumentsJSON, result)
   }
 
   func exportFilename(for conversation: Conversation) -> String {
