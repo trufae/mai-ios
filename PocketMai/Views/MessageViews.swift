@@ -1955,6 +1955,8 @@ enum MarkdownInlineSymbols {
 }
 
 struct MarkdownTableView: View {
+  @Environment(\.isFullChatScreenshotRendering) private var isFullChatScreenshotRendering
+
   let headers: [String]
   let rows: [[String]]
   let alignments: [TextAlignment]
@@ -1979,6 +1981,16 @@ struct MarkdownTableView: View {
   }
 
   var body: some View {
+    if appearance.unwrappedTables && !isFullChatScreenshotRendering {
+      ScrollView(.horizontal, showsIndicators: true) {
+        tableGrid(unwrapped: true)
+      }
+    } else {
+      tableGrid(unwrapped: false)
+    }
+  }
+
+  private func tableGrid(unwrapped: Bool) -> some View {
     Grid(
       alignment: .topLeading,
       horizontalSpacing: 0,
@@ -1986,7 +1998,7 @@ struct MarkdownTableView: View {
     ) {
       GridRow {
         ForEach(Array(headers.enumerated()), id: \.offset) { idx, header in
-          cellView(header, columnIndex: idx, isHeader: true)
+          cellView(header, columnIndex: idx, isHeader: true, unwrapped: unwrapped)
         }
       }
       .background(Color.secondary.opacity(0.10))
@@ -1995,7 +2007,7 @@ struct MarkdownTableView: View {
         GridRow {
           ForEach(0..<headers.count, id: \.self) { idx in
             let value = idx < row.count ? row[idx] : ""
-            cellView(value, columnIndex: idx, isHeader: false)
+            cellView(value, columnIndex: idx, isHeader: false, unwrapped: unwrapped)
           }
         }
         .background(rowIdx.isMultiple(of: 2) ? Color.clear : Color.secondary.opacity(0.05))
@@ -2012,8 +2024,11 @@ struct MarkdownTableView: View {
   }
 
   @ViewBuilder
-  private func cellView(_ value: String, columnIndex: Int, isHeader: Bool) -> some View {
+  private func cellView(_ value: String, columnIndex: Int, isHeader: Bool, unwrapped: Bool)
+    -> some View
+  {
     let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
+    let maxWidth: CGFloat? = unwrapped ? nil : .infinity
     Text(attributedInlineMarkdown(value))
       .font(
         isHeader
@@ -2022,7 +2037,8 @@ struct MarkdownTableView: View {
       )
       .lineSpacing(CGFloat(appearance.lineSpacing))
       .multilineTextAlignment(alignment)
-      .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
+      .fixedSize(horizontal: unwrapped, vertical: false)
+      .frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
       .padding(.horizontal, appearance.markdownMetric(10))
       .padding(.vertical, appearance.markdownMetric(8))
       .textSelectionIfEnabled(allowsTextSelection)

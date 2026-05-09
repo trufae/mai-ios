@@ -197,6 +197,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   var theme: AppearanceTheme = .system
   var solidResponseBubbles: Bool = true
   var liveMarkdown: Bool = true
+  var unwrappedTables: Bool = false
 
   static let defaults = AppearanceSettings()
 
@@ -212,7 +213,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case userFontFamily, assistantFontFamily, fontFamily, fontSize, lineSpacing, tint, theme
-    case solidResponseBubbles, colorizeResponseBubbles, liveMarkdown
+    case solidResponseBubbles, colorizeResponseBubbles, liveMarkdown, unwrappedTables
   }
 
   init(from decoder: Decoder) throws {
@@ -232,6 +233,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .solidResponseBubbles))
       ?? (try? c.decode(Bool.self, forKey: .colorizeResponseBubbles)) ?? true
     liveMarkdown = (try? c.decode(Bool.self, forKey: .liveMarkdown)) ?? true
+    unwrappedTables = (try? c.decode(Bool.self, forKey: .unwrappedTables)) ?? false
   }
 
   func encode(to encoder: Encoder) throws {
@@ -244,6 +246,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(theme, forKey: .theme)
     try c.encode(solidResponseBubbles, forKey: .solidResponseBubbles)
     try c.encode(liveMarkdown, forKey: .liveMarkdown)
+    try c.encode(unwrappedTables, forKey: .unwrappedTables)
   }
 }
 

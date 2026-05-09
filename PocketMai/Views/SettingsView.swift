@@ -436,6 +436,7 @@ struct SettingsView: View {
       isOn: settingsBinding(\.appearance.solidResponseBubbles))
     Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
     Toggle("Live Markdown", isOn: settingsBinding(\.appearance.liveMarkdown))
+    Toggle("Unwrapped Tables", isOn: settingsBinding(\.appearance.unwrappedTables))
   }
 
   @ViewBuilder
