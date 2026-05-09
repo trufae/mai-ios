@@ -344,7 +344,7 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
         "Uses one JSON object with name and arguments. Compact and easy to parse when the model emits strict JSON."
     case .native:
       return
-        "Uses provider-native structured tools for OpenAI-compatible and MLX requests. Apple Intelligence falls back to Text."
+        "Uses provider-native structured tools for OpenAI-compatible requests. MLX and Apple Intelligence fall back to Text."
     }
   }
 
@@ -774,12 +774,33 @@ struct ConversationDebugToolParameter: Codable, Equatable, Sendable {
 struct ConversationDebugPromptMessage: Codable, Equatable, Sendable {
   var role: String
   var content: String
+  var toolCallsJSON: String? = nil
+  var toolCallID: String? = nil
+}
+
+struct ConversationDebugParsedToolCall: Codable, Equatable, Sendable {
+  var name: String
+  var argumentsJSON: String
+  var rawBlock: String
 }
 
 struct ConversationDebugToolIteration: Codable, Equatable, Sendable {
   var assistantMessageID: UUID
   var assistantMessageIndex: Int
   var roundIndex: Int
+  var source: String = "storedToolRun"
+  var createdAt: Date? = nil
+  var provider: String? = nil
+  var model: String? = nil
+  var selectedMode: String? = nil
+  var effectiveMode: String? = nil
+  var requestContext: String? = nil
+  var toolPrompt: String? = nil
+  var nativeToolNames: [String] = []
+  var promptMessages: [ConversationDebugPromptMessage] = []
+  var rawModelResponse: String? = nil
+  var parsedToolCalls: [ConversationDebugParsedToolCall] = []
+  var outcome: String? = nil
   var toolName: String
   var argumentsJSON: String
   var result: String

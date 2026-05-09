@@ -623,7 +623,8 @@ struct ChatView: View {
     in scrollView: UIScrollView,
     to contentPoint: CGPoint
   ) -> MessageListAnchorUIView? {
-    var best: (view: MessageListAnchorUIView, verticalDistance: CGFloat, horizontalDistance: CGFloat)?
+    var best:
+      (view: MessageListAnchorUIView, verticalDistance: CGFloat, horizontalDistance: CGFloat)?
 
     func visit(_ view: UIView) {
       if let anchorView = view as? MessageListAnchorUIView {
@@ -686,7 +687,8 @@ struct ChatView: View {
     let minimumY = -scrollView.adjustedContentInset.top
     let maximumY = max(
       minimumY,
-      scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
+      scrollView.contentSize.height - scrollView.bounds.height
+        + scrollView.adjustedContentInset.bottom
     )
     return min(max(y, minimumY), maximumY)
   }
@@ -1476,8 +1478,8 @@ private struct ConversationModelSettingsView: View {
         "Only downloaded MLX models are shown. Manage downloads in Settings > Providers "
           + "> Local MLX LLM."
       )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
     .onAppear {
       store.refreshLocalMLXModels()

@@ -110,6 +110,7 @@ final class AppStore: ObservableObject {
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
   private var cancelledToolCallApprovalIDs: Set<UUID> = []
+  private var toolCallingDebugIterations: [UUID: [ConversationDebugToolIteration]] = [:]
 
   var isResponding: Bool { !respondingConversationIDs.isEmpty }
 
@@ -648,7 +649,8 @@ final class AppStore: ObservableObject {
 
   private func beginResponseBackgroundTask(for conversationID: UUID) {
     endResponseBackgroundTask(for: conversationID)
-    let taskID = UIApplication.shared.beginBackgroundTask(withName: "PocketMai assistant response") {
+    let taskID = UIApplication.shared.beginBackgroundTask(withName: "PocketMai assistant response")
+    {
       [weak self] in
       Task { @MainActor [weak self] in
         self?.handleResponseBackgroundTaskExpired(for: conversationID)
@@ -940,6 +942,18 @@ final class AppStore: ObservableObject {
     }
   }
 
+  func clearToolCallingDebugIterations(conversationID: UUID, assistantMessageID: UUID) {
+    toolCallingDebugIterations[conversationID, default: []].removeAll {
+      $0.assistantMessageID == assistantMessageID
+    }
+  }
+
+  func appendToolCallingDebugIteration(
+    _ iteration: ConversationDebugToolIteration,
+    conversationID: UUID
+  ) {
+    toolCallingDebugIterations[conversationID, default: []].append(iteration)
+  }
 
   func saveSettings() {
     persistence.saveSettings(settings)
@@ -1046,6 +1060,12 @@ final class AppStore: ObservableObject {
     )
     guard request.definitions.contains(where: { $0.name == normalizedCall.name }) else {
       return .failure("Unknown tool '\(normalizedCall.name)'.")
+    }
+    if let error = ToolAgentRegistry.requiredArgumentsError(
+      call: normalizedCall,
+      definitions: request.definitions)
+    {
+      return .failure(error)
     }
     return .success(normalizedCall)
   }
@@ -1579,7 +1599,7 @@ final class AppStore: ObservableObject {
       mcpTools: mcpTools)
     let providerNativeToolCalling =
       settings.toolCallingMode == .native
-      && (conversation.provider == .openAICompatible || conversation.provider == .mlx)
+      && conversation.provider == .openAICompatible
       && !visibleDefinitions.isEmpty
     let effectiveMode =
       providerNativeToolCalling
@@ -1601,6 +1621,11 @@ final class AppStore: ObservableObject {
       settings: settings,
       context: requestContext,
       hasTools: hasToolCalling)
+    let messageIDs = Set(conversation.messages.map(\.id))
+    let runtimeIterations =
+      (toolCallingDebugIterations[conversation.id] ?? [])
+      .filter { messageIDs.contains($0.assistantMessageID) }
+    let storedIterations = debugToolIterations(in: conversation)
 
     return ConversationToolCallingDebug(
       selectedMode: settings.toolCallingMode.rawValue,
@@ -1636,10 +1661,11 @@ final class AppStore: ObservableObject {
         conversation: conversation,
         systemPrompt: providerSystemPrompt,
         messageLimit: settings.contextWindowMode.messageLimit),
-      iterations: debugToolIterations(in: conversation),
+      iterations: runtimeIterations.isEmpty ? storedIterations : runtimeIterations,
       notes: [
         "Debug prompt data is reconstructed at export time from current settings.",
-        "Tool iterations are reconstructed from stored tool run blocks.",
+        "Runtime iterations are included for tool loops completed in the current app session.",
+        "The original per-iteration provider request payload is not persisted across app launches.",
       ])
   }
 

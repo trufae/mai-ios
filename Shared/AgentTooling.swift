@@ -310,7 +310,7 @@ enum AgentTooling {
       let name = api == def.name ? def.name : "\(def.name) (API/native alias: \(api))"
       return "- \(name): \(def.description) Arguments: \(params)."
     }.joined(separator: "\n")
-    let toolCalling = promptInstructions(for: mode)
+    let toolCalling = promptInstructions(for: mode, tools: definitions)
 
     return """
       ## Available Tools
@@ -321,40 +321,39 @@ enum AgentTooling {
 
       \(toolCalling)
 
-      When the host returns a `<tool_run>` result, use that result as ground truth. If more tool work is needed, emit the next single tool call in the same format; otherwise answer normally with no tool call.
+      After a `<tool_run>`, answer using that result. Call another tool only for a different missing fact; never repeat the same tool call with the same arguments.
       """
   }
 
-  private static func promptInstructions(for mode: ToolCallingMode) -> String {
+  private static func promptInstructions(
+    for mode: ToolCallingMode,
+    tools: [ToolDefinition] = []
+  ) -> String {
+    let example = toolCallExample(for: mode, text: "", tools: tools)
     switch mode.textProtocolFallback {
     case .text:
       return """
         When a tool is needed, reply with exactly one plain text block and no other text:
-        TOOL_CALL
-        tool: tool_name
-        required_arg: value
-        END_TOOL_CALL
+        \(example)
 
         Use only listed tool names or aliases. Put one argument per line as `argument_name: value`. Include required arguments, omit unused optional arguments, use true/false for booleans, and stop after the block.
         """
     case .xml:
       return """
         When a tool is needed, reply with exactly one XML block and no other text:
-        <tool_call name="tool_name">
-        <arg name="required_arg">value</arg>
-        </tool_call>
+        \(example)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, escape XML special characters, and stop after the block.
         """
     case .json:
       return """
         When a tool is needed, reply with exactly one JSON object and no other text:
-        {"name":"tool_name","arguments":{"required_arg":"value"}}
+        \(example)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, keep JSON valid, and stop after the JSON object.
         """
     case .native:
-      return promptInstructions(for: .text)
+      return promptInstructions(for: .text, tools: tools)
     }
   }
 
@@ -395,7 +394,33 @@ enum AgentTooling {
       }
     }
     if !calls.isEmpty { return calls }
+    let openerCalls = parseMalformedXMLCallOpeners(in: text, tools: tools)
+    if !openerCalls.isEmpty { return openerCalls }
     return parseJSONCall(in: text).map { [$0] } ?? []
+  }
+
+  private static func parseMalformedXMLCallOpeners(
+    in text: String,
+    tools: [ToolDefinition]
+  ) -> [ParsedToolCall] {
+    let pattern = "<\\s*tool_call\\b([^>\\n\\r]*)"
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    else { return [] }
+    let nsText = text as NSString
+    let matches = regex.matches(
+      in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+    let resolver = AgentToolNameResolver(tools: tools)
+    return matches.compactMap { match in
+      guard match.numberOfRanges == 2 else { return nil }
+      let raw = nsText.substring(with: match.range(at: 0))
+      let attributes = nsText.substring(with: match.range(at: 1))
+      let attrs = toolCallAttributes(from: attributes)
+      guard let name = firstNonEmpty(attrs["name"], attrs["tool"], attrs["function"]),
+        let canonical = resolver.canonicalName(for: name),
+        tools.contains(where: { $0.name == canonical })
+      else { return nil }
+      return parseToolCallPayload("", attributes: attributes, rawBlock: raw)
+    }
   }
 
   private static func parsePlainTextCalls(
@@ -517,29 +542,12 @@ enum AgentTooling {
 
   static func malformedToolCallFeedback(
     from text: String,
-    mode: ToolCallingMode = .text
+    mode: ToolCallingMode = .text,
+    tools: [ToolDefinition] = []
   ) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let preview = trimmed.count > 500 ? String(trimmed.prefix(500)) + "..." : trimmed
-    let example: String
-    switch mode.textProtocolFallback {
-    case .text:
-      example = """
-        TOOL_CALL
-        tool: tool_name
-        END_TOOL_CALL
-        """
-    case .xml:
-      example = #"<tool_call name="tool_name"></tool_call>"#
-    case .json:
-      example = #"{"name":"tool_name","arguments":{}}"#
-    case .native:
-      example = """
-        TOOL_CALL
-        tool: tool_name
-        END_TOOL_CALL
-        """
-    }
+    let example = toolCallExample(for: mode, text: text, tools: tools)
     return """
       <tool_run>
       invalid_tool_call tool ({}):
@@ -548,10 +556,109 @@ enum AgentTooling {
       Received:
       \(preview)
 
-      Emit exactly one valid tool call in the configured \(mode.displayName) format, or answer normally without any tool call marker:
+      Emit exactly one valid tool call in the configured \(mode.displayName) format for the same intended tool call:
       \(example)
       </tool_run>
       """
+  }
+
+  private static func toolCallExample(
+    for mode: ToolCallingMode,
+    text: String,
+    tools: [ToolDefinition]
+  ) -> String {
+    let tool = exampleTool(matching: text, tools: tools)
+    let resolver = AgentToolNameResolver(tools: tools)
+    let name = tool.map { resolver.apiName(for: $0.name) } ?? "tool_name"
+    let arguments = tool.map { exampleArguments(for: $0) } ?? [:]
+
+    switch mode.textProtocolFallback {
+    case .text:
+      var lines = ["TOOL_CALL", "tool: \(name)"]
+      if let tool {
+        for parameter in tool.parameters where parameter.required {
+          let value = arguments[parameter.name]?.stringValue ?? "value"
+          lines.append("\(parameter.name): \(value)")
+        }
+      }
+      lines.append("END_TOOL_CALL")
+      return lines.joined(separator: "\n")
+    case .xml:
+      guard let tool, !arguments.isEmpty else {
+        return #"<tool_call name="\#(xmlEscapedAttribute(name))"></tool_call>"#
+      }
+      let body = tool.parameters
+        .filter(\.required)
+        .map { parameter in
+          let value = arguments[parameter.name]?.stringValue ?? "value"
+          return
+            #"<arg name="\#(xmlEscapedAttribute(parameter.name))">\#(xmlEscapedAttribute(value))</arg>"#
+        }
+        .joined(separator: "\n")
+      return """
+        <tool_call name="\(xmlEscapedAttribute(name))">
+        \(body)
+        </tool_call>
+        """
+    case .json:
+      return toolCallObjectJSON(name: name, arguments: arguments)
+    case .native:
+      return toolCallExample(for: .text, text: text, tools: tools)
+    }
+  }
+
+  private static func exampleTool(
+    matching text: String,
+    tools: [ToolDefinition]
+  ) -> ToolDefinition? {
+    guard !tools.isEmpty else { return nil }
+    let resolver = AgentToolNameResolver(tools: tools)
+    let haystack = text.lowercased()
+    if !haystack.isEmpty {
+      for tool in tools {
+        let candidates = [
+          tool.name,
+          resolver.apiName(for: tool.name),
+          tool.name.replacingOccurrences(of: "::", with: "."),
+          tool.name.replacingOccurrences(of: "::", with: "_"),
+          tool.name.replacingOccurrences(of: "::", with: "__"),
+        ]
+        if candidates.contains(where: { candidate in
+          !candidate.isEmpty && haystack.contains(candidate.lowercased())
+        }) {
+          return tool
+        }
+      }
+    }
+    return tools.first
+  }
+
+  private static func exampleArguments(
+    for tool: ToolDefinition
+  ) -> [String: AgentToolArgumentValue] {
+    Dictionary(
+      uniqueKeysWithValues: tool.parameters
+        .filter(\.required)
+        .map { ($0.name, exampleArgumentValue(for: $0)) })
+  }
+
+  private static func exampleArgumentValue(
+    for parameter: ToolParameterDef
+  ) -> AgentToolArgumentValue {
+    switch parameter.type.lowercased() {
+    case "bool", "boolean":
+      return .bool(true)
+    case "int", "integer":
+      return .int(1)
+    case "number", "float", "double":
+      return .double(1)
+    case "array", "list":
+      return .array([])
+    case "object", "dictionary", "map":
+      return .object([:])
+    default:
+      return .string("value")
+    }
   }
 
   static func normalizeArguments(
@@ -631,14 +738,21 @@ enum AgentTooling {
   }
 
   private static func toolCallObjectJSON(for call: ParsedToolCall) -> String {
+    toolCallObjectJSON(name: call.name, arguments: call.argumentValues)
+  }
+
+  private static func toolCallObjectJSON(
+    name: String,
+    arguments: [String: AgentToolArgumentValue]
+  ) -> String {
     let payload: [String: Any] = [
-      "arguments": call.argumentValues.mapValues(\.jsonObject),
-      "name": call.name,
+      "arguments": arguments.mapValues(\.jsonObject),
+      "name": name,
     ]
     guard
       let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
       let json = String(data: data, encoding: .utf8)
-    else { return #"{"arguments":{},"name":"\#(call.name)"}"# }
+    else { return #"{"arguments":{},"name":"\#(name)"}"# }
     return json
   }
 
@@ -1075,6 +1189,13 @@ enum AgentTooling {
       let arguments = explicitArgumentsObject(from: object)
     {
       return (name, arguments)
+    }
+    if let arguments = explicitArgumentsObject(from: object),
+      let name = nonEmptyString(arguments["name"])
+        ?? nonEmptyString(arguments["tool"])
+        ?? nonEmptyString(arguments["function"])
+    {
+      return (name, toolArguments(from: arguments))
     }
     return nil
   }
