@@ -50,7 +50,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   case epub
   case audio
   case json
-  case debugJSON
+  case debug
 
   var id: String { rawValue }
 
@@ -58,7 +58,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .markdown: "Markdown"
     case .json: "JSON"
-    case .debugJSON: "Debug JSON"
+    case .debug: "Debug"
     case .epub: "EPUB"
     case .audio: "Audio"
     }
@@ -68,7 +68,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .markdown: "doc.richtext"
     case .json: "curlybraces"
-    case .debugJSON: "ladybug"
+    case .debug: "ladybug"
     case .epub: "book"
     case .audio: "waveform"
     }
@@ -77,7 +77,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   var fileExtension: String {
     switch self {
     case .markdown: "md"
-    case .json, .debugJSON: "json"
+    case .json, .debug: "json"
     case .epub: "epub"
     case .audio: "m4a"
     }

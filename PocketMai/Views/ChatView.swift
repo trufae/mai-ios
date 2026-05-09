@@ -327,7 +327,7 @@ struct ChatView: View {
     if format == .audio {
       return await exportAudioFile()
     }
-    if format == .debugJSON {
+    if format == .debug {
       return await store.exportCurrentConversationDebugJSONFile()
     }
     return store.exportCurrentConversationFile(format: format)

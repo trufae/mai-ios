@@ -890,7 +890,7 @@ final class AppStore: ObservableObject {
   func exportCurrentConversationFile(format: ConversationExportFormat) -> URL? {
     guard let conversation = currentConversation else { return nil }
     switch format {
-    case .markdown, .json, .debugJSON:
+    case .markdown, .json, .debug:
       return writeConversationExport(
         conversation: conversation,
         format: format,
@@ -914,8 +914,8 @@ final class AppStore: ObservableObject {
       locationService: { self.locationService })
     return writeConversationExport(
       conversation: conversation,
-      format: .debugJSON,
-      content: export(conversation: conversation, format: .debugJSON, debugContext: context))
+      format: .debug,
+      content: export(conversation: conversation, format: .debug, debugContext: context))
   }
 
   private func writeConversationExport(
@@ -931,7 +931,7 @@ final class AppStore: ObservableObject {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       let filename =
         exportFilename(for: conversation)
-        + (format == .debugJSON ? "-debug" : "")
+        + (format == .debug ? "-debug" : "")
       let url = directory.appendingPathComponent(filename).appendingPathExtension(
         format.fileExtension)
       try content.write(to: url, atomically: true, encoding: .utf8)
@@ -1566,13 +1566,13 @@ final class AppStore: ObservableObject {
       return conversation.messages.map { message in
         "## \(message.role.displayName)\n\n\(message.text)"
       }.joined(separator: "\n\n")
-    case .json, .debugJSON:
+    case .json, .debug:
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
       encoder.dateEncodingStrategy = .iso8601
       let envelope = ConversationExportEnvelope(
         conversation: conversation,
-        toolCallingDebug: format == .debugJSON
+        toolCallingDebug: format == .debug
           ? toolCallingDebug(for: conversation, context: debugContext) : nil)
       guard let data = try? encoder.encode(envelope),
         let json = String(data: data, encoding: .utf8)
