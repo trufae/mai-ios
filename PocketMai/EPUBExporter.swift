@@ -288,7 +288,7 @@ enum EPUBExporter {
       return "<hr/>"
     case .code(let language, let code):
       let attr = language.isEmpty ? "" : " class=\"language-\(xmlEscaped(language))\""
-      return "<pre><code\(attr)>\(xmlEscaped(code))</code></pre>"
+      return "<pre><code\(attr)>\(highlightedCodeHTML(code, language: language))</code></pre>"
     case .table(let headers, let rows, let alignments):
       return tableHTML(headers: headers, rows: rows, alignments: alignments)
     case .taskList(let items):
@@ -373,7 +373,7 @@ enum EPUBExporter {
 
       if c == "\\", index + 1 < chars.count {
         let next = chars[index + 1]
-        if "\\`*_{}[]()#+-.!".contains(next) {
+        if "\\`*_{}[]()#+-.!~".contains(next) {
           result += xmlEscaped(String(next))
           index += 2
           continue
@@ -386,6 +386,17 @@ enum EPUBExporter {
           result += "<code>\(xmlEscaped(code))</code>"
           index = end + 1
           continue
+        }
+      }
+
+      if c == "~", index + 1 < chars.count, chars[index + 1] == "~" {
+        if let end = findClose(chars: chars, start: index + 2, marker: "~~") {
+          let inner = String(chars[(index + 2)..<end])
+          if !inner.isEmpty {
+            result += "<del>\(inlineHTML(inner))</del>"
+            index = end + 2
+            continue
+          }
         }
       }
 
@@ -443,6 +454,165 @@ enum EPUBExporter {
     return result
   }
 
+  private static func highlightedCodeHTML(_ code: String, language: String) -> String {
+    let chars = Array(code)
+    var result = ""
+    var index = 0
+
+    while index < chars.count {
+      let c = chars[index]
+
+      if c == "/", index + 1 < chars.count, chars[index + 1] == "*" {
+        let start = index
+        index += 2
+        var closed = false
+        while index + 1 < chars.count {
+          if chars[index] == "*", chars[index + 1] == "/" {
+            index += 2
+            closed = true
+            break
+          }
+          index += 1
+        }
+        if !closed {
+          index = chars.count
+        }
+        result += syntaxSpan("comment", String(chars[start..<index]))
+        continue
+      }
+
+      if c == "/", index + 1 < chars.count, chars[index + 1] == "/" {
+        let start = index
+        index += 2
+        while index < chars.count, chars[index] != "\n" {
+          index += 1
+        }
+        result += syntaxSpan("comment", String(chars[start..<index]))
+        continue
+      }
+
+      if c == "#", isLineLeadingComment(in: chars, at: index, language: language) {
+        let start = index
+        index += 1
+        while index < chars.count, chars[index] != "\n" {
+          index += 1
+        }
+        result += syntaxSpan("comment", String(chars[start..<index]))
+        continue
+      }
+
+      if c == "\"", index + 1 < chars.count, chars[index + 1] == "\"",
+        index + 2 < chars.count, chars[index + 2] == "\""
+      {
+        let start = index
+        index += 3
+        var closed = false
+        while index + 2 < chars.count {
+          if chars[index] == "\"", chars[index + 1] == "\"", chars[index + 2] == "\"" {
+            index += 3
+            closed = true
+            break
+          }
+          index += 1
+        }
+        if !closed {
+          index = chars.count
+        }
+        result += syntaxSpan("string", String(chars[start..<index]))
+        continue
+      }
+
+      if c == "\"" || c == "'" {
+        let start = index
+        let quote = c
+        index += 1
+        var escaped = false
+        while index < chars.count {
+          let next = chars[index]
+          index += 1
+          if escaped {
+            escaped = false
+          } else if next == "\\" {
+            escaped = true
+          } else if next == quote || next == "\n" {
+            break
+          }
+        }
+        result += syntaxSpan("string", String(chars[start..<index]))
+        continue
+      }
+
+      if c.isNumber {
+        let start = index
+        index += 1
+        while index < chars.count, isNumberBody(chars[index]) {
+          index += 1
+        }
+        result += syntaxSpan("number", String(chars[start..<index]))
+        continue
+      }
+
+      if c.isLetter || c == "_" {
+        let start = index
+        index += 1
+        while index < chars.count, isIdentifierBody(chars[index]) {
+          index += 1
+        }
+        let token = String(chars[start..<index])
+        if syntaxKeywords.contains(token) {
+          result += syntaxSpan("keyword", token)
+        } else {
+          result += xmlEscaped(token)
+        }
+        continue
+      }
+
+      result += xmlEscaped(String(c))
+      index += 1
+    }
+
+    return result
+  }
+
+  private static func syntaxSpan(_ className: String, _ value: String) -> String {
+    "<span class=\"syntax-\(className)\">\(xmlEscaped(value))</span>"
+  }
+
+  private static func isLineLeadingComment(
+    in chars: [Character], at index: Int, language: String
+  ) -> Bool {
+    let commentLanguages: Set<String> = [
+      "bash", "conf", "fish", "make", "makefile", "py", "python", "rb", "ruby", "sh", "shell",
+      "toml", "yaml", "yml", "zsh",
+    ]
+    let normalizedLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalizedLanguage.isEmpty || commentLanguages.contains(normalizedLanguage) else {
+      return false
+    }
+    var cursor = index
+    while cursor > 0 {
+      cursor -= 1
+      if chars[cursor] == "\n" {
+        return true
+      }
+      if chars[cursor] != " " && chars[cursor] != "\t" {
+        return false
+      }
+    }
+    return true
+  }
+
+  private static func isIdentifierBody(_ character: Character) -> Bool {
+    character.isLetter || character.isNumber || character == "_"
+  }
+
+  private static func isNumberBody(_ character: Character) -> Bool {
+    character.isNumber || character == "." || character == "_" || character == "x" || character == "X"
+      || character == "a" || character == "b" || character == "c" || character == "d"
+      || character == "e" || character == "f" || character == "A" || character == "B"
+      || character == "C" || character == "D" || character == "E" || character == "F"
+  }
+
   private static func findClose(chars: [Character], start: Int, marker: String) -> Int? {
     let markerChars = Array(marker)
     guard !markerChars.isEmpty, start <= chars.count else { return nil }
@@ -476,6 +646,13 @@ enum EPUBExporter {
         result.append(chars[index + 1])
         index += 2
         continue
+      }
+      if c == "~", index + 1 < chars.count, chars[index + 1] == "~" {
+        if let end = findClose(chars: chars, start: index + 2, marker: "~~") {
+          result += stripInlineMarkdown(String(chars[(index + 2)..<end]))
+          index = end + 2
+          continue
+        }
       }
       if c == "`" || c == "*" || c == "_" || c == "#" {
         index += 1
@@ -516,6 +693,14 @@ enum EPUBExporter {
       .replacingOccurrences(of: "\"", with: "&quot;")
       .replacingOccurrences(of: "'", with: "&#39;")
   }
+
+  private static let syntaxKeywords: Set<String> = [
+    "actor", "as", "async", "await", "break", "case", "catch", "class", "const", "continue",
+    "default", "defer", "do", "else", "enum", "export", "extends", "false", "final", "for",
+    "from", "func", "function", "guard", "if", "import", "in", "interface", "let", "nil", "null",
+    "private", "public", "return", "self", "static", "struct", "switch", "throw", "throws", "true",
+    "try", "typealias", "var", "while",
+  ]
 
   private static let stylesCSS = """
     body {
@@ -574,7 +759,12 @@ enum EPUBExporter {
       font-size: 0.9em;
       padding: 0.1em 0.3em;
     }
+    del { text-decoration: line-through; }
     pre code { background: transparent; padding: 0; }
+    .syntax-keyword { color: #8250df; font-weight: 600; }
+    .syntax-number { color: #bc4c00; }
+    .syntax-string { color: #1a7f37; }
+    .syntax-comment { color: #57606a; font-style: italic; }
     blockquote {
       border-left: 3px solid #d0d7de;
       color: #57606a;
