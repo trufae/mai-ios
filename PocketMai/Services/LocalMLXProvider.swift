@@ -21,6 +21,9 @@ enum LocalMLXModels {
 
 enum LocalMLXError: LocalizedError {
   case invalidModelID(String)
+  case modelNotDownloaded(String)
+  case noDownloadedModels
+  case noModelSelected
   case emptyPrompt
 
   var errorDescription: String? {
@@ -31,6 +34,14 @@ enum LocalMLXError: LocalizedError {
       }
       return
         "Invalid MLX model id: \(id). Use a Hugging Face repo id in the form org/model-name, not a URL or local path."
+    case .modelNotDownloaded(let id):
+      return
+        "\(id) is not downloaded. Download it in Settings > Providers > Local MLX LLM "
+          + "before using MLX."
+    case .noDownloadedModels:
+      return "Download an MLX model in Settings > Providers > Local MLX LLM before using MLX."
+    case .noModelSelected:
+      return "Choose a downloaded MLX model before using MLX."
     case .emptyPrompt:
       return "Enter a prompt before generating."
     }
@@ -73,8 +84,14 @@ actor LocalMLXProvider {
     progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
   ) async throws {
     let modelID = Self.normalizedModelID(rawModelID)
+    guard !modelID.isEmpty else {
+      throw LocalMLXError.noModelSelected
+    }
     guard LocalMLXRepoIDValidator.isValid(modelID) else {
       throw LocalMLXError.invalidModelID(modelID)
+    }
+    guard LocalMLXModelCache.containsRepository(modelID) else {
+      throw LocalMLXError.modelNotDownloaded(modelID)
     }
 
     if container != nil, loadedModelID == modelID {
@@ -110,6 +127,11 @@ actor LocalMLXProvider {
       conversation: request.conversation,
       settings: request.settings
     )
+    guard !modelID.isEmpty else {
+      let error: LocalMLXError =
+        LocalMLXModelCache.listRepositoryIDs().isEmpty ? .noDownloadedModels : .noModelSelected
+      throw error
+    }
     guard LocalMLXRepoIDValidator.isValid(modelID) else {
       throw LocalMLXError.invalidModelID(modelID)
     }
@@ -171,7 +193,9 @@ actor LocalMLXProvider {
 
   static func effectiveModelID(conversation: Conversation, settings: AppSettings) -> String {
     let model = normalizedModelID(conversation.modelID)
-    return model.isEmpty ? normalizedModelID(settings.localMLXModelID) : model
+    if !model.isEmpty { return model }
+    let defaultModel = normalizedModelID(settings.localMLXModelID)
+    return LocalMLXModelCache.containsRepository(defaultModel) ? defaultModel : ""
   }
 
   static func message(for error: Error, action: String, modelID: String) -> String {

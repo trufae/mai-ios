@@ -302,6 +302,9 @@ struct SettingsView: View {
           }
         )
       }
+      .onAppear {
+        store.refreshLocalMLXModels()
+      }
     }
   }
 
@@ -563,9 +566,23 @@ struct SettingsView: View {
 
   private var mlxProviderRow: some View {
     let modelID = store.settings.localMLXModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    let downloadedCount = store.localMLXModelIDs.count
+    let subtitle: String = {
+      if downloadedCount == 0 {
+        return "No downloaded models"
+      }
+      let countText = "\(downloadedCount) downloaded"
+      guard !modelID.isEmpty else {
+        return countText
+      }
+      guard store.localMLXModelIDs.contains(modelID) else {
+        return "\(countText). Select a downloaded model"
+      }
+      return "\(countText). \(modelID)"
+    }()
     return providerStatusRow(
       title: "Local MLX LLM",
-      subtitle: modelID.isEmpty ? "Available. No model selected" : "Available. \(modelID)",
+      subtitle: subtitle,
       systemImage: "cpu",
       color: .green,
       badge: "Built-in"
@@ -1226,7 +1243,10 @@ struct SettingsView: View {
         case .apple:
           store.settings.defaultProvider = .apple
         case .mlx:
+          store.refreshLocalMLXModels()
           store.settings.defaultProvider = .mlx
+          store.settings.localMLXModelID =
+            store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
         case .endpoint(let id):
           store.settings.defaultProvider = .openAICompatible
           store.settings.selectedEndpointID = id

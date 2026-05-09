@@ -37,8 +37,17 @@ enum ChatProviderRouter {
     case .mlx:
       let modelID = LocalMLXProvider.effectiveModelID(
         conversation: conversation, settings: settings)
-      return LocalMLXRepoIDValidator.isValid(modelID)
-        ? nil : LocalMLXError.invalidModelID(modelID).errorDescription
+      guard !modelID.isEmpty else {
+        if LocalMLXModelCache.listRepositoryIDs().isEmpty {
+          return LocalMLXError.noDownloadedModels.errorDescription
+        }
+        return LocalMLXError.noModelSelected.errorDescription
+      }
+      guard LocalMLXRepoIDValidator.isValid(modelID) else {
+        return LocalMLXError.invalidModelID(modelID).errorDescription
+      }
+      return LocalMLXModelCache.containsRepository(modelID)
+        ? nil : LocalMLXError.modelNotDownloaded(modelID).errorDescription
     case .openAICompatible:
       return OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: settings) == nil
         ? ChatProviderError.missingEndpoint.errorDescription : nil

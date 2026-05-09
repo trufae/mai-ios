@@ -1448,25 +1448,41 @@ private struct ConversationModelSettingsView: View {
 
   @ViewBuilder
   private var mlxModelControls: some View {
-    Picker("Preset", selection: mlxPresetBinding) {
-      ForEach(LocalMLXModels.presets, id: \.self) { modelID in
-        Text(modelID).tag(modelID)
+    let modelIDs = store.localMLXModelIDs
+    Group {
+      if modelIDs.isEmpty {
+        Text("No downloaded MLX models")
+          .foregroundStyle(.secondary)
+      } else {
+        Picker("Model", selection: mlxModelBinding) {
+          ForEach(modelIDs, id: \.self) { modelID in
+            Text(modelID).tag(modelID)
+          }
+        }
+        .pickerStyle(.menu)
       }
+
+      Button {
+        store.refreshLocalMLXModels()
+        ensureCurrentMLXModelSelectionIsAvailable()
+      } label: {
+        Label("Refresh Models", systemImage: "arrow.clockwise")
+      }
+
+      Text(
+        "Only downloaded MLX models are shown. Manage downloads in Settings > Providers "
+          + "> Local MLX LLM."
+      )
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
-    .pickerStyle(.menu)
-
-    TextField(
-      "Hugging Face MLX repo id", text: modelBinding(default: AppSettings.localMLXDefaultModelID)
-    )
-    .textInputAutocapitalization(.never)
-    .autocorrectionDisabled()
-    .font(.callout.monospaced())
-
-    Text(
-      "MLX downloads the selected Hugging Face repo on demand and caches it locally. Use MLX-ready repos only."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
+    .onAppear {
+      store.refreshLocalMLXModels()
+      ensureCurrentMLXModelSelectionIsAvailable()
+    }
+    .onChange(of: store.localMLXModelIDs) { _, _ in
+      ensureCurrentMLXModelSelectionIsAvailable()
+    }
   }
 
   private var selectedEndpoint: OpenAIEndpoint? {
@@ -1481,7 +1497,7 @@ private struct ConversationModelSettingsView: View {
     case .apple:
       return true
     case .mlx:
-      return true
+      return !store.localMLXModelIDs.isEmpty
     case .openAICompatible:
       return selectedEndpoint != nil
     }
@@ -1495,7 +1511,9 @@ private struct ConversationModelSettingsView: View {
       return defaults.provider == .apple
         && normalizedModel(conversation.modelID) == normalizedModel(defaults.modelID)
     case .mlx:
-      let model = effectiveMLXModel(conversation)
+      let model =
+        store.availableLocalMLXModelID(preferred: effectiveMLXModel(conversation))
+        ?? effectiveMLXModel(conversation)
       return defaults.provider == .mlx
         && normalizedModel(model) == normalizedModel(defaults.modelID)
     case .openAICompatible:
@@ -1519,6 +1537,9 @@ private struct ConversationModelSettingsView: View {
     if conversation.provider == .openAICompatible && selectedEndpoint == nil {
       return "Choose an enabled endpoint before using these settings as the default."
     }
+    if conversation.provider == .mlx && store.localMLXModelIDs.isEmpty {
+      return "Download an MLX model before using MLX as the default."
+    }
     if didSaveDefaults {
       return "Future chats will use this provider and model."
     }
@@ -1532,7 +1553,9 @@ private struct ConversationModelSettingsView: View {
       store.settings.defaultProvider = .apple
       store.settings.appleModelID = conversation.modelID
     case .mlx:
-      let model = effectiveMLXModel(conversation)
+      let model =
+        store.availableLocalMLXModelID(preferred: effectiveMLXModel(conversation))
+        ?? effectiveMLXModel(conversation)
       store.settings.defaultProvider = .mlx
       if !model.isEmpty {
         store.settings.localMLXModelID = model
@@ -1590,6 +1613,11 @@ private struct ConversationModelSettingsView: View {
         }
       },
       set: { newSelection in
+        let selectedMLXModelID: String? = {
+          guard case .mlx = newSelection else { return nil }
+          store.refreshLocalMLXModels()
+          return store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID)
+        }()
         store.updateCurrentConversation { conversation in
           switch newSelection {
           case .apple:
@@ -1600,7 +1628,7 @@ private struct ConversationModelSettingsView: View {
           case .mlx:
             conversation.provider = .mlx
             conversation.endpointID = nil
-            conversation.modelID = store.settings.localMLXModelID
+            conversation.modelID = selectedMLXModelID ?? ""
             didSaveDefaults = false
           case .endpoint(let id):
             conversation.provider = .openAICompatible
@@ -1617,22 +1645,40 @@ private struct ConversationModelSettingsView: View {
     )
   }
 
-  private var mlxPresetBinding: Binding<String> {
+  private var mlxModelBinding: Binding<String> {
     Binding(
       get: {
         let model = normalizedModel(store.currentConversation?.modelID ?? "")
-        guard LocalMLXModels.presets.contains(model) else {
-          return LocalMLXModels.presets.first ?? AppSettings.localMLXDefaultModelID
-        }
-        return model
+        return store.availableLocalMLXModelID(preferred: model) ?? ""
       },
       set: { model in
+        guard store.localMLXModelIDs.contains(model) else { return }
         store.updateCurrentConversation { conversation in
           conversation.modelID = model
         }
         didSaveDefaults = false
       }
     )
+  }
+
+  private func ensureCurrentMLXModelSelectionIsAvailable() {
+    guard provider == .mlx else {
+      return
+    }
+    let currentModel = normalizedModel(store.currentConversation?.modelID ?? "")
+    guard
+      let model = store.availableLocalMLXModelID(preferred: store.currentConversation?.modelID)
+    else {
+      guard !currentModel.isEmpty else { return }
+      store.updateCurrentConversation { conversation in
+        conversation.modelID = ""
+      }
+      return
+    }
+    guard currentModel != model else { return }
+    store.updateCurrentConversation { conversation in
+      conversation.modelID = model
+    }
   }
 
   private func modelBinding(default defaultModel: String) -> Binding<String> {

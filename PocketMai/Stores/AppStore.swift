@@ -125,6 +125,7 @@ final class AppStore: ObservableObject {
   @Published var endpointStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var endpointModels: [UUID: [String]] = [:]
   @Published var endpointVoices: [UUID: [String]] = [:]
+  @Published var localMLXModelIDs: [String] = []
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   @Published private(set) var toolCallApprovalRequests: [ToolCallApprovalRequest] = []
@@ -154,6 +155,7 @@ final class AppStore: ObservableObject {
     conversations = []
     appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
+    refreshLocalMLXModels()
     startFreshConversationForLaunch()
     Task { await loadStartupData() }
     refreshConfiguredEndpointsInBackground()
@@ -220,7 +222,11 @@ final class AppStore: ObservableObject {
     let defaultProvider = settings.defaultProviderConfiguration
     var conversation = Conversation()
     conversation.provider = defaultProvider.provider
-    conversation.modelID = defaultProvider.modelID
+    if defaultProvider.provider == .mlx {
+      conversation.modelID = availableLocalMLXModelID(preferred: defaultProvider.modelID) ?? ""
+    } else {
+      conversation.modelID = defaultProvider.modelID
+    }
     conversation.endpointID = defaultProvider.endpointID
     if let endpointID = defaultProvider.endpointID,
       let endpoint = settings.openAIEndpoints.first(where: { $0.id == endpointID })
@@ -1112,6 +1118,28 @@ final class AppStore: ObservableObject {
     for endpoint in endpoints {
       Task { await refreshEndpoint(endpoint) }
     }
+  }
+
+  func refreshLocalMLXModels() {
+    localMLXModelIDs = LocalMLXModelCache.listRepositoryIDs()
+    normalizeDefaultLocalMLXModelIfNeeded()
+  }
+
+  func availableLocalMLXModelID(preferred rawPreferred: String? = nil) -> String? {
+    guard !localMLXModelIDs.isEmpty else { return nil }
+    let candidates = [rawPreferred, settings.localMLXModelID, AppSettings.localMLXDefaultModelID]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    return candidates.first { localMLXModelIDs.contains($0) } ?? localMLXModelIDs.first
+  }
+
+  private func normalizeDefaultLocalMLXModelIfNeeded() {
+    guard settings.defaultProvider == .mlx else { return }
+    let current = normalizedModelID(settings.localMLXModelID)
+    let next = availableLocalMLXModelID(preferred: current) ?? ""
+    guard current != next else { return }
+    settings.localMLXModelID = next
+    saveSettings()
   }
 
   private func fetchEndpointModelsResult(_ endpoint: OpenAIEndpoint) async -> Result<

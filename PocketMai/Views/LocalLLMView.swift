@@ -8,7 +8,7 @@ import MLXLMTokenizers
 
 @MainActor
 final class LocalLLMViewModel: ObservableObject {
-  static let defaultModelId = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
+  static let defaultModelId = AppSettings.localMLXDefaultModelID
 
   @Published var selectedModelId = LocalLLMViewModel.defaultModelId
   @Published var customModelId = ""
@@ -19,16 +19,7 @@ final class LocalLLMViewModel: ObservableObject {
   @Published var downloadProgress: Double?
   @Published var cachedModels: [CachedMLXModel] = []
 
-  let presets = [
-    "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit",
-    "mlx-community/LFM2-350M-MLX",
-    "mlx-community/LFM2-2.6B-4bit",
-    "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
-    "Irfanuruchi/SmolLM2-360M-Instruct-MLX-4bit",
-    "mlx-community/Llama-3.2-1B-Instruct-4bit",
-    "mlx-community/Qwen3-0.6B-4bit",
-    "mlx-community/gemma-3-1b-it-4bit",
-  ]
+  let presets = LocalMLXModels.presets
 
   private var container: ModelContainer?
   private var loadedModelId: String?
@@ -253,6 +244,7 @@ final class LocalLLMViewModel: ObservableObject {
 }
 
 struct LocalLLMView: View {
+  @EnvironmentObject private var store: AppStore
   @StateObject private var vm = LocalLLMViewModel()
   @State private var pendingModelDeletion: CachedMLXModel?
 
@@ -313,6 +305,12 @@ struct LocalLLMView: View {
       }
     }
     .navigationTitle("Local MLX LLM")
+    .onAppear {
+      store.refreshLocalMLXModels()
+    }
+    .onChange(of: vm.cachedModels) { _, _ in
+      store.refreshLocalMLXModels()
+    }
     .alert(item: $pendingModelDeletion) { model in
       Alert(
         title: Text("Delete Downloaded Model?"),

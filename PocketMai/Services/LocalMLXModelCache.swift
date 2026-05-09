@@ -65,6 +65,36 @@ enum LocalMLXModelCache {
     }
   }
 
+  static func listRepositoryIDs() -> [String] {
+    let root = cacheRootURL
+    let fileManager = FileManager.default
+    guard
+      let urls = try? fileManager.contentsOfDirectory(
+        at: root,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return []
+    }
+
+    return urls.compactMap { url in
+      guard let repoID = repoID(fromCacheDirectoryName: url.lastPathComponent) else {
+        return nil
+      }
+      guard
+        let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+        resourceValues.isDirectory == true
+      else {
+        return nil
+      }
+      return repoID
+    }
+    .sorted {
+      $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+    }
+  }
+
   static func containsRepository(_ repoID: String) -> Bool {
     guard let url = cacheDirectoryURL(forRepoID: repoID) else { return false }
     var isDirectory: ObjCBool = false
