@@ -14,6 +14,53 @@ enum AssistantTurnRunner {
     let nativeMessages: [OpenAIMessage]
   }
 
+  private struct ToolCallResult {
+    let call: ParsedToolCall
+    let result: String
+  }
+
+  private struct LoopState {
+    var assistantText = ""
+    var nativeContinuationMessages: [OpenAIMessage] = []
+
+    mutating func append(_ turnText: String) -> String {
+      assistantText =
+        assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
+      return assistantText
+    }
+
+    mutating func applyNativeContinuation(
+      _ messages: [OpenAIMessage],
+      conversation: Conversation,
+      toolState: ToolRequestState
+    ) {
+      if AssistantTurnRunner.shouldUseNativeContinuation(
+        conversation: conversation,
+        toolState: toolState),
+        !messages.isEmpty
+      {
+        nativeContinuationMessages.append(contentsOf: messages)
+      } else {
+        nativeContinuationMessages.removeAll()
+      }
+    }
+
+    func nativeContinuationForRequest(
+      conversation: Conversation,
+      toolState: ToolRequestState
+    ) -> [OpenAIMessage] {
+      AssistantTurnRunner.shouldUseNativeContinuation(
+        conversation: conversation, toolState: toolState)
+        ? nativeContinuationMessages : []
+    }
+  }
+
+  private enum TurnOutcome {
+    case final(String)
+    case retry(String)
+    case toolRun(ToolRunOutput)
+  }
+
   static func run(
     conversationID: UUID,
     context: String,
@@ -50,12 +97,11 @@ enum AssistantTurnRunner {
     context: String,
     store: AppStore
   ) async throws {
-    var assistantText = ""
-    var nativeContinuationMessages: [OpenAIMessage] = []
+    var state = LoopState()
     var didFinish = false
     let maxIterations = 8
 
-    for _ in 0..<maxIterations {
+    agentLoop: for _ in 0..<maxIterations {
       try Task.checkCancellation()
       guard let conversation = store.conversation(withID: conversationID) else {
         return
@@ -64,121 +110,78 @@ enum AssistantTurnRunner {
         conversation: conversation,
         baseContext: context,
         store: store)
-      if toolState.definitions.isEmpty {
-        assistantText = try await completeWithoutTools(
-          conversationID: conversationID,
-          assistantID: assistantID,
-          context: toolState.context,
-          baseline: assistantText,
-          store: store)
-        didFinish = true
-        break
-      }
-      let request = ChatCompletionRequest(
+      let response = try await requestModelResponse(
         conversation: conversation,
-        settings: store.settings,
-        context: toolState.context,
-        assistantMessageID: assistantID,
-        nativeTools: toolState.nativeTools,
-        nativeContinuationMessages: nativeContinuationMessagesIfNeeded(
-          nativeContinuationMessages,
-          conversation: conversation,
-          toolState: toolState),
-        hasToolCalling: true
-      )
-      let baseline = assistantText
-      let response = try await ChatProviderRouter.complete(request: request) {
-        [weak store] streamed in
-        let combined = baseline.isEmpty ? streamed : "\(baseline)\n\n\(streamed)"
-        store?.setAssistantMessage(
-          id: assistantID,
-          text: combined,
-          role: .assistant,
-          touch: false,
-          streaming: true
-        )
-      }
+        toolState: toolState,
+        state: state,
+        assistantID: assistantID,
+        store: store)
 
       try Task.checkCancellation()
 
-      let currentDefinitions = currentVisibleDefinitions(
+      let outcome = try await turnOutcome(
+        response: response,
+        toolState: toolState,
         conversationID: conversationID,
         store: store)
-      let parseDefinitions =
-        currentDefinitions.isEmpty ? toolState.definitions : currentDefinitions
-      let calls = ToolAgentRegistry.parseCalls(
-        in: response,
-        definitions: parseDefinitions,
-        mode: toolState.activeMode)
-      if calls.isEmpty {
-        if AgentTooling.containsToolCallMarker(in: response, mode: toolState.activeMode) {
-          let feedback = AgentTooling.malformedToolCallFeedback(
-            from: response,
-            mode: toolState.activeMode)
-          let turnText = [response, feedback]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
-          assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
-          store.setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-          store.saveConversations()
-          continue
-        }
-        assistantText = assistantText.isEmpty ? response : "\(assistantText)\n\n\(response)"
-        store.setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-        didFinish = true
-        break
-      }
 
-      let turnOutput = try await toolRunText(
-        response: response,
-        calls: calls,
-        parseDefinitions: parseDefinitions,
-        mode: toolState.activeMode,
-        conversationID: conversationID,
-        store: store
-      )
-      let turnText = turnOutput.text
-      assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
-      store.setAssistantMessage(id: assistantID, text: assistantText, role: .assistant)
-      store.saveConversations()
-      if shouldUseNativeContinuation(conversation: conversation, toolState: toolState),
-        !turnOutput.nativeMessages.isEmpty
-      {
-        nativeContinuationMessages.append(contentsOf: turnOutput.nativeMessages)
-      } else {
-        nativeContinuationMessages.removeAll()
+      switch outcome {
+      case .final(let turnText):
+        let text = state.append(turnText)
+        store.setAssistantMessage(id: assistantID, text: text, role: .assistant)
+        didFinish = true
+        break agentLoop
+      case .retry(let turnText):
+        let text = state.append(turnText)
+        store.setAssistantMessage(id: assistantID, text: text, role: .assistant)
+        store.saveConversations()
+        state.nativeContinuationMessages.removeAll()
+      case .toolRun(let output):
+        let text = state.append(output.text)
+        store.setAssistantMessage(id: assistantID, text: text, role: .assistant)
+        store.saveConversations()
+        state.applyNativeContinuation(
+          output.nativeMessages,
+          conversation: conversation,
+          toolState: toolState)
       }
     }
 
     if !didFinish {
       let suffix =
         "\n\nTool loop stopped after \(maxIterations) tool rounds before the model produced a final answer."
-      store.setAssistantMessage(id: assistantID, text: assistantText + suffix, role: .assistant)
+      store.setAssistantMessage(
+        id: assistantID, text: state.assistantText + suffix, role: .assistant)
     }
   }
 
-  private static func completeWithoutTools(
-    conversationID: UUID,
+  private static func requestModelResponse(
+    conversation: Conversation,
+    toolState: ToolRequestState,
+    state: LoopState,
     assistantID: UUID,
-    context: String,
-    baseline: String = "",
     store: AppStore
   ) async throws -> String {
-    guard let conversation = store.conversation(withID: conversationID) else {
-      return baseline
-    }
     let request = ChatCompletionRequest(
       conversation: conversation,
       settings: store.settings,
-      context: context,
+      context: toolState.context,
       assistantMessageID: assistantID,
-      hasToolCalling: false
+      nativeTools: toolState.nativeTools,
+      nativeContinuationMessages: state.nativeContinuationForRequest(
+        conversation: conversation,
+        toolState: toolState),
+      hasToolCalling: !toolState.definitions.isEmpty
     )
     let response = try await ChatProviderRouter.complete(request: request) {
       [weak store] streamed in
-      let cleaned = AppStore.strippedSpuriousToolCallText(streamed)
-      let combined = baseline.isEmpty ? cleaned : "\(baseline)\n\n\(cleaned)"
+      let turnText =
+        toolState.definitions.isEmpty
+        ? AppStore.strippedSpuriousToolCallText(streamed)
+        : streamed
+      let combined = combinedAssistantText(
+        baseline: state.assistantText,
+        turnText: turnText)
       store?.setAssistantMessage(
         id: assistantID,
         text: combined,
@@ -188,10 +191,60 @@ enum AssistantTurnRunner {
       )
     }
     try Task.checkCancellation()
-    let cleaned = AppStore.strippedSpuriousToolCallText(response)
-    let combined = baseline.isEmpty ? cleaned : "\(baseline)\n\n\(cleaned)"
-    store.setAssistantMessage(id: assistantID, text: combined, role: .assistant)
-    return combined
+    return toolState.definitions.isEmpty
+      ? AppStore.strippedSpuriousToolCallText(response)
+      : response
+  }
+
+  private static func turnOutcome(
+    response: String,
+    toolState: ToolRequestState,
+    conversationID: UUID,
+    store: AppStore
+  ) async throws -> TurnOutcome {
+    guard !toolState.definitions.isEmpty else {
+      return .final(response)
+    }
+
+    let currentDefinitions = currentVisibleDefinitions(
+      conversationID: conversationID,
+      store: store)
+    let parseDefinitions =
+      currentDefinitions.isEmpty ? toolState.definitions : currentDefinitions
+    let calls = ToolAgentRegistry.parseCalls(
+      in: response,
+      definitions: parseDefinitions,
+      mode: toolState.activeMode)
+    guard !calls.isEmpty else {
+      if AgentTooling.containsToolCallMarker(in: response, mode: toolState.activeMode) {
+        return .retry(malformedToolCallTurnText(response: response, mode: toolState.activeMode))
+      }
+      return .final(response)
+    }
+
+    let output = try await toolRunText(
+      response: response,
+      calls: calls,
+      parseDefinitions: parseDefinitions,
+      mode: toolState.activeMode,
+      conversationID: conversationID,
+      store: store)
+    return .toolRun(output)
+  }
+
+  private static func malformedToolCallTurnText(
+    response: String,
+    mode: ToolCallingMode
+  ) -> String {
+    let feedback = AgentTooling.malformedToolCallFeedback(from: response, mode: mode)
+    return [response, feedback]
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+  }
+
+  private static func combinedAssistantText(baseline: String, turnText: String) -> String {
+    baseline.isEmpty ? turnText : "\(baseline)\n\n\(turnText)"
   }
 
   private static func toolRunText(
@@ -204,69 +257,19 @@ enum AssistantTurnRunner {
   ) async throws -> ToolRunOutput {
     var transformed = response
     var runBlocks: [String] = []
-    var nativeResults: [(call: ParsedToolCall, result: String)] = []
+    var nativeResults: [ToolCallResult] = []
     for call in calls {
       try Task.checkCancellation()
-      let currentDefinitions = currentVisibleDefinitions(
+      let result = try await runToolCall(
+        call,
+        parseDefinitions: parseDefinitions,
+        mode: mode,
         conversationID: conversationID,
         store: store)
-      let fallbackCall = ToolAgentRegistry.normalized(
-        call: call,
-        definitions: parseDefinitions)
-      guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
-        let result = ToolAgentRegistry.unavailableToolError(name: fallbackCall.name)
-        let runBlock = ToolAgentRegistry.makeRunBlock(call: fallbackCall, result: result)
-        transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
-        runBlocks.append(runBlock)
-        nativeResults.append((fallbackCall, result))
-        continue
-      }
-      let approvedCall: ParsedToolCall
-      let shouldExecute: Bool
-      switch await store.requestToolCallApproval(
-        call: normalizedCall,
-        definitions: currentDefinitions,
-        mode: mode,
-        conversationID: conversationID
-      ) {
-      case .approved(let call):
-        approvedCall = call
-        shouldExecute = true
-      case .cancelled:
-        approvedCall = normalizedCall
-        shouldExecute = false
-      }
-      try Task.checkCancellation()
-      let result: String
-      let resultCall: ParsedToolCall
-      if shouldExecute {
-        let executionDefinitions = currentVisibleDefinitions(
-          conversationID: conversationID,
-          store: store)
-        if let executableCall = availableCall(
-          approvedCall,
-          definitions: executionDefinitions)
-        {
-          resultCall = executableCall
-          result = await ToolAgentRegistry.execute(
-            call: executableCall,
-            conversationID: conversationID,
-            store: store)
-        } else {
-          let unavailableCall = ToolAgentRegistry.normalized(
-            call: approvedCall,
-            definitions: currentDefinitions)
-          resultCall = unavailableCall
-          result = ToolAgentRegistry.unavailableToolError(name: unavailableCall.name)
-        }
-      } else {
-        resultCall = approvedCall
-        result = "Error: tool call cancelled by user."
-      }
-      let runBlock = ToolAgentRegistry.makeRunBlock(call: resultCall, result: result)
+      let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
       transformed = transformed.replacingOccurrences(of: call.rawBlock, with: "")
       runBlocks.append(runBlock)
-      nativeResults.append((resultCall, result))
+      nativeResults.append(result)
     }
     let text = ([transformed.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -280,15 +283,68 @@ enum AssistantTurnRunner {
         mode: mode))
   }
 
-  private static func nativeContinuationMessagesIfNeeded(
-    _ messages: [OpenAIMessage],
-    conversation: Conversation,
-    toolState: ToolRequestState
-  ) -> [OpenAIMessage] {
-    shouldUseNativeContinuation(conversation: conversation, toolState: toolState) ? messages : []
+  private static func runToolCall(
+    _ call: ParsedToolCall,
+    parseDefinitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversationID: UUID,
+    store: AppStore
+  ) async throws -> ToolCallResult {
+    let currentDefinitions = currentVisibleDefinitions(
+      conversationID: conversationID,
+      store: store)
+    let fallbackCall = ToolAgentRegistry.normalized(
+      call: call,
+      definitions: parseDefinitions)
+    guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
+      return ToolCallResult(
+        call: fallbackCall,
+        result: ToolAgentRegistry.unavailableToolError(name: fallbackCall.name))
+    }
+
+    let approvedCall: ParsedToolCall
+    let shouldExecute: Bool
+    switch await store.requestToolCallApproval(
+      call: normalizedCall,
+      definitions: currentDefinitions,
+      mode: mode,
+      conversationID: conversationID
+    ) {
+    case .approved(let call):
+      approvedCall = call
+      shouldExecute = true
+    case .cancelled:
+      approvedCall = normalizedCall
+      shouldExecute = false
+    }
+
+    try Task.checkCancellation()
+
+    guard shouldExecute else {
+      return ToolCallResult(call: approvedCall, result: "Error: tool call cancelled by user.")
+    }
+
+    let executionDefinitions = currentVisibleDefinitions(
+      conversationID: conversationID,
+      store: store)
+    guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
+    else {
+      let unavailableCall = ToolAgentRegistry.normalized(
+        call: approvedCall,
+        definitions: currentDefinitions)
+      return ToolCallResult(
+        call: unavailableCall,
+        result: ToolAgentRegistry.unavailableToolError(name: unavailableCall.name))
+    }
+
+    let result = await ToolAgentRegistry.execute(
+      call: executableCall,
+      conversationID: conversationID,
+      store: store)
+    return ToolCallResult(call: executableCall, result: result)
   }
 
-  private static func shouldUseNativeContinuation(
+  nonisolated private static func shouldUseNativeContinuation(
     conversation: Conversation,
     toolState: ToolRequestState
   ) -> Bool {
@@ -299,7 +355,7 @@ enum AssistantTurnRunner {
 
   private static func nativeMessages(
     assistantContent: String,
-    results: [(call: ParsedToolCall, result: String)],
+    results: [ToolCallResult],
     definitions: [ToolDefinition],
     mode: ToolCallingMode
   ) -> [OpenAIMessage] {
