@@ -1,6 +1,164 @@
 import AVFoundation
 import Foundation
 
+enum ToolApprovalKind: Sendable {
+  case auto
+  case confirm
+  case dangerous
+}
+
+struct BuiltInToolCatalogEntry: Sendable {
+  let id: BuiltInToolID
+  let toolNames: [String]
+  let approvalKind: ToolApprovalKind
+}
+
+@MainActor
+enum BuiltInToolCatalog {
+  static let entries: [BuiltInToolCatalogEntry] = [
+    BuiltInToolCatalogEntry(
+      id: .datetime,
+      toolNames: [DateTimeTool.name],
+      approvalKind: .auto),
+    BuiltInToolCatalogEntry(
+      id: .location,
+      toolNames: [LocationTool.name],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .weather,
+      toolNames: [WeatherTool.name],
+      approvalKind: .auto),
+    BuiltInToolCatalogEntry(
+      id: .webSearch,
+      toolNames: [WebSearchTool.name, WebSearchTool.fetchName],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .todo,
+      toolNames: [TodoTool.listName, TodoTool.addName, TodoTool.doneName],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .textToSpeech,
+      toolNames: [TextToSpeechTool.name],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .files,
+      toolNames: [
+        FileWorkspaceTool.listName,
+        FileWorkspaceTool.readName,
+        FileWorkspaceTool.writeName,
+        FileWorkspaceTool.renameName,
+      ],
+      approvalKind: .dangerous),
+  ]
+
+  static func definitions(
+    for enabledTools: Set<BuiltInToolID>,
+    settings: AppSettings
+  ) -> [ToolDefinition] {
+    entries.flatMap { entry -> [ToolDefinition] in
+      guard enabledTools.contains(entry.id), entry.id.isCallableTool else { return [] }
+      return definitions(for: entry.id, settings: settings)
+    }
+  }
+
+  static func isBuiltInToolName(_ name: String) -> Bool {
+    entry(containingToolName: name) != nil
+  }
+
+  static func approvalKind(forToolName name: String) -> ToolApprovalKind? {
+    entry(containingToolName: name)?.approvalKind
+  }
+
+  static func execute(call: ParsedToolCall, store: AppStore) async -> String? {
+    switch call.name {
+    case TodoTool.listName:
+      return TodoTool.list(store: store)
+    case TodoTool.addName:
+      let title = call.arguments["title"] ?? ""
+      return TodoTool.add(title: title, store: store)
+    case TodoTool.doneName:
+      let query =
+        call.arguments["title_or_id"] ?? call.arguments["id"]
+        ?? call.arguments["title"] ?? ""
+      return TodoTool.markDone(query: query, store: store)
+    case WebSearchTool.name:
+      return await WebSearchTool.search(
+        arguments: call.argumentValues, settings: store.settings)
+    case WebSearchTool.fetchName:
+      return await WebSearchTool.fetch(arguments: call.argumentValues)
+    case TextToSpeechTool.name:
+      return TextToSpeechTool.speak(
+        arguments: call.argumentValues,
+        settings: store.settings.toolSettings,
+        openAIEndpoints: store.settings.openAIEndpoints)
+    case DateTimeTool.name:
+      return DateTimeTool.run(settings: store.settings.toolSettings)
+    case LocationTool.name:
+      return await LocationTool.run(
+        settings: store.settings.toolSettings, locationService: { store.locationService })
+    case WeatherTool.name:
+      return await WeatherTool.run(
+        settings: store.settings.toolSettings, locationService: { store.locationService })
+    case FileWorkspaceTool.listName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.list(arguments: call.argumentValues)
+    case FileWorkspaceTool.readName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.read(arguments: call.argumentValues)
+    case FileWorkspaceTool.writeName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.write(arguments: call.argumentValues)
+    case FileWorkspaceTool.renameName:
+      guard fileWorkspaceToolsEnabled(store: store) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.rename(arguments: call.argumentValues)
+    default:
+      return nil
+    }
+  }
+
+  private static func definitions(
+    for id: BuiltInToolID,
+    settings: AppSettings
+  ) -> [ToolDefinition] {
+    switch id {
+    case .datetime:
+      return DateTimeTool.definitions
+    case .location:
+      return LocationTool.definitions
+    case .weather:
+      return WeatherTool.definitions
+    case .webSearch:
+      return WebSearchTool.definitions(settings: settings.toolSettings)
+    case .todo:
+      return TodoTool.definitions
+    case .textToSpeech:
+      return TextToSpeechTool.definitions
+    case .files:
+      guard settings.toolSettings.filesWorkspaceAccessEnabled else { return [] }
+      return FileWorkspaceTool.definitions
+    case .memory:
+      return []
+    }
+  }
+
+  private static func entry(containingToolName name: String) -> BuiltInToolCatalogEntry? {
+    entries.first { $0.toolNames.contains(name) }
+  }
+
+  private static func fileWorkspaceToolsEnabled(store: AppStore) -> Bool {
+    (store.currentConversation?.enabledTools.contains(.files) ?? false)
+      && store.settings.toolSettings.filesWorkspaceAccessEnabled
+  }
+}
+
 @MainActor
 enum ToolAgentRegistry {
   static func visibleDefinitions(
@@ -18,24 +176,9 @@ enum ToolAgentRegistry {
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   ) -> [ToolDefinition] {
-    var defs: [ToolDefinition] = []
-    if conversation.enabledTools.contains(.webSearch) {
-      defs.append(contentsOf: WebSearchTool.definitions(settings: settings.toolSettings))
-    }
-    if conversation.enabledTools.contains(.todo) {
-      defs.append(contentsOf: TodoTool.definitions)
-    }
-    if conversation.enabledTools.contains(.textToSpeech) {
-      defs.append(contentsOf: TextToSpeechTool.definitions)
-    }
-    if conversation.enabledTools.contains(.weather) {
-      defs.append(contentsOf: WeatherTool.definitions)
-    }
-    if conversation.enabledTools.contains(.files)
-      && settings.toolSettings.filesWorkspaceAccessEnabled
-    {
-      defs.append(contentsOf: FileWorkspaceTool.definitions)
-    }
+    var defs = BuiltInToolCatalog.definitions(
+      for: conversation.enabledTools,
+      settings: settings)
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidScheme {
       let tools = mcpTools[server.id] ?? []
@@ -213,15 +356,7 @@ enum ToolAgentRegistry {
   }
 
   private static func isBuiltInTool(_ name: String) -> Bool {
-    switch name {
-    case WebSearchTool.name, WebSearchTool.fetchName, WeatherTool.name,
-      TodoTool.listName, TodoTool.addName, TodoTool.doneName, TextToSpeechTool.name,
-      FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName,
-      FileWorkspaceTool.renameName:
-      return true
-    default:
-      return false
-    }
+    BuiltInToolCatalog.isBuiltInToolName(name)
   }
 
   static func execute(call: ParsedToolCall, store: AppStore) async -> String {
@@ -252,63 +387,10 @@ enum ToolAgentRegistry {
     call: ParsedToolCall, store: AppStore, definitions: [ToolDefinition]
   ) async -> String {
     let normalizedCall = normalized(call: call, definitions: definitions)
-    switch normalizedCall.name {
-    case TodoTool.listName:
-      return TodoTool.list(store: store)
-    case TodoTool.addName:
-      let title = normalizedCall.arguments["title"] ?? ""
-      return TodoTool.add(title: title, store: store)
-    case TodoTool.doneName:
-      let query =
-        normalizedCall.arguments["title_or_id"] ?? normalizedCall.arguments["id"]
-        ?? normalizedCall.arguments["title"] ?? ""
-      return TodoTool.markDone(query: query, store: store)
-    case WebSearchTool.name:
-      return await WebSearchTool.search(
-        arguments: normalizedCall.argumentValues, settings: store.settings)
-    case WebSearchTool.fetchName:
-      return await WebSearchTool.fetch(arguments: normalizedCall.argumentValues)
-    case TextToSpeechTool.name:
-      return TextToSpeechTool.speak(
-        arguments: normalizedCall.argumentValues,
-        settings: store.settings.toolSettings,
-        openAIEndpoints: store.settings.openAIEndpoints)
-    case DateTimeTool.name:
-      return DateTimeTool.run(settings: store.settings.toolSettings)
-    case LocationTool.name:
-      return await LocationTool.run(
-        settings: store.settings.toolSettings, locationService: { store.locationService })
-    case WeatherTool.name:
-      return await WeatherTool.run(
-        settings: store.settings.toolSettings, locationService: { store.locationService })
-    case FileWorkspaceTool.listName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.list(arguments: normalizedCall.argumentValues)
-    case FileWorkspaceTool.readName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.read(arguments: normalizedCall.argumentValues)
-    case FileWorkspaceTool.writeName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.write(arguments: normalizedCall.argumentValues)
-    case FileWorkspaceTool.renameName:
-      guard fileWorkspaceToolsEnabled(store: store) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.rename(arguments: normalizedCall.argumentValues)
-    default:
-      return await dispatchMCP(call: normalizedCall, store: store)
+    if let result = await BuiltInToolCatalog.execute(call: normalizedCall, store: store) {
+      return result
     }
-  }
-
-  private static func fileWorkspaceToolsEnabled(store: AppStore) -> Bool {
-    (store.currentConversation?.enabledTools.contains(.files) ?? false)
-      && store.settings.toolSettings.filesWorkspaceAccessEnabled
+    return await dispatchMCP(call: normalizedCall, store: store)
   }
 
   private static func dispatchMCP(call: ParsedToolCall, store: AppStore) async -> String {
