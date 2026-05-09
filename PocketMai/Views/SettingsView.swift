@@ -887,7 +887,7 @@ struct SettingsView: View {
         "Enable FilesData tools",
         isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
       Text(
-        "The callable Files tools can list, read, write, append, rename, and delete top-level text files in FilesData. Downloaded MLX models are available read-only under Models."
+        "The callable Files tools can list folders, read, write, append, rename, and delete UTF-8 text files in FilesData. Writes can create folders. Downloaded MLX models are available read-only under Models."
       )
         .font(.caption)
         .foregroundStyle(.secondary)

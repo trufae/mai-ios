@@ -148,6 +148,7 @@ enum FileWorkspaceService {
   private static let defaultReadLimit = 120_000
   private static let maxReadLimit = 500_000
   private static let maxWriteBytes = 1_000_000
+  private static let workspaceFolderName = "FilesData"
   private static let modelsFolderName = "Models"
   private static let listResourceKeys: [URLResourceKey] = [
     .contentModificationDateKey,
@@ -161,42 +162,55 @@ enum FileWorkspaceService {
     do {
       if let path = optionalPathArgument(arguments) {
         let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedPath.isEmpty, trimmedPath != ".", trimmedPath != "FilesData" {
-          guard isModelsPath(trimmedPath) else {
-            return "Error: only FilesData and the read-only Models folder can be listed."
+        if !isWorkspaceRootPath(trimmedPath) {
+          if isModelsPath(trimmedPath) {
+            return try listModelsPath(trimmedPath)
           }
-          return try listModelsPath(trimmedPath)
+          let url = try validatedWorkspaceURL(path: trimmedPath, allowRoot: true)
+          return try listWorkspaceDirectory(at: url)
         }
       }
 
-      let url = try workspaceRootURL()
-      var isDirectory: ObjCBool = false
-      guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-        return "Error: FilesData folder does not exist."
-      }
-      guard isDirectory.boolValue else {
-        return "Error: FilesData is not a folder."
-      }
-
-      let entries = try FileManager.default.contentsOfDirectory(
-        at: url, includingPropertiesForKeys: listResourceKeys, options: [.skipsHiddenFiles]
-      )
-      .filter { $0.lastPathComponent != modelsFolderName }
-      .sorted {
-        $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
-      }
-
-      var lines = ["FilesData files:", "- \(modelsFolderName) directory read-only"]
-      for entry in entries.prefix(maxListEntries) {
-        lines.append(entryLine(for: entry, path: relativePath(for: entry)))
-      }
-      if entries.count > maxListEntries {
-        lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
-      }
-      return lines.joined(separator: "\n")
+      return try listWorkspaceDirectory(at: try workspaceRootURL())
     } catch {
       return "Error: \(error.localizedDescription)"
     }
+  }
+
+  private static func listWorkspaceDirectory(at url: URL) throws -> String {
+    let root = try workspaceRootURL()
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      throw NSError.fileWorkspace("Folder '\(workspacePath(for: url))' does not exist.")
+    }
+    guard isDirectory.boolValue else {
+      throw NSError.fileWorkspace("'\(workspacePath(for: url))' is not a folder.")
+    }
+
+    let entries = try FileManager.default.contentsOfDirectory(
+      at: url, includingPropertiesForKeys: listResourceKeys, options: [.skipsHiddenFiles]
+    )
+    .filter { entry in
+      url.standardizedFileURL.path != root.path || entry.lastPathComponent != modelsFolderName
+    }
+    .sorted {
+      $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+    }
+
+    var lines = ["\(workspacePath(for: url)) files:"]
+    if url.standardizedFileURL.path == root.path {
+      lines.append("- \(modelsFolderName) directory read-only")
+    }
+    if entries.isEmpty {
+      lines.append("(no files)")
+    }
+    for entry in entries.prefix(maxListEntries) {
+      lines.append(entryLine(for: entry, path: relativePath(for: entry)))
+    }
+    if entries.count > maxListEntries {
+      lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
+    }
+    return lines.joined(separator: "\n")
   }
 
   static func read(arguments: [String: AgentToolArgumentValue]) -> String {
@@ -226,15 +240,14 @@ enum FileWorkspaceService {
         return "Error: path is required."
       }
       let append = arguments["append"]?.boolValue ?? false
-      if arguments["create_directory"]?.boolValue == true
-        || arguments["directory"]?.boolValue == true
-        || arguments["create_dirs"]?.boolValue == true
-        || arguments["create_directories"]?.boolValue == true
-      {
-        return "Error: FilesData tools work with files only. Create folders in the Files app."
+      let createDirectoryRequested = shouldCreateDirectory(arguments)
+      let url = try validatedFileURL(path: path)
+      let root = try workspaceRootURL()
+
+      if createDirectoryRequested {
+        return try createDirectory(at: url, path: path, root: root)
       }
 
-      let url = try validatedFileURL(path: path)
       guard let contentValue = arguments["content"] ?? arguments["text"] else {
         return "Error: content is required."
       }
@@ -253,13 +266,7 @@ enum FileWorkspaceService {
         return "Error: '\(displayPath(path))' is a directory."
       }
 
-      if content.isEmpty && !append {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-          return "Error: file '\(displayPath(path))' does not exist."
-        }
-        try FileManager.default.removeItem(at: url)
-        return "Deleted \(displayPath(path))"
-      }
+      try ensureParentDirectory(for: url, root: root, createIfNeeded: true)
 
       if append, FileManager.default.fileExists(atPath: url.path) {
         let handle = try FileHandle(forWritingTo: url)
@@ -274,6 +281,44 @@ enum FileWorkspaceService {
 
       let action = append ? "Appended" : "Wrote"
       return "\(action) \(data.count) byte\(data.count == 1 ? "" : "s") to \(displayPath(path))"
+    } catch {
+      return "Error: \(error.localizedDescription)"
+    }
+  }
+
+  static func delete(arguments: [String: AgentToolArgumentValue]) -> String {
+    do {
+      let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      let recursive = arguments["recursive"]?.boolValue ?? false
+      let url = try validatedFileURL(path: path)
+      let root = try workspaceRootURL()
+
+      var isDirectoryFlag: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectoryFlag) else {
+        return "Error: path '\(displayPath(path))' does not exist."
+      }
+      try validateInsideWorkspace(url, root: root)
+
+      let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+      let isDirectory = values?.isDirectory == true && values?.isSymbolicLink != true
+      if isDirectory {
+        if !recursive {
+          let entries = try FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [])
+          guard entries.isEmpty else {
+            return
+              "Error: directory '\(displayPath(path))' is not empty. Set recursive=true to delete it."
+          }
+        }
+        try FileManager.default.removeItem(at: url)
+        return "Deleted directory \(displayPath(path))"
+      }
+
+      try FileManager.default.removeItem(at: url)
+      return "Deleted file \(displayPath(path))"
     } catch {
       return "Error: \(error.localizedDescription)"
     }
@@ -318,6 +363,7 @@ enum FileWorkspaceService {
       guard !FileManager.default.fileExists(atPath: newURL.path) else {
         return "Error: file '\(displayPath(newPath))' already exists."
       }
+      try ensureParentDirectory(for: newURL, root: try workspaceRootURL(), createIfNeeded: false)
 
       try FileManager.default.moveItem(at: url, to: newURL)
       return "Renamed \(displayPath(path)) to \(displayPath(newPath))"
@@ -510,7 +556,34 @@ enum FileWorkspaceService {
     return components
   }
 
+  private static func shouldCreateDirectory(_ arguments: [String: AgentToolArgumentValue]) -> Bool {
+    arguments["create_directory"]?.boolValue == true
+      || arguments["directory"]?.boolValue == true
+      || arguments["create_dirs"]?.boolValue == true
+      || arguments["create_directories"]?.boolValue == true
+  }
+
+  private static func createDirectory(at url: URL, path: String, root: URL) throws -> String {
+    try ensureParentDirectory(for: url, root: root, createIfNeeded: true)
+
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+      guard isDirectory.boolValue else {
+        throw NSError.fileWorkspace("File '\(displayPath(path))' already exists.")
+      }
+      return "Directory already exists \(displayPath(path))"
+    }
+
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    try validateInsideWorkspace(url, root: root)
+    return "Created directory \(displayPath(path))"
+  }
+
   private static func validatedFileURL(path rawPath: String) throws -> URL {
+    try validatedWorkspaceURL(path: rawPath, allowRoot: false)
+  }
+
+  private static func validatedWorkspaceURL(path rawPath: String, allowRoot: Bool) throws -> URL {
     let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
       throw NSError.fileWorkspace("Path is required.")
@@ -519,51 +592,121 @@ enum FileWorkspaceService {
       throw NSError.fileWorkspace("Path contains an invalid character.")
     }
     if trimmed.contains("\\") {
-      throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
-    }
-    if isModelsPath(trimmed) {
-      throw NSError.fileWorkspace("Models is read-only. Use files_list or files_read for Models.")
+      throw NSError.fileWorkspace("Use forward slashes inside FilesData paths.")
     }
 
     let root = try workspaceRootURL()
-    let url: URL
     if (trimmed as NSString).isAbsolutePath {
-      url = URL(fileURLWithPath: trimmed, isDirectory: false).standardizedFileURL
+      let url = URL(fileURLWithPath: trimmed, isDirectory: false).standardizedFileURL
       try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
-      try validateTopLevelFileURL(url, root: root)
-    } else {
-      if trimmed == "." || trimmed == ".." {
-        throw NSError.fileWorkspace("Path must be a file name.")
+      if !allowRoot && url.path == root.path {
+        throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
       }
-      if trimmed.contains("/") {
-        throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
+      try validateWorkspacePathIsNotReserved(url, root: root)
+      if FileManager.default.fileExists(atPath: url.path) {
+        try validateInsideWorkspace(url, root: root)
       }
-      url = root.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
-      try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
-      try validateTopLevelFileURL(url, root: root)
+      return url
     }
 
+    let components = try workspacePathComponents(trimmed, allowRoot: allowRoot)
+    var url = root
+    for component in components {
+      url.appendPathComponent(component)
+    }
+    url = url.standardizedFileURL
+    try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
     if FileManager.default.fileExists(atPath: url.path) {
       try validateInsideWorkspace(url, root: root)
     }
     return url
   }
 
+  private static func workspacePathComponents(
+    _ rawPath: String,
+    allowRoot: Bool
+  ) throws -> [String] {
+    let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isWorkspaceRootPath(trimmed) {
+      if allowRoot { return [] }
+      throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
+    }
+
+    var relativePath = trimmed
+    if relativePath.hasPrefix(workspaceFolderName + "/") {
+      relativePath.removeFirst(workspaceFolderName.count + 1)
+    }
+    if isWorkspaceRootPath(relativePath) {
+      if allowRoot { return [] }
+      throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
+    }
+    if isModelsPath(relativePath) {
+      throw NSError.fileWorkspace("Models is not available through FilesData tools.")
+    }
+
+    let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+      .map(String.init)
+    guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+      throw NSError.fileWorkspace("FilesData path contains an invalid component.")
+    }
+    return components
+  }
+
+  private static func validateWorkspacePathIsNotReserved(_ url: URL, root: URL) throws {
+    let rootPath = root.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    guard path.hasPrefix(rootPath + "/") else { return }
+    let relativePath = String(path.dropFirst(rootPath.count + 1))
+    let firstComponent = relativePath.split(separator: "/", maxSplits: 1).first.map(String.init)
+    if firstComponent == modelsFolderName {
+      throw NSError.fileWorkspace("Models is not available through FilesData tools.")
+    }
+  }
+
+  private static func isWorkspaceRootPath(_ path: String) -> Bool {
+    path.isEmpty || path == "." || path == workspaceFolderName
+  }
+
+  private static func ensureParentDirectory(
+    for url: URL,
+    root: URL,
+    createIfNeeded: Bool
+  ) throws {
+    let parent = url.deletingLastPathComponent().standardizedFileURL
+    try validateInsideWorkspace(parent, root: root, resolvingSymlinks: false)
+
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory) {
+      guard isDirectory.boolValue else {
+        throw NSError.fileWorkspace("Parent path '\(workspacePath(for: parent))' is not a folder.")
+      }
+      try validateInsideWorkspace(parent, root: root)
+      return
+    }
+
+    guard createIfNeeded else {
+      throw NSError.fileWorkspace("Folder '\(workspacePath(for: parent))' does not exist.")
+    }
+
+    let ancestor = existingAncestor(for: parent, root: root)
+    try validateInsideWorkspace(ancestor, root: root)
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    try validateInsideWorkspace(parent, root: root)
+  }
+
+  private static func existingAncestor(for url: URL, root: URL) -> URL {
+    let rootPath = root.standardizedFileURL.path
+    var current = url.standardizedFileURL
+    while current.path != rootPath && !FileManager.default.fileExists(atPath: current.path) {
+      current = current.deletingLastPathComponent().standardizedFileURL
+    }
+    return current.path.hasPrefix(rootPath) ? current : root
+  }
+
   private static func workspaceRootURL() throws -> URL {
     let root = try PocketMaiDirectories.ensureFilesWorkspace().standardizedFileURL
     try validateInsideWorkspace(root, root: root, resolvingSymlinks: false)
     return root
-  }
-
-  private static func validateTopLevelFileURL(_ url: URL, root: URL) throws {
-    let rootPath = root.standardizedFileURL.path
-    let path = url.standardizedFileURL.path
-    guard path != rootPath else {
-      throw NSError.fileWorkspace("Path must be a file name.")
-    }
-    guard url.deletingLastPathComponent().standardizedFileURL.path == rootPath else {
-      throw NSError.fileWorkspace("Folders are not supported by FilesData tools.")
-    }
   }
 
   private static func validateInsideWorkspace(
@@ -617,6 +760,16 @@ enum FileWorkspaceService {
     let path = url.standardizedFileURL.path
     guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
     return String(path.dropFirst(rootPath.count + 1))
+  }
+
+  private static func workspacePath(for url: URL) -> String {
+    let rootPath = PocketMaiDirectories.filesWorkspaceURL.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    if path == rootPath {
+      return workspaceFolderName
+    }
+    guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
+    return "\(workspaceFolderName)/\(String(path.dropFirst(rootPath.count + 1)))"
   }
 
   private static func modelsRelativePath(for url: URL) -> String {

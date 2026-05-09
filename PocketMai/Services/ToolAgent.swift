@@ -47,6 +47,7 @@ enum BuiltInToolCatalog {
         FileWorkspaceTool.readName,
         FileWorkspaceTool.writeName,
         FileWorkspaceTool.renameName,
+        FileWorkspaceTool.deleteName,
       ],
       approvalKind: .dangerous),
   ]
@@ -123,6 +124,11 @@ enum BuiltInToolCatalog {
         return "Error: FilesData tools are disabled in Files settings."
       }
       return FileWorkspaceService.rename(arguments: call.argumentValues)
+    case FileWorkspaceTool.deleteName:
+      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
+        return "Error: FilesData tools are disabled in Files settings."
+      }
+      return FileWorkspaceService.delete(arguments: call.argumentValues)
     default:
       return nil
     }
@@ -527,16 +533,17 @@ enum FileWorkspaceTool {
   static let readName = "files_read"
   static let writeName = "files_write"
   static let renameName = "files_rename"
+  static let deleteName = "files_delete"
 
   static let definitions: [ToolDefinition] = [
     ToolDefinition(
       name: listName,
       description:
-        "List FilesData files or the read-only Models folder.",
+        "List a FilesData folder or the read-only Models folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "Folder to list. Use Models for downloaded MLX models.",
+          description: "Folder path. Use nested FilesData paths, or Models for downloaded MLX models.",
           required: false)
       ]
     ),
@@ -547,42 +554,61 @@ enum FileWorkspaceTool {
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File name in FilesData, or a Models/... path.",
+          description: "File path in FilesData, or a Models/... path.",
           required: true)
       ]
     ),
     ToolDefinition(
       name: writeName,
       description:
-        "Write or append text to a FilesData file.",
+        "Write or append text to a FilesData file, or create a FilesData folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "File name in FilesData.",
+          description: "File or folder path in FilesData.",
           required: true),
         ToolParameterDef(
           name: "content", type: "string",
-          description: "Text to write. Empty content with append=false deletes the file.",
-          required: true),
+          description: "Text to write. Required unless create_directory is true.",
+          required: false),
         ToolParameterDef(
           name: "append", type: "boolean",
           description: "Append instead of replacing. Default: false.",
+          required: false),
+        ToolParameterDef(
+          name: "create_directory", type: "boolean",
+          description: "Create a folder instead of writing a file. Default: false.",
           required: false),
       ]
     ),
     ToolDefinition(
       name: renameName,
       description:
-        "Rename a FilesData file.",
+        "Rename or move a FilesData file.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "Current file name in FilesData.",
+          description: "Current file path in FilesData.",
           required: true),
         ToolParameterDef(
           name: "new_path", type: "string",
-          description: "New file name in FilesData.",
+          description: "New file path in FilesData.",
           required: true),
+      ]
+    ),
+    ToolDefinition(
+      name: deleteName,
+      description:
+        "Delete a FilesData file or folder.",
+      parameters: [
+        ToolParameterDef(
+          name: "path", type: "string",
+          description: "File or folder path in FilesData.",
+          required: true),
+        ToolParameterDef(
+          name: "recursive", type: "boolean",
+          description: "Delete non-empty folders. Default: false.",
+          required: false),
       ]
     ),
   ]
