@@ -192,16 +192,9 @@ enum ToolAgentRegistry {
       for tool in tools {
         let key = "\(server.id.uuidString):\(tool.name)"
         if conversation.disabledMCPTools.contains(key) { continue }
-        let baseDesc =
-          tool.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          ? "MCP tool from \(server.name)."
-          : tool.description
-        let description: String
-        if !tool.parametersJSON.isEmpty {
-          description = "\(baseDesc) Input schema: \(tool.parametersJSON)"
-        } else {
-          description = baseDesc
-        }
+        let description = cleanedToolDescription(
+          tool.description,
+          fallback: "MCP tool from \(server.name).")
         defs.append(
           ToolDefinition(
             name: tool.name,
@@ -211,6 +204,11 @@ enum ToolAgentRegistry {
       }
     }
     return defs
+  }
+
+  private static func cleanedToolDescription(_ text: String, fallback: String) -> String {
+    let cleaned = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    return cleaned.isEmpty ? fallback : cleaned
   }
 
   static func promptDescription(
@@ -304,7 +302,8 @@ enum ToolAgentRegistry {
         return true
       }
       guard !isBuiltInTool(definition.name) else { return false }
-      let searchable = ([definition.name, definition.description]
+      let searchable =
+        ([definition.name, definition.description]
         + definition.parameters.flatMap { [$0.name, $0.description] })
         .joined(separator: " ")
       return promptTokens.intersection(significantTokens(in: searchable)).count >= 2
@@ -477,19 +476,18 @@ enum ToolProxy {
     ToolDefinition(
       name: listName,
       description:
-        "List enabled tools whose name, description, or argument names match the provided keywords. Call this before call-tool unless the target tool was already listed in the conversation.",
+        "Search enabled tools by capability, tool name, or argument name.",
       parameters: [
         ToolParameterDef(
           name: "keywords", type: "string",
-          description:
-            "Space-separated search keywords for the task, tool name, capability, or argument names.",
+          description: "Space-separated task, tool, capability, or argument keywords.",
           required: true)
       ]
     ),
     ToolDefinition(
       name: callName,
       description:
-        "Call one enabled tool by exact name after list-tools has returned it. Pass the selected tool's arguments as a JSON object.",
+        "Call one enabled tool by exact name with JSON arguments.",
       parameters: [
         ToolParameterDef(
           name: "name", type: "string",
@@ -624,29 +622,29 @@ enum FileWorkspaceTool {
     ToolDefinition(
       name: listName,
       description:
-        "List files in FilesData, or list downloaded MLX models under the read-only Models folder.",
+        "List FilesData files or the read-only Models folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
-          description: "Optional folder to list. Use Models to inspect downloaded MLX models.",
-          required: false),
+          description: "Folder to list. Use Models for downloaded MLX models.",
+          required: false)
       ]
     ),
     ToolDefinition(
       name: readName,
       description:
-        "Read a text file from FilesData, or a text file under the read-only Models folder.",
+        "Read text from FilesData or the read-only Models folder.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
           description: "File name in FilesData, or a Models/... path.",
-          required: true),
+          required: true)
       ]
     ),
     ToolDefinition(
       name: writeName,
       description:
-        "Write or append text to a file in FilesData. To delete a file, write an empty string with append omitted or false.",
+        "Write or append text to a FilesData file.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
@@ -654,18 +652,18 @@ enum FileWorkspaceTool {
           required: true),
         ToolParameterDef(
           name: "content", type: "string",
-          description: "Text to write. Empty string deletes the file when append is omitted or false.",
+          description: "Text to write. Empty content with append=false deletes the file.",
           required: true),
         ToolParameterDef(
           name: "append", type: "boolean",
-          description: "Add to the end of the file. Default: false.",
+          description: "Append instead of replacing. Default: false.",
           required: false),
       ]
     ),
     ToolDefinition(
       name: renameName,
       description:
-        "Rename a file in FilesData.",
+        "Rename a FilesData file.",
       parameters: [
         ToolParameterDef(
           name: "path", type: "string",
@@ -690,17 +688,16 @@ enum WebSearchTool {
       ToolDefinition(
         name: name,
         description:
-          "Search the web only when current or external information is needed. Do not call this for ordinary conversation, writing, coding from provided context, or questions answerable without fresh lookup.",
+          "Search the web for current or external information.",
         parameters: [
           ToolParameterDef(
             name: "query", type: "string",
-            description:
-              "Focused search query. Use only the information needed for lookup; do not include unrelated chat history.",
+            description: "Focused search query without unrelated chat history.",
             required: true),
           ToolParameterDef(
             name: "provider", type: "string",
             description:
-              "Optional provider override: duckDuckGo, wikipedia, searXNG, ollama, or all. Omit to use the configured default.",
+              "Provider override: duckDuckGo, wikipedia, searXNG, ollama, or all.",
             required: false),
         ])
     ]
@@ -709,11 +706,11 @@ enum WebSearchTool {
         ToolDefinition(
           name: fetchName,
           description:
-            "Fetch a specific HTTP or HTTPS URL and return cleaned page text. Use after search when the content of a result page is needed; do not use for files, images, private URLs, or ordinary questions.",
+            "Fetch one HTTP or HTTPS URL and return cleaned page text.",
           parameters: [
             ToolParameterDef(
               name: "url", type: "string",
-              description: "The full HTTP or HTTPS URL to fetch and clean.",
+              description: "Full HTTP or HTTPS URL.",
               required: true)
           ]))
     }
@@ -767,26 +764,25 @@ enum TodoTool {
   static let definitions: [ToolDefinition] = [
     ToolDefinition(
       name: listName,
-      description: "List all of the user's todos with their short IDs and status (pending/done).",
+      description: "List todos with short IDs and status.",
       parameters: []
     ),
     ToolDefinition(
       name: addName,
-      description: "Append a new pending todo to the user's todo list.",
+      description: "Add a pending todo.",
       parameters: [
         ToolParameterDef(
           name: "title", type: "string",
-          description: "The text/title of the todo to add", required: true)
+          description: "Todo title.", required: true)
       ]
     ),
     ToolDefinition(
       name: doneName,
-      description:
-        "Mark a pending todo as done. Match by short ID (first 8 chars) or a substring of the title.",
+      description: "Mark a todo done by short ID or title substring.",
       parameters: [
         ToolParameterDef(
           name: "title_or_id", type: "string",
-          description: "Either the short ID (8 hex chars) or a substring of the todo title",
+          description: "Short ID or title substring.",
           required: true)
       ]
     ),
@@ -841,37 +837,31 @@ enum TextToSpeechTool {
     ToolDefinition(
       name: name,
       description:
-        "Speak the provided text aloud on this iOS device using the configured text-to-speech voice.",
+        "Speak text aloud on this device.",
       parameters: [
         ToolParameterDef(
           name: "text", type: "string",
-          description:
-            "Text to speak aloud. Keep it concise unless the user asks for a long reading.",
+          description: "Text to speak.",
           required: true),
         ToolParameterDef(
           name: "language", type: "string",
-          description:
-            "Optional BCP-47 voice language, such as en-US or es-ES. Omit to use the configured default.",
+          description: "BCP-47 language, such as en-US or es-ES.",
           required: false),
         ToolParameterDef(
           name: "voice", type: "string",
-          description:
-            "Optional voice identifier. Omit to use the configured default voice.",
+          description: "Voice identifier.",
           required: false),
         ToolParameterDef(
           name: "rate", type: "number",
-          description:
-            "Optional speaking rate from 0.0 to 1.0. Omit to use the configured default.",
+          description: "Speaking rate from 0.0 to 1.0.",
           required: false),
         ToolParameterDef(
           name: "pitch", type: "number",
-          description:
-            "Optional pitch multiplier from 0.5 to 2.0. Omit to use the configured default.",
+          description: "Pitch multiplier from 0.5 to 2.0.",
           required: false),
         ToolParameterDef(
           name: "interrupt", type: "boolean",
-          description:
-            "Whether to stop current speech before speaking this text. Default: true.",
+          description: "Stop current speech first. Default: true.",
           required: false),
       ])
   ]
@@ -934,7 +924,7 @@ enum DateTimeTool {
     ToolDefinition(
       name: name,
       description:
-        "Return the current date/time plus optional time zone and moon phase using the user's configured Date & Time options.",
+        "Return current date/time using configured options.",
       parameters: []
     )
   ]
@@ -952,7 +942,7 @@ enum LocationTool {
     ToolDefinition(
       name: name,
       description:
-        "Return the user's current location using GPS or the manually configured location, depending on settings.",
+        "Return GPS or manually configured location.",
       parameters: []
     )
   ]
@@ -973,7 +963,7 @@ enum WeatherTool {
     ToolDefinition(
       name: name,
       description:
-        "Get current weather, a 7-day forecast (temperatures, wind, precipitation, chance of rain), and the moon phase for the configured location. Falls back to a secondary provider if the first one fails.",
+        "Return current weather and 7-day forecast for the configured location.",
       parameters: []
     )
   ]
