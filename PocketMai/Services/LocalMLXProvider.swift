@@ -37,7 +37,7 @@ enum LocalMLXError: LocalizedError {
     case .modelNotDownloaded(let id):
       return
         "\(id) is not downloaded. Download it in Settings > Providers > Local MLX LLM "
-          + "before using MLX."
+        + "before using MLX."
     case .noDownloadedModels:
       return "Download an MLX model in Settings > Providers > Local MLX LLM before using MLX."
     case .noModelSelected:
@@ -276,22 +276,15 @@ actor LocalMLXProvider {
     }()
 
     for message in limited {
-      let content = MessageContentFilter.conversationContextText(from: message.text)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !content.isEmpty else { continue }
-
-      switch message.role {
-      case .user:
-        messages.append(.user(content))
-      case .assistant:
-        let role: Chat.Message.Role =
-          content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
-          ? .assistant : .user
-        messages.append(Chat.Message(role: role, content: content))
-      case .system:
-        messages.append(.system(content))
-      case .tool, .error:
-        messages.append(.user(content))
+      for entry in PromptComposer.contextTranscriptEntries(from: message, settings: settings) {
+        switch entry.displayName {
+        case ChatRole.system.displayName:
+          messages.append(.system(entry.content))
+        case ChatRole.assistant.displayName:
+          messages.append(.assistant(entry.content))
+        default:
+          messages.append(.user(entry.content))
+        }
       }
     }
 

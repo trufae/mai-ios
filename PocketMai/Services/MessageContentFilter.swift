@@ -65,9 +65,13 @@ enum MessageContentFilter {
     conversationContextText(from: text)
   }
 
-  static func conversationContextText(from text: String) -> String {
+  static func conversationContextText(
+    from text: String,
+    includeReasoning: Bool = false
+  ) -> String {
     var result = text
-    for tag in promptStripTags {
+    let tags = includeReasoning ? promptStripTags.subtracting(["think"]) : promptStripTags
+    for tag in tags {
       let pattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
       result = result.replacingOccurrences(
         of: pattern, with: "", options: [.regularExpression, .caseInsensitive])

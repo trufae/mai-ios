@@ -750,6 +750,8 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var useToolProxy: Bool
   var contextWindowMode: String
   var contextWindowMessageLimit: Int?
+  var includeAssistantResponsesInContext: Bool?
+  var includeReasoningContentInContext: Bool?
   var enabledTools: [String]
   var disabledMCPTools: [String]
   var mcpServers: [ConversationDebugMCPServer]
@@ -791,6 +793,7 @@ struct ConversationDebugToolParameter: Codable, Equatable, Sendable {
 struct ConversationDebugPromptMessage: Codable, Equatable, Sendable {
   var role: String
   var content: String
+  var reasoningContent: String? = nil
   var toolCallsJSON: String? = nil
   var toolCallID: String? = nil
 }
@@ -1167,6 +1170,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   var yoloModeEnabled: Bool = true
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
+  var includeAssistantResponsesInContext: Bool = true
+  var includeReasoningContentInContext: Bool = true
   var appearance: AppearanceSettings = .defaults
   var renderMarkdownInChat: Bool = true
 
@@ -1207,7 +1212,9 @@ struct AppSettings: Codable, Equatable, Sendable {
       showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
     case toolSettings, mcpServers, memory, toolCallingMode
-    case yoloModeEnabled, useToolProxy, contextWindowMode, appearance, renderMarkdownInChat
+    case yoloModeEnabled, useToolProxy, contextWindowMode
+    case includeAssistantResponsesInContext, includeReasoningContentInContext
+    case appearance, renderMarkdownInChat
   }
 
   init(from decoder: Decoder) throws {
@@ -1246,6 +1253,10 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .useToolProxy)) ?? migratedFromLegacyProxy
     contextWindowMode =
       (try? c.decode(ContextWindowMode.self, forKey: .contextWindowMode)) ?? .full
+    includeAssistantResponsesInContext =
+      (try? c.decode(Bool.self, forKey: .includeAssistantResponsesInContext)) ?? true
+    includeReasoningContentInContext =
+      (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? true
     appearance =
       (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
     renderMarkdownInChat =

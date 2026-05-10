@@ -1603,7 +1603,8 @@ final class AppStore: ObservableObject {
       && !visibleDefinitions.isEmpty
     let effectiveMode =
       providerNativeToolCalling
-      ? ToolCallingMode.native : settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
+      ? ToolCallingMode.native
+      : settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
     let textToolPrompt =
       providerNativeToolCalling
       ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
@@ -1638,8 +1639,10 @@ final class AppStore: ObservableObject {
       selectedModeDisplayName: settings.toolCallingMode.displayName,
       effectiveMode: effectiveMode.rawValue,
       effectiveModeDisplayName: effectiveMode.displayName,
-      textProtocolFallback: settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
-        .rawValue,
+      textProtocolFallback: settings.toolCallingMode.textProtocolFallback(
+        for: conversation.provider
+      )
+      .rawValue,
       providerNativeToolCalling: providerNativeToolCalling,
       toolCatalogInlinedInPrompt: !providerNativeToolCalling && hasToolCalling,
       nativeToolNames: nativeToolNames,
@@ -1647,6 +1650,8 @@ final class AppStore: ObservableObject {
       useToolProxy: settings.useToolProxy,
       contextWindowMode: settings.contextWindowMode.rawValue,
       contextWindowMessageLimit: settings.contextWindowMode.messageLimit,
+      includeAssistantResponsesInContext: settings.includeAssistantResponsesInContext,
+      includeReasoningContentInContext: settings.includeReasoningContentInContext,
       enabledTools: conversation.enabledTools.map(\.rawValue).sorted(),
       disabledMCPTools: Array(conversation.disabledMCPTools).sorted(),
       mcpServers: settings.mcpServers.map { server in
@@ -1707,26 +1712,25 @@ final class AppStore: ObservableObject {
     }()
     var messages = [ConversationDebugPromptMessage(role: "system", content: systemPrompt)]
     messages.append(
-      contentsOf: limited.compactMap { message in
-        let content = MessageContentFilter.conversationContextText(from: message.text)
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return nil }
-        let role: String
-        switch message.role {
-        case .user:
-          role = "user"
-        case .assistant:
-          role =
-            content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
-            ? "assistant" : "user"
-        case .system:
-          role = "system"
-        case .tool, .error:
-          role = "user"
+      contentsOf: limited.flatMap { message in
+        PromptComposer.contextTranscriptEntries(from: message, settings: settings).map { entry in
+          ConversationDebugPromptMessage(
+            role: debugRole(displayName: entry.displayName),
+            content: entry.content)
         }
-        return ConversationDebugPromptMessage(role: role, content: content)
       })
     return messages
+  }
+
+  private func debugRole(displayName: String) -> String {
+    switch displayName {
+    case ChatRole.system.displayName:
+      return "system"
+    case ChatRole.assistant.displayName:
+      return "assistant"
+    default:
+      return "user"
+    }
   }
 
   private func debugToolIterations(in conversation: Conversation)

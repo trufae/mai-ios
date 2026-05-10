@@ -337,7 +337,10 @@ enum AssistantTurnRunner {
         assistantContent: transformed,
         results: nativeResults,
         definitions: parseDefinitions,
-        mode: mode),
+        mode: mode,
+        echoReasoningContent: shouldEchoReasoningContent(
+          conversationID: conversationID,
+          store: store)),
       completedRuns: completedRuns,
       parsedCalls: calls,
       results: nativeResults)
@@ -425,7 +428,8 @@ enum AssistantTurnRunner {
     assistantContent: String,
     results: [ToolCallResult],
     definitions: [ToolDefinition],
-    mode: ToolCallingMode
+    mode: ToolCallingMode,
+    echoReasoningContent: Bool
   ) -> [OpenAIMessage] {
     guard mode == .native, !results.isEmpty else { return [] }
     let resolver = AgentToolNameResolver(tools: definitions)
@@ -440,15 +444,32 @@ enum AssistantTurnRunner {
           arguments: item.call.argsJSON))
     }
     guard toolCalls.count == results.count else { return [] }
+    let content = MessageContentFilter.conversationContextText(from: assistantContent)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     let assistant = OpenAIMessage(
       role: "assistant",
-      content: assistantContent.trimmingCharacters(in: .whitespacesAndNewlines),
+      content: content,
+      reasoningContent: PromptComposer.reasoningContent(
+        from: assistantContent,
+        echoReasoningContent: echoReasoningContent),
       toolCalls: toolCalls)
     let toolMessages = results.compactMap { item -> OpenAIMessage? in
       guard let id = item.call.toolCallID else { return nil }
       return OpenAIMessage(role: "tool", content: item.result, toolCallID: id)
     }
     return [assistant] + toolMessages
+  }
+
+  private static func shouldEchoReasoningContent(
+    conversationID: UUID,
+    store: AppStore
+  ) -> Bool {
+    guard let conversation = store.conversation(withID: conversationID) else {
+      return false
+    }
+    return OpenAICompatibleProvider.shouldEchoReasoningContent(
+      conversation: conversation,
+      settings: store.settings)
   }
 
   private static func appendDebugIteration(
@@ -562,26 +583,26 @@ enum AssistantTurnRunner {
       return conversation.messages
     }()
     messages.append(
-      contentsOf: limited.compactMap { message in
-        let content = MessageContentFilter.conversationContextText(from: message.text)
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return nil }
-        let role: String
-        switch message.role {
-        case .user:
-          role = "user"
-        case .assistant:
-          role =
-            content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
-            ? "assistant" : "user"
-        case .system:
-          role = "system"
-        case .tool, .error:
-          role = "user"
+      contentsOf: limited.flatMap { message in
+        PromptComposer.contextTranscriptEntries(from: message, settings: store.settings).map {
+          entry in
+          ConversationDebugPromptMessage(
+            role: debugRole(displayName: entry.displayName),
+            content: entry.content)
         }
-        return ConversationDebugPromptMessage(role: role, content: content)
       })
     return messages
+  }
+
+  private static func debugRole(displayName: String) -> String {
+    switch displayName {
+    case ChatRole.system.displayName:
+      return "system"
+    case ChatRole.assistant.displayName:
+      return "assistant"
+    default:
+      return "user"
+    }
   }
 
   private static func debugPromptMessage(
@@ -599,6 +620,7 @@ enum AssistantTurnRunner {
     return ConversationDebugPromptMessage(
       role: message.role,
       content: message.content ?? "",
+      reasoningContent: message.reasoningContent,
       toolCallsJSON: toolCallsJSON,
       toolCallID: message.toolCallID)
   }

@@ -318,6 +318,12 @@ struct SettingsView: View {
       }
     }
     .pickerStyle(.menu)
+    Toggle(
+      "Include assistant responses",
+      isOn: settingsBinding(\.includeAssistantResponsesInContext))
+    Toggle(
+      "Include reasoning content",
+      isOn: settingsBinding(\.includeReasoningContentInContext))
     toolCallingContent
     yoloModeContent
   }
@@ -709,8 +715,8 @@ struct SettingsView: View {
     Text(
       "Tap a prompt to edit. Use the star in the editor to choose the default prompt sent to the model at the start of every chat."
     )
-      .font(.caption)
-      .foregroundStyle(.secondary)
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   private func promptRow(_ prompt: SystemPrompt) -> some View {
@@ -842,7 +848,8 @@ struct SettingsView: View {
       TextField("SearXNG username", text: settingsBinding(\.toolSettings.webSearchSearXNGUsername))
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
-      SecureField("SearXNG password", text: settingsBinding(\.toolSettings.webSearchSearXNGPassword))
+      SecureField(
+        "SearXNG password", text: settingsBinding(\.toolSettings.webSearchSearXNGPassword))
       Toggle(
         "Fetching data",
         isOn: settingsBinding(\.toolSettings.webSearchFetchingEnabled))
@@ -889,8 +896,8 @@ struct SettingsView: View {
       Text(
         "The callable Files tools can list folders, read, write, append, rename, and delete UTF-8 text files in FilesData. Writes can create folders. Downloaded MLX models are available read-only under Models."
       )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
       Button {
         showingToolFileImporter = true
       } label: {

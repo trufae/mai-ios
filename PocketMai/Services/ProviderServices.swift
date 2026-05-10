@@ -191,7 +191,7 @@ enum PromptComposer {
       )
     }
     let limit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
-    let transcript = promptTranscript(from: conversation, limit: limit)
+    let transcript = promptTranscript(from: conversation, settings: settings, limit: limit)
     let instruction: String
     if !hasTools {
       instruction = "Reply to the latest user message. Plain text only; no XML tags."
@@ -235,24 +235,15 @@ enum PromptComposer {
       }
       return conversation.messages
     }()
+    let echoReasoningContent = OpenAICompatibleProvider.shouldEchoReasoningContent(
+      model: model, endpoint: endpoint, settings: settings)
     messages.append(
-      contentsOf: limited.compactMap { message in
-        if message.id == excludingMessageID { return nil }
-        let content = MessageContentFilter.conversationContextText(from: message.text)
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { return nil }
-        let role: String
-        switch message.role {
-        case .user:
-          role = "user"
-        case .assistant:
-          role =
-            content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
-            ? "assistant" : "user"
-        case .system: role = "system"
-        case .tool, .error: role = "user"
-        }
-        return OpenAIMessage(role: role, content: content)
+      contentsOf: limited.flatMap { message -> [OpenAIMessage] in
+        if message.id == excludingMessageID { return [] }
+        return openAIHistoryMessages(
+          from: message,
+          includeAssistantResponses: settings.includeAssistantResponsesInContext,
+          echoReasoningContent: echoReasoningContent)
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
@@ -266,25 +257,180 @@ enum PromptComposer {
     return messages
   }
 
-  private static func promptTranscript(from conversation: Conversation, limit: Int? = nil)
+  static func openAIHistoryMessages(
+    from message: ChatMessage,
+    includeAssistantResponses: Bool,
+    echoReasoningContent: Bool
+  ) -> [OpenAIMessage] {
+    let content = MessageContentFilter.conversationContextText(from: message.text)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !content.isEmpty else { return [] }
+
+    switch message.role {
+    case .user:
+      return [OpenAIMessage(role: "user", content: content)]
+    case .assistant:
+      return assistantHistoryMessages(
+        from: message.text,
+        safeContent: content,
+        includeAssistantResponses: includeAssistantResponses,
+        echoReasoningContent: echoReasoningContent)
+    case .system:
+      return [OpenAIMessage(role: "system", content: content)]
+    case .tool:
+      return [OpenAIMessage(role: "user", content: content)]
+    case .error:
+      return []
+    }
+  }
+
+  private static func assistantHistoryMessages(
+    from rawText: String,
+    safeContent: String,
+    includeAssistantResponses: Bool,
+    echoReasoningContent: Bool
+  ) -> [OpenAIMessage] {
+    let rendered = MessageContentFilter.render(safeContent)
+    var messages = rendered.hiddenSections
+      .filter { $0.tag.caseInsensitiveCompare("tool_run") == .orderedSame }
+      .filter { isCompletedToolRunContent($0.content) }
+      .map { section in
+        OpenAIMessage(role: "user", content: wrappedToolRunContent(section.content))
+      }
+
+    let visible = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if includeAssistantResponses, !visible.isEmpty {
+      messages.append(
+        OpenAIMessage(
+          role: "assistant",
+          content: visible,
+          reasoningContent: reasoningContent(
+            from: rawText,
+            echoReasoningContent: echoReasoningContent)))
+    }
+    return messages
+  }
+
+  static func reasoningContent(
+    from text: String,
+    echoReasoningContent: Bool
+  ) -> String? {
+    guard echoReasoningContent else { return nil }
+    let content = MessageContentFilter.render(text).hiddenSections
+      .filter { $0.tag.caseInsensitiveCompare("think") == .orderedSame }
+      .map(\.content)
+      .joined(separator: "\n\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return content.isEmpty ? nil : content
+  }
+
+  private static func isCompletedToolRunContent(_ content: String) -> Bool {
+    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      let marker = trimmed.range(
+        of: #"(?s)\btool\s*\(.*?\):"#,
+        options: .regularExpression)
+    else {
+      return false
+    }
+    return !trimmed[marker.upperBound...]
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .isEmpty
+  }
+
+  private static func wrappedToolRunContent(_ content: String) -> String {
+    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "<tool_run>\n\(trimmed)\n</tool_run>"
+  }
+
+  private static func promptTranscript(
+    from conversation: Conversation,
+    settings: AppSettings,
+    limit: Int? = nil
+  )
     -> String
   {
     let limited: [ChatMessage] = {
       if let limit { return Array(conversation.messages.suffix(limit)) }
       return conversation.messages
     }()
-    let transcript = limited.compactMap { message -> String? in
-      let content = MessageContentFilter.conversationContextText(from: message.text)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !content.isEmpty else { return nil }
-      let displayName =
-        content.range(of: "<tool_run", options: [.caseInsensitive]) == nil
-        ? message.role.displayName : "Host tool results"
-      return "\(displayName):\n\(content)"
+    let transcript = limited.flatMap { message -> [String] in
+      contextTranscriptEntries(from: message, settings: settings).map { entry in
+        "\(entry.displayName):\n\(entry.content)"
+      }
     }
     .joined(separator: "\n\n")
 
     return transcript.isEmpty ? "No prior messages." : transcript
+  }
+
+  struct TranscriptEntry {
+    var displayName: String
+    var content: String
+  }
+
+  static func contextTranscriptEntries(
+    from message: ChatMessage,
+    settings: AppSettings
+  ) -> [TranscriptEntry] {
+    let content = MessageContentFilter.conversationContextText(
+      from: message.text,
+      includeReasoning: settings.includeReasoningContentInContext
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !content.isEmpty else { return [] }
+
+    switch message.role {
+    case .assistant:
+      return assistantTranscriptEntries(
+        content: content,
+        includeAssistantResponses: settings.includeAssistantResponsesInContext,
+        includeReasoning: settings.includeReasoningContentInContext)
+    case .error:
+      return []
+    default:
+      return [TranscriptEntry(displayName: message.role.displayName, content: content)]
+    }
+  }
+
+  private static func assistantTranscriptEntries(
+    content: String,
+    includeAssistantResponses: Bool,
+    includeReasoning: Bool
+  ) -> [TranscriptEntry] {
+    let rendered = MessageContentFilter.render(content)
+    var entries = rendered.hiddenSections
+      .filter { $0.tag.caseInsensitiveCompare("tool_run") == .orderedSame }
+      .filter { isCompletedToolRunContent($0.content) }
+      .map { section in
+        TranscriptEntry(
+          displayName: "Host tool results",
+          content: wrappedToolRunContent(section.content))
+      }
+
+    guard includeAssistantResponses else { return entries }
+
+    let visible = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let reasoning =
+      includeReasoning
+      ? rendered.hiddenSections
+        .filter { $0.tag.caseInsensitiveCompare("think") == .orderedSame }
+        .map(\.content)
+        .joined(separator: "\n\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      : ""
+    let assistantContent: String
+    if reasoning.isEmpty {
+      assistantContent = visible
+    } else if visible.isEmpty {
+      assistantContent = "<think>\n\(reasoning)\n</think>"
+    } else {
+      assistantContent = "<think>\n\(reasoning)\n</think>\n\n\(visible)"
+    }
+    if !assistantContent.isEmpty {
+      entries.append(TranscriptEntry(displayName: "Assistant", content: assistantContent))
+    }
+    return entries
   }
 }
 
@@ -460,11 +606,13 @@ enum AppleFoundationProvider {
 struct OpenAIMessage: Encodable, Sendable {
   var role: String
   var content: String?
+  var reasoningContent: String? = nil
   var toolCalls: [OpenAIMessageToolCall]?
   var toolCallID: String?
 
   enum CodingKeys: String, CodingKey {
     case role, content
+    case reasoningContent = "reasoning_content"
     case toolCalls = "tool_calls"
     case toolCallID = "tool_call_id"
   }
@@ -1189,6 +1337,28 @@ enum OpenAICompatibleProvider {
       return endpoint
     }
     return settings.openAIEndpoints.first(where: { $0.isEnabled })
+  }
+
+  static func shouldEchoReasoningContent(
+    conversation: Conversation,
+    settings: AppSettings
+  ) -> Bool {
+    guard let endpoint = selectedEndpoint(for: conversation, settings: settings) else {
+      return false
+    }
+    let model = conversation.modelID.isEmpty ? endpoint.defaultModel : conversation.modelID
+    return shouldEchoReasoningContent(model: model, endpoint: endpoint, settings: settings)
+  }
+
+  static func shouldEchoReasoningContent(
+    model: String,
+    endpoint: OpenAIEndpoint,
+    settings: AppSettings
+  ) -> Bool {
+    guard settings.includeReasoningContentInContext else { return false }
+    let text = "\(model) \(endpoint.name) \(endpoint.baseURL)".lowercased()
+    guard text.contains("deepseek") else { return false }
+    return !text.contains("deepseek-reasoner")
   }
 
   private static func selectedEndpoint(for request: ChatCompletionRequest) -> OpenAIEndpoint? {
