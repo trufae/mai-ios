@@ -21,6 +21,10 @@ final class TTSPlayer: NSObject, ObservableObject {
   private var providerSpeechTask: Task<Void, Never>?
   private var audioPlayer: AVAudioPlayer?
   private var audioFileURL: URL?
+  private var recordingEngine: AVAudioEngine?
+  private var recordingPlayerNode: AVAudioPlayerNode?
+  private var recordingGainUnit: AVAudioUnitEQ?
+  private var recordingPlaybackID: UUID?
   private var speechGeneration = 0
 
   override init() {
@@ -67,6 +71,39 @@ final class TTSPlayer: NSObject, ObservableObject {
     beginSpeaking(speech)
   }
 
+  func playRecording(
+    for message: ChatMessage,
+    title: String? = nil,
+    interrupt: Bool = true
+  ) {
+    guard let speech = QueuedSpeech(recordingMessage: message, title: title) else { return }
+
+    if hasActiveSpeech {
+      if interrupt {
+        queuedSpeech.removeAll()
+        pendingSpeechAfterCancel = speech
+        cancelActiveSpeech()
+      }
+      return
+    }
+
+    queuedSpeech.removeAll()
+    pendingSpeechAfterCancel = nil
+    beginSpeaking(speech)
+  }
+
+  func toggleRecordingPlayback(for message: ChatMessage, title: String? = nil) {
+    guard currentMessageID == message.id, isSpeaking else {
+      playRecording(for: message, title: title)
+      return
+    }
+    if isPaused {
+      resume()
+    } else {
+      pause()
+    }
+  }
+
   func speakFromHere(
     messages: [ChatMessage],
     voices: VoiceSettings,
@@ -78,6 +115,11 @@ final class TTSPlayer: NSObject, ObservableObject {
       case .user: role = .user
       case .assistant: role = .assistant
       default: return nil
+      }
+      if message.role == .user,
+        let recorded = QueuedSpeech(recordingMessage: message, title: message.role.displayName)
+      {
+        return recorded
       }
       return QueuedSpeech(
         text: MessageContentFilter.render(message.text).visibleText,
@@ -123,7 +165,75 @@ final class TTSPlayer: NSObject, ObservableObject {
       return
     }
 
+    if let recordingURL = speech.recordingURL {
+      beginAudioFileSpeaking(speech, url: recordingURL, generation: speechGeneration)
+      return
+    }
+
     beginSystemSpeaking(speech)
+  }
+
+  private func beginAudioFileSpeaking(
+    _ speech: QueuedSpeech,
+    url: URL,
+    generation: Int
+  ) {
+    do {
+      guard speechGeneration == generation else { return }
+      if try beginBoostedRecordingSpeaking(url: url, generation: generation) {
+        return
+      }
+      let player = try AVAudioPlayer(contentsOf: url)
+      player.delegate = self
+      player.prepareToPlay()
+      if player.play() {
+        audioPlayer = player
+        return
+      }
+    } catch {
+      // Fall through to stopped state.
+    }
+    handleStopped()
+  }
+
+  private func beginBoostedRecordingSpeaking(url: URL, generation: Int) throws -> Bool {
+    cleanupRecordingAudioEngine()
+
+    let file = try AVAudioFile(forReading: url)
+    guard file.length > 0 else { return false }
+
+    let engine = AVAudioEngine()
+    let playerNode = AVAudioPlayerNode()
+    let gainUnit = AVAudioUnitEQ(numberOfBands: 1)
+    gainUnit.bands.first?.bypass = true
+    gainUnit.globalGain = recordingPlaybackGainDecibels(for: file)
+
+    engine.attach(playerNode)
+    engine.attach(gainUnit)
+    engine.connect(playerNode, to: gainUnit, format: file.processingFormat)
+    engine.connect(gainUnit, to: engine.mainMixerNode, format: file.processingFormat)
+
+    try engine.start()
+    let playbackID = UUID()
+    recordingEngine = engine
+    recordingPlayerNode = playerNode
+    recordingGainUnit = gainUnit
+    recordingPlaybackID = playbackID
+
+    playerNode.scheduleFile(file, at: nil) { [weak self] in
+      Task { @MainActor in
+        guard
+          let self,
+          self.speechGeneration == generation,
+          self.recordingPlaybackID == playbackID
+        else {
+          return
+        }
+        self.handleFinished()
+      }
+    }
+    playerNode.play()
+    return true
   }
 
   private func beginSystemSpeaking(_ speech: QueuedSpeech) {
@@ -219,6 +329,12 @@ final class TTSPlayer: NSObject, ObservableObject {
 
 
   func pause() {
+    if let recordingPlayerNode, recordingPlayerNode.isPlaying, !isPaused {
+      recordingPlayerNode.pause()
+      isPaused = true
+      updateNowPlaying()
+      return
+    }
     if let audioPlayer, audioPlayer.isPlaying, !isPaused {
       audioPlayer.pause()
       isPaused = true
@@ -231,6 +347,12 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   func resume() {
     guard isPaused else { return }
+    if let recordingPlayerNode {
+      recordingPlayerNode.play()
+      isPaused = false
+      updateNowPlaying()
+      return
+    }
     if let audioPlayer {
       audioPlayer.play()
       isPaused = false
@@ -247,7 +369,7 @@ final class TTSPlayer: NSObject, ObservableObject {
       synthesizer.stopSpeaking(at: .immediate)
       return
     }
-    if providerSpeechTask != nil || audioPlayer != nil {
+    if providerSpeechTask != nil || audioPlayer != nil || recordingPlayerNode != nil {
       cancelProviderSpeech()
       handleStopped()
       return
@@ -260,8 +382,9 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   private func handleFinished() {
-    if audioPlayer != nil {
+    if audioPlayer != nil || recordingPlayerNode != nil {
       audioPlayer = nil
+      cleanupRecordingAudioEngine()
       cleanupAudioFile()
     }
     if !queuedSpeech.isEmpty {
@@ -288,6 +411,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     providerSpeechTask = nil
     audioPlayer?.stop()
     audioPlayer = nil
+    cleanupRecordingAudioEngine()
     cleanupAudioFile()
     isSpeaking = false
     isPaused = false
@@ -302,6 +426,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   private var hasActiveSpeech: Bool {
     synthesizer.isSpeaking || providerSpeechTask != nil || audioPlayer != nil
+      || recordingPlayerNode != nil
   }
 
   private func cancelActiveSpeech() {
@@ -318,7 +443,79 @@ final class TTSPlayer: NSObject, ObservableObject {
     providerSpeechTask = nil
     audioPlayer?.stop()
     audioPlayer = nil
+    cleanupRecordingAudioEngine()
     cleanupAudioFile()
+  }
+
+  private func cleanupRecordingAudioEngine() {
+    let engine = recordingEngine
+    recordingPlayerNode?.stop()
+    engine?.stop()
+    if let recordingPlayerNode {
+      engine?.detach(recordingPlayerNode)
+    }
+    if let recordingGainUnit {
+      engine?.detach(recordingGainUnit)
+    }
+    recordingPlayerNode = nil
+    recordingGainUnit = nil
+    recordingPlaybackID = nil
+    recordingEngine = nil
+  }
+
+  private func recordingPlaybackGainDecibels(for file: AVAudioFile) -> Float {
+    let originalFramePosition = file.framePosition
+    defer { file.framePosition = originalFramePosition }
+
+    file.framePosition = 0
+    let chunkFrameCapacity: AVAudioFrameCount = 4096
+    guard let buffer = AVAudioPCMBuffer(
+      pcmFormat: file.processingFormat,
+      frameCapacity: chunkFrameCapacity)
+    else {
+      return 0
+    }
+
+    var peak: Float = 0
+    var sumSquares: Double = 0
+    var sampleCount = 0
+
+    do {
+      while file.framePosition < file.length {
+        let remainingFrames = file.length - file.framePosition
+        let framesToRead = AVAudioFrameCount(min(Int64(chunkFrameCapacity), remainingFrames))
+        try file.read(into: buffer, frameCount: framesToRead)
+        guard let channelData = buffer.floatChannelData else { return 0 }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { break }
+
+        for channel in 0..<channelCount {
+          let samples = channelData[channel]
+          for frame in 0..<frameLength {
+            let value = samples[frame]
+            let magnitude = abs(value)
+            peak = max(peak, magnitude)
+            sumSquares += Double(value * value)
+            sampleCount += 1
+          }
+        }
+      }
+    } catch {
+      return 0
+    }
+
+    guard peak > 0, sampleCount > 0 else { return 0 }
+    let rms = sqrt(sumSquares / Double(sampleCount))
+    guard rms > 0, rms.isFinite else { return 0 }
+
+    let targetRMS = 0.18
+    let targetPeak = 0.92
+    let rmsGain = 20.0 * log10(targetRMS / rms)
+    let peakHeadroom = 20.0 * log10(targetPeak / Double(peak))
+    let gain = min(18.0, rmsGain, peakHeadroom)
+    guard gain.isFinite, gain > 0 else { return 0 }
+    return Float(gain)
   }
 
   private func cleanupAudioFile() {
@@ -331,7 +528,9 @@ final class TTSPlayer: NSObject, ObservableObject {
   private func activateAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
-      try session.setCategory(.playback, mode: .spokenAudio, options: [])
+      if session.category != .playAndRecord {
+        try session.setCategory(.playback, mode: .spokenAudio, options: [])
+      }
       try session.setActive(true, options: [])
     } catch {
       // Best-effort: TTS still plays in foreground without an active session.
@@ -340,8 +539,9 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   private func deactivateAudioSession() {
     do {
-      try AVAudioSession.sharedInstance().setActive(
-        false, options: .notifyOthersOnDeactivation)
+      let session = AVAudioSession.sharedInstance()
+      guard session.category != .playAndRecord else { return }
+      try session.setActive(false, options: .notifyOthersOnDeactivation)
     } catch {
       // Ignore: the session may already be inactive.
     }
@@ -406,6 +606,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     let tag: String?
     let messageID: UUID?
     let openAIEndpoints: [OpenAIEndpoint]
+    let recordingURL: URL?
     var openAIEndpoint: OpenAIEndpoint? {
       guard let id = voice.openAIEndpointID else { return nil }
       return openAIEndpoints.first(where: { $0.id == id && $0.isEnabled })
@@ -429,6 +630,25 @@ final class TTSPlayer: NSObject, ObservableObject {
       self.tag = tag
       self.messageID = messageID
       self.openAIEndpoints = openAIEndpoints
+      self.recordingURL = nil
+    }
+
+    init?(recordingMessage message: ChatMessage, title: String?) {
+      guard message.role == .user,
+        let filename = message.voiceRecordingFilename,
+        let url = PocketMaiDirectories.voiceRecordingURL(filename: filename),
+        FileManager.default.fileExists(atPath: url.path)
+      else {
+        return nil
+      }
+      self.text = MessageContentFilter.render(message.text).visibleText
+      self.voice = .defaults
+      self.role = .user
+      self.title = title
+      self.tag = nil
+      self.messageID = message.id
+      self.openAIEndpoints = []
+      self.recordingURL = url
     }
   }
 }

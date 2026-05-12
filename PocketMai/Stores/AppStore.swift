@@ -350,14 +350,20 @@ final class AppStore: ObservableObject {
   }
 
   func deleteMessage(_ message: ChatMessage) {
-    updateCurrentConversation { conversation in
-      conversation.messages.removeAll { $0.id == message.id }
-    }
+    guard let index = currentConversationIndex else { return }
+    let removedMessages = conversations[index].messages.filter { $0.id == message.id }
+    guard !removedMessages.isEmpty else { return }
+    conversations[index].messages.removeAll { $0.id == message.id }
+    conversations[index].updatedAt = Date()
+    upsertSummary(for: conversations[index])
+    saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
   }
 
   func clearAllConversations() {
     let archived = conversations.filter(\.isArchived)
     let removedIDs = Set(conversationSummaries.filter { !$0.isArchived }.map(\.id))
+    let removedMessages = voiceRecordingMessages(in: removedIDs)
     if !hasLoadedPersistedConversations {
       deletedConversationIDsBeforeLoad.formUnion(removedIDs)
     }
@@ -376,6 +382,7 @@ final class AppStore: ObservableObject {
     selectedConversationID = nil
     selectedConversationIDs.removeAll()
     saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
     newConversation()
   }
 
@@ -431,11 +438,13 @@ final class AppStore: ObservableObject {
     guard !isResponding, let index = currentConversationIndex else { return }
     guard let prompt = restartPrompt(from: message) else { return }
 
+    let removedMessages = conversations[index].messages
     conversations[index].messages.removeAll()
     conversations[index].title = "New chat"
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
     saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
 
     _ = await send(prompt: prompt)
   }
@@ -476,6 +485,7 @@ final class AppStore: ObservableObject {
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
+    let removedMessages = voiceRecordingMessages(in: ids)
     if !hasLoadedPersistedConversations {
       deletedConversationIDsBeforeLoad.formUnion(ids)
     }
@@ -498,6 +508,51 @@ final class AppStore: ObservableObject {
       createInitialConversationIfNeeded()
     }
     saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
+  }
+
+  private func voiceRecordingMessages(in conversationIDs: Set<UUID>) -> [ChatMessage] {
+    guard !conversationIDs.isEmpty else { return [] }
+    return conversationIDs.flatMap { id -> [ChatMessage] in
+      if let index = indexedConversationIndex(for: id) {
+        return conversations[index].messages
+      }
+      return persistence.loadConversation(id: id)?.messages ?? []
+    }
+  }
+
+  private func deleteUnreferencedVoiceRecordings(from messages: [ChatMessage]) {
+    let candidates = Set(messages.compactMap(Self.normalizedVoiceRecordingFilename))
+    guard !candidates.isEmpty else { return }
+
+    let referenced = referencedVoiceRecordingFilenames()
+    for filename in candidates.subtracting(referenced) {
+      guard let url = PocketMaiDirectories.voiceRecordingURL(filename: filename) else { continue }
+      try? FileManager.default.removeItem(at: url)
+    }
+  }
+
+  private func referencedVoiceRecordingFilenames() -> Set<String> {
+    var filenames = Set(
+      conversations.flatMap { conversation in
+        conversation.messages.compactMap(Self.normalizedVoiceRecordingFilename)
+      })
+    let loadedIDs = Set(conversations.map(\.id))
+    for summary in conversationSummaries where !loadedIDs.contains(summary.id) {
+      guard let conversation = persistence.loadConversation(id: summary.id) else { continue }
+      filenames.formUnion(conversation.messages.compactMap(Self.normalizedVoiceRecordingFilename))
+    }
+    return filenames
+  }
+
+  private static func normalizedVoiceRecordingFilename(from message: ChatMessage) -> String? {
+    guard let filename = message.voiceRecordingFilename?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      PocketMaiDirectories.voiceRecordingURL(filename: filename) != nil
+    else {
+      return nil
+    }
+    return filename
   }
 
   func cloneConversation(_ conversation: Conversation) {
@@ -513,7 +568,12 @@ final class AppStore: ObservableObject {
     cloned.id = UUID()
     cloned.title = copyTitle
     cloned.messages = conversation.messages.map {
-      ChatMessage(id: UUID(), role: $0.role, text: $0.text, createdAt: $0.createdAt)
+      ChatMessage(
+        id: UUID(),
+        role: $0.role,
+        text: $0.text,
+        createdAt: $0.createdAt,
+        voiceRecordingFilename: $0.voiceRecordingFilename)
     }
     cloned.createdAt = now
     cloned.updatedAt = now
@@ -538,7 +598,7 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
-  func send(prompt rawPrompt: String) async -> Bool {
+  func send(prompt rawPrompt: String, voiceRecordingFilename: String? = nil) async -> Bool {
     let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !prompt.isEmpty else { return false }
     if currentConversation == nil {
@@ -555,7 +615,11 @@ final class AppStore: ObservableObject {
     }
 
     errorMessage = nil
-    await composeUserTurn(prompt: prompt, conversationID: conversationID, mode: .append)
+    await composeUserTurn(
+      prompt: prompt,
+      conversationID: conversationID,
+      mode: .append,
+      voiceRecordingFilename: voiceRecordingFilename)
     return true
   }
 
@@ -568,10 +632,12 @@ final class AppStore: ObservableObject {
     else { return }
     let cutoff: Int = message.role == .user ? msgIndex : msgIndex - 1
     guard cutoff >= 0 else { return }
+    let removedMessages = Array(conversations[convIndex].messages.dropFirst(cutoff + 1))
     conversations[convIndex].messages = Array(conversations[convIndex].messages.prefix(cutoff + 1))
     conversations[convIndex].updatedAt = Date()
     upsertSummary(for: conversations[convIndex])
     saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
 
     guard let last = conversations[convIndex].messages.last, last.role == .user else { return }
     let prompt = MessageContentFilter.promptSafeText(from: last.text)
@@ -596,7 +662,10 @@ final class AppStore: ObservableObject {
   }
 
   private func composeUserTurn(
-    prompt: String, conversationID: UUID, mode: UserTurnMode
+    prompt: String,
+    conversationID: UUID,
+    mode: UserTurnMode,
+    voiceRecordingFilename: String? = nil
   ) async {
     guard let index = indexedConversationIndex(for: conversationID) else { return }
     let conversation = conversations[index]
@@ -610,9 +679,14 @@ final class AppStore: ObservableObject {
     guard let i = indexedConversationIndex(for: conversationID) else { return }
     switch mode {
     case .append:
-      let userMessage = ChatMessage(role: .user, text: prompt)
+      let userMessage = ChatMessage(
+        role: .user,
+        text: prompt,
+        voiceRecordingFilename: voiceRecordingFilename)
       conversations[i].messages.append(userMessage)
-      conversations[i].refreshTitle(from: prompt)
+      let titleSource = MessageContentFilter.render(prompt).visibleText
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      conversations[i].refreshTitle(from: titleSource.isEmpty ? prompt : titleSource)
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
         conversations[i].messages[lastIndex].text = prompt
@@ -854,6 +928,7 @@ final class AppStore: ObservableObject {
         throw ConversationImportError.missingExistingConversation
       }
 
+      let replacedMessages = conversations[index].messages
       var conversation = preview.conversation
       conversation.id = conflict.existingID
       conversation.title = conversations[index].title
@@ -865,6 +940,7 @@ final class AppStore: ObservableObject {
       selectedConversationID = conversation.id
       selectedConversationIDs.removeAll()
       saveConversations()
+      deleteUnreferencedVoiceRecordings(from: replacedMessages)
     }
   }
 
@@ -1545,6 +1621,7 @@ final class AppStore: ObservableObject {
       lhsMessage.role == rhsMessage.role
         && lhsMessage.text == rhsMessage.text
         && lhsMessage.createdAt == rhsMessage.createdAt
+        && lhsMessage.voiceRecordingFilename == rhsMessage.voiceRecordingFilename
     }
   }
 

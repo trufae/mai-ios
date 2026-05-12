@@ -7,6 +7,7 @@ enum PocketMaiDirectories {
     "settings.json",
     "conversations.json",
     "conversations",
+    "voice-recordings",
   ])
 
   private static var documentsURL: URL {
@@ -23,6 +24,10 @@ enum PocketMaiDirectories {
       FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
       ?? URL(fileURLWithPath: NSTemporaryDirectory())
     return applicationSupport.appendingPathComponent(appPrivateDirectoryName, isDirectory: true)
+  }
+
+  static var voiceRecordingsURL: URL {
+    appDataURL.appendingPathComponent("voice-recordings", isDirectory: true)
   }
 
   private static var legacyDocumentsAppDataURL: URL {
@@ -45,8 +50,29 @@ enum PocketMaiDirectories {
 
   static func prepareStorage(fileManager: FileManager = .default) {
     try? fileManager.createDirectory(at: appDataURL, withIntermediateDirectories: true)
+    try? fileManager.createDirectory(at: voiceRecordingsURL, withIntermediateDirectories: true)
     try? fileManager.createDirectory(at: filesWorkspaceURL, withIntermediateDirectories: true)
     migrateLegacyDocumentsAppData(fileManager: fileManager)
+  }
+
+  @discardableResult
+  static func ensureVoiceRecordings() throws -> URL {
+    let url = voiceRecordingsURL
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  static func voiceRecordingURL(filename: String) -> URL? {
+    let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty,
+      name != ".",
+      name != "..",
+      !name.contains("/"),
+      !name.contains("\\")
+    else {
+      return nil
+    }
+    return voiceRecordingsURL.appendingPathComponent(name)
   }
 
   private static func migrateLegacyDocumentsAppData(fileManager: FileManager) {

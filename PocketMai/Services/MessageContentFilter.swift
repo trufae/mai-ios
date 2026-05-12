@@ -13,7 +13,7 @@ struct HiddenMessageSection: Identifiable {
 
 enum MessageContentFilter {
   private static let hiddenTags = [
-    "context", "tool_context", "tool_run", "tool_call", "think", "conversation",
+    "context", "tool_context", "tool_run", "tool_call", "think", "conversation", "speech",
   ]
   private static let promptStripTags: Set<String> = [
     "context", "tool_context", "conversation", "think", "tool_call",

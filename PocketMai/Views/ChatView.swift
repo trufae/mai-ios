@@ -18,6 +18,7 @@ struct ChatView: View {
   @State private var pendingScrollToMessageID: UUID?
   @State private var fontSizePinchBase: Double?
   @StateObject private var audioExporter = TTSExporter()
+  @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
 
@@ -393,7 +394,7 @@ struct ChatView: View {
     ScrollViewReader { proxy in
       ScrollView {
         VStack(spacing: 14) {
-          if currentConversationIsEmpty {
+          if currentConversationIsEmpty && liveVoiceSession.previewMessage == nil {
             emptyState
               .containerRelativeFrame(.vertical, alignment: .center)
           } else {
@@ -422,6 +423,18 @@ struct ChatView: View {
                 MessageListAnchorMarker(messageID: message.id)
               }
               .id(message.id)
+            }
+            if let preview = liveVoiceSession.previewMessage {
+              MessageBubble(
+                message: preview,
+                toolSettings: store.settings.toolSettings,
+                openAIEndpoints: store.settings.openAIEndpoints,
+                appearance: store.settings.appearance,
+                renderMarkdown: store.settings.renderMarkdownInChat,
+                onDelete: {},
+                showThinking: store.currentConversation?.showThinking ?? false
+              )
+              .id(preview.id)
             }
           }
           Color.clear
@@ -457,6 +470,10 @@ struct ChatView: View {
         DispatchQueue.main.async {
           scrollToBottom(proxy, animated: false)
         }
+      }
+      .onChange(of: liveVoiceSession.transcript) { _, _ in
+        guard !userScrolledAfterLastMessage else { return }
+        scrollToBottom(proxy, animated: false)
       }
       .onChange(of: pendingScrollToMessageID) { _, target in
         guard let target else { return }
@@ -715,37 +732,48 @@ struct ChatView: View {
       store: store,
       placeholder: composerPlaceholder,
       conversationID: store.currentConversation?.id,
-      isResponding: currentChatIsResponding
+      isResponding: currentChatIsResponding,
+      liveVoiceSession: liveVoiceSession
     )
-    .equatable()
   }
 }
 
-private struct ChatComposer: View, Equatable {
+private struct ChatComposer: View {
+  @EnvironmentObject private var ttsPlayer: TTSPlayer
   let store: AppStore
   let placeholder: String
   let conversationID: UUID?
   let isResponding: Bool
+  @ObservedObject var liveVoiceSession: LiveVoiceSession
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
   @State private var draftText = ""
-
-  nonisolated static func == (lhs: ChatComposer, rhs: ChatComposer) -> Bool {
-    lhs.placeholder == rhs.placeholder
-      && lhs.conversationID == rhs.conversationID
-      && lhs.isResponding == rhs.isResponding
-  }
 
   private var canSubmitDraft: Bool {
     !isResponding && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  private var sendButtonColor: Color {
-    if isResponding { return .red }
-    return canSubmitDraft ? .accentColor : .secondary
+  var body: some View {
+    Group {
+      if liveVoiceSession.isActive {
+        voiceControls
+      } else {
+        textControls
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .simultaneousGesture(composerKeyboardDismissGesture)
+    .onAppear {
+      draftText = store.draftText(for: conversationID)
+    }
+    .onChange(of: conversationID) { oldID, newID in
+      store.setDraftText(draftText, for: oldID)
+      draftText = store.draftText(for: newID)
+    }
   }
 
-  var body: some View {
+  private var textControls: some View {
     HStack(alignment: .bottom, spacing: 10) {
       toolMenu
 
@@ -763,30 +791,115 @@ private struct ChatComposer: View, Equatable {
       Button {
         if let id = conversationID, isResponding {
           store.cancelResponse(in: id)
-        } else {
+        } else if canSubmitDraft {
           submitDraft()
+        } else {
+          liveVoiceSession.start(store: store, ttsPlayer: ttsPlayer)
         }
       } label: {
-        Image(systemName: isResponding ? "stop.circle" : "arrow.up.circle")
+        Image(systemName: trailingActionSystemImage)
           .font(.title2)
           .symbolRenderingMode(.hierarchical)
-          .foregroundStyle(sendButtonColor)
+          .foregroundStyle(trailingActionColor)
           .frame(width: 24, height: 24)
           .contentShape(Circle())
       }
       .buttonStyle(.glass)
-      .disabled(!isResponding && !canSubmitDraft)
+      .disabled(!isResponding && liveVoiceSession.isActive)
+      .help(trailingActionHelp)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .simultaneousGesture(composerKeyboardDismissGesture)
-    .onAppear {
-      draftText = store.draftText(for: conversationID)
+  }
+
+  private var trailingActionSystemImage: String {
+    if isResponding {
+      return "stop.circle"
     }
-    .onChange(of: conversationID) { oldID, newID in
-      store.setDraftText(draftText, for: oldID)
-      draftText = store.draftText(for: newID)
+    if canSubmitDraft {
+      return "arrow.up.circle.fill"
     }
+    return "mic.circle"
+  }
+
+  private var trailingActionColor: Color {
+    isResponding ? .red : .accentColor
+  }
+
+  private var trailingActionHelp: String {
+    if isResponding {
+      return "Stop response"
+    }
+    if canSubmitDraft {
+      return "Send message"
+    }
+    return "Start voice conversation"
+  }
+
+  private var voiceControls: some View {
+    HStack(spacing: 12) {
+      Button {
+        liveVoiceSession.togglePauseOrRecord(store: store, ttsPlayer: ttsPlayer)
+      } label: {
+        Image(systemName: liveVoiceSession.primaryControlSystemImage)
+          .font(.title2)
+          .symbolRenderingMode(.hierarchical)
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 28, height: 28)
+          .contentShape(Circle())
+      }
+      .buttonStyle(.glass)
+      .disabled(liveVoiceSession.state == .requestingPermission)
+      .help(liveVoiceSession.primaryControlHelp)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(liveVoiceSession.state.statusText)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.primary)
+        Text(liveVoiceSession.errorMessage ?? voiceStatusDetail)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Button {
+        Task { @MainActor in
+          await stopVoiceAndKeepTranscript()
+        }
+      } label: {
+        Image(systemName: "xmark.circle.fill")
+          .font(.title2)
+          .symbolRenderingMode(.hierarchical)
+          .foregroundStyle(Color.red)
+          .frame(width: 28, height: 28)
+          .contentShape(Circle())
+      }
+      .buttonStyle(.glass)
+      .help("Stop conversation")
+    }
+  }
+
+  @MainActor
+  private func stopVoiceAndKeepTranscript() async {
+    let text = await liveVoiceSession.stopForDraft(cancelResponse: true)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+    draftText = mergedDraftText(appending: text)
+    store.setDraftText(draftText, for: conversationID)
+    composerFocused = true
+  }
+
+  private func mergedDraftText(appending text: String) -> String {
+    let current = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !current.isEmpty else { return text }
+    return "\(current)\n\(text)"
+  }
+
+  private var voiceStatusDetail: String {
+    let trimmed = liveVoiceSession.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty {
+      return trimmed
+    }
+    return "\(store.settings.conversation.speechRecognitionBackend.displayName) · \(liveVoiceSession.languageIdentifier)"
   }
 
   private var draftBinding: Binding<String> {

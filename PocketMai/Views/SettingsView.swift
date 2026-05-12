@@ -1,4 +1,5 @@
 import AVFoundation
+import Speech
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -410,6 +411,12 @@ struct SettingsView: View {
       } label: {
         Label("Voices", systemImage: "speaker.wave.2")
       }
+
+      DisclosureGroup {
+        conversationOptionsContent
+      } label: {
+        Label("Conversation", systemImage: "mic.badge.plus")
+      }
     } header: {
       Text("Look and Feel")
     }
@@ -524,6 +531,69 @@ struct SettingsView: View {
     Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
       .font(.caption)
       .foregroundStyle(.secondary)
+  }
+
+  @ViewBuilder
+  private var conversationOptionsContent: some View {
+    Stepper(
+      value: settingsBinding(\.conversation.silenceTimeoutSeconds),
+      in: ConversationSettings.silenceTimeoutRange,
+      step: ConversationSettings.silenceTimeoutStep
+    ) {
+      Text(
+        "Silence \(store.settings.conversation.silenceTimeoutSeconds.formatted(.number.precision(.fractionLength(0...2)))) sec"
+      )
+    }
+
+    Picker("Speech to Text", selection: settingsBinding(\.conversation.speechRecognitionBackend)) {
+      ForEach(LiveSpeechRecognitionBackend.allCases) { backend in
+        Label(
+          backend.displayName,
+          systemImage: backend.systemImage
+        )
+        .tag(backend)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Picker(
+      "Language",
+      selection: settingsBinding(\.conversation.speechRecognitionLanguageIdentifier)
+    ) {
+      ForEach(speechRecognitionLocaleOptions, id: \.identifier) { locale in
+        Text(speechRecognitionLanguageTitle(locale.identifier)).tag(locale.identifier)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Text(
+      "Native iOS Live streams partial transcription with SpeechTranscriber. Native iOS File records first and transcribes after pause."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+  }
+
+  private var speechRecognitionLocaleOptions: [Locale] {
+    let selected = store.settings.conversation.speechRecognitionLanguageIdentifier
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    var locales = Array(SFSpeechRecognizer.supportedLocales())
+    if !selected.isEmpty, !locales.contains(where: { $0.identifier == selected }) {
+      locales.append(Locale(identifier: selected))
+    }
+    return locales.sorted {
+      speechRecognitionLanguageTitle($0.identifier)
+        .localizedCaseInsensitiveCompare(speechRecognitionLanguageTitle($1.identifier))
+        == .orderedAscending
+    }
+  }
+
+  private func speechRecognitionLanguageTitle(_ identifier: String) -> String {
+    let locale = Locale(identifier: identifier)
+    let name =
+      Locale.current.localizedString(forIdentifier: identifier)
+      ?? locale.localizedString(forIdentifier: identifier)
+      ?? identifier
+    return "\(name) (\(identifier))"
   }
 
   @ViewBuilder

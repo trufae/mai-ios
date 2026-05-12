@@ -265,6 +265,68 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   }
 }
 
+enum LiveSpeechRecognitionBackend: String, Codable, CaseIterable, Identifiable, Sendable {
+  case nativeIOSSpeechTranscriber
+  case nativeIOS
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .nativeIOSSpeechTranscriber: "Native iOS Live"
+    case .nativeIOS: "Native iOS File"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .nativeIOSSpeechTranscriber: "waveform.and.mic"
+    case .nativeIOS: "doc.badge.waveform"
+    }
+  }
+
+}
+
+struct ConversationSettings: Codable, Equatable, Sendable {
+  static let silenceTimeoutRange: ClosedRange<Double> = 0.5...8
+  static let silenceTimeoutStep: Double = 0.25
+
+  var silenceTimeoutSeconds: Double = 1.25
+  var speechRecognitionBackend: LiveSpeechRecognitionBackend = .nativeIOSSpeechTranscriber
+  var speechRecognitionLanguageIdentifier: String = Locale.current.identifier
+
+  static let defaults = ConversationSettings()
+
+  init() {}
+
+  enum CodingKeys: String, CodingKey {
+    case silenceTimeoutSeconds, speechRecognitionBackend, speechRecognitionLanguageIdentifier
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let defaults = ConversationSettings.defaults
+    let timeout =
+      (try? c.decode(Double.self, forKey: .silenceTimeoutSeconds))
+      ?? defaults.silenceTimeoutSeconds
+    silenceTimeoutSeconds = Self.clampedSilenceTimeout(timeout)
+    speechRecognitionBackend =
+      (try? c.decode(LiveSpeechRecognitionBackend.self, forKey: .speechRecognitionBackend))
+      ?? defaults.speechRecognitionBackend
+    let languageIdentifier =
+      (try? c.decode(String.self, forKey: .speechRecognitionLanguageIdentifier))
+      ?? defaults.speechRecognitionLanguageIdentifier
+    speechRecognitionLanguageIdentifier =
+      languageIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? defaults.speechRecognitionLanguageIdentifier
+      : languageIdentifier
+  }
+
+  static func clampedSilenceTimeout(_ value: Double) -> Double {
+    min(max(value, silenceTimeoutRange.lowerBound), silenceTimeoutRange.upperBound)
+  }
+}
+
 enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case datetime
   case location
@@ -489,6 +551,34 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var role: ChatRole
   var text: String
   var createdAt: Date = Date()
+  var voiceRecordingFilename: String? = nil
+
+  enum CodingKeys: String, CodingKey {
+    case id, role, text, createdAt, voiceRecordingFilename
+  }
+
+  init(
+    id: UUID = UUID(),
+    role: ChatRole,
+    text: String,
+    createdAt: Date = Date(),
+    voiceRecordingFilename: String? = nil
+  ) {
+    self.id = id
+    self.role = role
+    self.text = text
+    self.createdAt = createdAt
+    self.voiceRecordingFilename = voiceRecordingFilename
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(UUID.self, forKey: .id)
+    role = try c.decode(ChatRole.self, forKey: .role)
+    text = try c.decode(String.self, forKey: .text)
+    createdAt = try c.decode(Date.self, forKey: .createdAt)
+    voiceRecordingFilename = try? c.decode(String.self, forKey: .voiceRecordingFilename)
+  }
 }
 
 struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
@@ -1173,6 +1263,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var includeAssistantResponsesInContext: Bool = true
   var includeReasoningContentInContext: Bool = true
   var appearance: AppearanceSettings = .defaults
+  var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
 
   static let defaults = AppSettings()
@@ -1214,7 +1305,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case toolSettings, mcpServers, memory, toolCallingMode
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
-    case appearance, renderMarkdownInChat
+    case appearance, conversation, renderMarkdownInChat
   }
 
   init(from decoder: Decoder) throws {
@@ -1259,6 +1350,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? true
     appearance =
       (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
+    conversation =
+      (try? c.decode(ConversationSettings.self, forKey: .conversation)) ?? .defaults
     renderMarkdownInChat =
       (try? c.decode(Bool.self, forKey: .renderMarkdownInChat)) ?? true
   }

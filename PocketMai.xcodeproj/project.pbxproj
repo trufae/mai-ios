@@ -282,7 +282,7 @@
 				A0000000000000000000001D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		A00000000000000000000019 /* Build configuration list for PBXProject "PocketMai" */ = {
 			isa = XCConfigurationList;
@@ -291,7 +291,7 @@
 				A0000000000000000000001B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 

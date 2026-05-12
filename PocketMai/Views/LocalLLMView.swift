@@ -281,7 +281,7 @@ struct LocalLLMView: View {
           .font(.caption)
           .foregroundStyle(vm.isActiveModelReady ? Color.secondary : Color.primary)
       } header: {
-        Text("Model")
+        Text("MLX LLM Model")
       }
 
       Section {
@@ -301,7 +301,7 @@ struct LocalLLMView: View {
         }
         .disabled(vm.isLoading)
       } header: {
-        Text("Downloaded Models")
+        Text("Downloaded MLX LLM Models")
       }
     }
     .navigationTitle("Local MLX LLM")
@@ -351,4 +351,5 @@ struct LocalLLMView: View {
       .disabled(vm.isLoading)
     }
   }
+
 }

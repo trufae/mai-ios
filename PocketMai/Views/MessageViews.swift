@@ -195,6 +195,9 @@ private struct MessageBubbleContent: View, Equatable {
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
       }
+      if hasVoiceRecording {
+        VoiceRecordingPlaybackButton(message: message)
+      }
       if visibleText.isEmpty {
         Text("...")
           .font(messageFont)
@@ -310,6 +313,15 @@ private struct MessageBubbleContent: View, Equatable {
 
   private var iconColor: Color {
     message.role == .error ? .red : .accentColor
+  }
+
+  private var hasVoiceRecording: Bool {
+    guard isUser, let filename = message.voiceRecordingFilename,
+      let url = PocketMaiDirectories.voiceRecordingURL(filename: filename)
+    else {
+      return false
+    }
+    return FileManager.default.fileExists(atPath: url.path)
   }
 
   private var backgroundStyle: some ShapeStyle {
@@ -810,6 +822,50 @@ private struct FoldableMetaSection: View {
     .onChange(of: initiallyExpanded) { _, expandedByDefault in
       expanded = expandedByDefault
     }
+  }
+}
+
+private struct VoiceRecordingPlaybackButton: View {
+  @EnvironmentObject private var ttsPlayer: TTSPlayer
+
+  let message: ChatMessage
+
+  private var isCurrent: Bool {
+    ttsPlayer.currentMessageID == message.id && ttsPlayer.currentRole == .user
+  }
+
+  private var isPlaying: Bool {
+    isCurrent && ttsPlayer.isSpeaking && !ttsPlayer.isPaused
+  }
+
+  private var systemImage: String {
+    isPlaying ? "pause.circle.fill" : "play.circle.fill"
+  }
+
+  private var title: String {
+    if isPlaying { return "Pause recording" }
+    if isCurrent && ttsPlayer.isPaused { return "Resume recording" }
+    return "Play recording"
+  }
+
+  var body: some View {
+    Button {
+      ttsPlayer.toggleRecordingPlayback(for: message, title: "User Recording")
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: systemImage)
+          .font(.system(size: 30, weight: .semibold))
+          .symbolRenderingMode(.hierarchical)
+        Text(title)
+          .font(.callout.weight(.semibold))
+      }
+      .padding(.vertical, 6)
+      .padding(.horizontal, 8)
+      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(Color.accentColor)
+    .accessibilityLabel(title)
   }
 }
 
