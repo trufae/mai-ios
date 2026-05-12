@@ -193,11 +193,13 @@ enum ToolAgentRegistry {
       for: conversation.enabledTools,
       settings: settings)
     for server in settings.mcpServers
-    where server.isEnabled && server.hasValidScheme {
+    where server.isEnabled && server.hasValidScheme
+      && conversation.enabledMCPServers.contains(server.id)
+    {
       let tools = mcpTools[server.id] ?? []
       for tool in tools {
-        let key = "\(server.id.uuidString):\(tool.name)"
-        if conversation.disabledMCPTools.contains(key) { continue }
+        let key = MCPToolSelection.key(serverID: server.id, toolName: tool.name)
+        guard conversation.enabledMCPTools.contains(key) else { continue }
         let description = cleanedToolDescription(
           tool.description,
           fallback: "MCP tool from \(server.name).")
@@ -351,13 +353,14 @@ enum ToolAgentRegistry {
     conversation: Conversation,
     store: AppStore
   ) async -> String {
-    let conversationDisabled = conversation.disabledMCPTools
     for server in store.settings.mcpServers
-    where server.isEnabled && server.hasValidScheme {
+    where server.isEnabled && server.hasValidScheme
+      && conversation.enabledMCPServers.contains(server.id)
+    {
       let tools = store.mcpTools[server.id] ?? []
       guard tools.contains(where: { $0.name == call.name }) else { continue }
-      let key = "\(server.id.uuidString):\(call.name)"
-      if conversationDisabled.contains(key) {
+      let key = MCPToolSelection.key(serverID: server.id, toolName: call.name)
+      if !conversation.enabledMCPTools.contains(key) {
         return "Error: tool '\(call.name)' is disabled for this conversation."
       }
       do {

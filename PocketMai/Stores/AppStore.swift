@@ -237,6 +237,8 @@ final class AppStore: ObservableObject {
     }
     conversation.systemPromptID = settings.defaultSystemPromptID
     conversation.enabledTools = settings.defaultEnabledTools
+    conversation.enabledMCPServers = settings.defaultEnabledMCPServers
+    conversation.enabledMCPTools = settings.defaultEnabledMCPTools
     conversation.usesStreaming = settings.streamByDefault
     conversation.showThinking = settings.showThinkingByDefault
     return conversation
@@ -258,6 +260,8 @@ final class AppStore: ObservableObject {
       && normalizedModelID(conversation.modelID) == normalizedModelID(defaults.modelID)
       && conversation.systemPromptID == defaults.systemPromptID
       && conversation.enabledTools == defaults.enabledTools
+      && conversation.enabledMCPServers == defaults.enabledMCPServers
+      && conversation.enabledMCPTools == defaults.enabledMCPTools
       && conversation.usesStreaming == defaults.usesStreaming
       && conversation.showThinking == defaults.showThinking
       && conversation.reasoningLevel == defaults.reasoningLevel
@@ -461,6 +465,8 @@ final class AppStore: ObservableObject {
       conversation.endpointID = source.endpointID
       conversation.systemPromptID = source.systemPromptID
       conversation.enabledTools = source.enabledTools
+      conversation.enabledMCPServers = source.enabledMCPServers
+      conversation.enabledMCPTools = source.enabledMCPTools
       conversation.usesStreaming = source.usesStreaming
       conversation.disabledMCPTools = source.disabledMCPTools
       conversation.reasoningLevel = source.reasoningLevel
@@ -1185,10 +1191,41 @@ final class AppStore: ObservableObject {
     do {
       let tools = try await MCPHTTPClient.fetchTools(server: server)
       mcpTools[server.id] = tools
+      seedEnabledMCPToolsIfNeeded(serverID: server.id, tools: tools)
       mcpStatuses[server.id] = .available
     } catch {
       mcpTools[server.id] = nil
       mcpStatuses[server.id] = .failed(error.localizedDescription)
+    }
+  }
+
+  private func seedEnabledMCPToolsIfNeeded(serverID: UUID, tools: [MCPToolDescriptor]) {
+    guard !tools.isEmpty else { return }
+    let prefix = MCPToolSelection.prefix(serverID: serverID)
+    let toolKeys = Set(
+      tools.map { MCPToolSelection.key(serverID: serverID, toolName: $0.name) })
+    var settingsChanged = false
+    if settings.defaultEnabledMCPServers.contains(serverID),
+      !settings.defaultEnabledMCPTools.contains(where: { $0.hasPrefix(prefix) })
+    {
+      settings.defaultEnabledMCPTools.formUnion(toolKeys)
+      settingsChanged = true
+    }
+
+    var conversationsChanged = false
+    for index in conversations.indices
+    where conversations[index].enabledMCPServers.contains(serverID)
+      && !conversations[index].enabledMCPTools.contains(where: { $0.hasPrefix(prefix) })
+    {
+      conversations[index].enabledMCPTools.formUnion(toolKeys)
+      conversationsChanged = true
+    }
+
+    if settingsChanged {
+      saveSettings()
+    }
+    if conversationsChanged {
+      saveConversations()
     }
   }
 
@@ -1607,6 +1644,8 @@ final class AppStore: ObservableObject {
       && lhs.endpointID == rhs.endpointID
       && lhs.systemPromptID == rhs.systemPromptID
       && lhs.enabledTools == rhs.enabledTools
+      && lhs.enabledMCPServers == rhs.enabledMCPServers
+      && lhs.enabledMCPTools == rhs.enabledMCPTools
       && lhs.usesStreaming == rhs.usesStreaming
       && lhs.disabledMCPTools == rhs.disabledMCPTools
       && lhs.reasoningLevel == rhs.reasoningLevel
@@ -1730,6 +1769,8 @@ final class AppStore: ObservableObject {
       includeAssistantResponsesInContext: settings.includeAssistantResponsesInContext,
       includeReasoningContentInContext: settings.includeReasoningContentInContext,
       enabledTools: conversation.enabledTools.map(\.rawValue).sorted(),
+      enabledMCPServers: conversation.enabledMCPServers.map(\.uuidString).sorted(),
+      enabledMCPTools: Array(conversation.enabledMCPTools).sorted(),
       disabledMCPTools: Array(conversation.disabledMCPTools).sorted(),
       mcpServers: settings.mcpServers.map { server in
         ConversationDebugMCPServer(

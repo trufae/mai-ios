@@ -1216,7 +1216,14 @@ struct SettingsView: View {
     case .mcpServer:
       guard deletion.offsets.allSatisfy({ store.settings.mcpServers.indices.contains($0) })
       else { return }
+      let removedIDs = deletion.offsets.map { store.settings.mcpServers[$0].id }
       store.settings.mcpServers.remove(atOffsets: deletion.offsets)
+      for id in removedIDs {
+        let prefix = MCPToolSelection.prefix(serverID: id)
+        store.settings.defaultEnabledMCPServers.remove(id)
+        store.settings.defaultEnabledMCPTools = Set(
+          store.settings.defaultEnabledMCPTools.filter { !$0.hasPrefix(prefix) })
+      }
       store.saveSettings()
     }
   }

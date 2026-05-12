@@ -1291,8 +1291,8 @@ private struct ToolPickerPopover: View {
         Button {
           toggleServer(server.id)
         } label: {
-          Image(systemName: server.isEnabled ? "checkmark.circle.fill" : "circle")
-            .foregroundStyle(server.isEnabled ? Color.accentColor : Color.secondary)
+          Image(systemName: isMCPServerEnabled(server.id) ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(isMCPServerEnabled(server.id) ? Color.accentColor : Color.secondary)
         }
         .buttonStyle(.plain)
 
@@ -1386,21 +1386,52 @@ private struct ToolPickerPopover: View {
   }
 
   private func toggleBuiltInTool(_ tool: BuiltInToolID) {
+    let nextValue = !isBuiltInToolEnabled(tool)
     store.updateCurrentConversation { conversation in
-      if conversation.enabledTools.contains(tool) {
-        conversation.enabledTools.remove(tool)
-      } else {
+      if nextValue {
         conversation.enabledTools.insert(tool)
+      } else {
+        conversation.enabledTools.remove(tool)
       }
     }
+    if nextValue {
+      store.settings.defaultEnabledTools.insert(tool)
+    } else {
+      store.settings.defaultEnabledTools.remove(tool)
+    }
+    store.saveSettings()
   }
 
   // MARK: - MCP server helpers
 
   private func toggleServer(_ id: UUID) {
-    guard let index = store.settings.mcpServers.firstIndex(where: { $0.id == id }) else { return }
-    store.settings.mcpServers[index].isEnabled.toggle()
+    let nextValue = !isMCPServerEnabled(id)
+    let keys = mcpToolKeys(serverID: id)
+    let prefix = MCPToolSelection.prefix(serverID: id)
+    store.updateCurrentConversation { conversation in
+      if nextValue {
+        conversation.enabledMCPServers.insert(id)
+        conversation.enabledMCPTools.formUnion(keys)
+      } else {
+        conversation.enabledMCPServers.remove(id)
+        conversation.enabledMCPTools = Set(
+          conversation.enabledMCPTools.filter { !$0.hasPrefix(prefix) })
+      }
+    }
+    if nextValue {
+      store.settings.defaultEnabledMCPServers.insert(id)
+      store.settings.defaultEnabledMCPTools.formUnion(keys)
+    } else {
+      store.settings.defaultEnabledMCPServers.remove(id)
+      store.settings.defaultEnabledMCPTools = Set(
+        store.settings.defaultEnabledMCPTools.filter { !$0.hasPrefix(prefix) })
+    }
     store.saveSettings()
+  }
+
+  private func isMCPServerEnabled(_ id: UUID) -> Bool {
+    store.currentConversation?.enabledMCPServers.contains(id)
+      ?? store.settings.defaultEnabledMCPServers.contains(id)
   }
 
   private func isCheckingServer(_ id: UUID) -> Bool {
@@ -1429,23 +1460,47 @@ private struct ToolPickerPopover: View {
   }
 
   private func mcpToolKey(serverID: UUID, toolName: String) -> String {
-    "\(serverID.uuidString):\(toolName)"
+    MCPToolSelection.key(serverID: serverID, toolName: toolName)
+  }
+
+  private func mcpToolKeys(serverID: UUID) -> Set<String> {
+    Set(
+      (store.mcpTools[serverID] ?? []).map {
+        mcpToolKey(serverID: serverID, toolName: $0.name)
+      })
   }
 
   private func isMCPToolEnabled(serverID: UUID, toolName: String) -> Bool {
     let key = mcpToolKey(serverID: serverID, toolName: toolName)
-    return !(store.currentConversation?.disabledMCPTools.contains(key) ?? false)
+    return store.currentConversation?.enabledMCPTools.contains(key)
+      ?? store.settings.defaultEnabledMCPTools.contains(key)
   }
 
   private func toggleMCPTool(serverID: UUID, toolName: String) {
     let key = mcpToolKey(serverID: serverID, toolName: toolName)
+    let prefix = MCPToolSelection.prefix(serverID: serverID)
+    let nextValue = !isMCPToolEnabled(serverID: serverID, toolName: toolName)
     store.updateCurrentConversation { conversation in
-      if conversation.disabledMCPTools.contains(key) {
-        conversation.disabledMCPTools.remove(key)
+      if nextValue {
+        conversation.enabledMCPServers.insert(serverID)
+        conversation.enabledMCPTools.insert(key)
       } else {
-        conversation.disabledMCPTools.insert(key)
+        conversation.enabledMCPTools.remove(key)
+        if !conversation.enabledMCPTools.contains(where: { $0.hasPrefix(prefix) }) {
+          conversation.enabledMCPServers.remove(serverID)
+        }
       }
     }
+    if nextValue {
+      store.settings.defaultEnabledMCPServers.insert(serverID)
+      store.settings.defaultEnabledMCPTools.insert(key)
+    } else {
+      store.settings.defaultEnabledMCPTools.remove(key)
+      if !store.settings.defaultEnabledMCPTools.contains(where: { $0.hasPrefix(prefix) }) {
+        store.settings.defaultEnabledMCPServers.remove(serverID)
+      }
+    }
+    store.saveSettings()
   }
 }
 

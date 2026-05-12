@@ -635,6 +635,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var enabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var usesStreaming: Bool = true
   var isPinned: Bool = false
+  var enabledMCPServers: Set<UUID> = AppSettings.defaultMCPServers
+  var enabledMCPTools: Set<String> = AppSettings.defaultMCPTools
   var disabledMCPTools: Set<String> = []
   var reasoningLevel: ReasoningLevel = .automatic
   var showThinking: Bool = false
@@ -656,6 +658,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case enabledTools
     case usesStreaming
     case isPinned
+    case enabledMCPServers
+    case enabledMCPTools
     case disabledMCPTools
     case reasoningLevel
     case showThinking
@@ -678,6 +682,10 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     enabledTools = try container.decode(Set<BuiltInToolID>.self, forKey: .enabledTools)
     usesStreaming = try container.decode(Bool.self, forKey: .usesStreaming)
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
+    enabledMCPServers =
+      (try? container.decode(Set<UUID>.self, forKey: .enabledMCPServers)) ?? []
+    enabledMCPTools =
+      (try? container.decode(Set<String>.self, forKey: .enabledMCPTools)) ?? []
     disabledMCPTools =
       (try? container.decode(Set<String>.self, forKey: .disabledMCPTools)) ?? []
     reasoningLevel =
@@ -703,6 +711,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(enabledTools, forKey: .enabledTools)
     try container.encode(usesStreaming, forKey: .usesStreaming)
     try container.encode(isPinned, forKey: .isPinned)
+    try container.encode(enabledMCPServers, forKey: .enabledMCPServers)
+    try container.encode(enabledMCPTools, forKey: .enabledMCPTools)
     try container.encode(disabledMCPTools, forKey: .disabledMCPTools)
     try container.encode(reasoningLevel, forKey: .reasoningLevel)
     try container.encode(showThinking, forKey: .showThinking)
@@ -843,6 +853,8 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var includeAssistantResponsesInContext: Bool?
   var includeReasoningContentInContext: Bool?
   var enabledTools: [String]
+  var enabledMCPServers: [String]
+  var enabledMCPTools: [String]
   var disabledMCPTools: [String]
   var mcpServers: [ConversationDebugMCPServer]
   var fullToolDefinitions: [ConversationDebugToolDefinition]
@@ -1023,6 +1035,16 @@ struct MCPToolDescriptor: Identifiable, Codable, Equatable, Sendable {
     name = try c.decode(String.self, forKey: .name)
     description = (try? c.decode(String.self, forKey: .description)) ?? ""
     parametersJSON = (try? c.decode(String.self, forKey: .parametersJSON)) ?? ""
+  }
+}
+
+enum MCPToolSelection {
+  static func key(serverID: UUID, toolName: String) -> String {
+    "\(serverID.uuidString):\(toolName)"
+  }
+
+  static func prefix(serverID: UUID) -> String {
+    "\(serverID.uuidString):"
   }
 }
 
@@ -1234,9 +1256,12 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 }
 
 struct AppSettings: Codable, Equatable, Sendable {
+  static let currentSettingsVersion = 1
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
   static let defaultTools: Set<BuiltInToolID> = []
+  static let defaultMCPServers: Set<UUID> = []
+  static let defaultMCPTools: Set<String> = []
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful assistant",
     text:
@@ -1253,6 +1278,9 @@ struct AppSettings: Codable, Equatable, Sendable {
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
   var defaultEnabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
+  var settingsVersion: Int = AppSettings.currentSettingsVersion
+  var defaultEnabledMCPServers: Set<UUID> = AppSettings.defaultMCPServers
+  var defaultEnabledMCPTools: Set<String> = AppSettings.defaultMCPTools
   var toolSettings: NativeToolSettings = .defaults
   var mcpServers: [MCPServer] = []
   var memory: String = ""
@@ -1299,9 +1327,11 @@ struct AppSettings: Codable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
+    case settingsVersion
     case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
       showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
+    case defaultEnabledMCPServers, defaultEnabledMCPTools
     case toolSettings, mcpServers, memory, toolCallingMode
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
@@ -1310,6 +1340,9 @@ struct AppSettings: Codable, Equatable, Sendable {
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
+    let storedSettingsVersion =
+      (try? c.decode(Int.self, forKey: .settingsVersion)) ?? 0
+    settingsVersion = Self.currentSettingsVersion
     defaultProvider =
       (try? c.decode(ProviderKind.self, forKey: .defaultProvider)) ?? .apple
     appleModelID = (try? c.decode(String.self, forKey: .appleModelID)) ?? ""
@@ -1327,11 +1360,30 @@ struct AppSettings: Codable, Equatable, Sendable {
     defaultSystemPromptID =
       (try? c.decode(UUID.self, forKey: .defaultSystemPromptID))
       ?? (systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)
-    defaultEnabledTools =
+    let decodedDefaultEnabledTools =
       (try? c.decode(Set<BuiltInToolID>.self, forKey: .defaultEnabledTools))
       ?? AppSettings.defaultTools
+    defaultEnabledTools =
+      storedSettingsVersion < Self.currentSettingsVersion
+      ? AppSettings.defaultTools : decodedDefaultEnabledTools
+    let decodedDefaultEnabledMCPServers =
+      (try? c.decode(Set<UUID>.self, forKey: .defaultEnabledMCPServers))
+      ?? AppSettings.defaultMCPServers
+    let decodedDefaultEnabledMCPTools =
+      (try? c.decode(Set<String>.self, forKey: .defaultEnabledMCPTools))
+      ?? AppSettings.defaultMCPTools
+    defaultEnabledMCPServers =
+      storedSettingsVersion < Self.currentSettingsVersion
+      ? AppSettings.defaultMCPServers : decodedDefaultEnabledMCPServers
+    defaultEnabledMCPTools =
+      storedSettingsVersion < Self.currentSettingsVersion
+      ? AppSettings.defaultMCPTools : decodedDefaultEnabledMCPTools
     toolSettings =
       (try? c.decode(NativeToolSettings.self, forKey: .toolSettings)) ?? .defaults
+    if storedSettingsVersion < Self.currentSettingsVersion {
+      toolSettings.webSearchFetchingEnabled = false
+      toolSettings.filesWorkspaceAccessEnabled = false
+    }
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""
     let storedMode = (try? c.decode(String.self, forKey: .toolCallingMode)) ?? "text"
