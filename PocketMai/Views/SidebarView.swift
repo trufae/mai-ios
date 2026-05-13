@@ -12,6 +12,8 @@ struct SidebarView: View {
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
   var revealProgress: CGFloat = 1
+  private let floatingActionHorizontalInset: CGFloat = 18
+  private let floatingActionBottomInset: CGFloat = 22
 
   var body: some View {
     ZStack(alignment: .bottomTrailing) {
@@ -22,8 +24,6 @@ struct SidebarView: View {
         .modifier(SidebarPlaneEffect(progress: revealProgress))
       sidebarEdgeFades
       floatingActions
-        .padding(.trailing, 18)
-        .padding(.bottom, 22)
         .modifier(SidebarPlaneEffect(progress: revealProgress))
       SidebarDistanceTone(progress: revealProgress)
     }
@@ -176,19 +176,33 @@ struct SidebarView: View {
 
   private var floatingActions: some View {
     GeometryReader { proxy in
-      HStack(spacing: 10) {
+      let availableWidth = max(proxy.size.width - floatingActionHorizontalInset * 2, 0)
+      let isCompact = availableWidth < 300
+      let showsNewChatIcon = availableWidth >= 280
+
+      HStack(spacing: isCompact ? 6 : 10) {
         if isSelectionMode {
-          selectionFloatingActions
+          selectionFloatingActions(compact: isCompact)
         } else {
-          defaultFloatingActions(searchWidth: searchFieldWidth(containerWidth: proxy.size.width))
+          defaultFloatingActions(
+            searchWidth: searchFieldWidth(containerWidth: availableWidth),
+            compact: isCompact,
+            showsNewChatIcon: showsNewChatIcon)
         }
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+      .frame(width: availableWidth, alignment: .trailing)
+      .frame(maxHeight: .infinity, alignment: .bottomTrailing)
+      .padding(.horizontal, floatingActionHorizontalInset)
+      .padding(.bottom, floatingActionBottomInset)
     }
   }
 
   @ViewBuilder
-  private func defaultFloatingActions(searchWidth: CGFloat) -> some View {
+  private func defaultFloatingActions(
+    searchWidth: CGFloat,
+    compact: Bool,
+    showsNewChatIcon: Bool
+  ) -> some View {
     if isSearchActive {
       FloatingSearchField(
         text: $searchText,
@@ -200,15 +214,18 @@ struct SidebarView: View {
     } else {
       FloatingActionPill(
         title: "New Chat",
-        systemImage: "square.and.pencil",
-        prominent: true
+        systemImage: showsNewChatIcon ? "square.and.pencil" : nil,
+        prominent: true,
+        compact: compact
       ) {
         store.newConversation()
         onSelectConversation()
       }
+      Spacer(minLength: compact ? 0 : 4)
       FloatingActionIcon(
         systemImage: "magnifyingglass",
-        accessibilityLabel: "Search conversations"
+        accessibilityLabel: "Search conversations",
+        compact: compact
       ) {
         activateSearch()
       }
@@ -216,13 +233,15 @@ struct SidebarView: View {
         systemImage: showingArchive ? "tray.full.fill" : "archivebox",
         accessibilityLabel: showingArchive
           ? "Show active conversations" : "Show archived conversations",
-        isActive: showingArchive
+        isActive: showingArchive,
+        compact: compact
       ) {
         showingArchive.toggle()
       }
       FloatingActionIcon(
         systemImage: "gearshape",
-        accessibilityLabel: "Settings"
+        accessibilityLabel: "Settings",
+        compact: compact
       ) {
         showingSettings = true
       }
@@ -231,7 +250,7 @@ struct SidebarView: View {
   }
 
   private func searchFieldWidth(containerWidth: CGFloat) -> CGFloat {
-    min(max(containerWidth - 4, 276), 320)
+    min(max(containerWidth - 4, 240), 320)
   }
 
   private func activateSearch() {
@@ -251,17 +270,19 @@ struct SidebarView: View {
   }
 
   @ViewBuilder
-  private var selectionFloatingActions: some View {
+  private func selectionFloatingActions(compact: Bool) -> some View {
     let hasSelection = !selectedIDs.isEmpty
-    FloatingActionPill(title: "Cancel", prominent: true) {
+    FloatingActionPill(title: "Cancel", prominent: true, compact: compact) {
       withAnimation {
         isSelectionMode = false
         selectedIDs.removeAll()
       }
     }
+    Spacer(minLength: compact ? 0 : 4)
     FloatingActionIcon(
       systemImage: showingArchive ? "tray.and.arrow.up" : "archivebox",
-      accessibilityLabel: showingArchive ? "Unarchive selected" : "Archive selected"
+      accessibilityLabel: showingArchive ? "Unarchive selected" : "Archive selected",
+      compact: compact
     ) {
       archiveSelected()
     }
@@ -270,7 +291,8 @@ struct SidebarView: View {
     FloatingActionIcon(
       systemImage: "trash",
       accessibilityLabel: "Delete selected",
-      destructive: true
+      destructive: true,
+      compact: compact
     ) {
       deleteSelected()
     }
@@ -467,14 +489,15 @@ private struct FloatingActionIcon: View {
   let accessibilityLabel: String
   var isActive: Bool = false
   var destructive: Bool = false
+  var compact: Bool = false
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
         .font(.body.weight(.semibold))
-        .frame(width: 22, height: 22)
-        .padding(12)
+        .frame(width: compact ? 20 : 22, height: compact ? 20 : 22)
+        .padding(compact ? 11 : 12)
         .modifier(
           FloatingChrome(
             prominent: isActive,
@@ -531,18 +554,24 @@ private struct FloatingActionPill: View {
   let title: String
   var systemImage: String? = nil
   let prominent: Bool
+  var compact: Bool = false
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 8) {
+      HStack(spacing: compact ? 6 : 8) {
         if let systemImage {
-          Image(systemName: systemImage).font(.body.weight(.semibold))
+          Image(systemName: systemImage)
+            .font(.body.weight(.semibold))
+            .frame(width: compact ? 20 : nil, height: compact ? 20 : nil)
         }
-        Text(title).font(.body.weight(prominent ? .semibold : .medium))
+        Text(title)
+          .font(.body.weight(prominent ? .semibold : .medium))
+          .lineLimit(1)
+          .minimumScaleFactor(0.9)
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      .padding(.horizontal, compact ? 12 : 16)
+      .padding(.vertical, compact ? 11 : 12)
       .modifier(FloatingChrome(prominent: prominent, shape: Capsule()))
     }
     .buttonStyle(.plain)
