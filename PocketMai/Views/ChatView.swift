@@ -740,6 +740,7 @@ struct ChatView: View {
 
 private struct ChatComposer: View {
   @EnvironmentObject private var ttsPlayer: TTSPlayer
+  @Environment(\.scenePhase) private var scenePhase
   let store: AppStore
   let placeholder: String
   let conversationID: UUID?
@@ -770,6 +771,14 @@ private struct ChatComposer: View {
     .onChange(of: conversationID) { oldID, newID in
       store.setDraftText(draftText, for: oldID)
       draftText = store.draftText(for: newID)
+    }
+    .onChange(of: scenePhase) { _, phase in
+      guard phase == .background else { return }
+      guard liveVoiceSession.isActive else { return }
+      guard !store.settings.conversation.allowsBackgroundVoiceListening else { return }
+      Task { @MainActor in
+        await stopVoiceAndKeepTranscript(cancelResponse: false, focusComposer: false)
+      }
     }
   }
 
@@ -879,13 +888,18 @@ private struct ChatComposer: View {
   }
 
   @MainActor
-  private func stopVoiceAndKeepTranscript() async {
-    let text = await liveVoiceSession.stopForDraft(cancelResponse: true)
+  private func stopVoiceAndKeepTranscript(
+    cancelResponse: Bool = true,
+    focusComposer: Bool = true
+  ) async {
+    let text = await liveVoiceSession.stopForDraft(cancelResponse: cancelResponse)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     draftText = mergedDraftText(appending: text)
     store.setDraftText(draftText, for: conversationID)
-    composerFocused = true
+    if focusComposer {
+      composerFocused = true
+    }
   }
 
   private func mergedDraftText(appending text: String) -> String {

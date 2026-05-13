@@ -295,14 +295,23 @@ struct ConversationSettings: Codable, Equatable, Sendable {
   var speechRecognitionBackend: LiveSpeechRecognitionBackend = .nativeIOSSpeechTranscriber
   var speechRecognitionLanguageIdentifier: String = Locale.current.identifier
   var streamTTS: Bool = true
+  var backgroundVoiceListeningEnabled: Bool = false
 
   static let defaults = ConversationSettings()
 
   init() {}
 
+  var canUseBackgroundVoiceListening: Bool {
+    speechRecognitionBackend == .nativeIOSSpeechTranscriber
+  }
+
+  var allowsBackgroundVoiceListening: Bool {
+    canUseBackgroundVoiceListening && backgroundVoiceListeningEnabled
+  }
+
   enum CodingKeys: String, CodingKey {
     case silenceTimeoutSeconds, speechRecognitionBackend, speechRecognitionLanguageIdentifier,
-      streamTTS
+      streamTTS, backgroundVoiceListeningEnabled
   }
 
   init(from decoder: Decoder) throws {
@@ -324,6 +333,9 @@ struct ConversationSettings: Codable, Equatable, Sendable {
       : languageIdentifier
     streamTTS =
       (try? c.decode(Bool.self, forKey: .streamTTS)) ?? defaults.streamTTS
+    backgroundVoiceListeningEnabled =
+      (try? c.decode(Bool.self, forKey: .backgroundVoiceListeningEnabled))
+      ?? defaults.backgroundVoiceListeningEnabled
   }
 
   static func clampedSilenceTimeout(_ value: Double) -> Double {

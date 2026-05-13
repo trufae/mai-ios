@@ -25,9 +25,9 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>PocketMai can include your current location in prompts when the Location tool is enabled.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>PocketMai uses the microphone to transcribe voice conversations and save your spoken turns.</string>
+	<string>PocketMai uses the microphone for active voice conversations. When Native iOS Live is selected, raw microphone audio stays on this device.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>PocketMai uses on-device speech recognition to turn your voice into chat messages.</string>
+	<string>PocketMai uses speech recognition to turn your voice into chat messages. Native iOS Live transcription happens on device.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -231,6 +231,7 @@ struct SettingsView: View {
   @State private var showingClearAllConfirmation = false
   @State private var showingFactoryResetConfirmation = false
   @State private var showingClearMemoryConfirmation = false
+  @State private var showingBackgroundVoiceConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
   @State private var toastMessage: String?
@@ -299,6 +300,19 @@ struct SettingsView: View {
         }
       } message: {
         Text("Saved memory will be removed from this device. This cannot be undone.")
+      }
+      .alert(
+        "Continue voice chat when locked?",
+        isPresented: $showingBackgroundVoiceConfirmation
+      ) {
+        Button("Cancel", role: .cancel) {}
+        Button("Enable") {
+          enableBackgroundVoiceListening()
+        }
+      } message: {
+        Text(
+          "Voice capture can continue after the screen locks while an active voice conversation is running. Native iOS Live transcribes on device; raw microphone audio is not uploaded by PocketMai."
+        )
       }
       .navigationTitle("Settings")
       .toolbar {
@@ -592,6 +606,15 @@ struct SettingsView: View {
       }
     }
     .pickerStyle(.menu)
+    .onChange(of: store.settings.conversation.speechRecognitionBackend) { _, backend in
+      guard backend != .nativeIOSSpeechTranscriber,
+        store.settings.conversation.backgroundVoiceListeningEnabled
+      else {
+        return
+      }
+      store.settings.conversation.backgroundVoiceListeningEnabled = false
+      store.saveSettings()
+    }
 
     Picker("Language", selection: speechRecognitionPrimaryLanguageBinding) {
       ForEach(speechRecognitionPrimaryLanguages, id: \.self) { primary in
@@ -614,6 +637,9 @@ struct SettingsView: View {
       .pickerStyle(.menu)
     }
 
+    Toggle("Continue Voice Chat When Locked", isOn: backgroundVoiceListeningBinding)
+      .disabled(!store.settings.conversation.canUseBackgroundVoiceListening)
+
     Toggle("StreamTTS", isOn: settingsBinding(\.conversation.streamTTS))
 
     Text(
@@ -623,7 +649,19 @@ struct SettingsView: View {
     .foregroundStyle(.secondary)
 
     Text(
+      "Native iOS Live uses on-device transcription. Raw audio stays on this device; transcribed text is sent only when a voice turn is submitted to the selected chat provider."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    Text(
       "StreamTTS plays each sentence as the LLM streams it, instead of waiting for the full reply."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    Text(
+      "Locked-screen voice chat is available only for Native iOS Live and applies only while a voice conversation is active."
     )
     .font(.caption)
     .foregroundStyle(.secondary)
@@ -676,6 +714,36 @@ struct SettingsView: View {
         store.saveSettings()
       }
     )
+  }
+
+  private var backgroundVoiceListeningBinding: Binding<Bool> {
+    Binding(
+      get: { store.settings.conversation.allowsBackgroundVoiceListening },
+      set: { enabled in
+        guard store.settings.conversation.canUseBackgroundVoiceListening else {
+          store.settings.conversation.backgroundVoiceListeningEnabled = false
+          store.saveSettings()
+          return
+        }
+        guard enabled else {
+          store.settings.conversation.backgroundVoiceListeningEnabled = false
+          store.saveSettings()
+          return
+        }
+        guard !store.settings.conversation.backgroundVoiceListeningEnabled else { return }
+        showingBackgroundVoiceConfirmation = true
+      }
+    )
+  }
+
+  private func enableBackgroundVoiceListening() {
+    guard store.settings.conversation.canUseBackgroundVoiceListening else {
+      store.settings.conversation.backgroundVoiceListeningEnabled = false
+      store.saveSettings()
+      return
+    }
+    store.settings.conversation.backgroundVoiceListeningEnabled = true
+    store.saveSettings()
   }
 
   @ViewBuilder
