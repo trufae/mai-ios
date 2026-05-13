@@ -1542,13 +1542,11 @@ private struct RoleVoiceSettingsView: View {
         }
 
         Section {
-          VStack(alignment: .leading) {
-            Text("Rate")
+          LabeledContent("Rate") {
             Slider(value: voiceBinding(\.rate), in: 0...1, step: 0.05)
           }
 
-          VStack(alignment: .leading) {
-            Text("Pitch")
+          LabeledContent("Pitch") {
             Slider(value: voiceBinding(\.pitch), in: 0.5...2, step: 0.05)
           }
         }
