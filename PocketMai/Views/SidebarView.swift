@@ -115,7 +115,8 @@ struct SidebarView: View {
   private func conversationMatchesSearch(_ summary: ConversationSummary) -> Bool {
     let query = searchQuery
     guard !query.isEmpty else { return true }
-    if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query) {
+    if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query)
+    {
       return true
     }
     guard let conversation = store.conversation(withID: summary.id) else { return false }

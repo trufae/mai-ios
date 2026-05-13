@@ -80,17 +80,54 @@ private let customProviderTag = "__custom__"
 
 private enum TTSVoiceCache {
   static let voices: [AVSpeechSynthesisVoice] = AVSpeechSynthesisVoice.speechVoices().sorted {
-    if $0.language != $1.language { return $0.language < $1.language }
-    return $0.name < $1.name
+    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
   }
 
   static let languages: [String] = Array(Set(voices.map(\.language))).sorted {
     languageDisplayName($0) < languageDisplayName($1)
   }
 
+  static let primaryLanguages: [String] = {
+    let primaries = Set(languages.compactMap(primaryLanguageCode))
+    return Array(primaries).sorted {
+      primaryLanguageDisplayName($0)
+        .localizedCaseInsensitiveCompare(primaryLanguageDisplayName($1)) == .orderedAscending
+    }
+  }()
+
   static func voiceOptions(for language: String) -> [AVSpeechSynthesisVoice] {
-    guard !language.isEmpty else { return voices }
-    return voices.filter { $0.language == language }
+    let filtered = language.isEmpty ? voices : voices.filter { $0.language == language }
+    return filtered.sorted {
+      $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+    }
+  }
+
+  static func variants(forPrimary primary: String) -> [String] {
+    languages
+      .filter { primaryLanguageCode($0) == primary }
+      .sorted {
+        variantDisplayName($0)
+          .localizedCaseInsensitiveCompare(variantDisplayName($1)) == .orderedAscending
+      }
+  }
+
+  static func primaryLanguageCode(_ identifier: String) -> String? {
+    let code = Locale(identifier: identifier).language.languageCode?.identifier
+    return code?.isEmpty == false ? code : nil
+  }
+
+  static func primaryLanguageDisplayName(_ code: String) -> String {
+    Locale.current.localizedString(forLanguageCode: code) ?? code
+  }
+
+  static func variantDisplayName(_ identifier: String) -> String {
+    let locale = Locale(identifier: identifier)
+    if let region = locale.region?.identifier,
+      let regionName = Locale.current.localizedString(forRegionCode: region)
+    {
+      return "\(regionName) (\(identifier))"
+    }
+    return languageDisplayName(identifier)
   }
 
   static func languageDisplayName(_ language: String) -> String {
@@ -556,15 +593,26 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
 
-    Picker(
-      "Language",
-      selection: settingsBinding(\.conversation.speechRecognitionLanguageIdentifier)
-    ) {
-      ForEach(speechRecognitionLocaleOptions, id: \.identifier) { locale in
-        Text(speechRecognitionLanguageTitle(locale.identifier)).tag(locale.identifier)
+    Picker("Language", selection: speechRecognitionPrimaryLanguageBinding) {
+      ForEach(speechRecognitionPrimaryLanguages, id: \.self) { primary in
+        Text(TTSVoiceCache.primaryLanguageDisplayName(primary)).tag(primary)
       }
     }
     .pickerStyle(.menu)
+
+    let variants = speechRecognitionVariants(
+      forPrimary: speechRecognitionPrimaryLanguageBinding.wrappedValue)
+    if variants.count > 1 {
+      Picker(
+        "Region",
+        selection: settingsBinding(\.conversation.speechRecognitionLanguageIdentifier)
+      ) {
+        ForEach(variants, id: \.self) { id in
+          Text(TTSVoiceCache.variantDisplayName(id)).tag(id)
+        }
+      }
+      .pickerStyle(.menu)
+    }
 
     Text(
       "Native iOS Live streams partial transcription with SpeechTranscriber. Native iOS File records first and transcribes after pause."
@@ -573,27 +621,53 @@ struct SettingsView: View {
     .foregroundStyle(.secondary)
   }
 
-  private var speechRecognitionLocaleOptions: [Locale] {
+  private var speechRecognitionLocaleIdentifiers: [String] {
     let selected = store.settings.conversation.speechRecognitionLanguageIdentifier
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    var locales = Array(SFSpeechRecognizer.supportedLocales())
-    if !selected.isEmpty, !locales.contains(where: { $0.identifier == selected }) {
-      locales.append(Locale(identifier: selected))
+    var ids = SFSpeechRecognizer.supportedLocales().map(\.identifier)
+    if !selected.isEmpty, !ids.contains(selected) {
+      ids.append(selected)
     }
-    return locales.sorted {
-      speechRecognitionLanguageTitle($0.identifier)
-        .localizedCaseInsensitiveCompare(speechRecognitionLanguageTitle($1.identifier))
+    return ids
+  }
+
+  private var speechRecognitionPrimaryLanguages: [String] {
+    let primaries = Set(
+      speechRecognitionLocaleIdentifiers.compactMap {
+        TTSVoiceCache.primaryLanguageCode($0)
+      })
+    return Array(primaries).sorted {
+      TTSVoiceCache.primaryLanguageDisplayName($0)
+        .localizedCaseInsensitiveCompare(TTSVoiceCache.primaryLanguageDisplayName($1))
         == .orderedAscending
     }
   }
 
-  private func speechRecognitionLanguageTitle(_ identifier: String) -> String {
-    let locale = Locale(identifier: identifier)
-    let name =
-      Locale.current.localizedString(forIdentifier: identifier)
-      ?? locale.localizedString(forIdentifier: identifier)
-      ?? identifier
-    return "\(name) (\(identifier))"
+  private func speechRecognitionVariants(forPrimary primary: String) -> [String] {
+    speechRecognitionLocaleIdentifiers
+      .filter { TTSVoiceCache.primaryLanguageCode($0) == primary }
+      .sorted {
+        TTSVoiceCache.variantDisplayName($0)
+          .localizedCaseInsensitiveCompare(TTSVoiceCache.variantDisplayName($1))
+          == .orderedAscending
+      }
+  }
+
+  private var speechRecognitionPrimaryLanguageBinding: Binding<String> {
+    Binding(
+      get: {
+        let id = store.settings.conversation.speechRecognitionLanguageIdentifier
+        return TTSVoiceCache.primaryLanguageCode(id) ?? id
+      },
+      set: { newPrimary in
+        let variants = speechRecognitionVariants(forPrimary: newPrimary)
+        let current = store.settings.conversation.speechRecognitionLanguageIdentifier
+        if variants.contains(current) { return }
+        store.settings.conversation.speechRecognitionLanguageIdentifier =
+          variants.first ?? newPrimary
+        store.saveSettings()
+      }
+    )
   }
 
   @ViewBuilder
@@ -1442,18 +1516,27 @@ private struct RoleVoiceSettingsView: View {
         }
       } else {
         Section {
-          Picker("Language", selection: voiceBinding(\.language)) {
+          Picker("Language", selection: voicePrimaryLanguageBinding) {
             Text("System Default").tag("")
-            ForEach(TTSVoiceCache.languages, id: \.self) { lang in
-              Text(TTSVoiceCache.languageDisplayName(lang)).tag(lang)
+            ForEach(TTSVoiceCache.primaryLanguages, id: \.self) { primary in
+              Text(TTSVoiceCache.primaryLanguageDisplayName(primary)).tag(primary)
+            }
+          }
+
+          let variants = TTSVoiceCache.variants(
+            forPrimary: voicePrimaryLanguageBinding.wrappedValue)
+          if variants.count > 1 {
+            Picker("Region", selection: voiceBinding(\.language)) {
+              ForEach(variants, id: \.self) { id in
+                Text(TTSVoiceCache.variantDisplayName(id)).tag(id)
+              }
             }
           }
 
           Picker("Voice", selection: voiceBinding(\.voiceIdentifier)) {
             Text("Default Voice").tag("")
             ForEach(TTSVoiceCache.voiceOptions(for: voice.language), id: \.identifier) { option in
-              Text("\(option.name) (\(TTSVoiceCache.languageDisplayName(option.language)))")
-                .tag(option.identifier)
+              Text(option.name).tag(option.identifier)
             }
           }
         }
@@ -1521,6 +1604,27 @@ private struct RoleVoiceSettingsView: View {
       set: { newValue in
         var copy = voice
         copy[keyPath: keyPath] = newValue
+        voice = copy
+      })
+  }
+
+  private var voicePrimaryLanguageBinding: Binding<String> {
+    Binding(
+      get: {
+        let lang = voice.language
+        if lang.isEmpty { return "" }
+        return TTSVoiceCache.primaryLanguageCode(lang) ?? ""
+      },
+      set: { newPrimary in
+        var copy = voice
+        if newPrimary.isEmpty {
+          copy.language = ""
+        } else {
+          let variants = TTSVoiceCache.variants(forPrimary: newPrimary)
+          if !variants.contains(copy.language) {
+            copy.language = variants.first ?? ""
+          }
+        }
         voice = copy
       })
   }

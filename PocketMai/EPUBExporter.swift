@@ -607,7 +607,8 @@ enum EPUBExporter {
   }
 
   private static func isNumberBody(_ character: Character) -> Bool {
-    character.isNumber || character == "." || character == "_" || character == "x" || character == "X"
+    character.isNumber || character == "." || character == "_" || character == "x"
+      || character == "X"
       || character == "a" || character == "b" || character == "c" || character == "d"
       || character == "e" || character == "f" || character == "A" || character == "B"
       || character == "C" || character == "D" || character == "E" || character == "F"

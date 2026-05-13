@@ -222,7 +222,8 @@ private struct MessageBubbleContent: View, Equatable {
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-    let bubbleWithSheet = bubbleView
+    let bubbleWithSheet =
+      bubbleView
       .sheet(isPresented: $showingTextSelection) {
         MessageTextSelectionSheet(
           title: message.role.displayName,
@@ -385,23 +386,24 @@ private struct MessageTextSelectionSheet: View {
         text: text,
         fontSize: $fontSize,
         lineSpacing: lineSpacing,
-        fontFamily: fontFamily)
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .topBarLeading) {
-            Button("Done") {
-              dismiss()
-            }
-          }
-          ToolbarItem(placement: .topBarTrailing) {
-            Button {
-              UIPasteboard.general.string = text
-            } label: {
-              Label("Copy All", systemImage: "doc.on.doc")
-            }
+        fontFamily: fontFamily
+      )
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Done") {
+            dismiss()
           }
         }
+        ToolbarItem(placement: .topBarTrailing) {
+          Button {
+            UIPasteboard.general.string = text
+          } label: {
+            Label("Copy All", systemImage: "doc.on.doc")
+          }
+        }
+      }
     }
   }
 }
@@ -589,7 +591,8 @@ private struct SelectableMessageTextView: UIViewRepresentable {
         layoutManager.ensureLayout(for: textView.textContainer)
         let clampedIndex = min(max(characterIndex, 0), textView.textStorage.length - 1)
         let glyphIndex = layoutManager.glyphIndexForCharacter(at: clampedIndex)
-        let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let lineRect = layoutManager.lineFragmentUsedRect(
+          forGlyphAt: glyphIndex, effectiveRange: nil)
         return textView.textContainerInset.top + lineRect.minY + lineRect.height * anchor.unitY
       }
 
@@ -649,9 +652,9 @@ private struct TextViewPinchAnchor {
   let fallbackContentHeight: CGFloat
 }
 
-private extension View {
+extension View {
   @ViewBuilder
-  func textSelectionIfEnabled(_ enabled: Bool) -> some View {
+  fileprivate func textSelectionIfEnabled(_ enabled: Bool) -> some View {
     if enabled {
       textSelection(.enabled)
     } else {
@@ -660,7 +663,7 @@ private extension View {
   }
 
   @ViewBuilder
-  func foregroundStyleIfPresent(_ color: Color?) -> some View {
+  fileprivate func foregroundStyleIfPresent(_ color: Color?) -> some View {
     if let color {
       foregroundStyle(color)
     } else {
@@ -1078,8 +1081,9 @@ struct MarkdownContentView: View {
             uiFont: headingUIFont(level: level),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
-            .fixedSize(horizontal: false, vertical: true)
+            uiForegroundColor: uiForegroundColor
+          )
+          .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
           MarkdownInlineText(
             value: value,
@@ -1088,8 +1092,9 @@ struct MarkdownContentView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
-            .fixedSize(horizontal: false, vertical: true)
+            uiForegroundColor: uiForegroundColor
+          )
+          .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
           BlockquoteView(
             text: value,
@@ -1221,8 +1226,8 @@ private struct MarkdownInlineText: View {
   }
 }
 
-private extension TextAlignment {
-  var isLeading: Bool {
+extension TextAlignment {
+  fileprivate var isLeading: Bool {
     switch self {
     case .leading: true
     default: false
@@ -1282,16 +1287,16 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   }
 }
 
-private extension AppearanceSettings {
-  var markdownMetricScale: CGFloat {
+extension AppearanceSettings {
+  fileprivate var markdownMetricScale: CGFloat {
     CGFloat(fontSize / AppearanceSettings.defaults.fontSize)
   }
 
-  func markdownMetric(_ value: CGFloat) -> CGFloat {
+  fileprivate func markdownMetric(_ value: CGFloat) -> CGFloat {
     value * markdownMetricScale
   }
 
-  func markdownListMarkerWidth(markerLength: Int, minimum: CGFloat = 18) -> CGFloat {
+  fileprivate func markdownListMarkerWidth(markerLength: Int, minimum: CGFloat = 18) -> CGFloat {
     max(markdownMetric(minimum), CGFloat(markerLength) * CGFloat(fontSize) * 0.64)
   }
 }
@@ -1411,8 +1416,8 @@ private func nsAttributedRange(
   return NSRange(lowerBound..<upperBound, in: string)
 }
 
-private extension UIFont {
-  func withWeight(_ weight: UIFont.Weight) -> UIFont {
+extension UIFont {
+  fileprivate func withWeight(_ weight: UIFont.Weight) -> UIFont {
     var traits =
       fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any] ?? [:]
     traits[.weight] = weight.rawValue
@@ -1420,9 +1425,10 @@ private extension UIFont {
     return UIFont(descriptor: descriptor, size: pointSize)
   }
 
-  func italicized() -> UIFont {
-    guard let descriptor = fontDescriptor.withSymbolicTraits(
-      fontDescriptor.symbolicTraits.union(.traitItalic))
+  fileprivate func italicized() -> UIFont {
+    guard
+      let descriptor = fontDescriptor.withSymbolicTraits(
+        fontDescriptor.symbolicTraits.union(.traitItalic))
     else {
       return self
     }
@@ -1492,7 +1498,9 @@ private enum MarkdownInlineTokenColorizer {
     character == "@" || character == "#"
   }
 
-  private static func isTokenStart(in attributed: AttributedString, at index: AttributedString.Index)
+  private static func isTokenStart(
+    in attributed: AttributedString, at index: AttributedString.Index
+  )
     -> Bool
   {
     guard index != attributed.characters.startIndex else { return true }
@@ -1536,7 +1544,7 @@ enum MarkdownInlineSymbols {
 
       if chars[index] == "\\", index + 1 < chars.count {
         let opener = chars[index + 1]
-        if (opener == "(" || opener == "["),
+        if opener == "(" || opener == "[",
           let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
           rewrittenMathContent(String(chars[(index + 2)..<end])) != nil
         {
@@ -1881,7 +1889,7 @@ enum MarkdownInlineSymbols {
 
     while index < chars.count {
       let char = chars[index]
-      if (char == "^" || char == "_"),
+      if char == "^" || char == "_",
         let body = scriptBody(in: chars, start: index + 1)
       {
         let superscript = char == "^"
@@ -2374,11 +2382,12 @@ struct MarkdownTableView: View {
       textAlignment: alignment,
       foregroundStyle: foregroundStyle,
       uiForegroundColor: uiForegroundColor,
-      allowsJustification: !unwrapped)
-      .fixedSize(horizontal: unwrapped, vertical: false)
-      .frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
-      .padding(.horizontal, appearance.markdownMetric(10))
-      .padding(.vertical, appearance.markdownMetric(8))
+      allowsJustification: !unwrapped
+    )
+    .fixedSize(horizontal: unwrapped, vertical: false)
+    .frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
+    .padding(.horizontal, appearance.markdownMetric(10))
+    .padding(.vertical, appearance.markdownMetric(8))
   }
 
   private func frameAlignment(_ alignment: TextAlignment) -> Alignment {
@@ -2527,9 +2536,10 @@ struct TaskListView: View {
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: item.checked ? .secondary : foregroundStyle,
             uiForegroundColor: item.checked ? .secondaryLabel : uiForegroundColor,
-            strikethrough: item.checked)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+            strikethrough: item.checked
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -2578,9 +2588,10 @@ struct BulletListView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+            uiForegroundColor: uiForegroundColor
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -2631,9 +2642,10 @@ struct OrderedListView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+            uiForegroundColor: uiForegroundColor
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }

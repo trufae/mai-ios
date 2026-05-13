@@ -105,7 +105,9 @@ struct ContentView: View {
     }
   }
 
-  private func historyPanelDragGesture(panelWidth: CGFloat, activationWidth: CGFloat) -> some Gesture {
+  private func historyPanelDragGesture(panelWidth: CGFloat, activationWidth: CGFloat)
+    -> some Gesture
+  {
     DragGesture(minimumDistance: 12, coordinateSpace: .local)
       .onChanged { value in
         if !historyDragIsActive {
@@ -118,7 +120,9 @@ struct ContentView: View {
         historyDragOffset = draggedOffset - baseOffset
       }
       .onEnded { value in
-        guard historyDragIsActive || shouldHandleHistoryDrag(value, activationWidth: activationWidth) else {
+        guard
+          historyDragIsActive || shouldHandleHistoryDrag(value, activationWidth: activationWidth)
+        else {
           historyDragOffset = 0
           historyDragIsActive = false
           return
@@ -135,7 +139,8 @@ struct ContentView: View {
       }
   }
 
-  private func shouldHandleHistoryDrag(_ value: DragGesture.Value, activationWidth: CGFloat) -> Bool {
+  private func shouldHandleHistoryDrag(_ value: DragGesture.Value, activationWidth: CGFloat) -> Bool
+  {
     let horizontal = value.translation.width
     let vertical = abs(value.translation.height)
     guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else { return false }

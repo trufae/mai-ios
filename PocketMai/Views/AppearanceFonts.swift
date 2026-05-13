@@ -29,7 +29,9 @@ extension AppearanceSettings {
 }
 
 extension AppearanceFontFamily {
-  static let builtInPickerOptions: [AppearanceFontFamily] = [.system, .serif, .rounded, .monospaced]
+  static let builtInPickerOptions: [AppearanceFontFamily] = [
+    .system, .serif, .rounded, .monospaced,
+  ]
 
   static var fontPickerGroups: [AppearanceFontPickerGroup] {
     let builtIns = builtInPickerOptions.map {
@@ -123,7 +125,8 @@ extension AppearanceFontFamily {
       familyName.replacingOccurrences(of: " ", with: "-"),
     ]
     for prefix in prefixes where readableName.localizedCaseInsensitiveContains(prefix) {
-      let value = readableName
+      let value =
+        readableName
         .replacingOccurrences(of: prefix, with: "", options: [.caseInsensitive])
         .trimmingCharacters(in: CharacterSet(charactersIn: " -_"))
       if !value.isEmpty { return value }
@@ -181,7 +184,8 @@ struct AppearanceFontPickerGroup: Identifiable, Hashable {
   let faces: [AppearanceFontPickerFace]
 
   func preferredFace(currentFontName: String?) -> AppearanceFontPickerFace? {
-    if let currentFontName, let currentFace = faces.first(where: { $0.fontName == currentFontName }) {
+    if let currentFontName, let currentFace = faces.first(where: { $0.fontName == currentFontName })
+    {
       return currentFace
     }
     return faces.first { $0.displayName.localizedCaseInsensitiveCompare("Regular") == .orderedSame }

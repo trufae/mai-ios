@@ -552,8 +552,9 @@ final class AppStore: ObservableObject {
   }
 
   private static func normalizedVoiceRecordingFilename(from message: ChatMessage) -> String? {
-    guard let filename = message.voiceRecordingFilename?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
+    guard
+      let filename = message.voiceRecordingFilename?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
       PocketMaiDirectories.voiceRecordingURL(filename: filename) != nil
     else {
       return nil

@@ -327,7 +327,6 @@ final class TTSPlayer: NSObject, ObservableObject {
     return data.withRepairedWAVChunkSizes()
   }
 
-
   func pause() {
     if let recordingPlayerNode, recordingPlayerNode.isPlaying, !isPaused {
       recordingPlayerNode.pause()
@@ -469,9 +468,10 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     file.framePosition = 0
     let chunkFrameCapacity: AVAudioFrameCount = 4096
-    guard let buffer = AVAudioPCMBuffer(
-      pcmFormat: file.processingFormat,
-      frameCapacity: chunkFrameCapacity)
+    guard
+      let buffer = AVAudioPCMBuffer(
+        pcmFormat: file.processingFormat,
+        frameCapacity: chunkFrameCapacity)
     else {
       return 0
     }
@@ -695,8 +695,8 @@ extension TTSPlayer: AVAudioPlayerDelegate {
   }
 }
 
-private extension Data {
-  func withRepairedWAVChunkSizes() -> Data {
+extension Data {
+  fileprivate func withRepairedWAVChunkSizes() -> Data {
     guard count >= 44,
       matchesASCII("RIFF", at: 0),
       matchesASCII("WAVE", at: 8)
@@ -728,7 +728,7 @@ private extension Data {
     return repaired
   }
 
-  func matchesASCII(_ string: String, at offset: Int) -> Bool {
+  fileprivate func matchesASCII(_ string: String, at offset: Int) -> Bool {
     let bytes = Array(string.utf8)
     guard offset >= 0, offset + bytes.count <= count else { return false }
     for index in bytes.indices where self[offset + index] != bytes[index] {
@@ -737,7 +737,7 @@ private extension Data {
     return true
   }
 
-  func littleEndianUInt32(at offset: Int) -> UInt32 {
+  fileprivate func littleEndianUInt32(at offset: Int) -> UInt32 {
     guard offset >= 0, offset + 4 <= count else { return 0 }
     return UInt32(self[offset])
       | (UInt32(self[offset + 1]) << 8)
@@ -745,7 +745,7 @@ private extension Data {
       | (UInt32(self[offset + 3]) << 24)
   }
 
-  mutating func writeLittleEndianUInt32(_ value: UInt32, at offset: Int) {
+  fileprivate mutating func writeLittleEndianUInt32(_ value: UInt32, at offset: Int) {
     guard offset >= 0, offset + 4 <= count else { return }
     self[offset] = UInt8(value & 0xff)
     self[offset + 1] = UInt8((value >> 8) & 0xff)

@@ -534,7 +534,8 @@ enum WebSearchService {
     }
   }
 
-  private static func searXNGConfiguration(in settings: NativeToolSettings) -> SearXNGConfiguration? {
+  private static func searXNGConfiguration(in settings: NativeToolSettings) -> SearXNGConfiguration?
+  {
     let trimmedURL = settings.webSearchSearXNGURL.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedURL.isEmpty else { return nil }
     let urlString = trimmedURL.contains("://") ? trimmedURL : "https://\(trimmedURL)"
@@ -627,10 +628,11 @@ enum WebSearchService {
 
     var lines: [String] = []
     if let answers = object["answers"] as? [String] {
-      lines.append(contentsOf: answers.prefix(3).compactMap { answer -> String? in
-        let cleaned = stripHTML(answer)
-        return cleaned.isEmpty ? nil : "Answer: \(cleaned)"
-      })
+      lines.append(
+        contentsOf: answers.prefix(3).compactMap { answer -> String? in
+          let cleaned = stripHTML(answer)
+          return cleaned.isEmpty ? nil : "Answer: \(cleaned)"
+        })
     }
 
     let rawResults = object["results"] as? [[String: Any]] ?? []
@@ -897,7 +899,8 @@ enum WebSearchService {
   // MARK: - HTTP helpers
 
   private static func getJSON(url: URL, authorization: String? = nil) async -> Any? {
-    guard let data = await getData(url: url, accept: "application/json", authorization: authorization)
+    guard
+      let data = await getData(url: url, accept: "application/json", authorization: authorization)
     else {
       return nil
     }

@@ -17,9 +17,10 @@ final class ChatScreenshotService: NSObject, ObservableObject, UIScreenshotServi
 
   func screenshotService(
     _ screenshotService: UIScreenshotService,
-    generatePDFRepresentationWithCompletion completionHandler: @escaping (
-      Data?, Int, CGRect
-    ) -> Void
+    generatePDFRepresentationWithCompletion completionHandler:
+      @escaping (
+        Data?, Int, CGRect
+      ) -> Void
   ) {
     guard
       let store,

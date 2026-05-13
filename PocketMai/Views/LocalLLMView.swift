@@ -1,10 +1,9 @@
 import Foundation
-import SwiftUI
-
 import HFAPI
 import MLXLMCommon
 import MLXLMHFAPI
 import MLXLMTokenizers
+import SwiftUI
 
 @MainActor
 final class LocalLLMViewModel: ObservableObject {
@@ -178,11 +177,13 @@ final class LocalLLMViewModel: ObservableObject {
     if let factoryError = error as? ModelFactoryError {
       switch factoryError {
       case .unsupportedModelType:
-        return "Unsupported model format for \(modelId). Use a Hugging Face repo that is already converted to MLX and supported by mlx-swift-lm."
+        return
+          "Unsupported model format for \(modelId). Use a Hugging Face repo that is already converted to MLX and supported by mlx-swift-lm."
       case .noModelFactoryAvailable:
         return "MLX LLM support is not available in this build. Check that MLXLLM is linked."
       case .configurationFileError, .configurationDecodingError, .unsupportedProcessorType:
-        return "Unsupported MLX model configuration for \(modelId): \(factoryError.localizedDescription)"
+        return
+          "Unsupported MLX model configuration for \(modelId): \(factoryError.localizedDescription)"
       }
     }
 
@@ -210,7 +211,8 @@ final class LocalLLMViewModel: ObservableObject {
       || lowercasedDetail.contains("404")
       || lowercasedDetail.contains("repository")
     {
-      return "Invalid model id or unavailable Hugging Face repo: \(modelId). Use an MLX-ready repo id such as org/model-name."
+      return
+        "Invalid model id or unavailable Hugging Face repo: \(modelId). Use an MLX-ready repo id such as org/model-name."
     }
 
     if lowercasedDetail.contains("safetensor")

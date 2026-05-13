@@ -160,7 +160,8 @@ enum PocketMaiDirectories {
   }
 
   private static func removeDirectoryIfEmpty(_ url: URL, fileManager: FileManager) {
-    guard let items = try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil),
+    guard
+      let items = try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil),
       items.isEmpty
     else {
       return
@@ -397,7 +398,8 @@ enum FileWorkspaceService {
     AgentTooling.firstNonEmpty(arguments[primary]?.stringValue, arguments[fallback]?.stringValue)
   }
 
-  private static func optionalPathArgument(_ arguments: [String: AgentToolArgumentValue]) -> String? {
+  private static func optionalPathArgument(_ arguments: [String: AgentToolArgumentValue]) -> String?
+  {
     AgentTooling.firstNonEmpty(
       arguments["path"]?.stringValue,
       arguments["directory"]?.stringValue,
@@ -642,13 +644,16 @@ enum FileWorkspaceService {
   private static func entryLine(for entry: URL, path: String) -> String {
     let values = try? entry.resourceValues(forKeys: Set(listResourceKeys))
     let type =
-      values?.isDirectory == true ? "directory"
-      : values?.isSymbolicLink == true ? "symlink"
-      : values?.isRegularFile == true ? "file" : "other"
+      values?.isDirectory == true
+      ? "directory"
+      : values?.isSymbolicLink == true
+        ? "symlink"
+        : values?.isRegularFile == true ? "file" : "other"
     let size = values?.fileSize.map { " \($0) bytes" } ?? ""
-    let modified = values?.contentModificationDate.map {
-      " modified \(ISO8601DateFormatter().string(from: $0))"
-    } ?? ""
+    let modified =
+      values?.contentModificationDate.map {
+        " modified \(ISO8601DateFormatter().string(from: $0))"
+      } ?? ""
     return "- \(path) \(type)\(size)\(modified)"
   }
 
@@ -679,10 +684,12 @@ enum FileWorkspaceService {
   }
 }
 
-private extension NSError {
-  static func fileWorkspace(_ message: String) -> NSError {
-    NSError(domain: "PocketMai.FileWorkspace", code: 1, userInfo: [
-      NSLocalizedDescriptionKey: message
-    ])
+extension NSError {
+  fileprivate static func fileWorkspace(_ message: String) -> NSError {
+    NSError(
+      domain: "PocketMai.FileWorkspace", code: 1,
+      userInfo: [
+        NSLocalizedDescriptionKey: message
+      ])
   }
 }

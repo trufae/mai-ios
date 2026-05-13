@@ -68,9 +68,11 @@ private enum LiveSpeechRecognitionError: LocalizedError {
     case .audioInputUnavailable:
       return "No microphone input is available."
     case .speechTranscriberUnavailable(let language):
-      return "Native live transcription is not available for \(language). Select Native iOS File or choose another language."
+      return
+        "Native live transcription is not available for \(language). Select Native iOS File or choose another language."
     case .speechTranscriberAssetsUnavailable(let language):
-      return "Native live transcription assets are not available for \(language). Select Native iOS File or choose another language."
+      return
+        "Native live transcription assets are not available for \(language). Select Native iOS File or choose another language."
     }
   }
 }
@@ -316,7 +318,9 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
-  private func makeSpeechRecognitionEngine(settings: AppSettings) throws -> LiveSpeechRecognitionEngine {
+  private func makeSpeechRecognitionEngine(settings: AppSettings) throws
+    -> LiveSpeechRecognitionEngine
+  {
     switch settings.conversation.speechRecognitionBackend {
     case .nativeIOSSpeechTranscriber:
       return NativeIOSSpeechTranscriberRecognitionEngine(
@@ -512,9 +516,11 @@ final class LiveVoiceSession: ObservableObject {
   }
 
   private func latestSpeakableAssistantMessage() -> ChatMessage? {
-    guard let message = store?.currentConversation?.messages.reversed().first(where: {
-      $0.role == .assistant
-    }) else {
+    guard
+      let message = store?.currentConversation?.messages.reversed().first(where: {
+        $0.role == .assistant
+      })
+    else {
       return nil
     }
     let visible = MessageContentFilter.render(message.text).visibleText
@@ -584,7 +590,8 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
     guard SpeechTranscriber.isAvailable else {
       throw LiveSpeechRecognitionError.speechTranscriberUnavailable(requestedLocale.identifier)
     }
-    guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale)
+    guard
+      let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale)
     else {
       throw LiveSpeechRecognitionError.speechTranscriberUnavailable(requestedLocale.identifier)
     }
@@ -604,9 +611,10 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
     guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
       throw LiveSpeechRecognitionError.audioInputUnavailable
     }
-    let analysisFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
-      compatibleWith: [transcriber],
-      considering: inputFormat)
+    let analysisFormat =
+      await SpeechAnalyzer.bestAvailableAudioFormat(
+        compatibleWith: [transcriber],
+        considering: inputFormat)
       ?? NativeSpeechTranscriberAudioSink.preferredAnalysisFormat(matching: inputFormat)
 
     let recordingFile = try makeRecordingFile(format: inputFormat)
@@ -678,7 +686,9 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
     deactivateAudioSession()
   }
 
-  private func ensureAssetsAvailable(for transcriber: SpeechTranscriber, locale: Locale) async throws {
+  private func ensureAssetsAvailable(for transcriber: SpeechTranscriber, locale: Locale)
+    async throws
+  {
     let modules: [any SpeechModule] = [transcriber]
     let status = await AssetInventory.status(forModules: modules)
     switch status {
@@ -751,7 +761,8 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
     transcriptSegments.sort {
       CMTimeCompare($0.range.start, $1.range.start) < 0
     }
-    return transcriptSegments
+    return
+      transcriptSegments
       .map(\.text)
       .joined(separator: " ")
       .components(separatedBy: .whitespacesAndNewlines)
@@ -849,7 +860,9 @@ private final class NativeSpeechTranscriberAudioSink: @unchecked Sendable {
     ) ?? format
   }
 
-  private func convertedBufferForSpeechTranscriber(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+  private func convertedBufferForSpeechTranscriber(from buffer: AVAudioPCMBuffer)
+    -> AVAudioPCMBuffer?
+  {
     if converter == nil, buffer.format == analysisFormat {
       return buffer.copyForSpeechTranscriber()
     }
@@ -899,8 +912,8 @@ private final class OneShotAudioConverterInput: @unchecked Sendable {
   }
 }
 
-private extension AVAudioPCMBuffer {
-  func copyForSpeechTranscriber() -> AVAudioPCMBuffer? {
+extension AVAudioPCMBuffer {
+  fileprivate func copyForSpeechTranscriber() -> AVAudioPCMBuffer? {
     guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
       return nil
     }

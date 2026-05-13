@@ -899,7 +899,8 @@ private struct ChatComposer: View {
     if !trimmed.isEmpty {
       return trimmed
     }
-    return "\(store.settings.conversation.speechRecognitionBackend.displayName) · \(liveVoiceSession.languageIdentifier)"
+    return
+      "\(store.settings.conversation.speechRecognitionBackend.displayName) · \(liveVoiceSession.languageIdentifier)"
   }
 
   private var draftBinding: Binding<String> {
