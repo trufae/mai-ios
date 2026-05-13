@@ -1930,4 +1930,399 @@ final class AppStore: ObservableObject {
     let base = title.isEmpty ? "Chat" : title
     return String(base.prefix(80))
   }
+
+  // MARK: - Settings Backup (Import / Export / Clear)
+
+  func exportSettingsBackupFile(scope: SettingsBackupScope, includeAudio: Bool = false) -> URL? {
+    let envelope = makeBackupEnvelope(scope: scope, includeAudio: includeAudio)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    guard let data = try? encoder.encode(envelope) else {
+      errorMessage = "Could not encode backup."
+      return nil
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "PocketMaiExports",
+      isDirectory: true
+    )
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let filename = backupFilename(scope: scope)
+      let url = directory.appendingPathComponent(filename).appendingPathExtension("json")
+      try data.write(to: url, options: .atomic)
+      return url
+    } catch {
+      errorMessage = "Could not write backup: \(error.localizedDescription)"
+      return nil
+    }
+  }
+
+  private func makeBackupEnvelope(scope: SettingsBackupScope, includeAudio: Bool)
+    -> SettingsBackupEnvelope
+  {
+    let exportedConversations: [Conversation]?
+    switch scope {
+    case .everything, .conversations:
+      exportedConversations = conversations
+    case .providers, .prompts, .tools:
+      exportedConversations = nil
+    }
+    let attachments =
+      includeAudio
+      ? collectVoiceRecordingAttachments(from: exportedConversations ?? [])
+      : nil
+
+    switch scope {
+    case .everything:
+      return SettingsBackupEnvelope(
+        providers: providersBackup(),
+        prompts: promptsBackup(),
+        tools: toolsBackup(),
+        conversations: exportedConversations,
+        voiceRecordings: attachments)
+    case .providers:
+      return SettingsBackupEnvelope(providers: providersBackup())
+    case .prompts:
+      return SettingsBackupEnvelope(prompts: promptsBackup())
+    case .tools:
+      return SettingsBackupEnvelope(tools: toolsBackup())
+    case .conversations:
+      return SettingsBackupEnvelope(
+        conversations: exportedConversations,
+        voiceRecordings: attachments)
+    }
+  }
+
+  private func collectVoiceRecordingAttachments(from conversations: [Conversation])
+    -> [SettingsVoiceRecordingAttachment]
+  {
+    var seen = Set<String>()
+    var attachments: [SettingsVoiceRecordingAttachment] = []
+    for conversation in conversations {
+      for message in conversation.messages {
+        guard let filename = Self.normalizedVoiceRecordingFilename(from: message),
+          !seen.contains(filename),
+          let url = PocketMaiDirectories.voiceRecordingURL(filename: filename),
+          let data = try? Data(contentsOf: url)
+        else { continue }
+        seen.insert(filename)
+        attachments.append(
+          SettingsVoiceRecordingAttachment(
+            filename: filename, dataBase64: data.base64EncodedString()))
+      }
+    }
+    return attachments
+  }
+
+  private func providersBackup() -> SettingsProvidersBackup {
+    SettingsProvidersBackup(
+      endpoints: settings.openAIEndpoints,
+      selectedEndpointID: settings.selectedEndpointID,
+      defaultProvider: settings.defaultProvider)
+  }
+
+  private func promptsBackup() -> SettingsPromptsBackup {
+    SettingsPromptsBackup(
+      prompts: settings.systemPrompts,
+      defaultSystemPromptID: settings.defaultSystemPromptID)
+  }
+
+  private func toolsBackup() -> SettingsToolsBackup {
+    SettingsToolsBackup(
+      toolSettings: settings.toolSettings,
+      mcpServers: settings.mcpServers,
+      defaultEnabledTools: settings.defaultEnabledTools,
+      defaultEnabledMCPServers: settings.defaultEnabledMCPServers,
+      defaultEnabledMCPTools: settings.defaultEnabledMCPTools,
+      toolCallingMode: settings.toolCallingMode,
+      yoloModeEnabled: settings.yoloModeEnabled,
+      useToolProxy: settings.useToolProxy)
+  }
+
+  private func backupFilename(scope: SettingsBackupScope) -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    let stamp = formatter.string(from: Date())
+    let suffix: String
+    switch scope {
+    case .everything: suffix = "everything"
+    case .providers: suffix = "providers"
+    case .prompts: suffix = "prompts"
+    case .tools: suffix = "tools"
+    case .conversations: suffix = "conversations"
+    }
+    return "PocketMai-\(suffix)-\(stamp)"
+  }
+
+  @discardableResult
+  func importSettingsBackup(
+    from url: URL,
+    scope: SettingsBackupScope,
+    restoreAudio: Bool = false
+  ) throws -> String {
+    let access = url.startAccessingSecurityScopedResource()
+    defer {
+      if access {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let data = try? Data(contentsOf: url) else {
+      throw SettingsBackupError.unreadableFile
+    }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    guard let envelope = try? decoder.decode(SettingsBackupEnvelope.self, from: data),
+      envelope.format == SettingsBackupEnvelope.format
+    else {
+      throw SettingsBackupError.invalidJSON
+    }
+    return try applyBackup(envelope, scope: scope, restoreAudio: restoreAudio)
+  }
+
+  @discardableResult
+  private func applyBackup(
+    _ envelope: SettingsBackupEnvelope,
+    scope: SettingsBackupScope,
+    restoreAudio: Bool
+  ) throws -> String {
+    var applied: [String] = []
+
+    let wantProviders = scope == .everything || scope == .providers
+    let wantPrompts = scope == .everything || scope == .prompts
+    let wantTools = scope == .everything || scope == .tools
+    let wantConversations = scope == .everything || scope == .conversations
+
+    if wantProviders {
+      guard let payload = envelope.providers else {
+        if scope == .providers { throw SettingsBackupError.missingSection(.providers) }
+        if scope == .everything { /* allow */ } else { /* unreachable */ }
+        return ""
+      }
+      applyProvidersBackup(payload)
+      applied.append("\(payload.endpoints.count) provider\(payload.endpoints.count == 1 ? "" : "s")")
+    }
+
+    if wantPrompts {
+      guard let payload = envelope.prompts else {
+        if scope == .prompts { throw SettingsBackupError.missingSection(.prompts) }
+        return finishApplyBackup(applied: applied)
+      }
+      applyPromptsBackup(payload)
+      applied.append("\(payload.prompts.count) prompt\(payload.prompts.count == 1 ? "" : "s")")
+    }
+
+    if wantTools {
+      guard let payload = envelope.tools else {
+        if scope == .tools { throw SettingsBackupError.missingSection(.tools) }
+        return finishApplyBackup(applied: applied)
+      }
+      applyToolsBackup(payload)
+      applied.append("tool settings")
+    }
+
+    if wantConversations {
+      guard let payload = envelope.conversations else {
+        if scope == .conversations { throw SettingsBackupError.missingSection(.conversations) }
+        return finishApplyBackup(applied: applied)
+      }
+      applyConversationsBackup(payload)
+      applied.append("\(payload.count) conversation\(payload.count == 1 ? "" : "s")")
+
+      if restoreAudio, let attachments = envelope.voiceRecordings, !attachments.isEmpty {
+        let restored = restoreVoiceRecordings(attachments)
+        if restored > 0 {
+          applied.append("\(restored) audio file\(restored == 1 ? "" : "s")")
+        }
+      }
+    }
+
+    if scope == .everything && envelope.providers == nil && envelope.prompts == nil
+      && envelope.tools == nil && envelope.conversations == nil
+    {
+      throw SettingsBackupError.missingSection(.everything)
+    }
+
+    saveSettings()
+    return finishApplyBackup(applied: applied)
+  }
+
+  private func restoreVoiceRecordings(_ attachments: [SettingsVoiceRecordingAttachment]) -> Int {
+    guard let directory = try? PocketMaiDirectories.ensureVoiceRecordings() else { return 0 }
+    var restored = 0
+    for attachment in attachments {
+      let filename = attachment.filename.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !filename.isEmpty,
+        PocketMaiDirectories.voiceRecordingURL(filename: filename) != nil,
+        let data = Data(base64Encoded: attachment.dataBase64)
+      else { continue }
+      let url = directory.appendingPathComponent(filename)
+      if (try? data.write(to: url, options: .atomic)) != nil {
+        restored += 1
+      }
+    }
+    return restored
+  }
+
+  private func finishApplyBackup(applied: [String]) -> String {
+    saveSettings()
+    if applied.isEmpty {
+      return "Nothing to import."
+    }
+    return "Imported: " + applied.joined(separator: ", ") + "."
+  }
+
+  private func applyProvidersBackup(_ payload: SettingsProvidersBackup) {
+    settings.openAIEndpoints = payload.endpoints
+    if let selected = payload.selectedEndpointID,
+      payload.endpoints.contains(where: { $0.id == selected })
+    {
+      settings.selectedEndpointID = selected
+    } else {
+      settings.selectedEndpointID = payload.endpoints.first?.id
+    }
+    if let provider = payload.defaultProvider {
+      if provider == .openAICompatible && settings.selectedEndpointID == nil {
+        settings.defaultProvider = .apple
+      } else {
+        settings.defaultProvider = provider
+      }
+    }
+    endpointStatuses.removeAll()
+    endpointModels.removeAll()
+    endpointVoices.removeAll()
+  }
+
+  private func applyPromptsBackup(_ payload: SettingsPromptsBackup) {
+    let prompts = payload.prompts.isEmpty ? [AppSettings.defaultSystemPrompt] : payload.prompts
+    settings.systemPrompts = prompts
+    if let id = payload.defaultSystemPromptID, prompts.contains(where: { $0.id == id }) {
+      settings.defaultSystemPromptID = id
+    } else {
+      settings.defaultSystemPromptID = prompts.first?.id ?? AppSettings.defaultSystemPrompt.id
+    }
+  }
+
+  private func applyToolsBackup(_ payload: SettingsToolsBackup) {
+    settings.toolSettings = payload.toolSettings
+    settings.mcpServers = payload.mcpServers
+    if let tools = payload.defaultEnabledTools {
+      settings.defaultEnabledTools = tools
+    }
+    if let servers = payload.defaultEnabledMCPServers {
+      settings.defaultEnabledMCPServers = servers
+    }
+    if let mcpTools = payload.defaultEnabledMCPTools {
+      settings.defaultEnabledMCPTools = mcpTools
+    }
+    if let mode = payload.toolCallingMode {
+      settings.toolCallingMode = mode
+    }
+    if let yolo = payload.yoloModeEnabled {
+      settings.yoloModeEnabled = yolo
+    }
+    if let proxy = payload.useToolProxy {
+      settings.useToolProxy = proxy
+    }
+    mcpStatuses.removeAll()
+    mcpTools.removeAll()
+  }
+
+  private func applyConversationsBackup(_ payload: [Conversation]) {
+    let existingByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+    var merged = conversations
+    for var imported in payload {
+      if existingByID[imported.id] != nil {
+        imported.id = uniqueConversationID()
+      }
+      imported.updatedAt = Date()
+      merged.insert(imported, at: 0)
+    }
+    conversations = merged
+    sortConversations()
+    rebuildConversationIndexes()
+    conversationSummaries = Self.sortedSummaries(conversations.map(ConversationSummary.init))
+    saveConversations()
+  }
+
+  // MARK: - Clear actions
+
+  func clearProviderSettings() {
+    settings.openAIEndpoints.removeAll()
+    settings.selectedEndpointID = nil
+    if settings.defaultProvider == .openAICompatible {
+      settings.defaultProvider = .apple
+    }
+    endpointStatuses.removeAll()
+    endpointModels.removeAll()
+    endpointVoices.removeAll()
+    saveSettings()
+  }
+
+  func clearSystemPrompts() {
+    settings.systemPrompts = [AppSettings.defaultSystemPrompt]
+    settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
+    saveSettings()
+  }
+
+  func clearToolSettings() {
+    settings.toolSettings = .defaults
+    settings.defaultEnabledTools = AppSettings.defaultTools
+    settings.defaultEnabledMCPTools = AppSettings.defaultMCPTools
+    saveSettings()
+  }
+
+  func clearMCPServers() {
+    settings.mcpServers.removeAll()
+    settings.defaultEnabledMCPServers.removeAll()
+    settings.defaultEnabledMCPTools.removeAll()
+    mcpStatuses.removeAll()
+    mcpTools.removeAll()
+    saveSettings()
+  }
+
+  func clearMemory() {
+    settings.memory = ""
+    saveSettings()
+  }
+
+  @discardableResult
+  func clearDownloadedMLXModels() -> String {
+    let models = LocalMLXModelCache.listModels()
+    var removed = 0
+    var failed: [String] = []
+    for model in models {
+      do {
+        try LocalMLXModelCache.delete(model)
+        removed += 1
+      } catch {
+        failed.append(model.repoID)
+      }
+    }
+    refreshLocalMLXModels()
+    if !failed.isEmpty {
+      return "Removed \(removed) model\(removed == 1 ? "" : "s"); failed: \(failed.joined(separator: ", "))."
+    }
+    return "Removed \(removed) downloaded model\(removed == 1 ? "" : "s")."
+  }
+
+  @discardableResult
+  func clearFilesWorkspace() -> String {
+    let url = PocketMaiDirectories.filesWorkspaceURL
+    let fileManager = FileManager.default
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+    else {
+      return "Workspace is empty."
+    }
+    var removed = 0
+    for entry in entries {
+      if (try? fileManager.removeItem(at: entry)) != nil {
+        removed += 1
+      }
+    }
+    _ = try? PocketMaiDirectories.ensureFilesWorkspace()
+    return "Removed \(removed) workspace item\(removed == 1 ? "" : "s")."
+  }
 }

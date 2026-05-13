@@ -975,6 +975,103 @@ enum ConversationImportResolution: Sendable {
   case updateExisting
 }
 
+enum SettingsBackupScope: String, CaseIterable, Sendable {
+  case everything
+  case providers
+  case prompts
+  case tools
+  case conversations
+}
+
+struct SettingsProvidersBackup: Codable, Sendable {
+  var endpoints: [OpenAIEndpoint]
+  var selectedEndpointID: UUID?
+  var defaultProvider: ProviderKind?
+}
+
+struct SettingsPromptsBackup: Codable, Sendable {
+  var prompts: [SystemPrompt]
+  var defaultSystemPromptID: UUID?
+}
+
+struct SettingsToolsBackup: Codable, Sendable {
+  var toolSettings: NativeToolSettings
+  var mcpServers: [MCPServer]
+  var defaultEnabledTools: Set<BuiltInToolID>?
+  var defaultEnabledMCPServers: Set<UUID>?
+  var defaultEnabledMCPTools: Set<String>?
+  var toolCallingMode: ToolCallingMode?
+  var yoloModeEnabled: Bool?
+  var useToolProxy: Bool?
+}
+
+struct SettingsVoiceRecordingAttachment: Codable, Sendable {
+  var filename: String
+  var dataBase64: String
+}
+
+struct SettingsBackupEnvelope: Codable, Sendable {
+  static let format = "pocketmai.backup"
+  static let currentVersion = 1
+
+  var format: String
+  var version: Int
+  var exportedAt: Date
+  var pocketMaiVersion: String
+  var providers: SettingsProvidersBackup?
+  var prompts: SettingsPromptsBackup?
+  var tools: SettingsToolsBackup?
+  var conversations: [Conversation]?
+  var voiceRecordings: [SettingsVoiceRecordingAttachment]?
+
+  init(
+    providers: SettingsProvidersBackup? = nil,
+    prompts: SettingsPromptsBackup? = nil,
+    tools: SettingsToolsBackup? = nil,
+    conversations: [Conversation]? = nil,
+    voiceRecordings: [SettingsVoiceRecordingAttachment]? = nil,
+    exportedAt: Date = Date(),
+    pocketMaiVersion: String = ConversationExportEnvelope.currentPocketMaiVersion
+  ) {
+    self.format = Self.format
+    self.version = Self.currentVersion
+    self.exportedAt = exportedAt
+    self.pocketMaiVersion = pocketMaiVersion
+    self.providers = providers
+    self.prompts = prompts
+    self.tools = tools
+    self.conversations = conversations
+    self.voiceRecordings = voiceRecordings
+  }
+}
+
+enum SettingsBackupError: LocalizedError {
+  case unreadableFile
+  case invalidJSON
+  case missingSection(SettingsBackupScope)
+
+  var errorDescription: String? {
+    switch self {
+    case .unreadableFile: return "The selected file could not be read."
+    case .invalidJSON: return "The selected file is not a valid PocketMai backup."
+    case .missingSection(let scope):
+      return "The backup does not contain \(scope.sectionName)."
+    }
+  }
+}
+
+extension SettingsBackupScope {
+  var sectionName: String {
+    switch self {
+    case .everything: return "any data"
+    case .providers: return "provider settings"
+    case .prompts: return "system prompts"
+    case .tools: return "tool settings"
+    case .conversations: return "conversations"
+    }
+  }
+}
+
 extension OpenAIEndpoint {
   static let defaultDisplayName = "New Provider"
 

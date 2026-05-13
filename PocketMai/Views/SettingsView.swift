@@ -225,11 +225,7 @@ struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
   @State private var showingToolFileImporter = false
-  @State private var showingConversationImporter = false
-  @State private var pendingConversationImport: ConversationImportPreview?
   @State private var newTodoTitle = ""
-  @State private var showingClearAllConfirmation = false
-  @State private var showingFactoryResetConfirmation = false
   @State private var showingClearMemoryConfirmation = false
   @State private var showingBackgroundVoiceConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
@@ -249,31 +245,6 @@ struct SettingsView: View {
         if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
           EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
         }
-      }
-      .alert(
-        "Clear all conversations?",
-        isPresented: $showingClearAllConfirmation
-      ) {
-        Button("Cancel", role: .cancel) {}
-        Button("Clear", role: .destructive) {
-          store.clearAllConversations()
-        }
-      } message: {
-        Text("Every chat and its messages will be deleted. This cannot be undone.")
-      }
-      .alert(
-        "Factory reset PocketMai?",
-        isPresented: $showingFactoryResetConfirmation
-      ) {
-        Button("Cancel", role: .cancel) {}
-        Button("Factory Reset", role: .destructive) {
-          store.factoryReset()
-          dismiss()
-        }
-      } message: {
-        Text(
-          "All conversations, settings, providers, API keys, memory, tools, and local app data will be removed from this device. This cannot be undone."
-        )
       }
       .alert(
         pendingDeletion?.kind.title ?? "Delete item?",
@@ -328,31 +299,6 @@ struct SettingsView: View {
         if case .success(let url) = result {
           store.importToolFile(from: url)
         }
-      }
-      .fileImporter(
-        isPresented: $showingConversationImporter,
-        allowedContentTypes: [.json]
-      ) { result in
-        switch result {
-        case .success(let url):
-          Task { await prepareConversationImport(from: url) }
-        case .failure(let error):
-          showToast(error.localizedDescription)
-        }
-      }
-      .sheet(item: $pendingConversationImport) { preview in
-        ConversationImportConfirmationView(
-          preview: preview,
-          onCancel: {
-            pendingConversationImport = nil
-          },
-          onImportAsNew: { title in
-            finishConversationImport(preview, resolution: .create(title: title))
-          },
-          onUpdateExisting: {
-            finishConversationImport(preview, resolution: .updateExisting)
-          }
-        )
       }
       .onAppear {
         store.refreshLocalMLXModels()
@@ -1280,31 +1226,32 @@ struct SettingsView: View {
 
   private var dangerSection: some View {
     Section {
-      Button {
-        showingConversationImporter = true
+      NavigationLink {
+        SettingsImportView()
+          .environmentObject(store)
       } label: {
-        Label("Import Conversation", systemImage: "square.and.arrow.down")
+        Label("Import...", systemImage: "square.and.arrow.down")
       }
 
-      Button {
-        showingClearAllConfirmation = true
+      NavigationLink {
+        SettingsExportView()
+          .environmentObject(store)
       } label: {
-        Label("Clear All Conversations", systemImage: "trash")
-          .foregroundStyle(hasConversationContent ? Color.red : Color.secondary)
+        Label("Export...", systemImage: "square.and.arrow.up")
       }
-      .disabled(!hasConversationContent)
 
-      Button(role: .destructive) {
-        showingFactoryResetConfirmation = true
+      NavigationLink {
+        SettingsDestroyView { dismiss() }
+          .environmentObject(store)
       } label: {
-        Label("Factory Reset", systemImage: "arrow.counterclockwise.circle")
+        Label("Destroy...", systemImage: "exclamationmark.triangle")
           .foregroundStyle(Color.red)
       }
     } header: {
       Text("Danger Zone")
     } footer: {
       Text(
-        "Import adds or updates chats from PocketMai JSON. Clear conversations removes chats. Factory Reset removes chats, settings, providers, API keys, memory, tools, and local app data from this device."
+        "Move data between devices with Import and Export, or clear local data from Destroy. Destructive actions still require confirmation."
       )
     }
   }
@@ -1392,29 +1339,6 @@ struct SettingsView: View {
     store.settings.toolSettings.todos.append(TodoItem(title: trimmed))
     newTodoTitle = ""
     store.saveSettings()
-  }
-
-  @MainActor
-  private func prepareConversationImport(from url: URL) async {
-    do {
-      pendingConversationImport = try await store.previewConversationImport(from: url)
-    } catch {
-      showToast(error.localizedDescription)
-    }
-  }
-
-  private func finishConversationImport(
-    _ preview: ConversationImportPreview,
-    resolution: ConversationImportResolution
-  ) -> String? {
-    do {
-      try store.importConversation(preview, resolution: resolution)
-      pendingConversationImport = nil
-      dismiss()
-      return nil
-    } catch {
-      return error.localizedDescription
-    }
   }
 
   private func saveAndDismiss() {
@@ -1847,7 +1771,7 @@ private enum EndpointNameResolution {
   }
 }
 
-private struct ConversationImportConfirmationView: View {
+struct ConversationImportConfirmationView: View {
   let preview: ConversationImportPreview
   let onCancel: () -> Void
   let onImportAsNew: (String) -> String?
@@ -2008,7 +1932,7 @@ private struct ConversationImportConfirmationView: View {
   }
 }
 
-private struct SettingsToastModifier: ViewModifier {
+struct SettingsToastModifier: ViewModifier {
   @Binding var message: String?
 
   func body(content: Content) -> some View {
@@ -2042,7 +1966,7 @@ private struct SettingsToastModifier: ViewModifier {
 }
 
 extension View {
-  fileprivate func settingsToast(_ message: Binding<String?>) -> some View {
+  func settingsToast(_ message: Binding<String?>) -> some View {
     modifier(SettingsToastModifier(message: message))
   }
 }
