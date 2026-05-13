@@ -468,6 +468,19 @@ final class LiveVoiceSession: ObservableObject {
     transcript = ""
     previewMessageID = UUID()
     let conversationID = store.currentConversation?.id ?? conversationIDBeforeSend
+
+    if store.settings.conversation.streamTTS, let conversationID {
+      await streamSpeakAssistantResponse(
+        conversationID: conversationID, generation: generation)
+      isCommittingTurn = false
+      guard generation == sessionGeneration else { return }
+      _ = await beginRecognition(
+        displayState: .listening,
+        resetTranscript: true,
+        generation: generation)
+      return
+    }
+
     if let conversationID {
       await waitForAssistantResponse(in: conversationID, generation: generation)
     }
@@ -499,6 +512,107 @@ final class LiveVoiceSession: ObservableObject {
       displayState: .listening,
       resetTranscript: true,
       generation: generation)
+  }
+
+  private func streamSpeakAssistantResponse(
+    conversationID: UUID, generation: Int
+  ) async {
+    guard let store, let ttsPlayer else { return }
+
+    var assistantID: UUID?
+    while generation == sessionGeneration, !Task.isCancelled {
+      if let id = currentAssistantMessageID() {
+        assistantID = id
+        break
+      }
+      if store.isResponding(in: conversationID) == false {
+        break
+      }
+      try? await Task.sleep(for: .milliseconds(100))
+    }
+    guard generation == sessionGeneration, let id = assistantID else { return }
+
+    stopRecognition()
+    transcript = ""
+    previewMessageID = UUID()
+    state = .speaking
+
+    let voice = store.settings.toolSettings.voices.assistant
+    let endpoints = store.settings.openAIEndpoints
+    var consumed = 0
+
+    while generation == sessionGeneration, !Task.isCancelled {
+      let visible = currentAssistantVisibleText(id: id)
+      let stillResponding = store.isResponding(in: conversationID)
+
+      if consumed > visible.count {
+        consumed = visible.count
+      }
+
+      let startIdx = visible.index(visible.startIndex, offsetBy: consumed)
+      let tail = visible[startIdx...]
+      let (chunk, advanced) = Self.extractCompletedSentences(
+        from: tail, flushAll: !stillResponding)
+      if !chunk.isEmpty {
+        ttsPlayer.enqueue(
+          text: chunk,
+          voice: voice,
+          role: .assistant,
+          title: "Assistant",
+          messageID: id,
+          openAIEndpoints: endpoints)
+      }
+      consumed += advanced
+
+      if !stillResponding { break }
+      try? await Task.sleep(for: .milliseconds(150))
+    }
+
+    await waitForSpeechToFinish(ttsPlayer, generation: generation)
+  }
+
+  private func currentAssistantMessageID() -> UUID? {
+    store?.currentConversation?.messages.reversed().first(where: {
+      $0.role == .assistant
+    })?.id
+  }
+
+  private func currentAssistantVisibleText(id: UUID) -> String {
+    guard let store else { return "" }
+    let raw: String
+    if let streaming = store.streamingTextStore.currentText(for: id) {
+      raw = streaming
+    } else if let msg = store.currentConversation?.messages.first(where: { $0.id == id }) {
+      raw = msg.text
+    } else {
+      raw = ""
+    }
+    return MessageContentFilter.render(raw).visibleText
+  }
+
+  private static func extractCompletedSentences(
+    from text: Substring, flushAll: Bool
+  ) -> (chunk: String, advanced: Int) {
+    if flushAll {
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      return (trimmed, text.count)
+    }
+    var lastBoundary: String.Index?
+    var i = text.startIndex
+    while i < text.endIndex {
+      let c = text[i]
+      if c == "." || c == "!" || c == "?" || c == "\n" {
+        let next = text.index(after: i)
+        if next < text.endIndex, text[next].isWhitespace {
+          lastBoundary = next
+        }
+      }
+      i = text.index(after: i)
+    }
+    guard let boundary = lastBoundary else { return ("", 0) }
+    let chunk = String(text[..<boundary]).trimmingCharacters(in: .whitespacesAndNewlines)
+    let advanced = text.distance(from: text.startIndex, to: boundary)
+    return (chunk, advanced)
   }
 
   private func waitForAssistantResponse(in conversationID: UUID, generation: Int) async {

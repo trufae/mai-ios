@@ -614,8 +614,16 @@ struct SettingsView: View {
       .pickerStyle(.menu)
     }
 
+    Toggle("StreamTTS", isOn: settingsBinding(\.conversation.streamTTS))
+
     Text(
       "Native iOS Live streams partial transcription with SpeechTranscriber. Native iOS File records first and transcribes after pause."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    Text(
+      "StreamTTS plays each sentence as the LLM streams it, instead of waiting for the full reply."
     )
     .font(.caption)
     .foregroundStyle(.secondary)

@@ -71,6 +71,36 @@ final class TTSPlayer: NSObject, ObservableObject {
     beginSpeaking(speech)
   }
 
+  func enqueue(
+    text: String,
+    voice: RoleVoiceSettings,
+    role: VoiceRole,
+    title: String? = nil,
+    tag: String? = nil,
+    messageID: UUID? = nil,
+    openAIEndpoints: [OpenAIEndpoint] = []
+  ) {
+    guard
+      let speech = QueuedSpeech(
+        text: text,
+        voice: voice,
+        role: role,
+        title: title,
+        tag: tag,
+        messageID: messageID,
+        openAIEndpoints: openAIEndpoints
+      )
+    else { return }
+
+    if hasActiveSpeech {
+      queuedSpeech.append(speech)
+      return
+    }
+
+    pendingSpeechAfterCancel = nil
+    beginSpeaking(speech)
+  }
+
   func playRecording(
     for message: ChatMessage,
     title: String? = nil,
