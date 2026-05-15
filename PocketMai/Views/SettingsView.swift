@@ -583,6 +583,10 @@ struct SettingsView: View {
 
     Toggle("StreamTTS", isOn: settingsBinding(\.conversation.streamTTS))
 
+    Toggle(
+      "Skip Code and Links in TTS",
+      isOn: settingsBinding(\.conversation.skipTechnicalContentInTTS))
+
     Text(
       "Native iOS Live streams partial transcription with SpeechTranscriber. Native iOS File records first and transcribes after pause."
     )
@@ -597,6 +601,12 @@ struct SettingsView: View {
 
     Text(
       "StreamTTS plays each sentence as the LLM streams it, instead of waiting for the full reply."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    Text(
+      "Skip Code and Links in TTS removes code blocks, JSON, XML, and URLs before speech."
     )
     .font(.caption)
     .foregroundStyle(.secondary)

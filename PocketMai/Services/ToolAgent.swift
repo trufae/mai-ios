@@ -95,6 +95,8 @@ enum BuiltInToolCatalog {
       return TextToSpeechTool.speak(
         arguments: call.argumentValues,
         settings: store.effectiveToolSettings(for: conversation),
+        skipTechnicalContent: store.effectiveConversationSettings(for: conversation)
+          .skipTechnicalContentInTTS,
         openAIEndpoints: store.settings.openAIEndpoints)
     case DateTimeTool.name:
       return DateTimeTool.run(settings: store.settings.toolSettings)
@@ -808,12 +810,15 @@ enum TextToSpeechTool {
   static func speak(
     arguments: [String: AgentToolArgumentValue],
     settings: NativeToolSettings,
+    skipTechnicalContent: Bool = true,
     openAIEndpoints: [OpenAIEndpoint] = [],
     role: VoiceRole = .assistant,
     title: String? = nil,
     messageID: UUID? = nil
   ) -> String {
-    let text = TTSSpeechTextSanitizer.sanitized(arguments["text"]?.stringValue ?? "")
+    let text = TTSSpeechTextSanitizer.sanitized(
+      arguments["text"]?.stringValue ?? "",
+      skipTechnicalContent: skipTechnicalContent)
     guard !text.isEmpty else { return "Error: text is required." }
 
     let interrupt = arguments["interrupt"]?.boolValue ?? true
@@ -850,6 +855,7 @@ enum TextToSpeechTool {
       title: title,
       messageID: messageID,
       openAIEndpoints: openAIEndpoints,
+      skipTechnicalContent: skipTechnicalContent,
       interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
   }

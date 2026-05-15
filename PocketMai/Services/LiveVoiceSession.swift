@@ -507,7 +507,8 @@ final class LiveVoiceSession: ObservableObject {
       role: .assistant,
       title: "Assistant",
       messageID: assistant.id,
-      openAIEndpoints: store.settings.openAIEndpoints)
+      openAIEndpoints: store.settings.openAIEndpoints,
+      skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS)
     await waitForSpeechToFinish(ttsPlayer, generation: generation)
     guard generation == sessionGeneration else { return }
     _ = await beginRecognition(
@@ -562,7 +563,8 @@ final class LiveVoiceSession: ObservableObject {
           role: .assistant,
           title: "Assistant",
           messageID: id,
-          openAIEndpoints: endpoints)
+          openAIEndpoints: endpoints,
+          skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS)
       }
       consumed += advanced
 

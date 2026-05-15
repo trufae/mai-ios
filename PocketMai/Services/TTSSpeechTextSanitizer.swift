@@ -1,9 +1,14 @@
 import Foundation
 
 enum TTSSpeechTextSanitizer {
-  static func sanitized(_ text: String) -> String {
+  static func sanitized(_ text: String, skipTechnicalContent: Bool = true) -> String {
     var result = text
-    result = replacing(pattern: "<[^>]+>", in: result, with: " ")
+    if skipTechnicalContent {
+      result = removeMarkdownCodeBlocks(from: result)
+      result = removeJSONBlocks(from: result)
+      result = removeXMLBlocks(from: result)
+      result = removeURLs(from: result)
+    }
     result = decodeCommonHTMLEntities(result)
     result = replacing(pattern: #"!\[([^\]]*)\]\([^)]+\)"#, in: result, with: "$1")
     result = replacing(pattern: #"\[([^\]]+)\]\([^)]+\)"#, in: result, with: "$1")
@@ -11,7 +16,11 @@ enum TTSSpeechTextSanitizer {
     result = replacing(pattern: #"(?m)^\s*[-*+]\s+\[[ xX]\]\s+"#, in: result, with: "")
     result = replacing(pattern: #"(?m)^\s*[-*+]\s+"#, in: result, with: "")
     result = replacing(pattern: #"(?m)^\s*>\s?"#, in: result, with: "")
+    if skipTechnicalContent {
+      result = replacing(pattern: #"`[^`\n]+`"#, in: result, with: " ")
+    }
     result = replacing(pattern: #"`{1,3}"#, in: result, with: "")
+    result = replacing(pattern: "<[^>]+>", in: result, with: " ")
     result = replacing(pattern: "[\\*_~|\\\\#>\\[\\]{}()]", in: result, with: " ")
     result = result.replacingOccurrences(of: "<", with: " ")
       .replacingOccurrences(of: ">", with: " ")
@@ -19,6 +28,156 @@ enum TTSSpeechTextSanitizer {
     result = removeEmoji(from: result)
     result = collapseWhitespace(result)
     return result
+  }
+
+  private static func removeMarkdownCodeBlocks(from text: String) -> String {
+    var result = replacing(
+      pattern: #"(?ms)^ {0,3}`{3,}.*?$[\s\S]*?^ {0,3}`{3,}\s*$"#,
+      in: text,
+      with: " ")
+    result = replacing(
+      pattern: #"(?ms)^ {0,3}~{3,}.*?$[\s\S]*?^ {0,3}~{3,}\s*$"#,
+      in: result,
+      with: " ")
+    return replacing(
+      pattern: #"(?m)(?:^(?: {4}|\t).*(?:\n|$))+"#,
+      in: result,
+      with: " ")
+  }
+
+  private static func removeURLs(from text: String) -> String {
+    var result = replacing(
+      pattern: #"\b(?:https?|ftp)://[^\s<>\[\]{}"']+"#,
+      in: text,
+      with: " ")
+    result = replacing(
+      pattern: #"\bwww\.[^\s<>\[\]{}"']+"#,
+      in: result,
+      with: " ")
+    return replacing(
+      pattern: #"\bmailto:[^\s<>\[\]{}"']+"#,
+      in: result,
+      with: " ")
+  }
+
+  private static func removeXMLBlocks(from text: String) -> String {
+    let blockPattern = #"(?ms)^\s*<([A-Za-z][A-Za-z0-9._:-]*)(?:\s+[^>]*)?>[\s\S]*?</\1>\s*$"#
+    var result = replacing(pattern: blockPattern, in: text, with: " ")
+    result = replacing(
+      pattern:
+        #"(?ms)^\s*<\?xml\b[\s\S]*?(?:\?>\s*)?(?:<([A-Za-z][A-Za-z0-9._:-]*)(?:\s+[^>]*)?>[\s\S]*?</\1>)?\s*$"#,
+      in: result,
+      with: " ")
+    return replacing(
+      pattern: #"(?ms)^\s*<([A-Za-z][A-Za-z0-9._:-]*)(?:\s+[^>]*)?>[\s\S]*$"#,
+      in: result,
+      with: " ")
+  }
+
+  private static func removeJSONBlocks(from text: String) -> String {
+    var output = ""
+    var cursor = text.startIndex
+
+    while cursor < text.endIndex {
+      guard let start = nextJSONBlockStart(in: text, from: cursor) else {
+        output += text[cursor..<text.endIndex]
+        break
+      }
+
+      guard let end = jsonBlockEnd(in: text, from: start) else {
+        output += text[cursor..<text.endIndex]
+        break
+      }
+
+      let candidate = String(text[start..<end])
+      guard isLikelyJSONBlock(candidate) else {
+        output += text[cursor...start]
+        cursor = text.index(after: start)
+        continue
+      }
+
+      output += text[cursor..<start]
+      output += " "
+      cursor = end
+    }
+
+    return output
+  }
+
+  private static func nextJSONBlockStart(in text: String, from start: String.Index)
+    -> String.Index?
+  {
+    var lineStart = start
+    while lineStart < text.endIndex {
+      let lineEnd = text[lineStart...].firstIndex(of: "\n") ?? text.endIndex
+      var firstNonWhitespace = lineStart
+      while firstNonWhitespace < lineEnd,
+        text[firstNonWhitespace].isWhitespace
+      {
+        firstNonWhitespace = text.index(after: firstNonWhitespace)
+      }
+      if firstNonWhitespace < lineEnd,
+        text[firstNonWhitespace] == "{" || text[firstNonWhitespace] == "["
+      {
+        return firstNonWhitespace
+      }
+      guard lineEnd < text.endIndex else { break }
+      lineStart = text.index(after: lineEnd)
+    }
+    return nil
+  }
+
+  private static func jsonBlockEnd(in text: String, from start: String.Index) -> String.Index? {
+    var stack: [Character] = []
+    var cursor = start
+    var inString = false
+    var escaped = false
+
+    while cursor < text.endIndex {
+      let character = text[cursor]
+      defer { cursor = text.index(after: cursor) }
+
+      if inString {
+        if escaped {
+          escaped = false
+        } else if character == "\\" {
+          escaped = true
+        } else if character == "\"" {
+          inString = false
+        }
+        continue
+      }
+
+      switch character {
+      case "\"":
+        inString = true
+      case "{":
+        stack.append("}")
+      case "[":
+        stack.append("]")
+      case "}", "]":
+        guard stack.last == character else { return nil }
+        stack.removeLast()
+        if stack.isEmpty {
+          return text.index(after: cursor)
+        }
+      default:
+        break
+      }
+    }
+
+    return nil
+  }
+
+  private static func isLikelyJSONBlock(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count > 2,
+      (trimmed.first == "{" && trimmed.last == "}")
+        || (trimmed.first == "[" && trimmed.last == "]")
+    else {
+      return false
+    }
+    return trimmed.contains("\n") || trimmed.contains(#"""#) || trimmed.contains(":")
   }
 
   private static func decodeCommonHTMLEntities(_ text: String) -> String {

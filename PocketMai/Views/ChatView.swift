@@ -382,6 +382,7 @@ struct ChatView: View {
       try await audioExporter.export(
         messages: conversation.messages,
         voices: store.effectiveToolSettings(for: conversation).voices,
+        skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS,
         to: url)
       showingAudioExport = false
       try? await Task.sleep(for: .milliseconds(250))
@@ -408,7 +409,8 @@ struct ChatView: View {
     ttsPlayer.speakFromHere(
       messages: Array(conversation.messages[index...]),
       voices: store.effectiveToolSettings(for: conversation).voices,
-      openAIEndpoints: store.settings.openAIEndpoints
+      openAIEndpoints: store.settings.openAIEndpoints,
+      skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS
     )
   }
 
@@ -434,6 +436,7 @@ struct ChatView: View {
                 message: message,
                 toolSettings: currentToolSettings,
                 openAIEndpoints: store.settings.openAIEndpoints,
+                skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
                 onDelete: { messagePendingDeletion = message },

@@ -18,6 +18,7 @@ struct MessageBubble: View {
   let message: ChatMessage
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
+  var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   let onDelete: () -> Void
@@ -35,6 +36,7 @@ struct MessageBubble: View {
       streamingText: streamingTextStore.textObject(for: message.id),
       toolSettings: toolSettings,
       openAIEndpoints: openAIEndpoints,
+      skipTechnicalContentInTTS: skipTechnicalContentInTTS,
       appearance: appearance,
       renderMarkdown: renderMarkdown,
       onDelete: onDelete,
@@ -54,6 +56,7 @@ private struct StreamingMessageBubble: View {
   @ObservedObject var streamingText: StreamingText
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
+  var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   let onDelete: () -> Void
@@ -71,6 +74,7 @@ private struct StreamingMessageBubble: View {
       streamingOverride: streamingText.text,
       toolSettings: toolSettings,
       openAIEndpoints: openAIEndpoints,
+      skipTechnicalContentInTTS: skipTechnicalContentInTTS,
       appearance: appearance,
       renderMarkdown: renderMarkdown,
       onDelete: onDelete,
@@ -94,6 +98,7 @@ private struct MessageBubbleContent: View, Equatable {
   var streamingOverride: String? = nil
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
+  var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   let onDelete: () -> Void
@@ -116,6 +121,7 @@ private struct MessageBubbleContent: View, Equatable {
     lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
       && lhs.toolSettings == rhs.toolSettings
       && lhs.openAIEndpoints == rhs.openAIEndpoints
+      && lhs.skipTechnicalContentInTTS == rhs.skipTechnicalContentInTTS
       && lhs.appearance == rhs.appearance
       && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.showThinking == rhs.showThinking
@@ -267,6 +273,7 @@ private struct MessageBubbleContent: View, Equatable {
       _ = TextToSpeechTool.speak(
         arguments: ["text": .string(visibleText)],
         settings: toolSettings,
+        skipTechnicalContent: skipTechnicalContentInTTS,
         openAIEndpoints: openAIEndpoints,
         role: message.role == .user ? .user : .assistant,
         title: message.role.displayName,

@@ -41,6 +41,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     tag: String? = nil,
     messageID: UUID? = nil,
     openAIEndpoints: [OpenAIEndpoint] = [],
+    skipTechnicalContent: Bool = true,
     interrupt: Bool = true
   ) {
     guard
@@ -51,7 +52,8 @@ final class TTSPlayer: NSObject, ObservableObject {
         title: title,
         tag: tag,
         messageID: messageID,
-        openAIEndpoints: openAIEndpoints
+        openAIEndpoints: openAIEndpoints,
+        skipTechnicalContent: skipTechnicalContent
       )
     else { return }
 
@@ -78,7 +80,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     title: String? = nil,
     tag: String? = nil,
     messageID: UUID? = nil,
-    openAIEndpoints: [OpenAIEndpoint] = []
+    openAIEndpoints: [OpenAIEndpoint] = [],
+    skipTechnicalContent: Bool = true
   ) {
     guard
       let speech = QueuedSpeech(
@@ -88,7 +91,8 @@ final class TTSPlayer: NSObject, ObservableObject {
         title: title,
         tag: tag,
         messageID: messageID,
-        openAIEndpoints: openAIEndpoints
+        openAIEndpoints: openAIEndpoints,
+        skipTechnicalContent: skipTechnicalContent
       )
     else { return }
 
@@ -137,7 +141,8 @@ final class TTSPlayer: NSObject, ObservableObject {
   func speakFromHere(
     messages: [ChatMessage],
     voices: VoiceSettings,
-    openAIEndpoints: [OpenAIEndpoint] = []
+    openAIEndpoints: [OpenAIEndpoint] = [],
+    skipTechnicalContent: Bool = true
   ) {
     let items = messages.compactMap { message -> QueuedSpeech? in
       let role: VoiceRole
@@ -158,7 +163,8 @@ final class TTSPlayer: NSObject, ObservableObject {
         title: message.role.displayName,
         tag: nil,
         messageID: message.id,
-        openAIEndpoints: openAIEndpoints
+        openAIEndpoints: openAIEndpoints,
+        skipTechnicalContent: skipTechnicalContent
       )
     }
     guard let first = items.first else { return }
@@ -649,9 +655,12 @@ final class TTSPlayer: NSObject, ObservableObject {
       title: String?,
       tag: String?,
       messageID: UUID?,
-      openAIEndpoints: [OpenAIEndpoint]
+      openAIEndpoints: [OpenAIEndpoint],
+      skipTechnicalContent: Bool
     ) {
-      let sanitized = TTSSpeechTextSanitizer.sanitized(text)
+      let sanitized = TTSSpeechTextSanitizer.sanitized(
+        text,
+        skipTechnicalContent: skipTechnicalContent)
       guard !sanitized.isEmpty else { return nil }
       self.text = sanitized
       self.voice = voice

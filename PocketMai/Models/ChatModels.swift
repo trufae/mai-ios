@@ -295,6 +295,7 @@ struct ConversationSettings: Codable, Equatable, Sendable {
   var speechRecognitionBackend: LiveSpeechRecognitionBackend = .nativeIOSSpeechTranscriber
   var speechRecognitionLanguageIdentifier: String = Locale.current.identifier
   var streamTTS: Bool = true
+  var skipTechnicalContentInTTS: Bool = true
   var backgroundVoiceListeningEnabled: Bool = false
 
   static let defaults = ConversationSettings()
@@ -311,7 +312,7 @@ struct ConversationSettings: Codable, Equatable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case silenceTimeoutSeconds, speechRecognitionBackend, speechRecognitionLanguageIdentifier,
-      streamTTS, backgroundVoiceListeningEnabled
+      streamTTS, skipTechnicalContentInTTS, backgroundVoiceListeningEnabled
   }
 
   init(from decoder: Decoder) throws {
@@ -333,6 +334,9 @@ struct ConversationSettings: Codable, Equatable, Sendable {
       : languageIdentifier
     streamTTS =
       (try? c.decode(Bool.self, forKey: .streamTTS)) ?? defaults.streamTTS
+    skipTechnicalContentInTTS =
+      (try? c.decode(Bool.self, forKey: .skipTechnicalContentInTTS))
+      ?? defaults.skipTechnicalContentInTTS
     backgroundVoiceListeningEnabled =
       (try? c.decode(Bool.self, forKey: .backgroundVoiceListeningEnabled))
       ?? defaults.backgroundVoiceListeningEnabled
