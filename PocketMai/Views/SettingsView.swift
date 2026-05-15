@@ -304,6 +304,7 @@ struct SettingsView: View {
         store.refreshLocalMLXModels()
       }
     }
+    .preferredColorScheme(store.settings.appearance.theme.colorScheme)
   }
 
   @ViewBuilder
