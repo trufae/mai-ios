@@ -83,12 +83,10 @@ private enum TTSVoiceCache {
     $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
   }
 
-  static let languages: [String] = Array(Set(voices.map(\.language))).sorted {
-    languageDisplayName($0) < languageDisplayName($1)
-  }
+  static let languages: [String] = SystemLanguageSupport.textToSpeechLanguageIdentifiers
 
   static let primaryLanguages: [String] = {
-    let primaries = Set(languages.compactMap(primaryLanguageCode))
+    let primaries = Set(languages.compactMap(SystemLanguageSupport.primaryLanguageCode))
     return Array(primaries).sorted {
       primaryLanguageDisplayName($0)
         .localizedCaseInsensitiveCompare(primaryLanguageDisplayName($1)) == .orderedAscending
@@ -96,7 +94,11 @@ private enum TTSVoiceCache {
   }()
 
   static func voiceOptions(for language: String) -> [AVSpeechSynthesisVoice] {
-    let filtered = language.isEmpty ? voices : voices.filter { $0.language == language }
+    let normalized = SystemLanguageSupport.canonicalLanguageIdentifier(language)
+    let filtered =
+      normalized.isEmpty
+      ? voices
+      : voices.filter { SystemLanguageSupport.canonicalLanguageIdentifier($0.language) == normalized }
     return filtered.sorted {
       $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
     }
@@ -104,7 +106,7 @@ private enum TTSVoiceCache {
 
   static func variants(forPrimary primary: String) -> [String] {
     languages
-      .filter { primaryLanguageCode($0) == primary }
+      .filter { SystemLanguageSupport.primaryLanguageCode($0) == primary }
       .sorted {
         variantDisplayName($0)
           .localizedCaseInsensitiveCompare(variantDisplayName($1)) == .orderedAscending
@@ -112,27 +114,19 @@ private enum TTSVoiceCache {
   }
 
   static func primaryLanguageCode(_ identifier: String) -> String? {
-    let code = Locale(identifier: identifier).language.languageCode?.identifier
-    return code?.isEmpty == false ? code : nil
+    SystemLanguageSupport.primaryLanguageCode(identifier)
   }
 
   static func primaryLanguageDisplayName(_ code: String) -> String {
-    Locale.current.localizedString(forLanguageCode: code) ?? code
+    SystemLanguageSupport.primaryLanguageDisplayName(code)
   }
 
   static func variantDisplayName(_ identifier: String) -> String {
-    let locale = Locale(identifier: identifier)
-    if let region = locale.region?.identifier,
-      let regionName = Locale.current.localizedString(forRegionCode: region)
-    {
-      return "\(regionName) (\(identifier))"
-    }
-    return languageDisplayName(identifier)
+    SystemLanguageSupport.variantDisplayName(identifier)
   }
 
   static func languageDisplayName(_ language: String) -> String {
-    let name = Locale.current.localizedString(forIdentifier: language) ?? language
-    return "\(name) (\(language))"
+    SystemLanguageSupport.languageDisplayName(language)
   }
 }
 
@@ -617,11 +611,11 @@ struct SettingsView: View {
   private var speechRecognitionLocaleIdentifiers: [String] {
     let selected = store.settings.conversation.speechRecognitionLanguageIdentifier
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    var ids = SFSpeechRecognizer.supportedLocales().map(\.identifier)
+    var ids = SystemLanguageSupport.speechRecognitionLocaleIdentifiers
     if !selected.isEmpty, !ids.contains(selected) {
       ids.append(selected)
     }
-    return ids
+    return SystemLanguageSupport.sortedLanguageIdentifiers(ids)
   }
 
   private var speechRecognitionPrimaryLanguages: [String] {

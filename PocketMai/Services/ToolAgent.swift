@@ -94,7 +94,7 @@ enum BuiltInToolCatalog {
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
         arguments: call.argumentValues,
-        settings: store.settings.toolSettings,
+        settings: store.effectiveToolSettings(for: conversation),
         openAIEndpoints: store.settings.openAIEndpoints)
     case DateTimeTool.name:
       return DateTimeTool.run(settings: store.settings.toolSettings)

@@ -191,7 +191,8 @@ final class LiveVoiceSession: ObservableObject {
       transcript = ""
     }
     errorMessage = nil
-    languageIdentifier = Self.configuredLanguageIdentifier(from: store.settings)
+    languageIdentifier = Self.configuredLanguageIdentifier(
+      from: store.effectiveConversationSettings(for: store.currentConversation))
     isCommittingTurn = false
     activityTask?.cancel()
     activityTask = Task { @MainActor [weak self] in
@@ -202,8 +203,8 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
-  private static func configuredLanguageIdentifier(from settings: AppSettings) -> String {
-    let identifier = settings.conversation.speechRecognitionLanguageIdentifier
+  private static func configuredLanguageIdentifier(from settings: ConversationSettings) -> String {
+    let identifier = settings.speechRecognitionLanguageIdentifier
       .trimmingCharacters(in: .whitespacesAndNewlines)
     return identifier.isEmpty ? Locale.current.identifier : identifier
   }
@@ -287,10 +288,11 @@ final class LiveVoiceSession: ObservableObject {
     }
     state = .requestingPermission
     errorMessage = nil
-    languageIdentifier = Self.configuredLanguageIdentifier(from: store.settings)
+    let conversationSettings = store.effectiveConversationSettings(for: store.currentConversation)
+    languageIdentifier = Self.configuredLanguageIdentifier(from: conversationSettings)
 
     do {
-      let engine = try makeSpeechRecognitionEngine(settings: store.settings)
+      let engine = try makeSpeechRecognitionEngine(settings: conversationSettings)
       recognitionGeneration += 1
       let engineGeneration = recognitionGeneration
       engine.onTranscript = { [weak self] event in
@@ -318,17 +320,17 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
-  private func makeSpeechRecognitionEngine(settings: AppSettings) throws
+  private func makeSpeechRecognitionEngine(settings: ConversationSettings) throws
     -> LiveSpeechRecognitionEngine
   {
-    switch settings.conversation.speechRecognitionBackend {
+    switch settings.speechRecognitionBackend {
     case .nativeIOSSpeechTranscriber:
       return NativeIOSSpeechTranscriberRecognitionEngine(
-        localeIdentifier: settings.conversation.speechRecognitionLanguageIdentifier)
+        localeIdentifier: settings.speechRecognitionLanguageIdentifier)
     case .nativeIOS:
       return NativeIOSSpeechRecognitionEngine(
-        localeIdentifier: settings.conversation.speechRecognitionLanguageIdentifier,
-        silenceTimeoutSeconds: settings.conversation.silenceTimeoutSeconds)
+        localeIdentifier: settings.speechRecognitionLanguageIdentifier,
+        silenceTimeoutSeconds: settings.silenceTimeoutSeconds)
     }
   }
 
@@ -501,7 +503,7 @@ final class LiveVoiceSession: ObservableObject {
     state = .speaking
     ttsPlayer.speak(
       text: assistant.text,
-      voice: store.settings.toolSettings.voices.assistant,
+      voice: store.effectiveToolSettings(for: store.currentConversation).voices.assistant,
       role: .assistant,
       title: "Assistant",
       messageID: assistant.id,
@@ -537,7 +539,7 @@ final class LiveVoiceSession: ObservableObject {
     previewMessageID = UUID()
     state = .speaking
 
-    let voice = store.settings.toolSettings.voices.assistant
+    let voice = store.effectiveToolSettings(for: store.currentConversation).voices.assistant
     let endpoints = store.settings.openAIEndpoints
     var consumed = 0
 

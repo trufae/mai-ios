@@ -171,6 +171,7 @@ final class AppStore: ObservableObject {
   }
 
   func newConversation() {
+    let inheritedLanguageOverride = currentConversation?.effectiveLanguageOverrideIdentifier
     if let current = currentConversation,
       current.messages.isEmpty
     {
@@ -179,12 +180,12 @@ final class AppStore: ObservableObject {
         !conversationUsesNewConversationDefaults(current)
       {
         discardSelectedDisposableConversation()
-        createAndSelectNewConversation()
+        createAndSelectNewConversation(languageOverrideIdentifier: inheritedLanguageOverride)
       }
       return
     }
     discardSelectedDisposableConversation()
-    createAndSelectNewConversation()
+    createAndSelectNewConversation(languageOverrideIdentifier: inheritedLanguageOverride)
   }
 
   private func startFreshConversationForLaunch() {
@@ -244,8 +245,10 @@ final class AppStore: ObservableObject {
     return conversation
   }
 
-  private func createAndSelectNewConversation() {
-    let conversation = makeNewConversation()
+  private func createAndSelectNewConversation(languageOverrideIdentifier: String? = nil) {
+    var conversation = makeNewConversation()
+    conversation.languageOverrideIdentifier = Conversation.normalizedLanguageOverride(
+      languageOverrideIdentifier)
     conversations.insert(conversation, at: 0)
     sortConversations()
     selectedConversationID = conversation.id
@@ -266,6 +269,7 @@ final class AppStore: ObservableObject {
       && conversation.showThinking == defaults.showThinking
       && conversation.reasoningLevel == defaults.reasoningLevel
       && conversation.disabledMCPTools == defaults.disabledMCPTools
+      && conversation.effectiveLanguageOverrideIdentifier == defaults.effectiveLanguageOverrideIdentifier
   }
 
   private func normalizedModelID(_ modelID: String) -> String {
@@ -471,6 +475,7 @@ final class AppStore: ObservableObject {
       conversation.disabledMCPTools = source.disabledMCPTools
       conversation.reasoningLevel = source.reasoningLevel
       conversation.showThinking = source.showThinking
+      conversation.languageOverrideIdentifier = source.effectiveLanguageOverrideIdentifier
     }
     conversations.insert(conversation, at: 0)
     sortConversations()
@@ -595,6 +600,14 @@ final class AppStore: ObservableObject {
     sortConversations()
     selectedConversationID = cloned.id
     saveConversations()
+  }
+
+  func effectiveConversationSettings(for conversation: Conversation?) -> ConversationSettings {
+    settings.conversation.applyingLanguageOverride(from: conversation)
+  }
+
+  func effectiveToolSettings(for conversation: Conversation?) -> NativeToolSettings {
+    settings.toolSettings.applyingLanguageOverride(from: conversation)
   }
 
   func togglePin(_ conversation: Conversation) {
@@ -1652,6 +1665,7 @@ final class AppStore: ObservableObject {
       && lhs.reasoningLevel == rhs.reasoningLevel
       && lhs.showThinking == rhs.showThinking
       && lhs.lastContextSignature == rhs.lastContextSignature
+      && lhs.effectiveLanguageOverrideIdentifier == rhs.effectiveLanguageOverrideIdentifier
       && messageContentsMatch(lhs.messages, rhs.messages)
   }
 

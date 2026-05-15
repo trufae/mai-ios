@@ -658,6 +658,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var showThinking: Bool = false
   var lastContextSignature: String? = nil
   var isArchived: Bool = false
+  var languageOverrideIdentifier: String? = nil
 
   init() {}
 
@@ -682,6 +683,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case lastContextSignature
     case lastToolContextSignature
     case isArchived
+    case languageOverrideIdentifier
   }
 
   init(from decoder: Decoder) throws {
@@ -711,6 +713,9 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
       (try? container.decodeIfPresent(String.self, forKey: .lastContextSignature))
       ?? (try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature))
     isArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
+    let decodedLanguageOverride =
+      (try? container.decodeIfPresent(String.self, forKey: .languageOverrideIdentifier)) ?? nil
+    languageOverrideIdentifier = Self.normalizedLanguageOverride(decodedLanguageOverride)
   }
 
   func encode(to encoder: Encoder) throws {
@@ -734,6 +739,9 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(showThinking, forKey: .showThinking)
     try container.encodeIfPresent(lastContextSignature, forKey: .lastContextSignature)
     try container.encode(isArchived, forKey: .isArchived)
+    try container.encodeIfPresent(
+      Self.normalizedLanguageOverride(languageOverrideIdentifier),
+      forKey: .languageOverrideIdentifier)
   }
 
   var displayTitle: String {
@@ -748,6 +756,55 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     if title.isEmpty {
       title = "New chat"
     }
+  }
+
+  var effectiveLanguageOverrideIdentifier: String? {
+    Self.normalizedLanguageOverride(languageOverrideIdentifier)
+  }
+
+  static func normalizedLanguageOverride(_ identifier: String?) -> String? {
+    SystemLanguageSupport.normalizedLanguageIdentifier(identifier)
+  }
+}
+
+extension ConversationSettings {
+  func applyingLanguageOverride(from conversation: Conversation?) -> ConversationSettings {
+    guard let identifier = conversation?.effectiveLanguageOverrideIdentifier else { return self }
+    var copy = self
+    copy.speechRecognitionLanguageIdentifier = identifier
+    return copy
+  }
+}
+
+extension RoleVoiceSettings {
+  func applyingLanguageOverride(_ identifier: String?) -> RoleVoiceSettings {
+    guard provider == .system,
+      let identifier = SystemLanguageSupport.normalizedLanguageIdentifier(identifier)
+    else {
+      return self
+    }
+    var copy = self
+    copy.language = identifier
+    copy.voiceIdentifier = ""
+    return copy
+  }
+}
+
+extension VoiceSettings {
+  func applyingLanguageOverride(_ identifier: String?) -> VoiceSettings {
+    var copy = self
+    copy.user = copy.user.applyingLanguageOverride(identifier)
+    copy.assistant = copy.assistant.applyingLanguageOverride(identifier)
+    return copy
+  }
+}
+
+extension NativeToolSettings {
+  func applyingLanguageOverride(from conversation: Conversation?) -> NativeToolSettings {
+    guard let identifier = conversation?.effectiveLanguageOverrideIdentifier else { return self }
+    var copy = self
+    copy.voices = copy.voices.applyingLanguageOverride(identifier)
+    return copy
   }
 }
 

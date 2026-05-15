@@ -159,6 +159,35 @@ struct ChatView: View {
       } label: {
         Label("System Prompt", systemImage: "text.bubble")
       }
+      Menu {
+        Button {
+          store.updateCurrentConversation { conversation in
+            conversation.languageOverrideIdentifier = nil
+          }
+        } label: {
+          if currentLanguageOverrideIdentifier == nil {
+            Label("Defaults", systemImage: "checkmark")
+          } else {
+            Text("Defaults")
+          }
+        }
+        Divider()
+        ForEach(languageMenuOptions, id: \.self) { identifier in
+          Button {
+            store.updateCurrentConversation { conversation in
+              conversation.languageOverrideIdentifier = identifier
+            }
+          } label: {
+            if identifier == currentLanguageOverrideIdentifier {
+              Label(SystemLanguageSupport.languageDisplayName(identifier), systemImage: "checkmark")
+            } else {
+              Text(SystemLanguageSupport.languageDisplayName(identifier))
+            }
+          }
+        }
+      } label: {
+        Label("Language", systemImage: "globe")
+      }
       Divider()
       Button {
         showingCompactConfirmation = true
@@ -214,6 +243,18 @@ struct ChatView: View {
       let prompt = store.settings.systemPrompts.first(where: { $0.id == id })
     else { return nil }
     return prompt.displayName
+  }
+
+  private var currentLanguageOverrideIdentifier: String? {
+    store.currentConversation?.effectiveLanguageOverrideIdentifier
+  }
+
+  private var languageMenuOptions: [String] {
+    SystemLanguageSupport.chatLanguageIdentifiers(including: currentLanguageOverrideIdentifier)
+  }
+
+  private var currentToolSettings: NativeToolSettings {
+    store.effectiveToolSettings(for: store.currentConversation)
   }
 
   private var canCompactCurrentChat: Bool {
@@ -350,7 +391,7 @@ struct ChatView: View {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       try await audioExporter.export(
         messages: conversation.messages,
-        voices: store.settings.toolSettings.voices,
+        voices: store.effectiveToolSettings(for: conversation).voices,
         to: url)
       showingAudioExport = false
       try? await Task.sleep(for: .milliseconds(250))
@@ -376,7 +417,7 @@ struct ChatView: View {
     }
     ttsPlayer.speakFromHere(
       messages: Array(conversation.messages[index...]),
-      voices: store.settings.toolSettings.voices,
+      voices: store.effectiveToolSettings(for: conversation).voices,
       openAIEndpoints: store.settings.openAIEndpoints
     )
   }
@@ -401,7 +442,7 @@ struct ChatView: View {
             ForEach(store.currentConversation?.messages ?? []) { message in
               MessageBubble(
                 message: message,
-                toolSettings: store.settings.toolSettings,
+                toolSettings: currentToolSettings,
                 openAIEndpoints: store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
@@ -427,7 +468,7 @@ struct ChatView: View {
             if let preview = liveVoiceSession.previewMessage {
               MessageBubble(
                 message: preview,
-                toolSettings: store.settings.toolSettings,
+                toolSettings: currentToolSettings,
                 openAIEndpoints: store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
