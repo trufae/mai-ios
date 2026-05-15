@@ -857,7 +857,10 @@ final class AppStore: ObservableObject {
 
   func compactPromptForCurrentConversation() async -> (conversationID: UUID, prompt: String)? {
     guard let conversation = currentConversation else { return nil }
-    guard let prompt = await ConversationPromptBuilder.compactPrompt(conversation: conversation)
+    guard
+      let prompt = await ConversationPromptBuilder.compactPrompt(
+        conversation: conversation,
+        settings: settings)
     else {
       errorMessage = "Nothing to compact yet."
       return nil
@@ -2108,7 +2111,8 @@ final class AppStore: ObservableObject {
   private func promptsBackup() -> SettingsPromptsBackup {
     SettingsPromptsBackup(
       prompts: settings.systemPrompts,
-      defaultSystemPromptID: settings.defaultSystemPromptID)
+      defaultSystemPromptID: settings.defaultSystemPromptID,
+      compactPrompt: settings.compactPrompt)
   }
 
   private func toolsBackup() -> SettingsToolsBackup {
@@ -2284,6 +2288,9 @@ final class AppStore: ObservableObject {
     } else {
       settings.defaultSystemPromptID = prompts.first?.id ?? AppSettings.defaultSystemPrompt.id
     }
+    if let compactPrompt = payload.compactPrompt {
+      settings.compactPrompt = compactPrompt
+    }
   }
 
   private func applyToolsBackup(_ payload: SettingsToolsBackup) {
@@ -2345,6 +2352,7 @@ final class AppStore: ObservableObject {
   func clearSystemPrompts() {
     settings.systemPrompts = [AppSettings.defaultSystemPrompt]
     settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
+    settings.compactPrompt = AppSettings.defaultCompactPrompt
     saveSettings()
   }
 

@@ -62,7 +62,7 @@ struct SettingsImportView: View {
         importRow(
           title: "System Prompts",
           systemImage: "text.bubble",
-          description: "Replace the prompt library with the one in the backup.",
+          description: "Replace the prompt library and compact prompt with the backup.",
           scope: .prompts)
         importRow(
           title: "Tool Settings",
@@ -246,7 +246,7 @@ struct SettingsExportView: View {
         exportRow(
           title: "System Prompts",
           systemImage: "text.bubble",
-          description: "The prompt library and the default prompt.",
+          description: "The prompt library, default prompt, and compact prompt.",
           scope: .prompts)
         exportRow(
           title: "Tool Settings",
@@ -376,7 +376,7 @@ private enum DestroyAction: Identifiable {
       return
         "All OpenAI-compatible endpoints and their stored API keys will be removed from this device."
     case .prompts:
-      return "Custom system prompts will be removed and the default prompt restored."
+      return "Custom system prompts will be removed and the compact prompt restored to default."
     case .toolSettings:
       return
         "Tool settings, voices, todos, imported tool files, and tool-calling preferences will be reset to defaults."

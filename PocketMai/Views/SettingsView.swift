@@ -856,6 +856,12 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var promptContent: some View {
+    NavigationLink {
+      CompactPromptDetailView()
+    } label: {
+      compactPromptRow
+    }
+    Divider()
     ForEach(store.settings.systemPrompts) { prompt in
       NavigationLink {
         SystemPromptDetailView(
@@ -874,10 +880,31 @@ struct SettingsView: View {
       Label("Add Prompt", systemImage: "plus")
     }
     Text(
-      "Tap a prompt to edit. Use the star in the editor to choose the default prompt sent to the model at the start of every chat."
+      "Compact Prompt is used when summarizing a chat. System prompts are sent to the model at the start of each chat."
     )
     .font(.caption)
     .foregroundStyle(.secondary)
+  }
+
+  private var compactPromptRow: some View {
+    let trimmed = store.settings.compactPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    let preview = trimmed.split(separator: "\n").first.map(String.init) ?? ""
+    return HStack(spacing: 12) {
+      Image(systemName: "rectangle.compress.vertical")
+        .imageScale(.medium)
+        .foregroundStyle(Color.accentColor)
+        .frame(width: 18)
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Compact Prompt")
+          .font(.body)
+        Text(preview.isEmpty ? "Empty" : preview)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+      Spacer()
+    }
+    .padding(.vertical, 2)
   }
 
   private func promptRow(_ prompt: SystemPrompt) -> some View {
@@ -2369,6 +2396,91 @@ private struct SystemPromptDetailView: View {
     withAnimation(.snappy) {
       toastMessage = message
     }
+  }
+}
+
+private struct CompactPromptDetailView: View {
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+
+  @State private var draftText = ""
+  @State private var showingLeaveConfirmation = false
+
+  var body: some View {
+    Form {
+      Section {
+        TextEditor(text: $draftText)
+          .frame(minHeight: 320)
+          .font(.callout.monospaced())
+          .autocorrectionDisabled()
+      } header: {
+        Text("Instructions")
+      } footer: {
+        Text(
+          "Use {{transcript}} where the conversation transcript should be inserted. If omitted, the transcript is appended after the prompt."
+        )
+      }
+
+      Section {
+        Button {
+          draftText = AppSettings.defaultCompactPrompt
+        } label: {
+          Label("Reset to Default", systemImage: "arrow.counterclockwise")
+        }
+      }
+    }
+    .navigationTitle("Compact Prompt")
+    .navigationBarTitleDisplayMode(.inline)
+    .navigationBarBackButtonHidden(true)
+    .toolbar {
+      ToolbarItem(placement: .cancellationAction) {
+        Button {
+          requestDismiss()
+        } label: {
+          Label("Back", systemImage: "chevron.left")
+        }
+      }
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Save") {
+          saveAndDismiss()
+        }
+      }
+    }
+    .alert("Save changes?", isPresented: $showingLeaveConfirmation) {
+      Button("Cancel", role: .cancel) {}
+      Button("Discard Changes", role: .destructive) {
+        dismiss()
+      }
+      Button("Save") {
+        saveAndDismiss()
+      }
+    } message: {
+      Text("Save or discard changes before leaving this prompt.")
+    }
+    .onAppear {
+      if draftText.isEmpty {
+        draftText = store.settings.compactPrompt
+      }
+    }
+  }
+
+  private var hasUnsavedChanges: Bool {
+    draftText != store.settings.compactPrompt
+  }
+
+  private func requestDismiss() {
+    guard hasUnsavedChanges else {
+      dismiss()
+      return
+    }
+    showingLeaveConfirmation = true
+  }
+
+  private func saveAndDismiss() {
+    let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+    store.settings.compactPrompt = trimmed.isEmpty ? AppSettings.defaultCompactPrompt : draftText
+    store.saveSettings()
+    dismiss()
   }
 }
 

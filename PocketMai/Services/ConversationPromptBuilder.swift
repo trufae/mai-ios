@@ -14,9 +14,11 @@ struct CompactConversationRequest: Sendable {
 }
 
 enum ConversationPromptBuilder {
-  static func compactPrompt(conversation: Conversation) async -> String? {
+  static let transcriptPlaceholder = "{{transcript}}"
+
+  static func compactPrompt(conversation: Conversation, settings: AppSettings) async -> String? {
     await Task.detached(priority: .userInitiated) {
-      compactPromptText(conversation: conversation)
+      compactPromptText(conversation: conversation, template: settings.compactPrompt)
     }.value
   }
 
@@ -31,7 +33,11 @@ enum ConversationPromptBuilder {
         promptText = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !promptText.isEmpty else { return nil }
       } else {
-        guard let generated = compactPromptText(conversation: conversation) else { return nil }
+        guard
+          let generated = compactPromptText(
+            conversation: conversation,
+            template: settings.compactPrompt)
+        else { return nil }
         promptText = generated
       }
       let model: String = {
@@ -62,7 +68,7 @@ enum ConversationPromptBuilder {
     }.value
   }
 
-  private static func compactPromptText(conversation: Conversation) -> String? {
+  private static func compactPromptText(conversation: Conversation, template: String) -> String? {
     let transcriptEntries = conversation.messages.compactMap { msg -> String? in
       guard msg.role != .error else { return nil }
       let text = MessageContentFilter.promptSafeText(from: msg.text)
@@ -72,22 +78,13 @@ enum ConversationPromptBuilder {
     guard transcriptEntries.count >= 2 else { return nil }
 
     let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
-    return """
-      Compact the transcript below into durable context for continuing the same chat.
-
-      Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
-
-      Preserve:
-      - User goals, preferences, constraints, and decisions
-      - Important names, projects, files, commands, code snippets, errors, and results
-      - Current state, unresolved questions, and next steps
-
-      Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
-
-      Transcript:
-
-      \(transcript)
-      """
+    let promptTemplate = template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? AppSettings.defaultCompactPrompt
+      : template
+    if promptTemplate.contains(transcriptPlaceholder) {
+      return promptTemplate.replacingOccurrences(of: transcriptPlaceholder, with: transcript)
+    }
+    return "\(promptTemplate)\n\nTranscript:\n\n\(transcript)"
   }
 
   static func memoryUpdateRequest(

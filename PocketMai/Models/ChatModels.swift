@@ -1052,6 +1052,7 @@ struct SettingsProvidersBackup: Codable, Sendable {
 struct SettingsPromptsBackup: Codable, Sendable {
   var prompts: [SystemPrompt]
   var defaultSystemPromptID: UUID?
+  var compactPrompt: String?
 }
 
 struct SettingsToolsBackup: Codable, Sendable {
@@ -1440,6 +1441,22 @@ struct AppSettings: Codable, Equatable, Sendable {
     text:
       "You are a helpful, concise assistant for a private text-only chat app. Prefer clear answers and preserve useful formatting."
   )
+  static let defaultCompactPrompt = """
+    Compact the transcript below into durable context for continuing the same chat.
+
+    Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
+
+    Preserve:
+    - User goals, preferences, constraints, and decisions
+    - Important names, projects, files, commands, code snippets, errors, and results
+    - Current state, unresolved questions, and next steps
+
+    Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+
+    Transcript:
+
+    {{transcript}}
+    """
 
   var defaultProvider: ProviderKind = .apple
   var appleModelID: String = AppSettings.appleDefaultModelID
@@ -1450,6 +1467,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var openAIEndpoints: [OpenAIEndpoint] = []
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
+  var compactPrompt: String = AppSettings.defaultCompactPrompt
   var defaultEnabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var settingsVersion: Int = AppSettings.currentSettingsVersion
   var defaultEnabledMCPServers: Set<UUID> = AppSettings.defaultMCPServers
@@ -1503,7 +1521,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case settingsVersion
     case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
       showThinkingByDefault
-    case openAIEndpoints, systemPrompts, defaultSystemPromptID, defaultEnabledTools
+    case openAIEndpoints, systemPrompts, defaultSystemPromptID, compactPrompt, defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
     case toolSettings, mcpServers, memory, toolCallingMode
     case yoloModeEnabled, useToolProxy, contextWindowMode
@@ -1533,6 +1551,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     defaultSystemPromptID =
       (try? c.decode(UUID.self, forKey: .defaultSystemPromptID))
       ?? (systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)
+    compactPrompt =
+      (try? c.decode(String.self, forKey: .compactPrompt)) ?? AppSettings.defaultCompactPrompt
     let decodedDefaultEnabledTools =
       (try? c.decode(Set<BuiltInToolID>.self, forKey: .defaultEnabledTools))
       ?? AppSettings.defaultTools
