@@ -6,7 +6,7 @@ struct ChatView: View {
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
   @State private var showingProviderModelSheet = false
-  @State private var showingCompactConfirmation = false
+  @State private var showingCompactSheet = false
   @State private var messagePendingDeletion: ChatMessage?
   @State private var messagePendingTrimAndResubmit: ChatMessage?
   @State private var messagePendingRestartFresh: ChatMessage?
@@ -71,6 +71,10 @@ struct ChatView: View {
     }
     .sheet(isPresented: $showingProviderModelSheet) {
       ConversationModelSettingsView()
+        .environmentObject(store)
+    }
+    .sheet(isPresented: $showingCompactSheet) {
+      CompactChatSheet()
         .environmentObject(store)
     }
     .sheet(item: $exportShareFile) { file in
@@ -190,7 +194,7 @@ struct ChatView: View {
       }
       Divider()
       Button {
-        showingCompactConfirmation = true
+        showingCompactSheet = true
       } label: {
         Label("Compact Chat", systemImage: "rectangle.compress.vertical")
       }
@@ -217,20 +221,6 @@ struct ChatView: View {
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
-    .confirmationDialog(
-      "Compact this chat?",
-      isPresented: $showingCompactConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Compact Chat", role: .destructive) {
-        Task { await store.compactConversation() }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(
-        "All messages will be replaced with a single AI-generated summary. This cannot be undone."
-      )
-    }
     .accessibilityHint("Tap for chat options")
   }
 
@@ -1285,6 +1275,153 @@ private struct ActivityShareSheet: UIViewControllerRepresentable {
   }
 
   func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+private struct CompactChatSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var store: AppStore
+  @State private var conversationID: UUID?
+  @State private var prompt = ""
+  @State private var summary = ""
+  @State private var statusText: String?
+  @State private var isLoadingPrompt = false
+  @State private var showingPromptEditor = false
+  @State private var showingReplaceConfirmation = false
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          Button {
+            showingPromptEditor.toggle()
+          } label: {
+            Label(
+              showingPromptEditor ? "Hide Compact Prompt" : "Edit Compact Prompt",
+              systemImage: showingPromptEditor ? "eye.slash" : "square.and.pencil")
+          }
+          .disabled(isLoadingPrompt || store.isCompacting || prompt.isEmpty)
+
+          if showingPromptEditor {
+            TextEditor(text: $prompt)
+              .frame(minHeight: 220)
+              .font(.callout.monospaced())
+              .autocorrectionDisabled()
+          }
+        }
+
+        Section {
+          Button {
+            Task { await generateSummary() }
+          } label: {
+            if store.isCompacting {
+              HStack {
+                ProgressView()
+                Text("Compacting...")
+              }
+            } else {
+              Label("Generate Compact Summary", systemImage: "rectangle.compress.vertical")
+            }
+          }
+          .disabled(
+            isLoadingPrompt || store.isCompacting
+              || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+          TextEditor(text: $summary)
+            .frame(minHeight: 260)
+            .font(.callout)
+            .autocorrectionDisabled()
+            .overlay(alignment: .topLeading) {
+              if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Generated summary")
+                  .foregroundStyle(.tertiary)
+                  .padding(.top, 8)
+                  .padding(.leading, 5)
+                  .allowsHitTesting(false)
+              }
+            }
+
+          if let statusText {
+            Text(statusText)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        } footer: {
+          Text("Review and edit the compacted summary before replacing the conversation.")
+        }
+
+        Section {
+          Button(role: .destructive) {
+            showingReplaceConfirmation = true
+          } label: {
+            Label("Replace Conversation With Summary", systemImage: "arrow.triangle.2.circlepath")
+          }
+          .disabled(
+            conversationID == nil
+              || summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+      .navigationTitle("Compact Chat")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button {
+            dismiss()
+          } label: {
+            Image(systemName: "xmark")
+          }
+          .accessibilityLabel("Close")
+        }
+      }
+      .task {
+        await loadPrompt()
+      }
+      .alert("Replace conversation?", isPresented: $showingReplaceConfirmation) {
+        Button("Cancel", role: .cancel) {}
+        Button("Replace Conversation", role: .destructive) {
+          replaceConversation()
+        }
+      } message: {
+        Text(
+          "All current messages in this conversation will be replaced by the compacted summary. This cannot be undone."
+        )
+      }
+    }
+  }
+
+  private func loadPrompt() async {
+    guard prompt.isEmpty, conversationID == nil else { return }
+    isLoadingPrompt = true
+    statusText = "Loading compact prompt..."
+    defer { isLoadingPrompt = false }
+
+    if let draft = await store.compactPromptForCurrentConversation() {
+      conversationID = draft.conversationID
+      prompt = draft.prompt
+      statusText = nil
+    } else {
+      statusText = store.errorMessage ?? "Nothing to compact yet."
+    }
+  }
+
+  private func generateSummary() async {
+    guard let conversationID else { return }
+    statusText = nil
+    guard let generated = await store.generateCompactSummary(
+      conversationID: conversationID,
+      prompt: prompt
+    ) else {
+      statusText = store.errorMessage ?? "Could not generate compact summary."
+      return
+    }
+    summary = generated
+    statusText = "Compact summary generated."
+  }
+
+  private func replaceConversation() {
+    guard let conversationID else { return }
+    store.replaceConversationWithCompactSummary(conversationID: conversationID, summary: summary)
+    dismiss()
+  }
 }
 
 private struct ToolPickerPopover: View {

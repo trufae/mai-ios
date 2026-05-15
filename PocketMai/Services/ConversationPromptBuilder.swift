@@ -14,20 +14,26 @@ struct CompactConversationRequest: Sendable {
 }
 
 enum ConversationPromptBuilder {
+  static func compactPrompt(conversation: Conversation) async -> String? {
+    await Task.detached(priority: .userInitiated) {
+      compactPromptText(conversation: conversation)
+    }.value
+  }
+
   static func compactRequest(
     conversation: Conversation,
-    settings: AppSettings
+    settings: AppSettings,
+    prompt: String? = nil
   ) async -> CompactConversationRequest? {
     await Task.detached(priority: .userInitiated) {
-      let transcriptEntries = conversation.messages.compactMap { msg -> String? in
-        guard msg.role != .error else { return nil }
-        let text = MessageContentFilter.promptSafeText(from: msg.text)
-        guard !text.isEmpty else { return nil }
-        return "\(msg.role.displayName):\n\(text)"
+      let promptText: String
+      if let prompt {
+        promptText = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !promptText.isEmpty else { return nil }
+      } else {
+        guard let generated = compactPromptText(conversation: conversation) else { return nil }
+        promptText = generated
       }
-      guard transcriptEntries.count >= 2 else { return nil }
-
-      let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
       let model: String = {
         let m = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !m.isEmpty { return m }
@@ -43,33 +49,45 @@ enum ConversationPromptBuilder {
         return ""
       }()
 
-      let prompt = """
-        Compact the transcript below into durable context for continuing the same chat.
-
-        Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
-
-        Preserve:
-        - User goals, preferences, constraints, and decisions
-        - Important names, projects, files, commands, code snippets, errors, and results
-        - Current state, unresolved questions, and next steps
-
-        Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
-
-        Transcript:
-
-        \(transcript)
-        """
       return CompactConversationRequest(
         conversationID: conversation.id,
         oneShot: OneShotPromptRequest(
           title: "Compact",
-          prompt: prompt,
+          prompt: promptText,
           provider: conversation.provider,
           modelID: model,
           endpointID: conversation.endpointID
         )
       )
     }.value
+  }
+
+  private static func compactPromptText(conversation: Conversation) -> String? {
+    let transcriptEntries = conversation.messages.compactMap { msg -> String? in
+      guard msg.role != .error else { return nil }
+      let text = MessageContentFilter.promptSafeText(from: msg.text)
+      guard !text.isEmpty else { return nil }
+      return "\(msg.role.displayName):\n\(text)"
+    }
+    guard transcriptEntries.count >= 2 else { return nil }
+
+    let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
+    return """
+      Compact the transcript below into durable context for continuing the same chat.
+
+      Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
+
+      Preserve:
+      - User goals, preferences, constraints, and decisions
+      - Important names, projects, files, commands, code snippets, errors, and results
+      - Current state, unresolved questions, and next steps
+
+      Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+
+      Transcript:
+
+      \(transcript)
+      """
   }
 
   static func memoryUpdateRequest(

@@ -855,6 +855,75 @@ final class AppStore: ObservableObject {
     }
   }
 
+  func compactPromptForCurrentConversation() async -> (conversationID: UUID, prompt: String)? {
+    guard let conversation = currentConversation else { return nil }
+    guard let prompt = await ConversationPromptBuilder.compactPrompt(conversation: conversation)
+    else {
+      errorMessage = "Nothing to compact yet."
+      return nil
+    }
+    return (conversation.id, prompt)
+  }
+
+  func generateCompactSummary(conversationID: UUID, prompt: String) async -> String? {
+    guard !isCompacting, !isResponding(in: conversationID) else { return nil }
+    guard let index = indexedConversationIndex(for: conversationID) else { return nil }
+    let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedPrompt.isEmpty else {
+      errorMessage = "Compact prompt is empty."
+      return nil
+    }
+
+    let conversation = conversations[index]
+    let settingsSnapshot = settings
+
+    isCompacting = true
+    defer { isCompacting = false }
+    errorMessage = nil
+
+    guard
+      let compact = await ConversationPromptBuilder.compactRequest(
+        conversation: conversation,
+        settings: settingsSnapshot,
+        prompt: trimmedPrompt
+      )
+    else {
+      errorMessage = "Nothing to compact yet."
+      return nil
+    }
+
+    do {
+      let summary = try await OneShotPromptRunner.run(compact.oneShot, settings: settingsSnapshot)
+      let trimmed = MessageContentFilter.promptSafeText(from: summary)
+      guard !trimmed.isEmpty else {
+        errorMessage = "Compact returned an empty summary."
+        return nil
+      }
+      return trimmed
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+  }
+
+  func replaceConversationWithCompactSummary(conversationID: UUID, summary: String) {
+    guard let index = indexedConversationIndex(for: conversationID) else { return }
+    let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      errorMessage = "Compact summary is empty."
+      return
+    }
+
+    let removedMessages = conversations[index].messages
+    conversations[index].messages = [
+      ChatMessage(role: .system, text: "Conversation summary (compacted):\n\n\(trimmed)")
+    ]
+    conversations[index].updatedAt = Date()
+    upsertSummary(for: conversations[index])
+    saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
+  }
+
   func updateMemoryFromConversations() async {
     guard !isUpdatingMemory else { return }
     isUpdatingMemory = true
