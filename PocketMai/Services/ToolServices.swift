@@ -24,6 +24,13 @@ enum ContextBuilder {
       signatureParts.append(
         "datetime:\(DateTimeRenderer.signature(settings: settings.toolSettings))")
     }
+    if enabled.contains(.language) {
+      sections.append(
+        LanguagePreferenceRenderer.render(conversation: conversation, settings: settings))
+      signatureParts.append(
+        "language:\(LanguagePreferenceRenderer.signature(conversation: conversation, settings: settings))"
+      )
+    }
     if enabled.contains(.location) {
       sections.append(
         await LocationRenderer.render(
@@ -56,6 +63,40 @@ enum ContextBuilder {
   private static func filesSignature(settings: NativeToolSettings) -> String {
     settings.files.map { "\($0.id.uuidString)\($0.name)\($0.excerpt.count)" }
       .joined(separator: ",")
+  }
+}
+
+enum LanguagePreferenceRenderer {
+  static func render(conversation: Conversation, settings: AppSettings) -> String {
+    let label = languageLabel(conversation: conversation, settings: settings)
+    return "Language Preference tool:\nUser prefers \(label) language."
+  }
+
+  static func signature(conversation: Conversation, settings: AppSettings) -> String {
+    languageIdentifier(conversation: conversation, settings: settings) ?? ""
+  }
+
+  private static func languageLabel(conversation: Conversation, settings: AppSettings) -> String {
+    guard let identifier = languageIdentifier(conversation: conversation, settings: settings) else {
+      return SystemLanguageSupport.languageDisplayName(Locale.current.identifier)
+    }
+    return SystemLanguageSupport.languageDisplayName(identifier)
+  }
+
+  private static func languageIdentifier(conversation: Conversation, settings: AppSettings)
+    -> String?
+  {
+    if let override = conversation.effectiveLanguageOverrideIdentifier {
+      return override
+    }
+
+    let candidates = [
+      settings.conversation.speechRecognitionLanguageIdentifier,
+      settings.toolSettings.voices.user.language,
+      settings.toolSettings.voices.assistant.language,
+      Locale.current.identifier,
+    ]
+    return candidates.lazy.compactMap(SystemLanguageSupport.normalizedLanguageIdentifier).first
   }
 }
 

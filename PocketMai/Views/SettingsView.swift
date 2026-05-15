@@ -992,6 +992,12 @@ struct SettingsView: View {
     case .datetime:
       Toggle("Include time zone", isOn: settingsBinding(\.toolSettings.includeTimeZone))
       Toggle("Include moon phase", isOn: settingsBinding(\.toolSettings.includeMoonPhase))
+    case .language:
+      Text(
+        "Adds the chat language preference to the prompt. Chats set to Defaults use the language from Conversation settings, then voice settings."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     case .location:
       Toggle("Use GPS location", isOn: settingsBinding(\.toolSettings.useGPSLocation))
       TextField("Manual location", text: settingsBinding(\.toolSettings.manualLocation))

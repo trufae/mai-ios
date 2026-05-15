@@ -345,6 +345,7 @@ struct ConversationSettings: Codable, Equatable, Sendable {
 
 enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case datetime
+  case language
   case location
   case weather
   case webSearch
@@ -357,7 +358,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 
   var isContextSource: Bool {
     switch self {
-    case .datetime, .location, .memory:
+    case .datetime, .language, .location, .memory:
       return true
     case .weather, .webSearch, .todo, .textToSpeech, .files:
       return false
@@ -368,7 +369,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .weather, .webSearch, .todo, .textToSpeech, .files:
       return true
-    case .datetime, .location, .memory:
+    case .datetime, .language, .location, .memory:
       return false
     }
   }
@@ -376,6 +377,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   var displayName: String {
     switch self {
     case .datetime: "Date & Time"
+    case .language: "Language Preference"
     case .location: "Location"
     case .weather: "Weather"
     case .webSearch: "Web Search"
@@ -389,6 +391,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   var systemImage: String {
     switch self {
     case .datetime: "clock"
+    case .language: "globe"
     case .location: "location"
     case .weather: "cloud.sun"
     case .webSearch: "magnifyingglass"

@@ -141,6 +141,8 @@ enum BuiltInToolCatalog {
     switch id {
     case .datetime:
       return DateTimeTool.definitions
+    case .language:
+      return []
     case .location:
       return LocationTool.definitions
     case .weather:
