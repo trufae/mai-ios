@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (Xcode latest on macOS latest)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode and macOS versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: List available iOS Simulator runtimes
+        run: xcrun simctl list runtimes
+
+      - name: Build
+        run: make build
