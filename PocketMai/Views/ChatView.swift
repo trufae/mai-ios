@@ -774,7 +774,7 @@ struct ChatView: View {
 
 // Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @StateObject still re-trigger body.
 extension ChatView: Equatable {
-  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
 private struct ChatComposer: View {
