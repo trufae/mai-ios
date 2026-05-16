@@ -237,6 +237,6 @@ private struct SidebarBlurBackground: View, Equatable {
     Rectangle().fill(.regularMaterial)
   }
 
-  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
