@@ -21,12 +21,13 @@ struct ContentView: View {
         SidebarView(
           showingSettings: $showingSettings,
           showingArchive: $sidebarShowingArchive,
-          onSelectConversation: closeHistoryPanel,
-          revealProgress: revealProgress
+          onSelectConversation: closeHistoryPanel
         )
         .frame(width: panelWidth)
         .frame(maxHeight: .infinity)
+        .modifier(SidebarPlaneEffect(progress: revealProgress))
         .background(.regularMaterial)
+        .overlay { SidebarDistanceTone(progress: revealProgress) }
         .opacity(panelOffset > 0 ? 1 : 0)
         .allowsHitTesting(panelOffset > 0)
         .accessibilityHidden(panelOffset == 0)
@@ -42,16 +43,15 @@ struct ContentView: View {
           )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(PanelClipModifier(cornerRadius: panelOffset > 0 ? 28 : 0))
+        .clipShape(RoundedRectangle(cornerRadius: panelOffset > 0 ? 28 : 0, style: .continuous))
         .allowsHitTesting(panelOffset == 0)
         .overlay {
-          if panelOffset > 0 {
-            Color.black.opacity(0.001)
-              .contentShape(Rectangle())
-              .onTapGesture {
-                closeHistoryPanel()
-              }
-          }
+          Color.black.opacity(0.001)
+            .contentShape(Rectangle())
+            .allowsHitTesting(panelOffset > 0)
+            .onTapGesture {
+              closeHistoryPanel()
+            }
         }
         .offset(x: panelOffset)
         .zIndex(1)
@@ -229,14 +229,3 @@ private struct ToolCallApprovalView: View {
   }
 }
 
-private struct PanelClipModifier: ViewModifier {
-  let cornerRadius: CGFloat
-
-  func body(content: Content) -> some View {
-    if cornerRadius > 0 {
-      content.clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-    } else {
-      content
-    }
-  }
-}

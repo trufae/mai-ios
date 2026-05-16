@@ -11,7 +11,6 @@ struct SidebarView: View {
   @State private var pendingDeletion: PendingConversationDeletion?
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
-  var revealProgress: CGFloat = 1
   private let floatingActionHorizontalInset: CGFloat = 18
   private let floatingActionBottomInset: CGFloat = 22
 
@@ -21,11 +20,8 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom) {
           Color.clear.frame(height: 80)
         }
-        .modifier(SidebarPlaneEffect(progress: revealProgress))
       sidebarEdgeFades
       floatingActions
-        .modifier(SidebarPlaneEffect(progress: revealProgress))
-      SidebarDistanceTone(progress: revealProgress)
     }
     .alert(
       pendingDeletion?.title ?? "Delete conversations?",
@@ -386,7 +382,7 @@ private struct SidebarRowBackground: View {
   }
 }
 
-private struct SidebarPlaneEffect: ViewModifier {
+struct SidebarPlaneEffect: ViewModifier {
   let progress: CGFloat
 
   func body(content: Content) -> some View {
@@ -409,7 +405,7 @@ private struct SidebarPlaneEffect: ViewModifier {
 
 }
 
-private struct SidebarDistanceTone: View {
+struct SidebarDistanceTone: View {
   @Environment(\.colorScheme) private var colorScheme
 
   let progress: CGFloat
