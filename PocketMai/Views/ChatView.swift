@@ -772,6 +772,11 @@ struct ChatView: View {
   }
 }
 
+// Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @StateObject still re-trigger body.
+extension ChatView: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
 private struct ChatComposer: View {
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.scenePhase) private var scenePhase
