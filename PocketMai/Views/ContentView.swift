@@ -23,10 +23,11 @@ struct ContentView: View {
           showingArchive: $sidebarShowingArchive,
           onSelectConversation: closeHistoryPanel
         )
+        .equatable()
         .frame(width: panelWidth)
         .frame(maxHeight: .infinity)
         .modifier(SidebarPlaneEffect(progress: revealProgress))
-        .background(.regularMaterial)
+        .background { SidebarBlurBackground() }
         .overlay { SidebarDistanceTone(progress: revealProgress) }
         .opacity(panelOffset > 0 ? 1 : 0)
         .allowsHitTesting(panelOffset > 0)
@@ -41,6 +42,7 @@ struct ContentView: View {
               }
             }
           )
+          .equatable()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: panelOffset > 0 ? 28 : 0, style: .continuous))
@@ -227,5 +229,14 @@ private struct ToolCallApprovalView: View {
       }
     }
   }
+}
+
+// Identity-stable wrapper so the material's CALayer survives drag-tick body runs.
+private struct SidebarBlurBackground: View, Equatable {
+  var body: some View {
+    Rectangle().fill(.regularMaterial)
+  }
+
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 

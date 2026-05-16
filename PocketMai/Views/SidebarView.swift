@@ -11,6 +11,7 @@ struct SidebarView: View {
   @State private var pendingDeletion: PendingConversationDeletion?
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
+  @State private var visibleConversations: [ConversationSummary] = []
   private let floatingActionHorizontalInset: CGFloat = 18
   private let floatingActionBottomInset: CGFloat = 22
 
@@ -37,13 +38,22 @@ struct SidebarView: View {
     } message: { deletion in
       Text(deletion.message)
     }
+    .onAppear { refreshVisibleConversations() }
+    .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
+    .onChange(of: searchText) { _, _ in refreshVisibleConversations() }
+    .onChange(of: showingArchive) { _, _ in refreshVisibleConversations() }
   }
 
-  private var visibleConversations: [ConversationSummary] {
+  private func refreshVisibleConversations() {
+    let next: [ConversationSummary]
     if searchQuery.isEmpty {
-      return store.conversationSummaries.filter { $0.isArchived == showingArchive }
+      next = store.conversationSummaries.filter { $0.isArchived == showingArchive }
+    } else {
+      next = store.conversationSummaries.filter { conversationMatchesSearch($0) }
     }
-    return store.conversationSummaries.filter { conversationMatchesSearch($0) }
+    if visibleConversations != next {
+      visibleConversations = next
+    }
   }
 
   private var searchQuery: String {
@@ -380,6 +390,11 @@ private struct SidebarRowBackground: View {
   var body: some View {
     (isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
   }
+}
+
+// Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @Binding still re-trigger body.
+extension SidebarView: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
 struct SidebarPlaneEffect: ViewModifier {
