@@ -394,7 +394,7 @@ private struct SidebarRowBackground: View {
 
 // Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @Binding still re-trigger body.
 extension SidebarView: Equatable {
-  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
 struct SidebarPlaneEffect: ViewModifier {
