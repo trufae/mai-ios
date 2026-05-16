@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (Xcode latest on macOS latest)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest installed Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$latest" ]; then
+            echo "No Xcode.app found under /Applications" >&2
+            exit 1
+          fi
+          echo "Selecting $latest"
+          sudo xcode-select -s "$latest/Contents/Developer"
+
+      - name: Show Xcode and macOS versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          uname -m
+
+      - name: List available iOS Simulator runtimes
+        run: xcrun simctl list runtimes
+
+      - name: Build (arm64 only)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PocketMai.xcodeproj \
+            -scheme PocketMai \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS=arm64 \
+            VALID_ARCHS=arm64 \
+            EXCLUDED_ARCHS=x86_64 \
+            build
