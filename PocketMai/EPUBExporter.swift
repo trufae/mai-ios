@@ -231,7 +231,7 @@ enum EPUBExporter {
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first.text))
         }
-      case .horizontalRule, .table, .code:
+      case .horizontalRule, .table, .code, .footnotes:
         continue
       }
     }
@@ -303,6 +303,12 @@ enum EPUBExporter {
     case .orderedList(let items):
       let lis = items.map { "<li value=\"\($0.number)\">\(inlineHTML($0.text))</li>" }.joined()
       return "<ol>\(lis)</ol>"
+    case .footnotes(let items):
+      let lis = items.map { item -> String in
+        let sup = MarkdownInlineSymbols.toSuperscript(item.key)
+        return "<li>\(sup) \(inlineHTML(item.text))</li>"
+      }.joined()
+      return "<hr/><ol class=\"footnotes\">\(lis)</ol>"
     }
   }
 

@@ -1151,6 +1151,14 @@ struct MarkdownContentView: View {
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
             uiForegroundColor: uiForegroundColor)
+        case .footnotes(let items):
+          FootnotesView(
+            items: items,
+            appearance: appearance,
+            fontFamily: fontFamily,
+            allowsTextSelection: allowsTextSelection,
+            foregroundStyle: foregroundStyle,
+            uiForegroundColor: uiForegroundColor)
         }
       }
     }
@@ -1526,7 +1534,59 @@ private enum MarkdownInlineTokenColorizer {
 
 enum MarkdownInlineSymbols {
   static func displayString(_ raw: String) -> String {
-    rewriteDelimitedMath(in: raw)
+    rewriteDelimitedMath(in: rewriteCitationRefs(in: raw))
+  }
+
+  static func toSuperscript(_ key: String) -> String {
+    let map: [Character: Character] = [
+      "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+      "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    ]
+    return String(key.map { map[$0] ?? $0 })
+  }
+
+  private static func rewriteCitationRefs(in raw: String) -> String {
+    guard raw.contains("[^") else { return raw }
+    var output = ""
+    var idx = raw.startIndex
+    while idx < raw.endIndex {
+      guard raw[idx] == "[" else {
+        output.append(raw[idx])
+        idx = raw.index(after: idx)
+        continue
+      }
+      let afterBracket = raw.index(after: idx)
+      guard afterBracket < raw.endIndex, raw[afterBracket] == "^" else {
+        output.append(raw[idx])
+        idx = raw.index(after: idx)
+        continue
+      }
+      var searchIdx = raw.index(after: afterBracket)
+      var key = ""
+      var found = false
+      while searchIdx < raw.endIndex {
+        let c = raw[searchIdx]
+        if c == "]" { found = true; break }
+        if c == "\n" || c == "[" { break }
+        key.append(c)
+        searchIdx = raw.index(after: searchIdx)
+      }
+      if found, !key.isEmpty {
+        // Skip definition lines [^key]: ...
+        let afterClose = raw.index(after: searchIdx)
+        if afterClose < raw.endIndex, raw[afterClose] == ":" {
+          output.append(raw[idx])
+          idx = raw.index(after: idx)
+          continue
+        }
+        output += toSuperscript(key)
+        idx = raw.index(after: searchIdx)
+      } else {
+        output.append(raw[idx])
+        idx = raw.index(after: idx)
+      }
+    }
+    return output
   }
 
   static func containsMathSyntax(_ raw: String) -> Bool {
@@ -2700,6 +2760,32 @@ struct BlockquoteView: View {
   }
 }
 
+private struct FootnotesView: View {
+  let items: [(key: String, text: String)]
+  let appearance: AppearanceSettings
+  let fontFamily: AppearanceFontFamily
+  let allowsTextSelection: Bool
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: appearance.markdownMetric(3)) {
+      Divider()
+        .overlay(Color.secondary.opacity(0.25))
+      ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+        MarkdownInlineText(
+          value: "\(MarkdownInlineSymbols.toSuperscript(item.key)) \(item.text)",
+          appearance: appearance,
+          font: fontFamily.swiftUIFont(size: appearance.fontSize * 0.82),
+          uiFont: fontFamily.uiFont(size: appearance.fontSize * 0.82),
+          allowsTextSelection: allowsTextSelection,
+          foregroundStyle: foregroundStyle ?? Color.secondary,
+          uiForegroundColor: uiForegroundColor ?? .secondaryLabel)
+      }
+    }
+  }
+}
+
 struct MarkdownBlock: Identifiable {
   enum Kind {
     case heading(level: Int, text: String)
@@ -2711,6 +2797,7 @@ struct MarkdownBlock: Identifiable {
     case taskList(items: [TaskListItem])
     case bulletList(items: [String])
     case orderedList(items: [OrderedListItem])
+    case footnotes(items: [(key: String, text: String)])
   }
 
   let id = UUID()
@@ -2854,6 +2941,21 @@ enum MarkdownParser {
         continue
       }
 
+      if let firstItem = footnoteDefinition(trimmed) {
+        flushText()
+        var items: [(key: String, text: String)] = [firstItem]
+        var cursor = index + 1
+        while cursor < lines.count {
+          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
+          guard let nextItem = footnoteDefinition(nextTrimmed) else { break }
+          items.append(nextItem)
+          cursor += 1
+        }
+        blocks.append(MarkdownBlock(kind: .footnotes(items: items)))
+        index = cursor
+        continue
+      }
+
       if Self.containsTablePipe(trimmed),
         index + 1 < lines.count,
         let alignments = tableAlignments(
@@ -2892,6 +2994,20 @@ enum MarkdownParser {
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+  }
+
+  private static func footnoteDefinition(_ trimmed: String) -> (key: String, text: String)? {
+    guard trimmed.hasPrefix("[^") else { return nil }
+    guard let closeBracket = trimmed.firstIndex(of: "]") else { return nil }
+    let afterClose = trimmed.index(after: closeBracket)
+    guard afterClose < trimmed.endIndex, trimmed[afterClose] == ":" else { return nil }
+    let key = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 2)..<closeBracket])
+    guard !key.isEmpty else { return nil }
+    var textStart = trimmed.index(after: afterClose)
+    if textStart < trimmed.endIndex, trimmed[textStart] == " " {
+      textStart = trimmed.index(after: textStart)
+    }
+    return (key: key, text: String(trimmed[textStart...]))
   }
 
   private static func containsBlockquoteLine(_ text: String) -> Bool {
