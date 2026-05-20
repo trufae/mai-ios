@@ -290,7 +290,7 @@ private struct MessageBubbleContent: View, Equatable {
 
     if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
       Button(action: resend) {
-        Label("Resend From Here", systemImage: "arrow.clockwise")
+        Label("Retry From Here", systemImage: "arrow.clockwise")
       }
     }
     if let onRestartFresh {
@@ -446,6 +446,13 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     if textView.text != text {
       textView.text = text
     }
+    // Skip when the gesture handler already applied the style this run-loop cycle.
+    // SwiftUI fires updateUIView after the binding write in updateFontSize, which
+    // would cause a second full text-storage re-attribution for every gesture tick.
+    if context.coordinator.pendingStyleFromGesture {
+      context.coordinator.pendingStyleFromGesture = false
+      return
+    }
     context.coordinator.applyTextStyle(to: textView, size: fontSize)
   }
 
@@ -457,6 +464,11 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     private weak var textView: UITextView?
     private var pinchGesture: UIPinchGestureRecognizer?
     private var pinchBaseFontSize: Double?
+    private var pinchAnchor: TextViewPinchAnchor?
+    private var pinchViewportY: CGFloat?
+    // Set when applyTextStyle is called directly from the gesture handler so that
+    // the redundant updateUIView→applyTextStyle call in the same SwiftUI pass can be skipped.
+    var pendingStyleFromGesture = false
     private var originalShowsVerticalScrollIndicator: Bool?
     private var originalShowsHorizontalScrollIndicator: Bool?
 
@@ -508,6 +520,8 @@ private struct SelectableMessageTextView: UIViewRepresentable {
         updateFontSize(for: recognizer, in: textView)
       case .ended, .cancelled, .failed:
         pinchBaseFontSize = nil
+        pinchAnchor = nil
+        pinchViewportY = nil
         restoreScrollIndicators()
       default:
         break
@@ -526,11 +540,25 @@ private struct SelectableMessageTextView: UIViewRepresentable {
       let clampedSize = AppearanceSettings.clampedFontSize(steppedSize)
       guard fontSize.wrappedValue != clampedSize else { return }
 
+      // Capture anchor and viewport position once per gesture — the layout lookup
+      // (layoutIfNeeded + layoutManager queries) only runs on the first tick.
       let contentPoint = recognizer.location(in: textView)
-      let viewportY = contentPoint.y - textView.contentOffset.y
-      let anchor = makePinchAnchor(in: textView, at: contentPoint)
+      let viewportY: CGFloat
+      let anchor: TextViewPinchAnchor
+      if let cachedAnchor = pinchAnchor, let cachedViewportY = pinchViewportY {
+        anchor = cachedAnchor
+        viewportY = cachedViewportY
+      } else {
+        viewportY = contentPoint.y - textView.contentOffset.y
+        anchor = makePinchAnchor(in: textView, at: contentPoint)
+        pinchAnchor = anchor
+        pinchViewportY = viewportY
+      }
 
       fontSize.wrappedValue = clampedSize
+      // Mark before applyTextStyle so updateUIView can skip the redundant call that
+      // SwiftUI will fire in the same run-loop cycle after the binding write above.
+      pendingStyleFromGesture = true
       applyTextStyle(to: textView, size: clampedSize)
       preservePinchPosition(in: textView, anchor: anchor, viewportY: viewportY)
     }

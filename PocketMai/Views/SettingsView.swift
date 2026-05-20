@@ -232,8 +232,8 @@ struct SettingsView: View {
         providerSection
         appearanceSection
         toolsSection
-        aboutSection
         dangerSection
+        aboutSection
       }
       .navigationDestination(for: UUID.self) { id in
         if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
@@ -587,35 +587,6 @@ struct SettingsView: View {
       "Skip Code and Links in TTS",
       isOn: settingsBinding(\.conversation.skipTechnicalContentInTTS))
 
-    Text(
-      "Native iOS Live streams partial transcription with SpeechTranscriber. Native iOS File records first and transcribes after pause."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-
-    Text(
-      "Native iOS Live uses on-device transcription. Raw audio stays on this device; transcribed text is sent only when a voice turn is submitted to the selected chat provider."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-
-    Text(
-      "StreamTTS plays each sentence as the LLM streams it, instead of waiting for the full reply."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-
-    Text(
-      "Skip Code and Links in TTS removes code blocks, JSON, XML, and URLs before speech."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-
-    Text(
-      "Locked-screen voice chat is available only for Native iOS Live and applies only while a voice conversation is active."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
   }
 
   private var speechRecognitionLocaleIdentifiers: [String] {
@@ -871,7 +842,6 @@ struct SettingsView: View {
     } label: {
       compactPromptRow
     }
-    Divider()
     ForEach(store.settings.systemPrompts) { prompt in
       NavigationLink {
         SystemPromptDetailView(
@@ -2012,9 +1982,15 @@ extension View {
 private struct EndpointDetailView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
-  @Binding var endpoint: OpenAIEndpoint
+  @Binding private var savedEndpoint: OpenAIEndpoint
+  @State private var endpoint: OpenAIEndpoint
   @State private var modelFilter = ""
   @State private var toastMessage: String?
+
+  init(endpoint: Binding<OpenAIEndpoint>) {
+    self._savedEndpoint = endpoint
+    self._endpoint = State(initialValue: endpoint.wrappedValue)
+  }
 
   var body: some View {
     Form {
@@ -2038,6 +2014,20 @@ private struct EndpointDetailView: View {
           .autocorrectionDisabled()
           .keyboardType(.URL)
         SecureField("API Key", text: $endpoint.apiKey)
+        Button {
+          let snapshot = endpoint
+          Task { await store.refreshEndpoint(snapshot) }
+        } label: {
+          if isChecking {
+            HStack {
+              ProgressView()
+              Text("Testing connection…")
+            }
+          } else {
+            Label("Test & Refresh Models & Voices", systemImage: "arrow.clockwise")
+          }
+        }
+        .disabled(isChecking)
         if let scheme = URL(string: endpoint.baseURL)?.scheme?.lowercased(),
           !scheme.isEmpty,
           !["http", "https"].contains(scheme)
@@ -2061,23 +2051,6 @@ private struct EndpointDetailView: View {
       } footer: {
         statusFooter
       }
-
-      Section {
-        Button {
-          let snapshot = endpoint
-          Task { await store.refreshEndpoint(snapshot) }
-        } label: {
-          if isChecking {
-            HStack {
-              ProgressView()
-              Text("Testing connection…")
-            }
-          } else {
-            Label("Test & Refresh Models & Voices", systemImage: "arrow.clockwise")
-          }
-        }
-        .disabled(isChecking)
-      }
     }
     .navigationTitle(endpoint.displayName)
     .navigationBarTitleDisplayMode(.inline)
@@ -2087,9 +2060,6 @@ private struct EndpointDetailView: View {
       }
     }
     .settingsToast($toastMessage)
-    .onChange(of: endpoint) { _, _ in store.saveSettings() }
-    .onChange(of: endpoint.baseURL) { _, _ in store.resetEndpointStatus(endpoint.id) }
-    .onChange(of: endpoint.apiKey) { _, _ in store.resetEndpointStatus(endpoint.id) }
   }
 
   @ViewBuilder
@@ -2183,6 +2153,12 @@ private struct EndpointDetailView: View {
     }
     if let savedName = EndpointNameResolution.savedName(for: endpoint) {
       endpoint.name = savedName
+    }
+    let connectionChanged =
+      endpoint.baseURL != savedEndpoint.baseURL || endpoint.apiKey != savedEndpoint.apiKey
+    savedEndpoint = endpoint
+    if connectionChanged {
+      store.resetEndpointStatus(endpoint.id)
     }
     store.saveSettings()
     dismiss()

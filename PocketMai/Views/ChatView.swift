@@ -17,6 +17,8 @@ struct ChatView: View {
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
   @State private var fontSizePinchBase: Double?
+  @State private var fontSizePinchAnchor: MessageListPinchAnchor?
+  @State private var fontSizePinchViewportY: CGFloat?
   @StateObject private var audioExporter = TTSExporter()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -102,14 +104,14 @@ struct ChatView: View {
       Text("This message will be removed from the chat. This cannot be undone.")
     }
     .alert(
-      "Resend from here?",
+      "Retry from here?",
       isPresented: trimAndResubmitConfirmationBinding,
       presenting: messagePendingTrimAndResubmit
     ) { message in
       Button("Cancel", role: .cancel) {
         messagePendingTrimAndResubmit = nil
       }
-      Button("Resend From Here", role: .destructive) {
+      Button("Retry From Here", role: .destructive) {
         Task { await store.trimAndResubmit(from: message) }
         messagePendingTrimAndResubmit = nil
       }
@@ -597,11 +599,24 @@ struct ChatView: View {
     let clampedSize = AppearanceSettings.clampedFontSize(steppedSize)
     guard store.settings.appearance.fontSize != clampedSize else { return }
 
-    let anchor = makePinchAnchor(in: scrollView, at: contentPoint)
-    let viewportY = contentPoint.y - scrollView.contentOffset.y
+    // Capture anchor and viewport position once per gesture — reusing them avoids the
+    // O(n) UIView tree walk on every tick and prevents anchor drift as fingers move.
+    let anchor: MessageListPinchAnchor
+    if let cached = fontSizePinchAnchor {
+      anchor = cached
+    } else {
+      anchor = makePinchAnchor(in: scrollView, at: contentPoint)
+      fontSizePinchAnchor = anchor
+    }
+    let viewportY: CGFloat
+    if let cached = fontSizePinchViewportY {
+      viewportY = cached
+    } else {
+      viewportY = contentPoint.y - scrollView.contentOffset.y
+      fontSizePinchViewportY = viewportY
+    }
 
     store.settings.appearance.fontSize = clampedSize
-    store.saveSettings()
 
     preservePinchPosition(
       in: scrollView,
@@ -611,6 +626,9 @@ struct ChatView: View {
 
   private func endMessageFontSizePinch() {
     fontSizePinchBase = nil
+    fontSizePinchAnchor = nil
+    fontSizePinchViewportY = nil
+    store.saveSettings()
   }
 
   private func preservePinchPosition(
