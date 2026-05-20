@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
   @EnvironmentObject private var store: AppStore
@@ -822,10 +824,23 @@ private struct ChatComposer: View {
   @ObservedObject var liveVoiceSession: LiveVoiceSession
   @FocusState private var composerFocused: Bool
   @State private var showingToolPicker = false
+  @State private var showingTextFileImporter = false
+  @State private var showingImagePicker = false
+  @State private var selectedPhotoItem: PhotosPickerItem?
   @State private var draftText = ""
+  @State private var pendingAttachments: [ChatAttachment] = []
+  @State private var attachmentError: String?
 
   private var canSubmitDraft: Bool {
-    !isResponding && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    !isResponding
+      && (!draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !pendingAttachments.isEmpty)
+  }
+
+  private var canAttachImage: Bool {
+    ProviderVisionSupport.supportsImageInput(
+      conversation: store.currentConversation,
+      settings: store.settings)
   }
 
   var body: some View {
@@ -854,42 +869,86 @@ private struct ChatComposer: View {
         await stopVoiceAndKeepTranscript(cancelResponse: false, focusComposer: false)
       }
     }
+    .fileImporter(
+      isPresented: $showingTextFileImporter,
+      allowedContentTypes: Self.textAttachmentTypes
+    ) { result in
+      importTextAttachment(result)
+    }
+    .photosPicker(
+      isPresented: $showingImagePicker,
+      selection: $selectedPhotoItem,
+      matching: .images
+    )
+    .onChange(of: selectedPhotoItem) { _, item in
+      guard let item else { return }
+      Task { await importImageAttachment(item) }
+    }
+    .alert(
+      "Attachment failed",
+      isPresented: Binding(
+        get: { attachmentError != nil },
+        set: { if !$0 { attachmentError = nil } }),
+      presenting: attachmentError
+    ) { _ in
+      Button("OK", role: .cancel) { attachmentError = nil }
+    } message: { message in
+      Text(message)
+    }
   }
 
   private var textControls: some View {
-    HStack(alignment: .bottom, spacing: 10) {
-      toolMenu
-
-      TextField(placeholder, text: draftBinding, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...3)
-        .submitLabel(.send)
-        .padding(.vertical, 5)
-        .frame(minHeight: 32, alignment: .center)
-        .focused($composerFocused)
-        .onSubmit {
-          submitDraft()
-        }
-
-      Button {
-        if let id = conversationID, isResponding {
-          store.cancelResponse(in: id)
-        } else if canSubmitDraft {
-          submitDraft()
-        } else {
-          liveVoiceSession.start(store: store, ttsPlayer: ttsPlayer)
-        }
-      } label: {
-        Image(systemName: trailingActionSystemImage)
-          .font(.title2)
-          .symbolRenderingMode(.hierarchical)
-          .foregroundStyle(trailingActionColor)
-          .frame(width: 24, height: 24)
-          .contentShape(Circle())
+    VStack(alignment: .leading, spacing: 6) {
+      if !pendingAttachments.isEmpty {
+        pendingAttachmentStrip
       }
-      .buttonStyle(.glass)
-      .disabled(!isResponding && liveVoiceSession.isActive)
-      .help(trailingActionHelp)
+      HStack(alignment: .bottom, spacing: 10) {
+        toolMenu
+
+        TextField(placeholder, text: draftBinding, axis: .vertical)
+          .textFieldStyle(.plain)
+          .lineLimit(1...3)
+          .submitLabel(.send)
+          .padding(.vertical, 5)
+          .frame(minHeight: 32, alignment: .center)
+          .focused($composerFocused)
+          .onSubmit {
+            submitDraft()
+          }
+
+        Button {
+          if let id = conversationID, isResponding {
+            store.cancelResponse(in: id)
+          } else if canSubmitDraft {
+            submitDraft()
+          } else {
+            liveVoiceSession.start(store: store, ttsPlayer: ttsPlayer)
+          }
+        } label: {
+          Image(systemName: trailingActionSystemImage)
+            .font(.title2)
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(trailingActionColor)
+            .frame(width: 24, height: 24)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.glass)
+        .disabled(!isResponding && liveVoiceSession.isActive)
+        .help(trailingActionHelp)
+      }
+    }
+  }
+
+  private var pendingAttachmentStrip: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        ForEach(pendingAttachments) { attachment in
+          AttachmentPill(attachment: attachment) {
+            pendingAttachments.removeAll { $0.id == attachment.id }
+          }
+        }
+      }
+      .padding(.horizontal, 34)
     }
   }
 
@@ -1008,13 +1067,16 @@ private struct ChatComposer: View {
   private func submitDraft() {
     guard canSubmitDraft else { return }
     let submitted = draftText
+    let submittedAttachments = pendingAttachments
     let submittedConversationID = conversationID
     draftText = ""
+    pendingAttachments = []
     store.setDraftText("", for: submittedConversationID)
     Task {
-      let sent = await store.send(prompt: submitted)
+      let sent = await store.send(prompt: submitted, attachments: submittedAttachments)
       if !sent {
         draftText = submitted
+        pendingAttachments = submittedAttachments
         store.setDraftText(submitted, for: submittedConversationID)
       }
     }
@@ -1033,8 +1095,24 @@ private struct ChatComposer: View {
   }
 
   private var toolMenu: some View {
-    Button {
-      showingToolPicker.toggle()
+    Menu {
+      Button {
+        showingToolPicker = true
+      } label: {
+        Label("Tools...", systemImage: "wrench.and.screwdriver")
+      }
+      Divider()
+      Button {
+        showingTextFileImporter = true
+      } label: {
+        Label("Add text", systemImage: "doc.text")
+      }
+      Button {
+        showingImagePicker = true
+      } label: {
+        Label("Add image", systemImage: "photo")
+      }
+      .disabled(!canAttachImage)
     } label: {
       Image(systemName: "plus")
         .font(.title3.weight(.semibold))
@@ -1048,6 +1126,121 @@ private struct ChatComposer: View {
         .presentationCompactAdaptation(.popover)
     }
     .help("Tools")
+  }
+
+  private static var textAttachmentTypes: [UTType] {
+    var types: [UTType] = [.plainText, .text]
+    if let markdown = UTType(filenameExtension: "md") {
+      types.append(markdown)
+    }
+    return types
+  }
+
+  private func importTextAttachment(_ result: Result<URL, Error>) {
+    do {
+      let url = try result.get()
+      let access = url.startAccessingSecurityScopedResource()
+      defer {
+        if access { url.stopAccessingSecurityScopedResource() }
+      }
+      let ext = url.pathExtension.lowercased()
+      guard ext == "txt" || ext == "md" || ext == "markdown" else {
+        attachmentError = "Choose a .txt or .md file."
+        return
+      }
+      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+      guard data.count <= 1_500_000 else {
+        attachmentError = "Text attachments are limited to 1.5 MB."
+        return
+      }
+      guard let text = String(data: data, encoding: .utf8) else {
+        attachmentError = "The selected file is not UTF-8 text."
+        return
+      }
+      pendingAttachments.append(
+        .textFile(
+          filename: url.lastPathComponent,
+          text: text,
+          mimeType: ext == "md" || ext == "markdown" ? "text/markdown" : "text/plain"))
+      composerFocused = true
+    } catch {
+      attachmentError = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func importImageAttachment(_ item: PhotosPickerItem) async {
+    defer { selectedPhotoItem = nil }
+    guard canAttachImage else {
+      attachmentError = "The selected provider or model does not support image input."
+      return
+    }
+    do {
+      guard let data = try await item.loadTransferable(type: Data.self),
+        let image = UIImage(data: data)
+      else {
+        attachmentError = "Could not read the selected image."
+        return
+      }
+      let resized = resizeImage(
+        image,
+        maxDimension: store.settings.attachmentImageSize.maxDimension)
+      guard let output = resized.image.jpegData(compressionQuality: 0.82) else {
+        attachmentError = "Could not encode the selected image."
+        return
+      }
+      pendingAttachments.append(
+        .image(
+          filename: "image-\(Int(Date().timeIntervalSince1970)).jpg",
+          data: output,
+          width: Int(resized.size.width.rounded()),
+          height: Int(resized.size.height.rounded())))
+      composerFocused = true
+    } catch {
+      attachmentError = error.localizedDescription
+    }
+  }
+
+  private func resizeImage(_ image: UIImage, maxDimension: Int?) -> (image: UIImage, size: CGSize) {
+    let pixelSize = CGSize(
+      width: image.size.width * image.scale,
+      height: image.size.height * image.scale)
+    guard let maxDimension, max(pixelSize.width, pixelSize.height) > CGFloat(maxDimension) else {
+      return (image, pixelSize)
+    }
+    let scale = CGFloat(maxDimension) / max(pixelSize.width, pixelSize.height)
+    let target = CGSize(
+      width: max(1, floor(pixelSize.width * scale)),
+      height: max(1, floor(pixelSize.height * scale)))
+    let renderer = UIGraphicsImageRenderer(size: target)
+    let resized = renderer.image { _ in
+      image.draw(in: CGRect(origin: .zero, size: target))
+    }
+    return (resized, target)
+  }
+}
+
+private struct AttachmentPill: View {
+  let attachment: ChatAttachment
+  let onRemove: () -> Void
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: attachment.kind == .image ? "photo" : "doc.text")
+        .foregroundStyle(.secondary)
+      Text(attachment.displayName)
+        .font(.caption)
+        .lineLimit(1)
+      Button(action: onRemove) {
+        Image(systemName: "xmark.circle.fill")
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 }
 
@@ -1783,7 +1976,8 @@ private struct ConversationModelSettingsView: View {
                 Text("Provider")
                 Spacer()
                 Label(providerMenuTitle, systemImage: providerMenuIcon)
-                  .foregroundStyle(.secondary)
+                  .foregroundStyle(
+                    selectedProviderIsBlockedByAirplaneMode ? .secondary : Color.accentColor)
               }
             }
             providerModelControls

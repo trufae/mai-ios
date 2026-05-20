@@ -11,6 +11,8 @@ enum LocalMLXModels {
     AppSettings.localMLXDefaultModelID,
     "mlx-community/LFM2-350M-MLX",
     "mlx-community/LFM2-2.6B-4bit",
+    "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+    "Irfanuruchi/SmolLM2-135M-Instruct-MLX-4bit",
     "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
     "Irfanuruchi/SmolLM2-360M-Instruct-MLX-4bit",
     "mlx-community/Llama-3.2-1B-Instruct-4bit",

@@ -570,6 +570,33 @@ enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable {
+  case tiny
+  case small
+  case medium
+  case full
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .tiny: "Tiny"
+    case .small: "Small"
+    case .medium: "Medium"
+    case .full: "Full"
+    }
+  }
+
+  var maxDimension: Int? {
+    switch self {
+    case .tiny: 32
+    case .small: 100
+    case .medium: 320
+    case .full: nil
+    }
+  }
+}
+
 enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   case duckDuckGo
   case wikipedia
@@ -590,15 +617,63 @@ enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum ChatAttachmentKind: String, Codable, Sendable {
+  case textFile
+  case image
+}
+
+struct ChatAttachment: Identifiable, Codable, Equatable, Sendable {
+  var id: UUID = UUID()
+  var kind: ChatAttachmentKind
+  var filename: String
+  var mimeType: String
+  var text: String?
+  var dataBase64: String?
+  var width: Int?
+  var height: Int?
+
+  static func textFile(filename: String, text: String, mimeType: String = "text/plain")
+    -> ChatAttachment
+  {
+    ChatAttachment(kind: .textFile, filename: filename, mimeType: mimeType, text: text)
+  }
+
+  static func image(
+    filename: String,
+    data: Data,
+    mimeType: String = "image/jpeg",
+    width: Int?,
+    height: Int?
+  ) -> ChatAttachment {
+    ChatAttachment(
+      kind: .image,
+      filename: filename,
+      mimeType: mimeType,
+      dataBase64: data.base64EncodedString(),
+      width: width,
+      height: height)
+  }
+
+  var displayName: String {
+    filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Attachment" : filename
+  }
+
+  var dataURL: String? {
+    guard kind == .image, let dataBase64, !dataBase64.isEmpty else { return nil }
+    return "data:\(mimeType);base64,\(dataBase64)"
+  }
+}
+
 struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var id: UUID = UUID()
   var role: ChatRole
   var text: String
   var createdAt: Date = Date()
   var voiceRecordingFilename: String? = nil
+  var attachments: [ChatAttachment] = []
 
   enum CodingKeys: String, CodingKey {
-    case id, role, text, createdAt, voiceRecordingFilename
+    case id, role, text, createdAt, voiceRecordingFilename, attachments
   }
 
   init(
@@ -606,13 +681,15 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     role: ChatRole,
     text: String,
     createdAt: Date = Date(),
-    voiceRecordingFilename: String? = nil
+    voiceRecordingFilename: String? = nil,
+    attachments: [ChatAttachment] = []
   ) {
     self.id = id
     self.role = role
     self.text = text
     self.createdAt = createdAt
     self.voiceRecordingFilename = voiceRecordingFilename
+    self.attachments = attachments
   }
 
   init(from decoder: Decoder) throws {
@@ -622,6 +699,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     text = try c.decode(String.self, forKey: .text)
     createdAt = try c.decode(Date.self, forKey: .createdAt)
     voiceRecordingFilename = try? c.decode(String.self, forKey: .voiceRecordingFilename)
+    attachments = (try? c.decode([ChatAttachment].self, forKey: .attachments)) ?? []
   }
 }
 
@@ -1517,6 +1595,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
   var airplaneModeEnabled: Bool = false
+  var attachmentImageSize: AttachmentImageSize = .medium
 
   static let defaults = AppSettings()
 
@@ -1563,7 +1642,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
     case appearance, conversation, renderMarkdownInChat
-    case airplaneModeEnabled
+    case airplaneModeEnabled, attachmentImageSize
   }
 
   init(from decoder: Decoder) throws {
@@ -1638,6 +1717,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .renderMarkdownInChat)) ?? true
     airplaneModeEnabled =
       (try? c.decode(Bool.self, forKey: .airplaneModeEnabled)) ?? false
+    attachmentImageSize =
+      (try? c.decode(AttachmentImageSize.self, forKey: .attachmentImageSize)) ?? .medium
   }
 }
 

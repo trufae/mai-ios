@@ -439,8 +439,8 @@ final class AppStore: ObservableObject {
     guard message.role == .user, !isResponding else { return }
     let cleaned = MessageContentFilter.promptSafeText(from: message.text)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleaned.isEmpty else { return }
-    _ = await send(prompt: cleaned)
+    guard !cleaned.isEmpty || !message.attachments.isEmpty else { return }
+    _ = await send(prompt: cleaned, attachments: message.attachments)
   }
 
   func restartFromScratch(with message: ChatMessage) async {
@@ -455,7 +455,7 @@ final class AppStore: ObservableObject {
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
 
-    _ = await send(prompt: prompt)
+    _ = await send(prompt: prompt, attachments: message.attachments)
   }
 
   func startNewConversation(with message: ChatMessage) async {
@@ -484,7 +484,7 @@ final class AppStore: ObservableObject {
     selectedConversationIDs.removeAll()
     saveConversations()
 
-    _ = await send(prompt: prompt)
+    _ = await send(prompt: prompt, attachments: message.attachments)
   }
 
   private func restartPrompt(from message: ChatMessage) -> String? {
@@ -493,7 +493,7 @@ final class AppStore: ObservableObject {
     let fallback = MessageContentFilter.promptSafeText(from: message.text)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let prompt = visible.isEmpty ? fallback : visible
-    return prompt.isEmpty ? nil : prompt
+    return prompt.isEmpty && message.attachments.isEmpty ? nil : prompt
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
@@ -586,7 +586,8 @@ final class AppStore: ObservableObject {
         role: $0.role,
         text: $0.text,
         createdAt: $0.createdAt,
-        voiceRecordingFilename: $0.voiceRecordingFilename)
+        voiceRecordingFilename: $0.voiceRecordingFilename,
+        attachments: $0.attachments)
     }
     cloned.createdAt = now
     cloned.updatedAt = now
@@ -624,9 +625,13 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
-  func send(prompt rawPrompt: String, voiceRecordingFilename: String? = nil) async -> Bool {
+  func send(
+    prompt rawPrompt: String,
+    voiceRecordingFilename: String? = nil,
+    attachments: [ChatAttachment] = []
+  ) async -> Bool {
     let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty else { return false }
+    guard !prompt.isEmpty || !attachments.isEmpty else { return false }
     if currentConversation == nil {
       newConversation()
     }
@@ -645,7 +650,8 @@ final class AppStore: ObservableObject {
       prompt: prompt,
       conversationID: conversationID,
       mode: .append,
-      voiceRecordingFilename: voiceRecordingFilename)
+      voiceRecordingFilename: voiceRecordingFilename,
+      attachments: attachments)
     return true
   }
 
@@ -691,7 +697,8 @@ final class AppStore: ObservableObject {
     prompt: String,
     conversationID: UUID,
     mode: UserTurnMode,
-    voiceRecordingFilename: String? = nil
+    voiceRecordingFilename: String? = nil,
+    attachments: [ChatAttachment] = []
   ) async {
     guard let index = indexedConversationIndex(for: conversationID) else { return }
     let conversation = conversations[index]
@@ -708,11 +715,16 @@ final class AppStore: ObservableObject {
       let userMessage = ChatMessage(
         role: .user,
         text: prompt,
-        voiceRecordingFilename: voiceRecordingFilename)
+        voiceRecordingFilename: voiceRecordingFilename,
+        attachments: attachments)
       conversations[i].messages.append(userMessage)
       let titleSource = MessageContentFilter.render(prompt).visibleText
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      conversations[i].refreshTitle(from: titleSource.isEmpty ? prompt : titleSource)
+      let fallbackTitle = attachments.map(\.displayName).joined(separator: ", ")
+      conversations[i].refreshTitle(
+        from: titleSource.isEmpty
+          ? (prompt.isEmpty ? fallbackTitle : prompt)
+          : titleSource)
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
         conversations[i].messages[lastIndex].text = prompt
@@ -1766,6 +1778,7 @@ final class AppStore: ObservableObject {
         && lhsMessage.text == rhsMessage.text
         && lhsMessage.createdAt == rhsMessage.createdAt
         && lhsMessage.voiceRecordingFilename == rhsMessage.voiceRecordingFilename
+        && lhsMessage.attachments == rhsMessage.attachments
     }
   }
 

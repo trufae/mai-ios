@@ -619,7 +619,7 @@ enum AssistantTurnRunner {
     }
     return ConversationDebugPromptMessage(
       role: message.role,
-      content: message.content ?? "",
+      content: message.textContent,
       reasoningContent: message.reasoningContent,
       toolCallsJSON: toolCallsJSON,
       toolCallID: message.toolCallID)

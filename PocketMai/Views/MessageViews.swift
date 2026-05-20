@@ -109,6 +109,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
   @State private var showingTextSelection = false
+  @State private var selectedTextAttachment: ChatAttachment?
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
@@ -204,6 +205,13 @@ private struct MessageBubbleContent: View, Equatable {
       if hasVoiceRecording {
         VoiceRecordingPlaybackButton(message: message)
       }
+      ForEach(message.attachments) { attachment in
+        MessageAttachmentRow(attachment: attachment) {
+          if attachment.kind == .textFile {
+            selectedTextAttachment = attachment
+          }
+        }
+      }
       if visibleText.isEmpty {
         Text("...")
           .font(messageFont)
@@ -234,6 +242,14 @@ private struct MessageBubbleContent: View, Equatable {
         MessageTextSelectionSheet(
           title: message.role.displayName,
           text: visibleText,
+          initialFontSize: appearance.fontSize,
+          initialLineSpacing: appearance.lineSpacing,
+          fontFamily: appearance.fontFamily(for: message.role))
+      }
+      .sheet(item: $selectedTextAttachment) { attachment in
+        MessageTextSelectionSheet(
+          title: attachment.displayName,
+          text: attachment.text ?? "",
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
           fontFamily: appearance.fontFamily(for: message.role))
@@ -361,6 +377,70 @@ private struct MessageBubbleContent: View, Equatable {
       return text
     }
     return "…" + text[start...]
+  }
+}
+
+private struct MessageAttachmentRow: View {
+  let attachment: ChatAttachment
+  let onTap: () -> Void
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(spacing: 10) {
+        preview
+        VStack(alignment: .leading, spacing: 2) {
+          Text(attachment.displayName)
+            .font(.callout.weight(.semibold))
+            .lineLimit(1)
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .background(Color(uiColor: .secondarySystemBackground).opacity(0.72))
+      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(attachment.kind != .textFile)
+  }
+
+  @ViewBuilder
+  private var preview: some View {
+    if attachment.kind == .image,
+      let dataBase64 = attachment.dataBase64,
+      let data = Data(base64Encoded: dataBase64),
+      let uiImage = UIImage(data: data)
+    {
+      Image(uiImage: uiImage)
+        .resizable()
+        .scaledToFill()
+        .frame(width: 34, height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    } else {
+      Image(systemName: attachment.kind == .image ? "photo" : "doc.text")
+        .font(.title3)
+        .foregroundStyle(Color.accentColor)
+        .frame(width: 34, height: 34)
+        .background(Color.accentColor.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+  }
+
+  private var subtitle: String {
+    switch attachment.kind {
+    case .textFile:
+      let count = attachment.text?.count ?? 0
+      return "\(count) character\(count == 1 ? "" : "s")"
+    case .image:
+      if let width = attachment.width, let height = attachment.height {
+        return "\(width)x\(height)"
+      }
+      return "Image"
+    }
   }
 }
 

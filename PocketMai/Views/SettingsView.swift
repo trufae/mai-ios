@@ -335,6 +335,12 @@ struct SettingsView: View {
     Toggle(
       "Include reasoning content",
       isOn: settingsBinding(\.includeReasoningContentInContext))
+    Picker("Image Attachments", selection: settingsBinding(\.attachmentImageSize)) {
+      ForEach(AttachmentImageSize.allCases) { size in
+        Text(size.displayName).tag(size)
+      }
+    }
+    .pickerStyle(.menu)
     toolCallingContent
     yoloModeContent
   }
@@ -389,7 +395,7 @@ struct SettingsView: View {
           Text("Default")
           Spacer()
           Label(defaultProviderMenuTitle, systemImage: defaultProviderMenuIcon)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(store.settings.airplaneModeEnabled ? .secondary : Color.accentColor)
         }
       }
 
