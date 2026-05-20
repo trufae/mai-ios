@@ -1157,26 +1157,30 @@ struct MarkdownContentView: View {
   }
 
   private func headingFont(level: Int) -> Font {
-    let clampedLevel = min(max(level, 1), 4)
+    let clampedLevel = min(max(level, 1), 6)
     let scale: Double =
       switch clampedLevel {
       case 1: 1.55
       case 2: 1.32
       case 3: 1.16
-      default: 1.04
+      case 4: 1.04
+      case 5: 0.96
+      default: 0.88
       }
     return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
       .weight(clampedLevel == 1 ? .bold : .semibold)
   }
 
   private func headingUIFont(level: Int) -> UIFont {
-    let clampedLevel = min(max(level, 1), 4)
+    let clampedLevel = min(max(level, 1), 6)
     let scale: Double =
       switch clampedLevel {
       case 1: 1.55
       case 2: 1.32
       case 3: 1.16
-      default: 1.04
+      case 4: 1.04
+      case 5: 0.96
+      default: 0.88
       }
     return fontFamily.uiFont(size: appearance.fontSize * scale)
       .withWeight(clampedLevel == 1 ? .bold : .semibold)
@@ -2849,7 +2853,7 @@ enum MarkdownParser {
         continue
       }
 
-      if trimmed.contains("|"),
+      if Self.containsTablePipe(trimmed),
         index + 1 < lines.count,
         let alignments = tableAlignments(
           lines[index + 1].trimmingCharacters(in: .whitespaces)
@@ -2862,7 +2866,7 @@ enum MarkdownParser {
           var cursor = index + 2
           while cursor < lines.count {
             let rowTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-            guard rowTrimmed.contains("|"), tableAlignments(rowTrimmed) == nil else { break }
+            guard Self.containsTablePipe(rowTrimmed), tableAlignments(rowTrimmed) == nil else { break }
             var cells = splitTableRow(rowTrimmed)
             while cells.count < headers.count { cells.append("") }
             if cells.count > headers.count { cells = Array(cells.prefix(headers.count)) }
@@ -2920,7 +2924,7 @@ enum MarkdownParser {
   private static func heading(_ trimmed: String) -> (level: Int, text: String)? {
     guard trimmed.hasPrefix("#") else { return nil }
     let level = trimmed.prefix(while: { $0 == "#" }).count
-    guard (1...4).contains(level), trimmed.count > level else { return nil }
+    guard (1...6).contains(level), trimmed.count > level else { return nil }
     let separatorIndex = trimmed.index(trimmed.startIndex, offsetBy: level)
     guard trimmed[separatorIndex] == " " else { return nil }
     let text = trimmed[trimmed.index(after: separatorIndex)...]
@@ -2981,8 +2985,23 @@ enum MarkdownParser {
     return OrderedListItem(number: number, delimiter: String(delimiter), text: String(text))
   }
 
+  private static func normalizeTablePipes(_ line: String) -> String {
+    var result = line
+    for ch in ["\u{2502}", "\u{2503}", "\u{FF5C}"] {
+      if result.contains(ch) {
+        result = result.replacingOccurrences(of: ch, with: "|")
+      }
+    }
+    return result
+  }
+
+  static func containsTablePipe(_ line: String) -> Bool {
+    line.contains("|") || line.contains("\u{2502}") || line.contains("\u{2503}")
+      || line.contains("\u{FF5C}")
+  }
+
   private static func splitTableRow(_ line: String) -> [String] {
-    var s = line
+    var s = normalizeTablePipes(line)
     if s.hasPrefix("|") { s.removeFirst() }
     if s.hasSuffix("|") { s.removeLast() }
     let placeholder = "\u{1}"
@@ -2994,8 +3013,9 @@ enum MarkdownParser {
   }
 
   private static func tableAlignments(_ line: String) -> [TextAlignment]? {
-    guard line.contains("|"), line.contains("-") else { return nil }
-    let cells = splitTableRow(line)
+    let normalized = normalizeTablePipes(line)
+    guard normalized.contains("|"), normalized.contains("-") else { return nil }
+    let cells = splitTableRow(normalized)
     guard !cells.isEmpty else { return nil }
     var alignments: [TextAlignment] = []
     for cell in cells {
