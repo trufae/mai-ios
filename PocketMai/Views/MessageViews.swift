@@ -2933,7 +2933,10 @@ enum MarkdownParser {
   }
 
   private static func isHorizontalRule(_ trimmed: String) -> Bool {
-    trimmed.count >= 3 && trimmed.allSatisfy { $0 == "-" }
+    guard trimmed.count >= 3, let first = trimmed.first,
+      first == "-" || first == "_" || first == "*"
+    else { return false }
+    return trimmed.allSatisfy { $0 == first }
   }
 
   private static func taskListItem(_ trimmed: String) -> TaskListItem? {
