@@ -2461,6 +2461,7 @@ struct CodeBlockView: View {
             .lineSpacing(CGFloat(appearance.lineSpacing))
             .textSelectionIfEnabled(allowsTextSelection)
             .padding(appearance.markdownMetric(12))
+            .fixedSize(horizontal: true, vertical: true)
         }
       }
     }
