@@ -1106,6 +1106,10 @@ struct SettingsView: View {
       .onDelete { offsets in
         deleteTodos(at: offsets)
       }
+    case .calculator:
+      Text("Evaluates local arithmetic with parentheses, +, -, *, and /.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
     case .textToSpeech:
       Text("Configure user and assistant voices in Look and Feel.")
         .font(.footnote)

@@ -363,6 +363,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case weather
   case webSearch
   case todo
+  case calculator
   case textToSpeech
   case files
   case memory
@@ -373,14 +374,14 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .datetime, .language, .location, .memory:
       return true
-    case .weather, .webSearch, .todo, .textToSpeech, .files:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files:
       return false
     }
   }
 
   var isCallableTool: Bool {
     switch self {
-    case .weather, .webSearch, .todo, .textToSpeech, .files:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -395,6 +396,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather: "Weather"
     case .webSearch: "Web Search"
     case .todo: "Todo"
+    case .calculator: "Calculator"
     case .textToSpeech: "Text to Speech"
     case .files: "Files"
     case .memory: "Memory"
@@ -409,6 +411,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather: "cloud.sun"
     case .webSearch: "magnifyingglass"
     case .todo: "checklist"
+    case .calculator: "function"
     case .textToSpeech: "speaker.wave.2"
     case .files: "folder"
     case .memory: "brain"
@@ -419,7 +422,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .weather, .webSearch:
       return true
-    case .datetime, .language, .location, .todo, .textToSpeech, .files, .memory:
+    case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .memory:
       return false
     }
   }

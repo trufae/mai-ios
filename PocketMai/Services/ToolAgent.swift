@@ -37,6 +37,10 @@ enum BuiltInToolCatalog {
       toolNames: [TodoTool.listName, TodoTool.addName, TodoTool.doneName],
       approvalKind: .confirm),
     BuiltInToolCatalogEntry(
+      id: .calculator,
+      toolNames: [CalculatorTool.name],
+      approvalKind: .auto),
+    BuiltInToolCatalogEntry(
       id: .textToSpeech,
       toolNames: [TextToSpeechTool.name],
       approvalKind: .confirm),
@@ -89,6 +93,8 @@ enum BuiltInToolCatalog {
         call.arguments["title_or_id"] ?? call.arguments["id"]
         ?? call.arguments["title"] ?? ""
       return TodoTool.markDone(query: query, store: store)
+    case CalculatorTool.name:
+      return CalculatorTool.run(arguments: call.argumentValues)
     case WebSearchTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: web search is disabled while Airplane Mode is enabled."
@@ -165,6 +171,8 @@ enum BuiltInToolCatalog {
       return WebSearchTool.definitions(settings: settings.toolSettings)
     case .todo:
       return TodoTool.definitions
+    case .calculator:
+      return CalculatorTool.definitions
     case .textToSpeech:
       return TextToSpeechTool.definitions
     case .files:
@@ -780,6 +788,188 @@ enum TodoTool {
     store.saveSettings()
     return "Marked done: \(title)"
   }
+}
+
+@MainActor
+enum CalculatorTool {
+  static let name = "calculator"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: name,
+      description:
+        "Evaluate a numeric math expression with parentheses using +, -, *, /, and unary signs.",
+      parameters: [
+        ToolParameterDef(
+          name: "expression", type: "string",
+          description: "Math expression to evaluate, such as (2 + 3) * 4 / 5.",
+          required: true)
+      ])
+  ]
+
+  static func run(arguments: [String: AgentToolArgumentValue]) -> String {
+    let expression =
+      arguments["expression"]?.stringValue ?? arguments["expr"]?.stringValue
+      ?? arguments["input"]?.stringValue ?? ""
+    let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Error: expression is required." }
+
+    do {
+      var parser = CalculatorParser(trimmed)
+      let result = try parser.parse()
+      return format(result)
+    } catch {
+      return "Error: invalid expression: \(error.localizedDescription)"
+    }
+  }
+
+  private static func format(_ value: Double) -> String {
+    guard value.isFinite else { return "Error: calculation result is not finite." }
+    if value.rounded() == value && value <= Double(Int64.max) && value >= Double(Int64.min) {
+      return String(Int64(value))
+    }
+    return String(format: "%.15g", value)
+  }
+}
+
+private struct CalculatorParser {
+  private let text: String
+  private var index: String.Index
+
+  init(_ text: String) {
+    self.text = text
+    self.index = text.startIndex
+  }
+
+  mutating func parse() throws -> Double {
+    let value = try parseExpression()
+    skipWhitespace()
+    guard index == text.endIndex else {
+      throw CalculatorParserError("unexpected '\(text[index])'")
+    }
+    guard value.isFinite else {
+      throw CalculatorParserError("result is not finite")
+    }
+    return value
+  }
+
+  private mutating func parseExpression() throws -> Double {
+    var value = try parseTerm()
+    while true {
+      if consume("+") {
+        value += try parseTerm()
+      } else if consume("-") {
+        value -= try parseTerm()
+      } else {
+        return value
+      }
+    }
+  }
+
+  private mutating func parseTerm() throws -> Double {
+    var value = try parseFactor()
+    while true {
+      if consume("*") {
+        value *= try parseFactor()
+      } else if consume("/") {
+        let divisor = try parseFactor()
+        guard divisor != 0 else { throw CalculatorParserError("division by zero") }
+        value /= divisor
+      } else {
+        return value
+      }
+    }
+  }
+
+  private mutating func parseFactor() throws -> Double {
+    skipWhitespace()
+    if consume("+") {
+      return try parseFactor()
+    }
+    if consume("-") {
+      return -(try parseFactor())
+    }
+    if consume("(") {
+      let value = try parseExpression()
+      guard consume(")") else { throw CalculatorParserError("expected ')'") }
+      return value
+    }
+    return try parseNumber()
+  }
+
+  private mutating func parseNumber() throws -> Double {
+    skipWhitespace()
+    let start = index
+    var hasDigit = false
+
+    while let char = current, char.isNumber {
+      hasDigit = true
+      advance()
+    }
+    if consumeRaw(".") {
+      while let char = current, char.isNumber {
+        hasDigit = true
+        advance()
+      }
+    }
+    guard hasDigit else { throw CalculatorParserError("expected number") }
+
+    if let char = current, char == "e" || char == "E" {
+      let exponentStart = index
+      advance()
+      _ = consumeRaw("+") || consumeRaw("-")
+      var hasExponentDigit = false
+      while let char = current, char.isNumber {
+        hasExponentDigit = true
+        advance()
+      }
+      guard hasExponentDigit else {
+        index = exponentStart
+        throw CalculatorParserError("expected exponent digits")
+      }
+    }
+
+    let raw = String(text[start..<index])
+    guard let value = Double(raw), value.isFinite else {
+      throw CalculatorParserError("invalid number '\(raw)'")
+    }
+    return value
+  }
+
+  private var current: Character? {
+    index < text.endIndex ? text[index] : nil
+  }
+
+  private mutating func skipWhitespace() {
+    while let char = current, char.isWhitespace {
+      advance()
+    }
+  }
+
+  private mutating func consume(_ char: Character) -> Bool {
+    skipWhitespace()
+    return consumeRaw(char)
+  }
+
+  private mutating func consumeRaw(_ char: Character) -> Bool {
+    guard current == char else { return false }
+    advance()
+    return true
+  }
+
+  private mutating func advance() {
+    index = text.index(after: index)
+  }
+}
+
+private struct CalculatorParserError: LocalizedError {
+  let message: String
+
+  init(_ message: String) {
+    self.message = message
+  }
+
+  var errorDescription: String? { message }
 }
 
 @MainActor
