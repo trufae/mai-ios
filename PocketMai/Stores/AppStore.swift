@@ -207,8 +207,9 @@ final class AppStore: ObservableObject {
     guard generation == dataGeneration else { return }
     mergeLoadedSummaries(summaries)
 
+    let deviceOnlyApple = settings.airplaneModeEnabled
     let availabilityTask = Task.detached(priority: .utility) {
-      AppleFoundationProvider.availabilityReport
+      AppleFoundationProvider.availabilityReport(deviceOnly: deviceOnlyApple)
     }
     let loadedConversations = await Task.detached(priority: .userInitiated) {
       persistence.loadConversations()
@@ -607,7 +608,12 @@ final class AppStore: ObservableObject {
   }
 
   func effectiveToolSettings(for conversation: Conversation?) -> NativeToolSettings {
-    settings.toolSettings.applyingLanguageOverride(from: conversation)
+    var toolSettings = settings.toolSettings.applyingLanguageOverride(from: conversation)
+    if settings.airplaneModeEnabled {
+      toolSettings.voices.user = toolSettings.voices.user.withoutOnlineProvider()
+      toolSettings.voices.assistant = toolSettings.voices.assistant.withoutOnlineProvider()
+    }
+    return toolSettings
   }
 
   func togglePin(_ conversation: Conversation) {
@@ -1260,8 +1266,9 @@ final class AppStore: ObservableObject {
   }
 
   func refreshAppleIntelligenceAvailability() async {
+    let deviceOnlyApple = settings.airplaneModeEnabled
     let report = await Task.detached(priority: .utility) {
-      AppleFoundationProvider.availabilityReport
+      AppleFoundationProvider.availabilityReport(deviceOnly: deviceOnlyApple)
     }.value
     appleAvailabilityReport = report
     appleAvailabilityMessage = report.unavailableMessage
@@ -1273,6 +1280,10 @@ final class AppStore: ObservableObject {
   }
 
   func refreshMCP(_ server: MCPServer) async {
+    guard !settings.airplaneModeEnabled else {
+      mcpStatuses[server.id] = .failed("Airplane mode is enabled.")
+      return
+    }
     mcpStatuses[server.id] = .checking
     do {
       let tools = try await MCPHTTPClient.fetchTools(server: server)
@@ -1316,6 +1327,12 @@ final class AppStore: ObservableObject {
   }
 
   func refreshEndpoint(_ endpoint: OpenAIEndpoint) async {
+    guard !settings.airplaneModeEnabled else {
+      endpointStatuses[endpoint.id] = .failed("Airplane mode is enabled.")
+      endpointModels[endpoint.id] = nil
+      endpointVoices[endpoint.id] = nil
+      return
+    }
     endpointStatuses[endpoint.id] = .checking
     async let modelResult = fetchEndpointModelsResult(endpoint)
     async let voiceResult = fetchEndpointVoicesResult(endpoint)
@@ -1344,6 +1361,7 @@ final class AppStore: ObservableObject {
   }
 
   func refreshConfiguredEndpointsInBackground() {
+    guard !settings.airplaneModeEnabled else { return }
     let endpoints = settings.openAIEndpoints.filter(\.isEnabled)
     guard !endpoints.isEmpty else { return }
     for endpoint in endpoints {

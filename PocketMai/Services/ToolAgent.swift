@@ -58,6 +58,9 @@ enum BuiltInToolCatalog {
   ) -> [ToolDefinition] {
     entries.flatMap { entry -> [ToolDefinition] in
       guard enabledTools.contains(entry.id), entry.id.isCallableTool else { return [] }
+      guard !(settings.airplaneModeEnabled && entry.id.isDisabledInAirplaneMode) else {
+        return []
+      }
       return definitions(for: entry.id, settings: settings)
     }
   }
@@ -87,9 +90,15 @@ enum BuiltInToolCatalog {
         ?? call.arguments["title"] ?? ""
       return TodoTool.markDone(query: query, store: store)
     case WebSearchTool.name:
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: web search is disabled while Airplane Mode is enabled."
+      }
       return await WebSearchTool.search(
         arguments: call.argumentValues, settings: store.settings)
     case WebSearchTool.fetchName:
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: web fetch is disabled while Airplane Mode is enabled."
+      }
       return await WebSearchTool.fetch(arguments: call.argumentValues)
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
@@ -97,13 +106,16 @@ enum BuiltInToolCatalog {
         settings: store.effectiveToolSettings(for: conversation),
         skipTechnicalContent: store.effectiveConversationSettings(for: conversation)
           .skipTechnicalContentInTTS,
-        openAIEndpoints: store.settings.openAIEndpoints)
+        openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints)
     case DateTimeTool.name:
       return DateTimeTool.run(settings: store.settings.toolSettings)
     case LocationTool.name:
       return await LocationTool.run(
         settings: store.settings.toolSettings, locationService: { store.locationService })
     case WeatherTool.name:
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: weather is disabled while Airplane Mode is enabled."
+      }
       return await WeatherTool.run(
         settings: store.settings.toolSettings, locationService: { store.locationService })
     case FileWorkspaceTool.listName:

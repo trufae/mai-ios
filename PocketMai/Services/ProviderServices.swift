@@ -18,6 +18,7 @@ enum ChatProviderError: LocalizedError {
   case emptyResponse
   case appleModelUnavailable(String)
   case providerRequestFailed(String)
+  case providerUnavailableInAirplaneMode(String)
 
   var errorDescription: String? {
     switch self {
@@ -26,15 +27,22 @@ enum ChatProviderError: LocalizedError {
     case .emptyResponse: "The provider returned an empty response."
     case .appleModelUnavailable(let reason): reason
     case .providerRequestFailed(let reason): reason
+    case .providerUnavailableInAirplaneMode(let name):
+      "Airplane mode is enabled. Switch this chat to Apple Intelligence or MLX Local before using \(name)."
     }
   }
 }
 
 enum ChatProviderRouter {
   static func preflightMessage(conversation: Conversation, settings: AppSettings) -> String? {
+    if settings.airplaneModeEnabled && !conversation.provider.isAirplaneModeEligible {
+      return ChatProviderError.providerUnavailableInAirplaneMode(conversation.provider.displayName)
+        .errorDescription
+    }
     switch conversation.provider {
     case .apple:
-      return AppleFoundationProvider.unavailableMessage
+      return AppleFoundationProvider.unavailableMessage(
+        deviceOnly: settings.airplaneModeEnabled)
     case .mlx:
       let modelID = LocalMLXProvider.effectiveModelID(
         conversation: conversation, settings: settings)
@@ -84,6 +92,12 @@ enum ChatProviderRouter {
     request: ChatCompletionRequest,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
+    if request.settings.airplaneModeEnabled
+      && !request.conversation.provider.isAirplaneModeEligible
+    {
+      throw ChatProviderError.providerUnavailableInAirplaneMode(
+        request.conversation.provider.displayName)
+    }
     switch request.conversation.provider {
     case .apple:
       return try await AppleFoundationProvider.complete(request: request, onUpdate: onUpdate)
@@ -494,11 +508,17 @@ struct AppleFoundationAvailabilityReport: Equatable, Sendable {
 
 enum AppleFoundationProvider {
   static var availabilityReport: AppleFoundationAvailabilityReport {
-    switch SystemLanguageModel.default.availability {
+    availabilityReport(deviceOnly: false)
+  }
+
+  static func availabilityReport(deviceOnly: Bool) -> AppleFoundationAvailabilityReport {
+    switch systemModel(deviceOnly: deviceOnly).availability {
     case .available:
       return AppleFoundationAvailabilityReport(
         kind: .available,
-        detail: "Apple Intelligence is supported and enabled."
+        detail: deviceOnly
+          ? "Apple Intelligence is available through the on-device Foundation Models framework."
+          : "Apple Intelligence is supported and enabled."
       )
     case .unavailable(let reason):
       return report(for: reason)
@@ -506,7 +526,11 @@ enum AppleFoundationProvider {
   }
 
   static var unavailableMessage: String? {
-    availabilityReport.unavailableMessage
+    unavailableMessage(deviceOnly: false)
+  }
+
+  static func unavailableMessage(deviceOnly: Bool) -> String? {
+    availabilityReport(deviceOnly: deviceOnly).unavailableMessage
   }
 
   static var availabilitySummary: String {
@@ -517,11 +541,13 @@ enum AppleFoundationProvider {
     request: ChatCompletionRequest,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
-    if let unavailableMessage {
+    let deviceOnly = request.settings.airplaneModeEnabled
+    if let unavailableMessage = unavailableMessage(deviceOnly: deviceOnly) {
       throw ChatProviderError.appleModelUnavailable(unavailableMessage)
     }
 
     let session = LanguageModelSession(
+      model: systemModel(deviceOnly: deviceOnly),
       instructions: PromptComposer.systemPrompt(
         settings: request.settings, conversation: request.conversation)
     )
@@ -555,6 +581,11 @@ enum AppleFoundationProvider {
     let content = response.content
     await MainActor.run { onUpdate(content) }
     return content
+  }
+
+  private static func systemModel(deviceOnly: Bool) -> SystemLanguageModel {
+    guard deviceOnly else { return .default }
+    return SystemLanguageModel(useCase: .general, guardrails: .default)
   }
 
   private static func message(

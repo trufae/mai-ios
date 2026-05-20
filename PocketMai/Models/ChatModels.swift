@@ -43,6 +43,15 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
       return false
     }
   }
+
+  var isAirplaneModeEligible: Bool {
+    switch self {
+    case .apple, .mlx:
+      return true
+    case .openAICompatible:
+      return false
+    }
+  }
 }
 
 enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
@@ -403,6 +412,15 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .textToSpeech: "speaker.wave.2"
     case .files: "folder"
     case .memory: "brain"
+    }
+  }
+
+  var isDisabledInAirplaneMode: Bool {
+    switch self {
+    case .weather, .webSearch:
+      return true
+    case .datetime, .language, .location, .todo, .textToSpeech, .files, .memory:
+      return false
     }
   }
 
@@ -1302,6 +1320,13 @@ struct RoleVoiceSettings: Codable, Equatable, Sendable {
   }
 
   static let defaults = RoleVoiceSettings()
+
+  func withoutOnlineProvider() -> RoleVoiceSettings {
+    guard provider == .openAICompatible else { return self }
+    var copy = self
+    copy.provider = .system
+    return copy
+  }
 }
 
 struct VoiceSettings: Codable, Equatable, Sendable {
@@ -1488,6 +1513,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var appearance: AppearanceSettings = .defaults
   var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
+  var airplaneModeEnabled: Bool = false
 
   static let defaults = AppSettings()
 
@@ -1508,6 +1534,9 @@ struct AppSettings: Codable, Equatable, Sendable {
   }
 
   var defaultProviderConfiguration: (provider: ProviderKind, endpointID: UUID?, modelID: String) {
+    if airplaneModeEnabled && !defaultProvider.isAirplaneModeEligible {
+      return (.apple, nil, appleModelID)
+    }
     switch defaultProvider {
     case .apple:
       return (.apple, nil, appleModelID)
@@ -1531,6 +1560,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
     case appearance, conversation, renderMarkdownInChat
+    case airplaneModeEnabled
   }
 
   init(from decoder: Decoder) throws {
@@ -1603,6 +1633,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(ConversationSettings.self, forKey: .conversation)) ?? .defaults
     renderMarkdownInChat =
       (try? c.decode(Bool.self, forKey: .renderMarkdownInChat)) ?? true
+    airplaneModeEnabled =
+      (try? c.decode(Bool.self, forKey: .airplaneModeEnabled)) ?? false
   }
 }
 

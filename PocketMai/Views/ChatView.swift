@@ -211,8 +211,8 @@ struct ChatView: View {
           .font(.caption2)
           .foregroundStyle(.secondary)
           .lineLimit(1)
-        if let systemPromptName {
-          Text(systemPromptName)
+        if let systemPromptTitle {
+          Text(systemPromptTitle)
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -235,6 +235,11 @@ struct ChatView: View {
       let prompt = store.settings.systemPrompts.first(where: { $0.id == id })
     else { return nil }
     return prompt.displayName
+  }
+
+  private var systemPromptTitle: String? {
+    guard let systemPromptName else { return nil }
+    return store.settings.airplaneModeEnabled ? "\(systemPromptName) (offline)" : systemPromptName
   }
 
   private var currentLanguageOverrideIdentifier: String? {
@@ -411,12 +416,22 @@ struct ChatView: View {
     ttsPlayer.speakFromHere(
       messages: Array(conversation.messages[index...]),
       voices: store.effectiveToolSettings(for: conversation).voices,
-      openAIEndpoints: store.settings.openAIEndpoints,
+      openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints,
       skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS
     )
   }
 
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
+    if let conversation = store.currentConversation,
+      store.settings.airplaneModeEnabled,
+      !conversation.provider.isAirplaneModeEligible
+    {
+      return (
+        "Airplane Mode is on. Switch this chat to Apple Intelligence or MLX Local.",
+        "airplane",
+        .orange
+      )
+    }
     guard store.currentConversation?.provider == .apple,
       let message = store.appleAvailabilityMessage
     else {
@@ -437,7 +452,8 @@ struct ChatView: View {
               MessageBubble(
                 message: message,
                 toolSettings: currentToolSettings,
-                openAIEndpoints: store.settings.openAIEndpoints,
+                openAIEndpoints: store.settings.airplaneModeEnabled
+                  ? [] : store.settings.openAIEndpoints,
                 skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
@@ -464,7 +480,8 @@ struct ChatView: View {
               MessageBubble(
                 message: preview,
                 toolSettings: currentToolSettings,
-                openAIEndpoints: store.settings.openAIEndpoints,
+                openAIEndpoints: store.settings.airplaneModeEnabled
+                  ? [] : store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
                 onDelete: {},
@@ -1479,6 +1496,8 @@ private struct ToolPickerPopover: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .disabled(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode)
+          .opacity(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode ? 0.5 : 1)
         }
 
         if !store.settings.mcpServers.isEmpty {
@@ -1605,6 +1624,9 @@ private struct ToolPickerPopover: View {
   }
 
   private func toggleBuiltInTool(_ tool: BuiltInToolID) {
+    guard !(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode) else {
+      return
+    }
     let nextValue = !isBuiltInToolEnabled(tool)
     store.updateCurrentConversation { conversation in
       if nextValue {
@@ -1736,17 +1758,34 @@ private struct ConversationModelSettingsView: View {
           ContentUnavailableView("No Chat Selected", systemImage: "bubble.left")
         } else {
           Section("Provider") {
-            Picker("Provider", selection: providerSelectionBinding) {
-              Label("Apple Intelligence", systemImage: "apple.logo")
-                .tag(DefaultProviderSelection.apple)
-              Label("MLX Local", systemImage: "cpu")
-                .tag(DefaultProviderSelection.mlx)
-              ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
-                Label(endpoint.displayName, systemImage: "network")
-                  .tag(DefaultProviderSelection.endpoint(endpoint.id))
+            Menu {
+              Button {
+                providerSelectionBinding.wrappedValue = .apple
+              } label: {
+                Label("Apple Intelligence", systemImage: "apple.logo")
+              }
+              Button {
+                providerSelectionBinding.wrappedValue = .mlx
+              } label: {
+                Label("MLX Local", systemImage: "cpu")
+              }
+              if !store.settings.airplaneModeEnabled {
+                ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
+                  Button {
+                    providerSelectionBinding.wrappedValue = .endpoint(endpoint.id)
+                  } label: {
+                    Label(endpoint.displayName, systemImage: "network")
+                  }
+                }
+              }
+            } label: {
+              HStack {
+                Text("Provider")
+                Spacer()
+                Label(providerMenuTitle, systemImage: providerMenuIcon)
+                  .foregroundStyle(.secondary)
               }
             }
-            .pickerStyle(.menu)
             providerModelControls
           }
 
@@ -1803,12 +1842,45 @@ private struct ConversationModelSettingsView: View {
     store.currentConversation?.provider ?? .apple
   }
 
+  private var selectedProviderIsBlockedByAirplaneMode: Bool {
+    store.settings.airplaneModeEnabled && !provider.isAirplaneModeEligible
+  }
+
+  private var providerMenuTitle: String {
+    if selectedProviderIsBlockedByAirplaneMode {
+      return "Unavailable Offline"
+    }
+    switch provider {
+    case .apple:
+      return "Apple Intelligence"
+    case .mlx:
+      return "MLX Local"
+    case .openAICompatible:
+      return selectedEndpoint?.displayName ?? "OpenAI Compatible"
+    }
+  }
+
+  private var providerMenuIcon: String {
+    if selectedProviderIsBlockedByAirplaneMode { return "network.slash" }
+    switch provider {
+    case .apple:
+      return "apple.logo"
+    case .mlx:
+      return "cpu"
+    case .openAICompatible:
+      return "network"
+    }
+  }
+
   @ViewBuilder
   private var providerModelControls: some View {
     if provider == .apple {
       EmptyView()
     } else if provider == .mlx {
       mlxModelControls
+    } else if selectedProviderIsBlockedByAirplaneMode {
+      Text("Airplane Mode is on. Switch to Apple Intelligence or MLX Local.")
+        .foregroundStyle(.secondary)
     } else if let endpoint = selectedEndpoint {
       let models = store.endpointModels[endpoint.id] ?? []
       if models.isEmpty {
@@ -1891,6 +1963,7 @@ private struct ConversationModelSettingsView: View {
     case .mlx:
       return !store.localMLXModelIDs.isEmpty
     case .openAICompatible:
+      guard !store.settings.airplaneModeEnabled else { return false }
       return selectedEndpoint != nil
     }
   }
@@ -1926,6 +1999,9 @@ private struct ConversationModelSettingsView: View {
       return "These provider and model settings already match the app defaults."
     }
     guard let conversation = store.currentConversation else { return "" }
+    if conversation.provider == .openAICompatible && store.settings.airplaneModeEnabled {
+      return "Airplane Mode is on. OpenAI-compatible providers cannot be used as defaults."
+    }
     if conversation.provider == .openAICompatible && selectedEndpoint == nil {
       return "Choose an enabled endpoint before using these settings as the default."
     }
@@ -1953,6 +2029,7 @@ private struct ConversationModelSettingsView: View {
         store.settings.localMLXModelID = model
       }
     case .openAICompatible:
+      guard !store.settings.airplaneModeEnabled else { return }
       guard let endpoint = selectedEndpoint,
         let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id })
       else { return }
@@ -2023,6 +2100,10 @@ private struct ConversationModelSettingsView: View {
             conversation.modelID = selectedMLXModelID ?? ""
             didSaveDefaults = false
           case .endpoint(let id):
+            guard !store.settings.airplaneModeEnabled else {
+              didSaveDefaults = false
+              return
+            }
             conversation.provider = .openAICompatible
             conversation.endpointID = id
             if let endpoint = store.settings.openAIEndpoints.first(where: { $0.id == id }),

@@ -281,6 +281,24 @@ struct SettingsView: View {
       }
       .navigationTitle("Settings")
       .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button {
+            toggleAirplaneMode()
+          } label: {
+            Label(
+              store.settings.airplaneModeEnabled ? "Offline" : "Online",
+              systemImage: store.settings.airplaneModeEnabled
+                ? "airplane.circle.fill" : "airplane.circle"
+            )
+          }
+          .accessibilityLabel(
+            store.settings.airplaneModeEnabled
+              ? "Offline mode enabled. Tap to go online."
+              : "Online mode enabled. Tap to go offline."
+          )
+          .help(store.settings.airplaneModeEnabled ? "Go online" : "Go offline")
+        }
+
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { saveAndDismiss() }
         }
@@ -346,17 +364,34 @@ struct SettingsView: View {
 
   private var providerSection: some View {
     Section {
-      Picker("Default", selection: defaultProviderBinding) {
-        Label("Apple Intelligence", systemImage: "apple.logo")
-          .tag(DefaultProviderSelection.apple)
-        Label("MLX Local", systemImage: "cpu")
-          .tag(DefaultProviderSelection.mlx)
-        ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
-          Label(endpoint.displayName, systemImage: "network")
-            .tag(DefaultProviderSelection.endpoint(endpoint.id))
+      Menu {
+        Button {
+          defaultProviderBinding.wrappedValue = .apple
+        } label: {
+          Label("Apple Intelligence", systemImage: "apple.logo")
+        }
+        Button {
+          defaultProviderBinding.wrappedValue = .mlx
+        } label: {
+          Label("MLX Local", systemImage: "cpu")
+        }
+        if !store.settings.airplaneModeEnabled {
+          ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
+            Button {
+              defaultProviderBinding.wrappedValue = .endpoint(endpoint.id)
+            } label: {
+              Label(endpoint.displayName, systemImage: "network")
+            }
+          }
+        }
+      } label: {
+        HStack {
+          Text("Default")
+          Spacer()
+          Label(defaultProviderMenuTitle, systemImage: defaultProviderMenuIcon)
+            .foregroundStyle(.secondary)
         }
       }
-      .pickerStyle(.menu)
 
       DisclosureGroup {
         endpointContent
@@ -682,6 +717,8 @@ struct SettingsView: View {
       NavigationLink(value: endpoint.id) {
         endpointRow(endpoint)
       }
+      .disabled(store.settings.airplaneModeEnabled)
+      .opacity(store.settings.airplaneModeEnabled ? 0.5 : 1)
     }
     .onDelete { offsets in
       pendingDeletion = PendingSettingsDeletion(kind: .endpoint, offsets: offsets)
@@ -696,8 +733,11 @@ struct SettingsView: View {
     } label: {
       Label("Add Provider", systemImage: "plus")
     }
+    .disabled(store.settings.airplaneModeEnabled)
     Text(
-      "Apple Intelligence and MLX are built in. OpenAI-compatible providers can be added, edited, or removed."
+      store.settings.airplaneModeEnabled
+        ? "Airplane Mode is on. Apple Intelligence and MLX remain available; OpenAI-compatible providers are offline."
+        : "Apple Intelligence and MLX are built in. OpenAI-compatible providers can be added, edited, or removed."
     )
     .font(.caption)
     .foregroundStyle(.secondary)
@@ -705,12 +745,13 @@ struct SettingsView: View {
 
   private var appleIntelligenceProviderRow: some View {
     let report = store.appleAvailabilityReport
+    let deviceOnlyReady = store.settings.airplaneModeEnabled && report.kind == .available
     return providerStatusRow(
       title: "Apple Intelligence",
-      subtitle: report.providerListSubtitle,
+      subtitle: deviceOnlyReady ? "Ready: device-only on this device" : report.providerListSubtitle,
       systemImage: appleIntelligenceStatusIcon(report.kind),
       color: appleIntelligenceStatusColor(report.kind),
-      badge: report.statusLabel
+      badge: deviceOnlyReady ? "Device" : report.statusLabel
     )
   }
 
@@ -817,7 +858,11 @@ struct SettingsView: View {
           .lineLimit(1)
       }
       Spacer()
-      if !endpoint.isEnabled {
+      if store.settings.airplaneModeEnabled {
+        Text("Offline")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      } else if !endpoint.isEnabled {
         Text("Off")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.tertiary)
@@ -968,6 +1013,8 @@ struct SettingsView: View {
     } label: {
       toolLabel(tool)
     }
+    .disabled(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode)
+    .opacity(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode ? 0.5 : 1)
   }
 
   private func toolLabel(_ tool: BuiltInToolID) -> some View {
@@ -1385,6 +1432,11 @@ struct SettingsView: View {
   private var defaultProviderBinding: Binding<DefaultProviderSelection> {
     Binding(
       get: {
+        if store.settings.airplaneModeEnabled
+          && !store.settings.defaultProvider.isAirplaneModeEligible
+        {
+          return .apple
+        }
         switch store.settings.defaultProvider {
         case .apple:
           return .apple
@@ -1412,12 +1464,52 @@ struct SettingsView: View {
           store.settings.localMLXModelID =
             store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
         case .endpoint(let id):
+          guard !store.settings.airplaneModeEnabled else {
+            showToast("Airplane Mode is enabled. Choose Apple Intelligence or MLX Local.")
+            return
+          }
           store.settings.defaultProvider = .openAICompatible
           store.settings.selectedEndpointID = id
         }
         store.saveSettings()
       }
     )
+  }
+
+  private var defaultProviderMenuTitle: String {
+    switch defaultProviderBinding.wrappedValue {
+    case .apple:
+      return "Apple Intelligence"
+    case .mlx:
+      return "MLX Local"
+    case .endpoint(let id):
+      return store.settings.openAIEndpoints.first(where: { $0.id == id })?.displayName
+        ?? "OpenAI Compatible"
+    }
+  }
+
+  private var defaultProviderMenuIcon: String {
+    switch defaultProviderBinding.wrappedValue {
+    case .apple:
+      return "apple.logo"
+    case .mlx:
+      return "cpu"
+    case .endpoint:
+      return "network"
+    }
+  }
+
+  private func toggleAirplaneMode() {
+    store.settings.airplaneModeEnabled.toggle()
+    if store.settings.airplaneModeEnabled {
+      store.endpointStatuses.removeAll()
+      store.endpointModels.removeAll()
+      store.endpointVoices.removeAll()
+    } else {
+      store.refreshConfiguredEndpointsInBackground()
+    }
+    store.refreshAppleIntelligenceAvailabilityInBackground()
+    store.saveSettings()
   }
 
   private func settingsBinding<Value>(_ keyPath: WritableKeyPath<AppSettings, Value>) -> Binding<
@@ -1471,6 +1563,10 @@ struct SettingsView: View {
   }
 
   private func toggleTool(_ tool: BuiltInToolID) {
+    guard !(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode) else {
+      showToast("\(tool.displayName) is disabled while Airplane Mode is enabled.")
+      return
+    }
     if store.settings.defaultEnabledTools.contains(tool) {
       store.settings.defaultEnabledTools.remove(tool)
     } else {
@@ -1492,14 +1588,19 @@ private struct RoleVoiceSettingsView: View {
         Picker("Provider", selection: providerBinding) {
           Text("System").tag(VoiceProviderSelection.system)
           ForEach(openAIVoiceEndpoints) { endpoint in
-            Text(endpoint.displayName).tag(VoiceProviderSelection.openAI(endpoint.id))
+            Text(endpoint.displayName)
+              .tag(VoiceProviderSelection.openAI(endpoint.id))
+              .disabled(store.settings.airplaneModeEnabled)
           }
         }
       } footer: {
-        Text("Only OpenAI-compatible providers with discovered /v1/voices are listed.")
+        Text(
+          store.settings.airplaneModeEnabled
+            ? "Airplane Mode is on. Provider voices are unavailable."
+            : "Only OpenAI-compatible providers with discovered /v1/voices are listed.")
       }
 
-      if voice.provider == .openAICompatible {
+      if showsOpenAIVoiceSettings {
         Section {
           openAIVoicePicker
           Button {
@@ -1564,8 +1665,8 @@ private struct RoleVoiceSettingsView: View {
         Button {
           VoiceTest.toggle(
             role: role,
-            voice: voice,
-            openAIEndpoints: store.settings.openAIEndpoints,
+            voice: effectiveVoice,
+            openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints,
             player: ttsPlayer)
         } label: {
           let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
@@ -1578,7 +1679,7 @@ private struct RoleVoiceSettingsView: View {
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
     .onChange(of: voice.language) { _, newLanguage in
-      guard voice.provider == .system else { return }
+      guard effectiveVoice.provider == .system else { return }
       guard !newLanguage.isEmpty,
         let selectedVoice = TTSVoiceCache.voices.first(where: {
           $0.identifier == voice.voiceIdentifier
@@ -1600,6 +1701,14 @@ private struct RoleVoiceSettingsView: View {
     case .user: "User"
     case .assistant: "Assistant"
     }
+  }
+
+  private var effectiveVoice: RoleVoiceSettings {
+    store.settings.airplaneModeEnabled ? voice.withoutOnlineProvider() : voice
+  }
+
+  private var showsOpenAIVoiceSettings: Bool {
+    effectiveVoice.provider == .openAICompatible
   }
 
   private func voiceBinding<Value>(_ keyPath: WritableKeyPath<RoleVoiceSettings, Value>)
@@ -1638,6 +1747,7 @@ private struct RoleVoiceSettingsView: View {
   private var providerBinding: Binding<VoiceProviderSelection> {
     Binding(
       get: {
+        guard !store.settings.airplaneModeEnabled else { return .system }
         if voice.provider == .openAICompatible, let id = voice.openAIEndpointID {
           return .openAI(id)
         }
@@ -1649,6 +1759,7 @@ private struct RoleVoiceSettingsView: View {
         case .system:
           copy.provider = .system
         case .openAI(let id):
+          guard !store.settings.airplaneModeEnabled else { return }
           copy.provider = .openAICompatible
           copy.openAIEndpointID = id
           let voices = store.endpointVoices[id] ?? []
@@ -1683,6 +1794,7 @@ private struct RoleVoiceSettingsView: View {
   }
 
   private var selectedEndpointVoices: [String] {
+    guard !store.settings.airplaneModeEnabled else { return [] }
     guard voice.provider == .openAICompatible,
       let id = voice.openAIEndpointID
     else { return [] }
@@ -1690,7 +1802,8 @@ private struct RoleVoiceSettingsView: View {
   }
 
   private var openAIVoiceEndpoints: [OpenAIEndpoint] {
-    store.settings.openAIEndpoints.filter { endpoint in
+    guard !store.settings.airplaneModeEnabled else { return [] }
+    return store.settings.openAIEndpoints.filter { endpoint in
       endpoint.isEnabled && !(store.endpointVoices[endpoint.id] ?? []).isEmpty
     }
   }
@@ -1709,6 +1822,7 @@ private struct RoleVoiceSettingsView: View {
 
   private func normalizeProviderVoiceSelection() {
     guard voice.provider == .openAICompatible else { return }
+    guard !store.settings.airplaneModeEnabled else { return }
     guard !openAIVoiceEndpoints.isEmpty else {
       voice.provider = .system
       voice.openAIEndpointID = nil
@@ -1727,6 +1841,7 @@ private struct RoleVoiceSettingsView: View {
   }
 
   private func refreshSelectedVoiceEndpoint() {
+    guard !store.settings.airplaneModeEnabled else { return }
     guard let endpoint = selectedOpenAIEndpoint else { return }
     Task { await store.refreshEndpoint(endpoint) }
   }
