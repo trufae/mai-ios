@@ -17,6 +17,9 @@ enum ContextBuilder {
   ) async -> Output {
     var sections: [String] = []
     var signatureParts: [String] = []
+    guard conversation.toolsEnabled else {
+      return Output(text: "", signature: "")
+    }
     let enabled = conversation.enabledTools
 
     if enabled.contains(.datetime) {

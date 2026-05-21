@@ -815,6 +815,7 @@ private struct ChatComposer: View {
   let isResponding: Bool
   @ObservedObject var liveVoiceSession: LiveVoiceSession
   @FocusState private var composerFocused: Bool
+  @State private var showingToolMenu = false
   @State private var showingToolPicker = false
   @State private var showingTextFileImporter = false
   @State private var showingImagePicker = false
@@ -1087,30 +1088,18 @@ private struct ChatComposer: View {
   }
 
   private var toolMenu: some View {
-    Menu {
-      Button {
-        showingToolPicker = true
-      } label: {
-        Label("Tools...", systemImage: "wrench.and.screwdriver")
-      }
-      Divider()
-      Button {
-        showingTextFileImporter = true
-      } label: {
-        Label("Add text", systemImage: "doc.text")
-      }
-      Button {
-        showingImagePicker = true
-      } label: {
-        Label("Add image", systemImage: "photo")
-      }
-      .disabled(!canAttachImage)
+    Button {
+      showingToolMenu.toggle()
     } label: {
       Image(systemName: "plus")
         .font(.title3.weight(.semibold))
         .frame(width: 24, height: 24)
     }
     .buttonStyle(.glass)
+    .popover(isPresented: $showingToolMenu, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+      toolMenuPopover
+        .presentationCompactAdaptation(.popover)
+    }
     .popover(isPresented: $showingToolPicker, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom)
     {
       ToolPickerPopover()
@@ -1118,6 +1107,88 @@ private struct ChatComposer: View {
         .presentationCompactAdaptation(.popover)
     }
     .help("Tools")
+  }
+
+  private var toolMenuPopover: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 12) {
+        Button {
+          openToolPicker()
+        } label: {
+          toolMenuRowLabel("Tools...", systemImage: "wrench.and.screwdriver")
+        }
+        .disabled(!toolsEnabled)
+        .opacity(toolsEnabled ? 1 : 0.45)
+        .buttonStyle(.plain)
+
+        Toggle("", isOn: toolsEnabledBinding)
+          .labelsHidden()
+          .toggleStyle(.switch)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      Divider()
+
+      Button {
+        showingToolMenu = false
+        showingTextFileImporter = true
+      } label: {
+        toolMenuRowLabel("Add text", systemImage: "doc.text")
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      Button {
+        showingToolMenu = false
+        showingImagePicker = true
+      } label: {
+        toolMenuRowLabel("Add image", systemImage: "photo")
+      }
+      .disabled(!canAttachImage)
+      .opacity(canAttachImage ? 1 : 0.45)
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+    }
+    .padding(8)
+    .frame(minWidth: 240)
+    .background(.regularMaterial)
+  }
+
+  private func toolMenuRowLabel(_ title: String, systemImage: String) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: systemImage)
+        .foregroundStyle(.secondary)
+        .frame(width: 18)
+      Text(title)
+        .foregroundStyle(.primary)
+      Spacer()
+    }
+    .contentShape(Rectangle())
+  }
+
+  private func openToolPicker() {
+    guard toolsEnabled else { return }
+    showingToolMenu = false
+    showingToolPicker = true
+  }
+
+  private var toolsEnabled: Bool {
+    store.currentConversation?.toolsEnabled ?? true
+  }
+
+  private var toolsEnabledBinding: Binding<Bool> {
+    Binding(
+      get: { toolsEnabled },
+      set: { enabled in
+        showingToolPicker = false
+        store.updateCurrentConversation { conversation in
+          conversation.toolsEnabled = enabled
+        }
+      }
+    )
   }
 
   private static var textAttachmentTypes: [UTType] {
@@ -1700,9 +1771,15 @@ private struct ToolPickerPopover: View {
         }
       }
       .padding(8)
+      .disabled(!toolsEnabled)
+      .opacity(toolsEnabled ? 1 : 0.5)
     }
     .frame(minWidth: 260, maxHeight: 480)
     .background(.regularMaterial)
+  }
+
+  private var toolsEnabled: Bool {
+    store.currentConversation?.toolsEnabled ?? true
   }
 
   @ViewBuilder
@@ -1811,6 +1888,7 @@ private struct ToolPickerPopover: View {
   }
 
   private func toggleBuiltInTool(_ tool: BuiltInToolID) {
+    guard toolsEnabled else { return }
     guard !(store.settings.airplaneModeEnabled && tool.isDisabledInAirplaneMode) else {
       return
     }
@@ -1833,6 +1911,7 @@ private struct ToolPickerPopover: View {
   // MARK: - MCP server helpers
 
   private func toggleServer(_ id: UUID) {
+    guard toolsEnabled else { return }
     let nextValue = !isMCPServerEnabled(id)
     let keys = mcpToolKeys(serverID: id)
     let prefix = MCPToolSelection.prefix(serverID: id)
@@ -1905,6 +1984,7 @@ private struct ToolPickerPopover: View {
   }
 
   private func toggleMCPTool(serverID: UUID, toolName: String) {
+    guard toolsEnabled else { return }
     let key = mcpToolKey(serverID: serverID, toolName: toolName)
     let prefix = MCPToolSelection.prefix(serverID: serverID)
     let nextValue = !isMCPToolEnabled(serverID: serverID, toolName: toolName)

@@ -791,6 +791,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var modelID: String = AppSettings.appleDefaultModelID
   var endpointID: UUID? = nil
   var systemPromptID: UUID? = nil
+  var toolsEnabled: Bool = true
   var enabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var usesStreaming: Bool = true
   var isPinned: Bool = false
@@ -815,6 +816,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case modelID
     case endpointID
     case systemPromptID
+    case toolsEnabled
     case enabledTools
     case usesStreaming
     case isPinned
@@ -840,6 +842,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     modelID = try container.decode(String.self, forKey: .modelID)
     endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)
     systemPromptID = try container.decodeIfPresent(UUID.self, forKey: .systemPromptID)
+    toolsEnabled = (try? container.decode(Bool.self, forKey: .toolsEnabled)) ?? true
     enabledTools = try container.decode(Set<BuiltInToolID>.self, forKey: .enabledTools)
     usesStreaming = try container.decode(Bool.self, forKey: .usesStreaming)
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
@@ -872,6 +875,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(modelID, forKey: .modelID)
     try container.encodeIfPresent(endpointID, forKey: .endpointID)
     try container.encodeIfPresent(systemPromptID, forKey: .systemPromptID)
+    try container.encode(toolsEnabled, forKey: .toolsEnabled)
     try container.encode(enabledTools, forKey: .enabledTools)
     try container.encode(usesStreaming, forKey: .usesStreaming)
     try container.encode(isPinned, forKey: .isPinned)
@@ -1075,6 +1079,7 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var defaultEnabledTools: [String]
   var defaultEnabledMCPServers: [String]
   var defaultEnabledMCPTools: [String]
+  var toolsEnabled: Bool
   var enabledTools: [String]
   var enabledMCPServers: [String]
   var enabledMCPTools: [String]

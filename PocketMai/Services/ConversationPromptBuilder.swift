@@ -135,6 +135,7 @@ enum OneShotPromptRunner {
     oneShot.provider = prompt.provider
     oneShot.modelID = prompt.modelID
     oneShot.endpointID = prompt.endpointID
+    oneShot.toolsEnabled = false
     oneShot.enabledTools = []
     oneShot.usesStreaming = false
     oneShot.messages = [ChatMessage(role: .user, text: prompt.prompt)]

@@ -263,6 +263,7 @@ final class AppStore: ObservableObject {
       && conversation.endpointID == defaults.endpointID
       && normalizedModelID(conversation.modelID) == normalizedModelID(defaults.modelID)
       && conversation.systemPromptID == defaults.systemPromptID
+      && conversation.toolsEnabled == defaults.toolsEnabled
       && conversation.enabledTools == defaults.enabledTools
       && conversation.enabledMCPServers == defaults.enabledMCPServers
       && conversation.enabledMCPTools == defaults.enabledMCPTools
@@ -472,6 +473,7 @@ final class AppStore: ObservableObject {
       conversation.modelID = source.modelID
       conversation.endpointID = source.endpointID
       conversation.systemPromptID = source.systemPromptID
+      conversation.toolsEnabled = source.toolsEnabled
       conversation.enabledTools = source.enabledTools
       conversation.enabledMCPServers = source.enabledMCPServers
       conversation.enabledMCPTools = source.enabledMCPTools
@@ -1819,6 +1821,7 @@ final class AppStore: ObservableObject {
       && lhs.modelID == rhs.modelID
       && lhs.endpointID == rhs.endpointID
       && lhs.systemPromptID == rhs.systemPromptID
+      && lhs.toolsEnabled == rhs.toolsEnabled
       && lhs.enabledTools == rhs.enabledTools
       && lhs.enabledMCPServers == rhs.enabledMCPServers
       && lhs.enabledMCPTools == rhs.enabledMCPTools
@@ -1958,6 +1961,7 @@ final class AppStore: ObservableObject {
       defaultEnabledTools: settings.defaultEnabledTools.map(\.rawValue).sorted(),
       defaultEnabledMCPServers: settings.defaultEnabledMCPServers.map(\.uuidString).sorted(),
       defaultEnabledMCPTools: Array(settings.defaultEnabledMCPTools).sorted(),
+      toolsEnabled: conversation.toolsEnabled,
       enabledTools: conversation.enabledTools.map(\.rawValue).sorted(),
       enabledMCPServers: conversation.enabledMCPServers.map(\.uuidString).sorted(),
       enabledMCPTools: Array(conversation.enabledMCPTools).sorted(),

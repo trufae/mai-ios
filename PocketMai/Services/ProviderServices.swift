@@ -201,7 +201,7 @@ enum PromptComposer {
       .joined(separator: "\n")
 
     var parts = [base]
-    if conversation.enabledTools.contains(.memory) && !memory.isEmpty {
+    if conversation.toolsEnabled && conversation.enabledTools.contains(.memory) && !memory.isEmpty {
       parts.append(
         """
         <user_preferences>

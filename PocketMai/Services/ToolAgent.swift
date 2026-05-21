@@ -192,7 +192,8 @@ enum BuiltInToolCatalog {
     conversation: Conversation,
     settings: AppSettings
   ) -> Bool {
-    conversation.enabledTools.contains(.files)
+    conversation.toolsEnabled
+      && conversation.enabledTools.contains(.files)
       && settings.toolSettings.filesWorkspaceAccessEnabled
   }
 }
@@ -214,6 +215,7 @@ enum ToolAgentRegistry {
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   ) -> [ToolDefinition] {
+    guard conversation.toolsEnabled else { return [] }
     var defs = BuiltInToolCatalog.definitions(
       for: conversation.enabledTools,
       settings: settings)
