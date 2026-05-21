@@ -8,13 +8,18 @@ app.
 ## Build
 
 ```bash
-cd src/ui/ios/aitest
-swift build
+swift build --package-path aitest
 ```
+
+`Sources/aitest/AgentTooling.swift` is a symlink to
+`../../../Shared/AgentTooling.swift`. Keep `Shared/AgentTooling.swift` as the
+single source of truth and run `make check-shared-tooling` if the link looks
+wrong.
 
 ## Run
 
 ```bash
+cd aitest
 swift run aitest \
   --base-url https://api.openai.com/v1 \
   --api-key sk-... \

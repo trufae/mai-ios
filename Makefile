@@ -4,7 +4,7 @@ CONFIG ?= Debug
 DESTINATION ?= generic/platform=iOS Simulator
 DERIVED_DATA ?= build/DerivedData
 
-.PHONY: all build fmt clean
+.PHONY: all build fmt clean check-shared-tooling aitest-build
 
 all: build
 
@@ -13,6 +13,12 @@ build:
 
 fmt:
 	xcrun swift-format format -i -r PocketMai Shared PocketMaiLiveActivityExtension
+
+check-shared-tooling:
+	test "$$(readlink aitest/Sources/aitest/AgentTooling.swift)" = "../../../Shared/AgentTooling.swift"
+
+aitest-build: check-shared-tooling
+	swift build --package-path aitest
 
 clean:
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -derivedDataPath $(DERIVED_DATA) clean

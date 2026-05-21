@@ -35,6 +35,9 @@ jobs:
       - name: List available iOS Simulator runtimes
         run: xcrun simctl list runtimes
 
+      - name: Verify shared aitest tooling
+        run: make aitest-build
+
       - name: Build (arm64 only)
         run: |
           set -o pipefail

@@ -27,6 +27,7 @@ enum LocalMLXError: LocalizedError {
   case noDownloadedModels
   case noModelSelected
   case emptyPrompt
+  case contextLengthExceeded(tokenCount: Int)
 
   var errorDescription: String? {
     switch self {
@@ -46,6 +47,10 @@ enum LocalMLXError: LocalizedError {
       return "Choose a downloaded MLX model before using MLX."
     case .emptyPrompt:
       return "Enter a prompt before generating."
+    case .contextLengthExceeded(let count):
+      return
+        "MLX context length exceeded: the prompt is \(count) tokens. "
+        + "Reduce the context window size in Settings or start a shorter conversation."
     }
   }
 }
@@ -78,6 +83,12 @@ actor LocalMLXProvider {
 
   private var container: ModelContainer?
   private var loadedModelID: String?
+
+  // Cap the KV cache to prevent unbounded memory growth (and segfaults) as conversations
+  // grow. MLX switches to RotatingKVCache when maxKVSize is set, overwriting old entries
+  // instead of allocating more GPU memory. promptTokenLimit reserves space for output.
+  private static let maxKVSize = 4096
+  private static let promptTokenLimit = maxKVSize - 512
 
   private init() {}
 
@@ -157,10 +168,14 @@ actor LocalMLXProvider {
     let input = try await container.prepare(
       input: UserInput(chat: messages, tools: Self.mlxToolSpecs(from: request.nativeTools))
     )
+    let promptTokenCount = input.text.tokens.size
+    if promptTokenCount > Self.promptTokenLimit {
+      throw LocalMLXError.contextLengthExceeded(tokenCount: promptTokenCount)
+    }
     let temperature: Float = request.hasToolCalling ? 0.2 : 0.7
     let stream = try await container.generate(
       input: input,
-      parameters: GenerateParameters(maxTokens: 1_200, temperature: temperature)
+      parameters: GenerateParameters(maxTokens: 1_200, maxKVSize: Self.maxKVSize, temperature: temperature)
     )
 
     var output = ""
