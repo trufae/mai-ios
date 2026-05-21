@@ -321,7 +321,7 @@ enum AgentTooling {
 
       \(toolCalling)
 
-      After a `<tool_run>`, answer using that result. Call another tool only for a different missing fact; never repeat the same tool call with the same arguments.
+      After a `<tool_run>`, use the result to continue. Keep calling tools across turns whenever more information is needed — including the same tool with different arguments — and give your final answer only once you have enough. Never repeat a tool call with identical arguments.
       """
   }
 
@@ -334,21 +334,21 @@ enum AgentTooling {
     switch mode.textProtocolFallback {
     case .text:
       return """
-        When a tool is needed, reply with exactly one plain text block and no other text. Examples, output one call only:
+        When a tool is needed, reply with a single plain text block and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Put one argument per line as `argument_name: value`. Include required arguments, omit unused optional arguments, use true/false for booleans, and stop after the block.
         """
     case .xml:
       return """
-        When a tool is needed, reply with exactly one XML block and no other text. Examples, output one call only:
+        When a tool is needed, reply with a single XML block and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, escape XML special characters, and stop after the block.
         """
     case .json:
       return """
-        When a tool is needed, reply with exactly one JSON object and no other text. Examples, output one call only:
+        When a tool is needed, reply with a single JSON object and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, keep JSON valid, and stop after the JSON object.
