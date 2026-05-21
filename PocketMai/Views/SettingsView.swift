@@ -335,6 +335,25 @@ struct SettingsView: View {
     Toggle(
       "Include reasoning content",
       isOn: settingsBinding(\.includeReasoningContentInContext))
+    Picker("MLX KV Cache", selection: settingsBinding(\.mlxMaxKVSize)) {
+      ForEach(MLXKVCacheSize.allCases) { size in
+        Text(size.displayName).tag(size)
+      }
+    }
+    .pickerStyle(.menu)
+    Text(
+      "Caps the token sliding window for MLX Local. Larger values retain more conversation history but use more GPU memory. Reducing this is the first fix for out-of-memory crashes."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+    Toggle("Auto-Compact MLX Context", isOn: settingsBinding(\.mlxAutoCompact))
+    if store.settings.mlxAutoCompact {
+      Text(
+        "Before each MLX response, older messages are summarized automatically when the conversation grows long, keeping the most recent exchange intact. Uses the same Compact Prompt template."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    }
     Picker("Image Attachments", selection: settingsBinding(\.attachmentImageSize)) {
       ForEach(AttachmentImageSize.allCases) { size in
         Text(size.displayName).tag(size)

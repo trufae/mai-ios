@@ -758,8 +758,57 @@ final class AppStore: ObservableObject {
     upsertSummary(for: conversations[i])
     saveConversations()
 
+    if let idx = indexedConversationIndex(for: conversationID),
+      conversations[idx].provider == .mlx,
+      settings.mlxAutoCompact
+    {
+      await autoCompactIfNeeded(conversationID: conversationID)
+    }
+
     dispatchAssistantTurn(
       conversationID: conversationID, context: context.text)
+  }
+
+  private func autoCompactIfNeeded(conversationID: UUID) async {
+    guard let idx = indexedConversationIndex(for: conversationID) else { return }
+    let conversation = conversations[idx]
+    guard conversation.messages.count > 3, !isCompacting else { return }
+
+    // Estimate token count at ~3 chars/token; compact when exceeding 75% of the KV window.
+    let totalChars = conversation.messages.reduce(0) { $0 + $1.text.count }
+    let kvLimit = settings.mlxMaxKVSize.effectiveSize
+    guard totalChars > kvLimit * 3 else { return }
+
+    // Summarize all messages except the most recent user message so it is preserved.
+    var summaryConversation = conversation
+    summaryConversation.messages = Array(conversation.messages.dropLast())
+    guard
+      let compactReq = await ConversationPromptBuilder.compactRequest(
+        conversation: summaryConversation,
+        settings: settings)
+    else { return }
+
+    isCompacting = true
+    defer { isCompacting = false }
+
+    do {
+      let summary = try await OneShotPromptRunner.run(compactReq.oneShot, settings: settings)
+      let trimmed = MessageContentFilter.promptSafeText(from: summary)
+      guard !trimmed.isEmpty else { return }
+      guard let i = indexedConversationIndex(for: conversationID) else { return }
+      let lastMsg = conversations[i].messages.last
+      let removed = Array(conversations[i].messages.dropLast())
+      conversations[i].messages = [
+        ChatMessage(role: .system, text: "Conversation summary (compacted):\n\n\(trimmed)")
+      ]
+      if let lastMsg { conversations[i].messages.append(lastMsg) }
+      conversations[i].updatedAt = Date()
+      upsertSummary(for: conversations[i])
+      saveConversations()
+      deleteUnreferencedVoiceRecordings(from: removed)
+    } catch {
+      // Best-effort: proceed without compaction if summarization fails.
+    }
   }
 
   private func dispatchAssistantTurn(conversationID: UUID, context: String) {

@@ -182,6 +182,13 @@ enum AssistantToolLoop {
     assistantID: UUID,
     store: AppStore
   ) async throws -> String {
+    // In the synthesis round (after a tool has run), suppress the tail reminder that says
+    // "emit exactly one valid tool call and stop" — small models echo the tool result instead
+    // of answering when they see that instruction a second time.
+    let tailToolPrompt: String = {
+      guard requestState.usesTextProtocol else { return "" }
+      return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
+    }()
     let request = ChatCompletionRequest(
       conversation: conversation,
       settings: store.settings,
@@ -192,7 +199,7 @@ enum AssistantToolLoop {
         conversation: conversation,
         requestState: requestState),
       hasToolCalling: !requestState.definitions.isEmpty,
-      toolPrompt: requestState.usesTextProtocol ? requestState.toolPrompt : ""
+      toolPrompt: tailToolPrompt
     )
     let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
       let turnText =
@@ -550,7 +557,10 @@ enum AssistantToolLoop {
     assistantID: UUID,
     store: AppStore
   ) -> [ConversationDebugPromptMessage] {
-    let tailToolPrompt = requestState.usesTextProtocol ? requestState.toolPrompt : ""
+    let tailToolPrompt: String = {
+      guard requestState.usesTextProtocol else { return "" }
+      return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
+    }()
     if conversation.provider == .apple {
       return [
         ConversationDebugPromptMessage(

@@ -570,6 +570,43 @@ enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum MLXKVCacheSize: Int, Codable, CaseIterable, Identifiable, Sendable {
+  case auto = 0
+  case size1024 = 1024
+  case size2048 = 2048
+  case size4096 = 4096
+  case size8192 = 8192
+  case size16384 = 16384
+
+  var id: Int { rawValue }
+
+  var effectiveSize: Int {
+    guard case .auto = self else { return rawValue }
+    let gb = ProcessInfo.processInfo.physicalMemory / (1_024 * 1_024 * 1_024)
+    switch gb {
+    case ..<6: return 2_048
+    case ..<8: return 4_096
+    case ..<16: return 8_192
+    default: return 16_384
+    }
+  }
+
+  var displayName: String {
+    switch self {
+    case .auto:
+      let effective = effectiveSize
+      let formatted = effective >= 1_000
+        ? "\(effective / 1_000),\(String(format: "%03d", effective % 1_000))" : "\(effective)"
+      return "Auto (\(formatted) tokens)"
+    case .size1024: return "1,024 tokens"
+    case .size2048: return "2,048 tokens"
+    case .size4096: return "4,096 tokens"
+    case .size8192: return "8,192 tokens"
+    case .size16384: return "16,384 tokens"
+    }
+  }
+}
+
 enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable {
   case tiny
   case small
@@ -1629,6 +1666,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   var renderMarkdownInChat: Bool = true
   var airplaneModeEnabled: Bool = false
   var attachmentImageSize: AttachmentImageSize = .medium
+  var mlxMaxKVSize: MLXKVCacheSize = .auto
+  var mlxAutoCompact: Bool = false
 
   static let defaults = AppSettings()
 
@@ -1676,6 +1715,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case includeAssistantResponsesInContext, includeReasoningContentInContext
     case appearance, conversation, renderMarkdownInChat
     case airplaneModeEnabled, attachmentImageSize
+    case mlxMaxKVSize, mlxAutoCompact
   }
 
   init(from decoder: Decoder) throws {
@@ -1754,6 +1794,9 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .airplaneModeEnabled)) ?? false
     attachmentImageSize =
       (try? c.decode(AttachmentImageSize.self, forKey: .attachmentImageSize)) ?? .medium
+    mlxMaxKVSize =
+      (try? c.decode(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)) ?? .auto
+    mlxAutoCompact = (try? c.decode(Bool.self, forKey: .mlxAutoCompact)) ?? false
   }
 }
 

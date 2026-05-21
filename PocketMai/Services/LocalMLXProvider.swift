@@ -84,11 +84,8 @@ actor LocalMLXProvider {
   private var container: ModelContainer?
   private var loadedModelID: String?
 
-  // Cap the KV cache to prevent unbounded memory growth (and segfaults) as conversations
-  // grow. MLX switches to RotatingKVCache when maxKVSize is set, overwriting old entries
-  // instead of allocating more GPU memory. promptTokenLimit reserves space for output.
-  private static let maxKVSize = 4096
-  private static let promptTokenLimit = maxKVSize - 512
+  // Minimum headroom reserved for output tokens within the KV window.
+  private static let outputHeadroom = 512
 
   private init() {}
 
@@ -165,17 +162,19 @@ actor LocalMLXProvider {
       throw LocalMLXError.emptyPrompt
     }
 
+    let maxKVSize = request.settings.mlxMaxKVSize.effectiveSize
+    let promptTokenLimit = maxKVSize - Self.outputHeadroom
     let input = try await container.prepare(
       input: UserInput(chat: messages, tools: Self.mlxToolSpecs(from: request.nativeTools))
     )
     let promptTokenCount = input.text.tokens.size
-    if promptTokenCount > Self.promptTokenLimit {
+    if promptTokenCount > promptTokenLimit {
       throw LocalMLXError.contextLengthExceeded(tokenCount: promptTokenCount)
     }
     let temperature: Float = request.hasToolCalling ? 0.2 : 0.7
     let stream = try await container.generate(
       input: input,
-      parameters: GenerateParameters(maxTokens: 1_200, maxKVSize: Self.maxKVSize, temperature: temperature)
+      parameters: GenerateParameters(maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
     )
 
     var output = ""
