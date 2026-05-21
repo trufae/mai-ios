@@ -356,6 +356,12 @@ struct SettingsView: View {
     Text(store.settings.toolCallingMode.summary)
       .font(.caption)
       .foregroundStyle(.secondary)
+    Stepper(value: settingsBinding(\.maxToolCallsPerTurn), in: 1...20) {
+      Text("Max Tool Calls: \(store.settings.maxToolCallsPerTurn)")
+    }
+    Text("Stops one assistant turn after this many executed tool calls, including repeated calls and multiple calls emitted in one response.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
   }
 
   @ViewBuilder

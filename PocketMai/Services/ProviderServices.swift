@@ -9,6 +9,7 @@ struct ChatCompletionRequest: Sendable {
   var nativeTools: [OpenAITool]? = nil
   var nativeContinuationMessages: [OpenAIMessage] = []
   var hasToolCalling: Bool = false
+  var toolPrompt: String = ""
   var messageLimitOverride: Int? = nil
 }
 
@@ -240,6 +241,7 @@ enum PromptComposer {
     settings: AppSettings,
     context: String,
     hasTools: Bool = false,
+    toolPrompt: String = "",
     messageLimitOverride: Int? = nil
   ) -> String {
     var sections: [String] = []
@@ -261,11 +263,14 @@ enum PromptComposer {
       instruction = settings.toolCallingMode.textProtocolFallback.appleInstruction(
         hasToolResults: hasToolResults)
     }
+    let reminder = toolCallingReminder(toolPrompt: hasTools ? toolPrompt : "") ?? ""
     sections.append(
       """
       Conversation so far:
 
       \(transcript)
+
+      \(reminder)
 
       \(instruction)
       """
@@ -281,6 +286,7 @@ enum PromptComposer {
     endpoint: OpenAIEndpoint,
     excludingMessageID: UUID? = nil,
     nativeContinuationMessages: [OpenAIMessage] = [],
+    toolPrompt: String = "",
     messageLimitOverride: Int? = nil
   ) -> [OpenAIMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
@@ -311,6 +317,9 @@ enum PromptComposer {
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
+    if let reminder = toolCallingReminder(toolPrompt: toolPrompt) {
+      messages.append(OpenAIMessage(role: "user", content: reminder))
+    }
     if let directive = ReasoningCompatibility.promptDirective(
       level: conversation.reasoningLevel, model: model, endpoint: endpoint),
       let lastUserIndex = messages.lastIndex(where: { $0.role == "user" })
@@ -318,6 +327,18 @@ enum PromptComposer {
       messages[lastUserIndex].appendText(directive)
     }
     return messages
+  }
+
+  static func toolCallingReminder(toolPrompt: String) -> String? {
+    let trimmed = toolPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return """
+      Tool calling reminder for the latest user message:
+
+      \(trimmed)
+
+      Follow these tool instructions now. If the latest user message needs current, external, searched, fetched, calculated, or tool-only information, emit exactly one valid tool call and stop. Do not say you cannot access tools.
+      """
   }
 
   static func openAIHistoryMessages(
@@ -681,6 +702,7 @@ enum AppleFoundationProvider {
       settings: request.settings,
       context: request.context,
       hasTools: request.hasToolCalling,
+      toolPrompt: request.toolPrompt,
       messageLimitOverride: request.messageLimitOverride
     )
     let options = GenerationOptions(maximumResponseTokens: 1_200)
@@ -1573,6 +1595,7 @@ enum OpenAICompatibleProvider {
           excludingMessageID: request.nativeContinuationMessages.isEmpty
             ? nil : request.assistantMessageID,
           nativeContinuationMessages: request.nativeContinuationMessages,
+          toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
           messageLimitOverride: request.messageLimitOverride
         ),
         stream: request.conversation.usesStreaming,

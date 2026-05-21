@@ -1023,19 +1023,27 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var effectiveModeDisplayName: String
   var textProtocolFallback: String
   var providerNativeToolCalling: Bool
+  var nativeToolCallingUnavailableReason: String?
   var toolCatalogInlinedInPrompt: Bool
   var nativeToolNames: [String]
+  var maxToolCallsPerTurn: Int
+  var maxRepairTurnsPerTurn: Int
   var yoloModeEnabled: Bool
   var useToolProxy: Bool
+  var airplaneModeEnabled: Bool
   var contextWindowMode: String
   var contextWindowMessageLimit: Int?
   var includeAssistantResponsesInContext: Bool?
   var includeReasoningContentInContext: Bool?
+  var defaultEnabledTools: [String]
+  var defaultEnabledMCPServers: [String]
+  var defaultEnabledMCPTools: [String]
   var enabledTools: [String]
   var enabledMCPServers: [String]
   var enabledMCPTools: [String]
   var disabledMCPTools: [String]
   var mcpServers: [ConversationDebugMCPServer]
+  var nativeToolSettings: ConversationDebugNativeToolSettings
   var fullToolDefinitions: [ConversationDebugToolDefinition]
   var visibleToolDefinitions: [ConversationDebugToolDefinition]
   var toolPrompt: String
@@ -1048,6 +1056,23 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var promptMessages: [ConversationDebugPromptMessage]
   var iterations: [ConversationDebugToolIteration]
   var notes: [String]
+}
+
+struct ConversationDebugNativeToolSettings: Codable, Equatable, Sendable {
+  var includeTimeZone: Bool
+  var includeMoonPhase: Bool
+  var useGPSLocation: Bool
+  var manualLocationConfigured: Bool
+  var weatherLocationConfigured: Bool
+  var webSearchProvider: String
+  var webSearchSearXNGURLConfigured: Bool
+  var webSearchSearXNGURLHost: String?
+  var webSearchSearXNGUsernameConfigured: Bool
+  var webSearchSearXNGPasswordConfigured: Bool
+  var webSearchFetchingEnabled: Bool
+  var filesWorkspaceAccessEnabled: Bool
+  var configuredToolFilesCount: Int
+  var todoCount: Int
 }
 
 struct ConversationDebugMCPServer: Codable, Equatable, Sendable {
@@ -1095,9 +1120,15 @@ struct ConversationDebugToolIteration: Codable, Equatable, Sendable {
   var model: String? = nil
   var selectedMode: String? = nil
   var effectiveMode: String? = nil
+  var maxToolCallsPerTurn: Int? = nil
+  var maxRepairTurnsPerTurn: Int? = nil
+  var yoloModeEnabled: Bool? = nil
+  var useToolProxy: Bool? = nil
+  var nativeToolCallingUnavailableReason: String? = nil
   var requestContext: String? = nil
   var toolPrompt: String? = nil
   var nativeToolNames: [String] = []
+  var visibleToolDefinitions: [ConversationDebugToolDefinition]? = nil
   var promptMessages: [ConversationDebugPromptMessage] = []
   var rawModelResponse: String? = nil
   var parsedToolCalls: [ConversationDebugParsedToolCall] = []
@@ -1165,6 +1196,7 @@ struct SettingsToolsBackup: Codable, Sendable {
   var defaultEnabledMCPServers: Set<UUID>?
   var defaultEnabledMCPTools: Set<String>?
   var toolCallingMode: ToolCallingMode?
+  var maxToolCallsPerTurn: Int?
   var yoloModeEnabled: Bool?
   var useToolProxy: Bool?
 }
@@ -1586,6 +1618,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var mcpServers: [MCPServer] = []
   var memory: String = ""
   var toolCallingMode: ToolCallingMode = .text
+  var maxToolCallsPerTurn: Int = 8
   var yoloModeEnabled: Bool = true
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
@@ -1638,7 +1671,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       showThinkingByDefault
     case openAIEndpoints, systemPrompts, defaultSystemPromptID, compactPrompt, defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
-    case toolSettings, mcpServers, memory, toolCallingMode
+    case toolSettings, mcpServers, memory, toolCallingMode, maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
     case appearance, conversation, renderMarkdownInChat
@@ -1699,6 +1732,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     let migratedFromLegacyProxy = (storedMode == "proxy")
     toolCallingMode =
       ToolCallingMode(rawValue: storedMode) ?? .text
+    maxToolCallsPerTurn =
+      min(20, max(1, (try? c.decode(Int.self, forKey: .maxToolCallsPerTurn)) ?? 8))
     yoloModeEnabled =
       (try? c.decode(Bool.self, forKey: .yoloModeEnabled)) ?? true
     useToolProxy =

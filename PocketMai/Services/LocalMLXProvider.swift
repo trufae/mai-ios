@@ -147,6 +147,7 @@ actor LocalMLXProvider {
       conversation: request.conversation,
       settings: request.settings,
       context: request.context,
+      toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
       messageLimitOverride: request.messageLimitOverride
     )
     guard messages.contains(where: { $0.role == .user }) else {
@@ -260,6 +261,7 @@ actor LocalMLXProvider {
     conversation: Conversation,
     settings: AppSettings,
     context: String,
+    toolPrompt: String,
     messageLimitOverride: Int?
   ) -> [Chat.Message] {
     let baseSystem = PromptComposer.systemPrompt(settings: settings, conversation: conversation)
@@ -288,6 +290,10 @@ actor LocalMLXProvider {
           messages.append(.user(entry.content))
         }
       }
+    }
+
+    if let reminder = PromptComposer.toolCallingReminder(toolPrompt: toolPrompt) {
+      messages.append(.user(reminder))
     }
 
     return messages

@@ -321,7 +321,7 @@ enum AgentTooling {
 
       \(toolCalling)
 
-      After a `<tool_run>`, use the result to continue. Keep calling tools across turns whenever more information is needed — including the same tool with different arguments — and give your final answer only once you have enough. Never repeat a tool call with identical arguments.
+      After a `<tool_run>`, decide if the result is enough. If it is enough, give the final answer. If another missing fact remains, emit one more tool call in the next reply. You may call the same tool again with different arguments, but never repeat a tool call with identical arguments.
       """
   }
 
@@ -334,21 +334,27 @@ enum AgentTooling {
     switch mode.textProtocolFallback {
     case .text:
       return """
-        When a tool is needed, reply with a single plain text block and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
+        Use a tool whenever the user asks for current, external, searched, fetched, calculated, or tool-only information. Do not answer from memory when a listed tool can get the needed information.
+
+        When a tool is needed, reply with exactly one plain text block and no other text. This limit is per assistant reply: after the host returns a result, you may emit one more tool call in the next reply if needed. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Put one argument per line as `argument_name: value`. Include required arguments, omit unused optional arguments, use true/false for booleans, and stop after the block.
         """
     case .xml:
       return """
-        When a tool is needed, reply with a single XML block and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
+        Use a tool whenever the user asks for current, external, searched, fetched, calculated, or tool-only information. Do not answer from memory when a listed tool can get the needed information.
+
+        When a tool is needed, reply with exactly one XML block and no other text. This limit is per assistant reply: after the host returns a result, you may emit one more tool call in the next reply if needed. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, escape XML special characters, and stop after the block.
         """
     case .json:
       return """
-        When a tool is needed, reply with a single JSON object and no other text. Emit one call per reply; you may call tools again in later turns, including the same tool with a new query. Examples:
+        Use a tool whenever the user asks for current, external, searched, fetched, calculated, or tool-only information. Do not answer from memory when a listed tool can get the needed information.
+
+        When a tool is needed, reply with exactly one JSON object and no other text. This limit is per assistant reply: after the host returns a result, you may emit one more tool call in the next reply if needed. Examples:
         \(examples)
 
         Use only listed tool names or aliases. Include required arguments, omit unused optional arguments, keep JSON valid, and stop after the JSON object.
@@ -366,13 +372,29 @@ enum AgentTooling {
     switch mode {
     case .text:
       let calls = parsePlainTextCalls(in: text, tools: tools)
-      return calls.isEmpty ? [] : calls
+      if !calls.isEmpty { return calls }
+      let xmlCalls = parseXMLCalls(in: text, tools: tools)
+      if !xmlCalls.isEmpty { return xmlCalls }
+      return parseJSONCalls(in: text, tools: tools)
     case .xml:
-      return parseXMLCalls(in: text, tools: tools)
+      let calls = parseXMLCalls(in: text, tools: tools)
+      if !calls.isEmpty { return calls }
+      let textCalls = parsePlainTextCalls(in: text, tools: tools)
+      return textCalls.isEmpty ? [] : textCalls
     case .json:
-      return parseJSONCall(in: text, tools: tools).map { [$0] } ?? []
+      let xmlCalls = parseXMLCalls(in: text, tools: tools)
+      if !xmlCalls.isEmpty { return xmlCalls }
+      let jsonCalls = parseJSONCalls(in: text, tools: tools)
+      if !jsonCalls.isEmpty { return jsonCalls }
+      let textCalls = parsePlainTextCalls(in: text, tools: tools)
+      return textCalls.isEmpty ? [] : textCalls
     case .native:
-      return parseXMLCalls(in: text, tools: tools)
+      let xmlCalls = parseXMLCalls(in: text, tools: tools)
+      if !xmlCalls.isEmpty { return xmlCalls }
+      let jsonCalls = parseJSONCalls(in: text, tools: tools)
+      if !jsonCalls.isEmpty { return jsonCalls }
+      let textCalls = parsePlainTextCalls(in: text, tools: tools)
+      return textCalls.isEmpty ? [] : textCalls
     }
   }
 
@@ -397,7 +419,7 @@ enum AgentTooling {
     if !calls.isEmpty { return calls }
     let openerCalls = parseMalformedXMLCallOpeners(in: text, tools: tools)
     if !openerCalls.isEmpty { return openerCalls }
-    return parseJSONCall(in: text, tools: tools).map { [$0] } ?? []
+    return parseJSONCalls(in: text, tools: tools)
   }
 
   private static func parseMalformedXMLCallOpeners(
@@ -522,17 +544,27 @@ enum AgentTooling {
         return text.range(
           of: "(?m)^\\s*TOOL_CALL\\s*$",
           options: [.regularExpression, .caseInsensitive]) != nil
-      case .xml, .native:
+      case .xml:
         return text.range(
           of: "<\\s*/?\\s*tool_call\\b",
           options: [.regularExpression, .caseInsensitive]) != nil
+      case .native:
+        if text.range(
+          of: "<\\s*/?\\s*tool_call\\b",
+          options: [.regularExpression, .caseInsensitive]) != nil
+        {
+          return true
+        }
+        fallthrough
       case .json:
         let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
           .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let object = jsonObject(from: visible) {
+        let candidates = jsonObjects(in: visible)
+        for candidate in candidates {
+          guard let object = jsonObject(from: candidate) else { continue }
           return strictToolCallObject(object) != nil || isNamelessToolCallObject(object)
         }
-        return visible.hasPrefix("{")
+        return visible.contains("{")
           && containsJSONKey(in: visible, keys: ["name", "tool", "function"])
           && containsJSONKey(
             in: visible,
@@ -559,6 +591,54 @@ enum AgentTooling {
 
       Emit exactly one valid tool call in the configured \(mode.displayName) format for the same intended tool call:
       \(example)
+      </tool_run>
+      """
+  }
+
+  static func containsNonToolJSONToolLoopObject(
+    in text: String,
+    tools: [ToolDefinition]
+  ) -> Bool {
+    let visible = stripMarkdownFence(
+      from: stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    let statusKeys = Set([
+      "assistance", "assistant", "status", "progress", "message", "note", "thought",
+    ])
+    let toolLoopKeys = statusKeys.union([
+      "search_results", "search_queries", "planned_searches", "research_plan",
+    ])
+    return jsonObjects(in: visible).contains { rawBlock in
+      guard let object = jsonObject(from: rawBlock),
+        parseJSONCallObject(object, rawBlock: rawBlock, tools: tools) == nil
+      else { return false }
+      let keys = Set(object.keys.map { $0.lowercased() })
+      return !keys.isDisjoint(with: toolLoopKeys)
+    }
+  }
+
+  static func nonToolJSONToolLoopFeedback(
+    from text: String,
+    mode: ToolCallingMode = .text,
+    tools: [ToolDefinition] = []
+  ) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let preview = trimmed.count > 500 ? String(trimmed.prefix(500)) + "..." : trimmed
+    let example = toolCallExample(for: mode, text: text, tools: tools)
+    return """
+      <tool_run>
+      invalid_assistant_tool_loop_json tool ({}):
+      Error: the assistant emitted status, planning, or result JSON instead of a tool call or final answer.
+
+      Received:
+      \(preview)
+
+      JSON objects are only for executable tool calls in this chat. Do not emit status JSON like {"assistance":"..."} or pretend search result JSON like {"search_results":[...]}.
+      Continue the tool loop. If no tool has run yet, or if more information is needed, emit exactly one valid tool call:
+      \(example)
+
+      If the available tool results are enough, write the final answer in normal text/Markdown, not JSON.
       </tool_run>
       """
   }
@@ -816,9 +896,11 @@ enum AgentTooling {
     }
     let parameterByName = Dictionary(uniqueKeysWithValues: tool.parameters.map { ($0.name, $0) })
     var result: [String: AgentToolArgumentValue] = [:]
+    var unknown: [String: AgentToolArgumentValue] = [:]
     for (name, value) in arguments {
       guard let parameter = parameterByName[name] else {
-        result[name] = value
+        if case .null = value { continue }
+        unknown[name] = value
         continue
       }
       guard let normalized = normalizeValue(value, for: parameter) else {
@@ -828,6 +910,22 @@ enum AgentTooling {
         continue
       }
       result[name] = normalized
+    }
+    if result["query"] == nil,
+      let queryParameter = parameterByName["query"],
+      let q = unknown["q"],
+      let normalized = normalizeValue(q, for: queryParameter)
+    {
+      result["query"] = normalized
+    }
+    if result.isEmpty,
+      tool.parameters.filter(\.required).count == 1,
+      let required = tool.parameters.first(where: \.required),
+      unknown.count == 1,
+      let value = unknown.values.first,
+      let normalized = normalizeValue(value, for: required)
+    {
+      result[required.name] = normalized
     }
     return result
   }
@@ -1097,6 +1195,11 @@ enum AgentTooling {
   }
 
   private static func firstJSONObject(in text: String) -> String? {
+    jsonObjects(in: text).first
+  }
+
+  private static func jsonObjects(in text: String) -> [String] {
+    var objects: [String] = []
     var start: String.Index?
     var depth = 0
     var inString = false
@@ -1128,12 +1231,16 @@ enum AgentTooling {
         depth += 1
       } else if char == "}" {
         depth -= 1
-        if depth == 0, let start {
-          return String(text[start...index]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if depth == 0, let objectStart = start {
+          objects.append(
+            String(text[objectStart...index]).trimmingCharacters(in: .whitespacesAndNewlines))
+          start = nil
+          inString = false
+          escaped = false
         }
       }
     }
-    return nil
+    return objects
   }
 
   private static func toolCallAttributes(from text: String) -> [String: String] {
@@ -1202,13 +1309,29 @@ enum AgentTooling {
   }
 
   private static func parseJSONCall(in text: String, tools: [ToolDefinition]) -> ParsedToolCall? {
-    let rawBlock = stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
-    let visible = stripMarkdownFence(from: rawBlock)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard visible.hasPrefix("{"), visible.hasSuffix("}"),
-      let data = visible.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else { return nil }
+    parseJSONCalls(in: text, tools: tools).first
+  }
+
+  private static func parseJSONCalls(in text: String, tools: [ToolDefinition]) -> [ParsedToolCall] {
+    let visible = stripMarkdownFence(
+      from: stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    var calls: [ParsedToolCall] = []
+    for rawBlock in jsonObjects(in: visible) {
+      guard let object = jsonObject(from: rawBlock),
+        let call = parseJSONCallObject(object, rawBlock: rawBlock, tools: tools)
+      else { continue }
+      calls.append(call)
+    }
+    return calls
+  }
+
+  private static func parseJSONCallObject(
+    _ object: [String: Any],
+    rawBlock: String,
+    tools: [ToolDefinition]
+  ) -> ParsedToolCall? {
     if let normalized = strictToolCallObject(object) {
       return ParsedToolCall(
         name: normalized.name,

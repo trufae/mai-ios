@@ -445,7 +445,9 @@ final class AppStore: ObservableObject {
 
   func restartFromScratch(with message: ChatMessage) async {
     guard !isResponding, let index = currentConversationIndex else { return }
-    guard let prompt = restartPrompt(from: message) else { return }
+    guard let source = restartSourceMessage(for: message),
+      let prompt = restartPrompt(from: source)
+    else { return }
 
     let removedMessages = conversations[index].messages
     conversations[index].messages.removeAll()
@@ -455,7 +457,7 @@ final class AppStore: ObservableObject {
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
 
-    _ = await send(prompt: prompt, attachments: message.attachments)
+    _ = await send(prompt: prompt, attachments: source.attachments)
   }
 
   func startNewConversation(with message: ChatMessage) async {
@@ -494,6 +496,20 @@ final class AppStore: ObservableObject {
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let prompt = visible.isEmpty ? fallback : visible
     return prompt.isEmpty && message.attachments.isEmpty ? nil : prompt
+  }
+
+  private func restartSourceMessage(for message: ChatMessage) -> ChatMessage? {
+    if message.role == .user {
+      return message
+    }
+    guard let location = messageLocation(for: message.id) else {
+      return message
+    }
+    let messages = conversations[location.conversationIndex].messages
+    guard location.messageIndex > 0 else {
+      return message
+    }
+    return messages[..<location.messageIndex].last(where: { $0.role == .user }) ?? message
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
@@ -674,7 +690,7 @@ final class AppStore: ObservableObject {
     guard let last = conversations[convIndex].messages.last, last.role == .user else { return }
     let prompt = MessageContentFilter.promptSafeText(from: last.text)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty else { return }
+    guard !prompt.isEmpty || !last.attachments.isEmpty else { return }
 
     if let preflight = ChatProviderRouter.preflightMessage(
       conversation: conversations[convIndex], settings: settings)
@@ -685,7 +701,11 @@ final class AppStore: ObservableObject {
 
     errorMessage = nil
     await composeUserTurn(
-      prompt: prompt, conversationID: conversationID, mode: .replaceLastUser)
+      prompt: prompt,
+      conversationID: conversationID,
+      mode: .replaceLastUser,
+      voiceRecordingFilename: last.voiceRecordingFilename,
+      attachments: last.attachments)
   }
 
   private enum UserTurnMode {
@@ -728,6 +748,8 @@ final class AppStore: ObservableObject {
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
         conversations[i].messages[lastIndex].text = prompt
+        conversations[i].messages[lastIndex].voiceRecordingFilename = voiceRecordingFilename
+        conversations[i].messages[lastIndex].attachments = attachments
       }
     }
     conversations[i].lastContextSignature = context.signature
@@ -1848,6 +1870,8 @@ final class AppStore: ObservableObject {
       let resolver = AgentToolNameResolver(tools: visibleDefinitions)
       return visibleDefinitions.map { resolver.apiName(for: $0.name) }
     }()
+    let maxToolCalls = min(20, max(1, settings.maxToolCallsPerTurn))
+    let maxRepairTurns = min(4, maxToolCalls + 1)
     let contextPrompt = context?.text ?? ""
     let requestContext = [contextPrompt, toolPrompt]
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1861,7 +1885,8 @@ final class AppStore: ObservableObject {
       conversation: conversation,
       settings: settings,
       context: requestContext,
-      hasTools: hasToolCalling)
+      hasTools: hasToolCalling,
+      toolPrompt: providerNativeToolCalling ? "" : toolPrompt)
     let messageIDs = Set(conversation.messages.map(\.id))
     let runtimeIterations =
       (toolCallingDebugIterations[conversation.id] ?? [])
@@ -1878,14 +1903,23 @@ final class AppStore: ObservableObject {
       )
       .rawValue,
       providerNativeToolCalling: providerNativeToolCalling,
+      nativeToolCallingUnavailableReason: nativeToolCallingUnavailableReason(
+        conversation: conversation,
+        hasTools: hasToolCalling),
       toolCatalogInlinedInPrompt: !providerNativeToolCalling && hasToolCalling,
       nativeToolNames: nativeToolNames,
+      maxToolCallsPerTurn: maxToolCalls,
+      maxRepairTurnsPerTurn: maxRepairTurns,
       yoloModeEnabled: settings.yoloModeEnabled,
       useToolProxy: settings.useToolProxy,
+      airplaneModeEnabled: settings.airplaneModeEnabled,
       contextWindowMode: settings.contextWindowMode.rawValue,
       contextWindowMessageLimit: settings.contextWindowMode.messageLimit,
       includeAssistantResponsesInContext: settings.includeAssistantResponsesInContext,
       includeReasoningContentInContext: settings.includeReasoningContentInContext,
+      defaultEnabledTools: settings.defaultEnabledTools.map(\.rawValue).sorted(),
+      defaultEnabledMCPServers: settings.defaultEnabledMCPServers.map(\.uuidString).sorted(),
+      defaultEnabledMCPTools: Array(settings.defaultEnabledMCPTools).sorted(),
       enabledTools: conversation.enabledTools.map(\.rawValue).sorted(),
       enabledMCPServers: conversation.enabledMCPServers.map(\.uuidString).sorted(),
       enabledMCPTools: Array(conversation.enabledMCPTools).sorted(),
@@ -1897,6 +1931,7 @@ final class AppStore: ObservableObject {
           isEnabled: server.isEnabled,
           hasValidScheme: server.hasValidScheme)
       },
+      nativeToolSettings: debugNativeToolSettings(settings.toolSettings),
       fullToolDefinitions: debugDefinitions(fullDefinitions),
       visibleToolDefinitions: debugDefinitions(visibleDefinitions),
       toolPrompt: toolPrompt,
@@ -1909,13 +1944,51 @@ final class AppStore: ObservableObject {
       promptMessages: debugPromptMessages(
         conversation: conversation,
         systemPrompt: providerSystemPrompt,
-        messageLimit: settings.contextWindowMode.messageLimit),
+        messageLimit: settings.contextWindowMode.messageLimit,
+        toolPrompt: providerNativeToolCalling ? "" : toolPrompt),
       iterations: runtimeIterations.isEmpty ? storedIterations : runtimeIterations,
       notes: [
         "Debug prompt data is reconstructed at export time from current settings.",
         "Runtime iterations are included for tool loops completed in the current app session.",
         "The original per-iteration provider request payload is not persisted across app launches.",
       ])
+  }
+
+  private func nativeToolCallingUnavailableReason(
+    conversation: Conversation,
+    hasTools: Bool
+  ) -> String? {
+    guard settings.toolCallingMode == .native, hasTools else { return nil }
+    guard !conversation.provider.supportsNativeToolCalling else { return nil }
+    return
+      "\(conversation.provider.displayName) does not expose native tool calling; using \(settings.toolCallingMode.textProtocolFallback(for: conversation.provider).displayName) text fallback."
+  }
+
+  private func debugNativeToolSettings(
+    _ toolSettings: NativeToolSettings
+  ) -> ConversationDebugNativeToolSettings {
+    let searXNGURL = toolSettings.webSearchSearXNGURL.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    return ConversationDebugNativeToolSettings(
+      includeTimeZone: toolSettings.includeTimeZone,
+      includeMoonPhase: toolSettings.includeMoonPhase,
+      useGPSLocation: toolSettings.useGPSLocation,
+      manualLocationConfigured: !toolSettings.manualLocation.trimmingCharacters(
+        in: .whitespacesAndNewlines
+      ).isEmpty,
+      weatherLocationConfigured: !toolSettings.weatherLocation.trimmingCharacters(
+        in: .whitespacesAndNewlines
+      ).isEmpty,
+      webSearchProvider: toolSettings.webSearchProvider.rawValue,
+      webSearchSearXNGURLConfigured: !searXNGURL.isEmpty,
+      webSearchSearXNGURLHost: URLComponents(string: searXNGURL)?.host,
+      webSearchSearXNGUsernameConfigured: !toolSettings.webSearchSearXNGUsername
+        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      webSearchSearXNGPasswordConfigured: !toolSettings.webSearchSearXNGPassword.isEmpty,
+      webSearchFetchingEnabled: toolSettings.webSearchFetchingEnabled,
+      filesWorkspaceAccessEnabled: toolSettings.filesWorkspaceAccessEnabled,
+      configuredToolFilesCount: toolSettings.files.count,
+      todoCount: toolSettings.todos.count)
   }
 
   private func debugDefinitions(
@@ -1940,7 +2013,8 @@ final class AppStore: ObservableObject {
   private func debugPromptMessages(
     conversation: Conversation,
     systemPrompt: String,
-    messageLimit: Int?
+    messageLimit: Int?,
+    toolPrompt: String = ""
   ) -> [ConversationDebugPromptMessage] {
     let limited: [ChatMessage] = {
       if let messageLimit { return Array(conversation.messages.suffix(messageLimit)) }
@@ -1955,6 +2029,9 @@ final class AppStore: ObservableObject {
             content: entry.content)
         }
       })
+    if let reminder = PromptComposer.toolCallingReminder(toolPrompt: toolPrompt) {
+      messages.append(ConversationDebugPromptMessage(role: "user", content: reminder))
+    }
     return messages
   }
 
@@ -2154,6 +2231,7 @@ final class AppStore: ObservableObject {
       defaultEnabledMCPServers: settings.defaultEnabledMCPServers,
       defaultEnabledMCPTools: settings.defaultEnabledMCPTools,
       toolCallingMode: settings.toolCallingMode,
+      maxToolCallsPerTurn: settings.maxToolCallsPerTurn,
       yoloModeEnabled: settings.yoloModeEnabled,
       useToolProxy: settings.useToolProxy)
   }
@@ -2338,6 +2416,9 @@ final class AppStore: ObservableObject {
     }
     if let mode = payload.toolCallingMode {
       settings.toolCallingMode = mode
+    }
+    if let limit = payload.maxToolCallsPerTurn {
+      settings.maxToolCallsPerTurn = min(20, max(1, limit))
     }
     if let yolo = payload.yoloModeEnabled {
       settings.yoloModeEnabled = yolo

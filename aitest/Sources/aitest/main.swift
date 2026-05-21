@@ -32,7 +32,8 @@ func printUsage() {
       --message TEXT  -m TEXT  User message
 
     Optional:
-      --mode text|native|api   Tool-calling protocol (default: text; api is native)
+      --mode text|xml|json|native|api
+                               Tool-calling protocol (default: text; api is native)
       --no-stream              Disable streaming (default: streaming on)
       --max-iter N             Max agent iterations (default: 6)
       --mcp URL                MCP server URL (repeatable)
@@ -86,9 +87,9 @@ func parseArgs() -> CLIConfig? {
     printUsage()
     return nil
   }
-  guard cfg.mode == "text" || cfg.mode == "native" else {
+  guard ["text", "xml", "json", "native"].contains(cfg.mode) else {
     FileHandle.standardError.write(
-      Data("invalid --mode: \(cfg.mode) (expected text, native, or api)\n".utf8))
+      Data("invalid --mode: \(cfg.mode) (expected text, xml, json, native, or api)\n".utf8))
     return nil
   }
   return cfg
@@ -478,10 +479,14 @@ func openAITools(from tools: [ToolDefinition], resolver: AgentToolNameResolver) 
   }
 }
 
-func parsedCalls(from completion: ChatCompletionResult, tools: [ToolDefinition]) -> [ParsedToolCall]
+func parsedCalls(
+  from completion: ChatCompletionResult,
+  tools: [ToolDefinition],
+  mode: ToolCallingMode
+) -> [ParsedToolCall]
 {
   guard !tools.isEmpty else { return [] }
-  if !completion.nativeToolCalls.isEmpty {
+  if mode == .native, !completion.nativeToolCalls.isEmpty {
     return completion.nativeToolCalls.map { call in
       let normalized = AgentTooling.parseCalls(in: call.textBlock, tools: tools).first
       return ParsedToolCall(
@@ -493,7 +498,7 @@ func parsedCalls(from completion: ChatCompletionResult, tools: [ToolDefinition])
         apiName: call.name)
     }
   }
-  return AgentTooling.parseCalls(in: completion.text, tools: tools)
+  return AgentTooling.parseCalls(in: completion.text, tools: tools, mode: mode)
 }
 
 func appendNextTurnMessages(
@@ -607,8 +612,9 @@ func runMain() async {
   }
   print()
 
+  let selectedMode = ToolCallingMode(rawValue: cfg.mode) ?? .text
   let resolver = AgentToolNameResolver(tools: allTools)
-  let agentPrompt = AgentTooling.promptDescription(for: allTools)
+  let agentPrompt = AgentTooling.promptDescription(for: allTools, mode: selectedMode)
   let systemContent =
     agentPrompt.isEmpty
     ? cfg.systemPrompt
@@ -622,7 +628,7 @@ func runMain() async {
   let openai = OpenAIClient(
     baseURL: cfg.baseURL, apiKey: cfg.apiKey, model: cfg.model, stream: cfg.stream)
   let nativeTools: [[String: Any]]? =
-    cfg.mode == "native" && !allTools.isEmpty
+    selectedMode == .native && !allTools.isEmpty
     ? openAITools(from: allTools, resolver: resolver) : nil
 
   var fullAssistant = ""
@@ -648,7 +654,8 @@ func runMain() async {
     print(response)
     print(ANSI("90", "───────────────────"))
 
-    let calls = allTools.isEmpty ? [] : parsedCalls(from: completion, tools: allTools)
+    let calls =
+      allTools.isEmpty ? [] : parsedCalls(from: completion, tools: allTools, mode: selectedMode)
     info("parsed \(calls.count) tool call(s)")
 
     if calls.isEmpty {
