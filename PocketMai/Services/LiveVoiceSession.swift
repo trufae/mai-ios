@@ -451,6 +451,12 @@ final class LiveVoiceSession: ObservableObject {
   ) async {
     guard let store, let ttsPlayer else { return }
     let conversationIDBeforeSend = store.currentConversation?.id
+    // Capture the set of assistant message IDs that already exist BEFORE we
+    // submit the new user turn. `store.send` returns as soon as it has
+    // dispatched the assistant turn Task, which has not yet appended its
+    // placeholder message — so without this snapshot the "latest assistant
+    // message" is the previous turn's reply, and TTS would speak it.
+    let priorAssistantIDs = priorAssistantMessageIDs()
     let sent = await store.send(prompt: prompt, voiceRecordingFilename: voiceRecordingFilename)
     guard generation == sessionGeneration else { return }
 
@@ -473,7 +479,9 @@ final class LiveVoiceSession: ObservableObject {
 
     if store.settings.conversation.streamTTS, let conversationID {
       await streamSpeakAssistantResponse(
-        conversationID: conversationID, generation: generation)
+        conversationID: conversationID,
+        priorAssistantIDs: priorAssistantIDs,
+        generation: generation)
       isCommittingTurn = false
       guard generation == sessionGeneration else { return }
       _ = await beginRecognition(
@@ -489,7 +497,7 @@ final class LiveVoiceSession: ObservableObject {
     guard generation == sessionGeneration else { return }
 
     isCommittingTurn = false
-    guard let assistant = latestSpeakableAssistantMessage() else {
+    guard let assistant = latestSpeakableAssistantMessage(excluding: priorAssistantIDs) else {
       _ = await beginRecognition(
         displayState: .listening,
         resetTranscript: true,
@@ -518,13 +526,15 @@ final class LiveVoiceSession: ObservableObject {
   }
 
   private func streamSpeakAssistantResponse(
-    conversationID: UUID, generation: Int
+    conversationID: UUID,
+    priorAssistantIDs: Set<UUID>,
+    generation: Int
   ) async {
     guard let store, let ttsPlayer else { return }
 
     var assistantID: UUID?
     while generation == sessionGeneration, !Task.isCancelled {
-      if let id = currentAssistantMessageID() {
+      if let id = currentAssistantMessageID(excluding: priorAssistantIDs) {
         assistantID = id
         break
       }
@@ -575,9 +585,14 @@ final class LiveVoiceSession: ObservableObject {
     await waitForSpeechToFinish(ttsPlayer, generation: generation)
   }
 
-  private func currentAssistantMessageID() -> UUID? {
+  private func priorAssistantMessageIDs() -> Set<UUID> {
+    guard let messages = store?.currentConversation?.messages else { return [] }
+    return Set(messages.lazy.filter { $0.role == .assistant }.map(\.id))
+  }
+
+  private func currentAssistantMessageID(excluding priorIDs: Set<UUID>) -> UUID? {
     store?.currentConversation?.messages.reversed().first(where: {
-      $0.role == .assistant
+      $0.role == .assistant && !priorIDs.contains($0.id)
     })?.id
   }
 
@@ -633,10 +648,10 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
-  private func latestSpeakableAssistantMessage() -> ChatMessage? {
+  private func latestSpeakableAssistantMessage(excluding priorIDs: Set<UUID>) -> ChatMessage? {
     guard
       let message = store?.currentConversation?.messages.reversed().first(where: {
-        $0.role == .assistant
+        $0.role == .assistant && !priorIDs.contains($0.id)
       })
     else {
       return nil
