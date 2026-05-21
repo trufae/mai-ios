@@ -381,8 +381,9 @@ enum PromptComposer {
   ) -> String {
     let visible = MessageContentFilter.conversationContextText(
       from: message.text,
-      includeReasoning: includeReasoning)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+      includeReasoning: includeReasoning
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
     let attachmentText = attachmentPromptText(
       from: message.attachments,
       includeImageFallbacks: includeImageFallbacks)
@@ -1465,24 +1466,9 @@ private struct OpenAISpeechRequest: Encodable {
 
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
-    let url = try modelsURL(from: endpoint.baseURL)
-    var urlRequest = URLRequest(url: url)
-    urlRequest.httpMethod = "GET"
-    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
-    if let authorization {
-      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
-
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: urlRequest)
-    let (data, response) = try await URLSession.shared.data(
-      for: urlRequest, delegate: delegate)
-    if let statusCode = (response as? HTTPURLResponse)?.statusCode,
-      !(200..<300).contains(statusCode)
-    {
-      throw ChatProviderError.providerRequestFailed("Model list returned HTTP \(statusCode).")
-    }
+    let request = try endpointRequest(endpoint: endpoint, url: modelsURL(from: endpoint.baseURL))
+    let (data, response) = try await data(for: request)
+    try validateHTTPResponse(response, data: data)
     let decoded = try JSONDecoder().decode(OpenAIModelsResponse.self, from: data)
     let models = decoded.data
       .map(\.id)
@@ -1495,19 +1481,8 @@ enum OpenAICompatibleProvider {
   }
 
   static func fetchVoices(endpoint: OpenAIEndpoint) async throws -> [String] {
-    let url = try voicesURL(from: endpoint.baseURL)
-    var urlRequest = URLRequest(url: url)
-    urlRequest.httpMethod = "GET"
-    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
-    if let authorization {
-      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
-
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: urlRequest)
-    let (data, response) = try await URLSession.shared.data(
-      for: urlRequest, delegate: delegate)
+    let request = try endpointRequest(endpoint: endpoint, url: voicesURL(from: endpoint.baseURL))
+    let (data, response) = try await data(for: request)
     try validateHTTPResponse(response, data: data)
     let decoded = try JSONDecoder().decode(OpenAIVoicesResponse.self, from: data)
     let voices = decoded.data
@@ -1526,27 +1501,21 @@ enum OpenAICompatibleProvider {
     voice: String,
     responseFormat: String = "wav"
   ) async throws -> Data {
-    let url = try speechURL(from: endpoint.baseURL)
-    var urlRequest = URLRequest(url: url)
-    urlRequest.httpMethod = "POST"
-    urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    urlRequest.setValue(speechAcceptHeader(for: responseFormat), forHTTPHeaderField: "Accept")
-    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
-    if let authorization {
-      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
     let model = endpoint.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
-    urlRequest.httpBody = try JSONEncoder().encode(
+    let body = try JSONEncoder().encode(
       OpenAISpeechRequest(
         input: input,
         voice: voice,
         responseFormat: responseFormat,
         model: model.isEmpty ? nil : model))
-
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: urlRequest)
-    let (data, response) = try await URLSession.shared.data(for: urlRequest, delegate: delegate)
+    let request = try endpointRequest(
+      endpoint: endpoint,
+      url: speechURL(from: endpoint.baseURL),
+      method: "POST",
+      contentType: "application/json",
+      accept: speechAcceptHeader(for: responseFormat),
+      body: body)
+    let (data, response) = try await data(for: request)
     try validateHTTPResponse(response, data: data)
     if data.isEmpty {
       throw ChatProviderError.emptyResponse
@@ -1572,18 +1541,9 @@ enum OpenAICompatibleProvider {
     guard let endpoint = selectedEndpoint(for: request) else {
       throw ChatProviderError.missingEndpoint
     }
-    let url = try chatCompletionsURL(from: endpoint.baseURL)
-    var urlRequest = URLRequest(url: url)
-    urlRequest.httpMethod = "POST"
-    urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    let trimmedKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let authorization = trimmedKey.isEmpty ? nil : "Bearer \(trimmedKey)"
-    if let authorization {
-      urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
     let model =
       request.conversation.modelID.isEmpty ? endpoint.defaultModel : request.conversation.modelID
-    urlRequest.httpBody = try JSONEncoder().encode(
+    let body = try JSONEncoder().encode(
       OpenAIChatRequest(
         model: model,
         messages: PromptComposer.openAIMessages(
@@ -1604,13 +1564,17 @@ enum OpenAICompatibleProvider {
         endpoint: endpoint
       )
     )
+    let urlRequest = try endpointRequest(
+      endpoint: endpoint,
+      url: chatCompletionsURL(from: endpoint.baseURL),
+      method: "POST",
+      contentType: "application/json",
+      body: body)
 
     if request.conversation.usesStreaming {
-      return try await stream(
-        request: urlRequest, authorization: authorization, onUpdate: onUpdate)
+      return try await stream(request: urlRequest, onUpdate: onUpdate)
     }
-    return try await completeOnce(
-      request: urlRequest, authorization: authorization, onUpdate: onUpdate)
+    return try await completeOnce(request: urlRequest, onUpdate: onUpdate)
   }
 
   static func selectedEndpoint(for conversation: Conversation, settings: AppSettings)
@@ -1652,29 +1616,7 @@ enum OpenAICompatibleProvider {
   }
 
   private static func modelsURL(from baseURL: String) throws -> URL {
-    guard var components = URLComponents(string: baseURL),
-      ["http", "https"].contains(components.scheme?.lowercased() ?? "")
-    else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
-    }
-
-    var pathComponents = components.path.split(separator: "/").map(String.init)
-    if pathComponents.count >= 2,
-      pathComponents[pathComponents.count - 2] == "chat",
-      pathComponents[pathComponents.count - 1] == "completions"
-    {
-      pathComponents.removeLast(2)
-    }
-    if pathComponents.last != "models" {
-      pathComponents.append("models")
-    }
-    components.path = "/" + pathComponents.joined(separator: "/")
-    components.query = nil
-
-    guard let url = components.url else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
-    }
-    return url
+    try endpointURL(from: baseURL, appending: ["models"])
   }
 
   private static func voicesURL(from baseURL: String) throws -> URL {
@@ -1709,32 +1651,53 @@ enum OpenAICompatibleProvider {
   }
 
   private static func chatCompletionsURL(from baseURL: String) throws -> URL {
-    guard var components = URLComponents(string: baseURL) else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
+    try endpointURL(from: baseURL, appending: ["chat", "completions"])
+  }
+
+  private static func endpointRequest(
+    endpoint: OpenAIEndpoint,
+    url: URL,
+    method: String = "GET",
+    contentType: String? = nil,
+    accept: String? = nil,
+    body: Data? = nil
+  ) -> URLRequest {
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    if let contentType {
+      request.setValue(contentType, forHTTPHeaderField: "Content-Type")
     }
-    let path = components.path
-    if !path.hasSuffix("/chat/completions") {
-      components.path =
-        path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions"
-      if !components.path.hasPrefix("/") {
-        components.path = "/" + components.path
-      }
+    if let accept {
+      request.setValue(accept, forHTTPHeaderField: "Accept")
     }
-    guard let url = components.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "")
-    else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
+    if let authorization = authorizationHeader(for: endpoint) {
+      request.setValue(authorization, forHTTPHeaderField: "Authorization")
     }
-    return url
+    request.httpBody = body
+    return request
+  }
+
+  private static func authorizationHeader(for endpoint: OpenAIEndpoint) -> String? {
+    let key = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    return key.isEmpty ? nil : "Bearer \(key)"
+  }
+
+  private static func authorizationHeader(from request: URLRequest) -> String? {
+    request.value(forHTTPHeaderField: "Authorization")
+  }
+
+  private static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+    let delegate = RedirectPreservingDelegate(
+      authorization: authorizationHeader(from: request),
+      originalRequest: request)
+    return try await URLSession.shared.data(for: request, delegate: delegate)
   }
 
   private static func completeOnce(
     request: URLRequest,
-    authorization: String?,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: request)
-    let (data, response) = try await URLSession.shared.data(for: request, delegate: delegate)
+    let (data, response) = try await data(for: request)
     try validateHTTPResponse(response, data: data)
     let content = (try? decodeChatResponseText(from: data)) ?? ""
     guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1746,16 +1709,16 @@ enum OpenAICompatibleProvider {
 
   private static func stream(
     request: URLRequest,
-    authorization: String?,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
     let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: request)
+      authorization: authorizationHeader(from: request),
+      originalRequest: request)
     let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: delegate)
     let statusCode = (response as? HTTPURLResponse)?.statusCode
     var accumulated = ""
     var reasoning = ""
-    var rawLines: [String] = []
+    var rawLines = RawLineBuffer()
     var streamTrace: [String] = []
     let traceCap = 80
     var lastEmit = Date(timeIntervalSince1970: 0)
@@ -1768,11 +1731,11 @@ enum OpenAICompatibleProvider {
         streamTrace.append(line)
       }
       if let statusCode, !(200..<300).contains(statusCode) {
-        appendRawLine(line, to: &rawLines)
+        rawLines.append(line)
         continue
       }
       guard line.hasPrefix("data:") else {
-        appendRawLine(line, to: &rawLines)
+        rawLines.append(line)
         continue
       }
       let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1789,7 +1752,7 @@ enum OpenAICompatibleProvider {
       }
 
       guard let chunk = try? JSONDecoder().decode(OpenAIStreamChunk.self, from: data) else {
-        appendRawLine(line, to: &rawLines)
+        rawLines.append(line)
         continue
       }
       if let delta = streamDeltaText(from: chunk), !delta.isEmpty {
@@ -1840,8 +1803,7 @@ enum OpenAICompatibleProvider {
       await MainActor.run { onUpdate(snapshot) }
     }
 
-    let rawBody = rawLines.joined(separator: "\n")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let rawBody = rawLines.body
     if let statusCode, !(200..<300).contains(statusCode) {
       throw providerHTTPError(statusCode: statusCode, data: rawBody.data(using: .utf8) ?? Data())
     }
@@ -1988,10 +1950,19 @@ enum OpenAICompatibleProvider {
     return "<think>\n\(hidden)\n</think>\n\n\(visible)"
   }
 
-  private static func appendRawLine(_ line: String, to rawLines: inout [String]) {
-    guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-    if rawLines.joined(separator: "\n").count < 32_000 {
-      rawLines.append(line)
+  private struct RawLineBuffer {
+    private var lines: [String] = []
+    private var count = 0
+
+    var body: String {
+      lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    mutating func append(_ line: String) {
+      guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      guard count < 32_000 else { return }
+      count += line.count + (lines.isEmpty ? 0 : 1)
+      lines.append(line)
     }
   }
 }

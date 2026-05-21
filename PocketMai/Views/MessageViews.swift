@@ -1674,7 +1674,10 @@ enum MarkdownInlineSymbols {
       var found = false
       while searchIdx < raw.endIndex {
         let c = raw[searchIdx]
-        if c == "]" { found = true; break }
+        if c == "]" {
+          found = true
+          break
+        }
         if c == "\n" || c == "[" { break }
         key.append(c)
         searchIdx = raw.index(after: searchIdx)
@@ -1706,31 +1709,9 @@ enum MarkdownInlineSymbols {
         index = end + 1
         continue
       }
-
-      if chars[index] == "$", !isEscaped(chars, at: index) {
-        if index + 1 < chars.count, chars[index + 1] == "$",
-          let end = findUnescapedDoubleDollar(in: chars, start: index + 2),
-          rewrittenMathContent(String(chars[(index + 2)..<end])) != nil
-        {
-          return true
-        }
-        if let end = findUnescapedDollar(in: chars, start: index + 1),
-          rewrittenMathContent(String(chars[(index + 1)..<end])) != nil
-        {
-          return true
-        }
+      if mathReplacement(in: chars, at: index) != nil {
+        return true
       }
-
-      if chars[index] == "\\", index + 1 < chars.count {
-        let opener = chars[index + 1]
-        if opener == "(" || opener == "[",
-          let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
-          rewrittenMathContent(String(chars[(index + 2)..<end])) != nil
-        {
-          return true
-        }
-      }
-
       index += 1
     }
 
@@ -1749,34 +1730,10 @@ enum MarkdownInlineSymbols {
         continue
       }
 
-      if chars[index] == "$", !isEscaped(chars, at: index) {
-        if index + 1 < chars.count, chars[index + 1] == "$",
-          let end = findUnescapedDoubleDollar(in: chars, start: index + 2),
-          let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
-        {
-          result += markdownEscaped(rewritten)
-          index = end + 2
-          continue
-        }
-        if let end = findUnescapedDollar(in: chars, start: index + 1),
-          let rewritten = rewrittenMathContent(String(chars[(index + 1)..<end]))
-        {
-          result += markdownEscaped(rewritten)
-          index = end + 1
-          continue
-        }
-      }
-
-      if chars[index] == "\\", index + 1 < chars.count {
-        let opener = chars[index + 1]
-        if opener == "(" || opener == "[",
-          let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
-          let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
-        {
-          result += markdownEscaped(rewritten)
-          index = end + 2
-          continue
-        }
+      if let replacement = mathReplacement(in: chars, at: index) {
+        result += markdownEscaped(replacement.text)
+        index = replacement.end
+        continue
       }
 
       result.append(chars[index])
@@ -1784,6 +1741,32 @@ enum MarkdownInlineSymbols {
     }
 
     return result
+  }
+
+  private static func mathReplacement(in chars: [Character], at index: Int)
+    -> (text: String, end: Int)?
+  {
+    if chars[index] == "$", !isEscaped(chars, at: index) {
+      if index + 1 < chars.count, chars[index + 1] == "$",
+        let end = findUnescapedDoubleDollar(in: chars, start: index + 2),
+        let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
+      {
+        return (rewritten, end + 2)
+      }
+      if let end = findUnescapedDollar(in: chars, start: index + 1),
+        let rewritten = rewrittenMathContent(String(chars[(index + 1)..<end]))
+      {
+        return (rewritten, end + 1)
+      }
+    }
+
+    guard chars[index] == "\\", index + 1 < chars.count else { return nil }
+    let opener = chars[index + 1]
+    guard opener == "(" || opener == "[",
+      let end = findEscapedMathClose(in: chars, start: index + 2, opener: opener),
+      let rewritten = rewrittenMathContent(String(chars[(index + 2)..<end]))
+    else { return nil }
+    return (rewritten, end + 2)
   }
 
   private static func rewrittenMathContent(_ raw: String) -> String? {
@@ -2951,6 +2934,25 @@ enum MarkdownParser {
       language = ""
     }
 
+    func collectItems<T>(
+      first: T,
+      after index: Int,
+      parse: (String) -> T?
+    ) -> (items: [T], nextIndex: Int) {
+      var items: [T] = [first]
+      var cursor = index + 1
+      while cursor < lines.count {
+        guard let item = parse(lines[cursor]) else { break }
+        items.append(item)
+        cursor += 1
+      }
+      return (items, cursor)
+    }
+
+    func parseTrimmed<T>(_ line: String, with parser: (String) -> T?) -> T? {
+      parser(line.trimmingCharacters(in: .whitespaces))
+    }
+
     while index < lines.count {
       let line = lines[index]
       let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -2976,17 +2978,11 @@ enum MarkdownParser {
 
       if let firstLine = blockquoteLine(line) {
         flushText()
-        var quoteLines: [String] = [firstLine]
-        var cursor = index + 1
-        while cursor < lines.count {
-          guard let quoteLine = blockquoteLine(lines[cursor]) else { break }
-          quoteLines.append(quoteLine)
-          cursor += 1
-        }
+        let block = collectItems(first: firstLine, after: index, parse: blockquoteLine)
         blocks.append(
-          MarkdownBlock(kind: .blockquote(quoteLines.joined(separator: "\n")))
+          MarkdownBlock(kind: .blockquote(block.items.joined(separator: "\n")))
         )
-        index = cursor
+        index = block.nextIndex
         continue
       }
 
@@ -3006,61 +3002,41 @@ enum MarkdownParser {
 
       if let firstItem = taskListItem(trimmed) {
         flushText()
-        var items: [TaskListItem] = [firstItem]
-        var cursor = index + 1
-        while cursor < lines.count {
-          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-          guard let nextItem = taskListItem(nextTrimmed) else { break }
-          items.append(nextItem)
-          cursor += 1
+        let block = collectItems(first: firstItem, after: index) {
+          parseTrimmed($0, with: taskListItem)
         }
-        blocks.append(MarkdownBlock(kind: .taskList(items: items)))
-        index = cursor
+        blocks.append(MarkdownBlock(kind: .taskList(items: block.items)))
+        index = block.nextIndex
         continue
       }
 
       if let firstItem = orderedListItem(trimmed) {
         flushText()
-        var items: [OrderedListItem] = [firstItem]
-        var cursor = index + 1
-        while cursor < lines.count {
-          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-          guard let nextItem = orderedListItem(nextTrimmed) else { break }
-          items.append(nextItem)
-          cursor += 1
+        let block = collectItems(first: firstItem, after: index) {
+          parseTrimmed($0, with: orderedListItem)
         }
-        blocks.append(MarkdownBlock(kind: .orderedList(items: items)))
-        index = cursor
+        blocks.append(MarkdownBlock(kind: .orderedList(items: block.items)))
+        index = block.nextIndex
         continue
       }
 
       if let firstItem = bulletListItem(trimmed) {
         flushText()
-        var items: [String] = [firstItem]
-        var cursor = index + 1
-        while cursor < lines.count {
-          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-          guard let nextItem = bulletListItem(nextTrimmed) else { break }
-          items.append(nextItem)
-          cursor += 1
+        let block = collectItems(first: firstItem, after: index) {
+          parseTrimmed($0, with: bulletListItem)
         }
-        blocks.append(MarkdownBlock(kind: .bulletList(items: items)))
-        index = cursor
+        blocks.append(MarkdownBlock(kind: .bulletList(items: block.items)))
+        index = block.nextIndex
         continue
       }
 
       if let firstItem = footnoteDefinition(trimmed) {
         flushText()
-        var items: [(key: String, text: String)] = [firstItem]
-        var cursor = index + 1
-        while cursor < lines.count {
-          let nextTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-          guard let nextItem = footnoteDefinition(nextTrimmed) else { break }
-          items.append(nextItem)
-          cursor += 1
+        let block = collectItems(first: firstItem, after: index) {
+          parseTrimmed($0, with: footnoteDefinition)
         }
-        blocks.append(MarkdownBlock(kind: .footnotes(items: items)))
-        index = cursor
+        blocks.append(MarkdownBlock(kind: .footnotes(items: block.items)))
+        index = block.nextIndex
         continue
       }
 
@@ -3077,7 +3053,9 @@ enum MarkdownParser {
           var cursor = index + 2
           while cursor < lines.count {
             let rowTrimmed = lines[cursor].trimmingCharacters(in: .whitespaces)
-            guard Self.containsTablePipe(rowTrimmed), tableAlignments(rowTrimmed) == nil else { break }
+            guard Self.containsTablePipe(rowTrimmed), tableAlignments(rowTrimmed) == nil else {
+              break
+            }
             var cells = splitTableRow(rowTrimmed)
             while cells.count < headers.count { cells.append("") }
             if cells.count > headers.count { cells = Array(cells.prefix(headers.count)) }

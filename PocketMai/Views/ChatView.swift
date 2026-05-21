@@ -1,6 +1,6 @@
+import PhotosUI
 import SwiftUI
 import UIKit
-import PhotosUI
 import UniformTypeIdentifiers
 
 struct ChatView: View {
@@ -377,17 +377,9 @@ struct ChatView: View {
   @MainActor
   private func exportAudioFile() async -> URL? {
     guard let conversation = store.currentConversation else { return nil }
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "PocketMaiExports",
-      isDirectory: true
-    )
-    let url =
-      directory
-      .appendingPathComponent(store.exportFilename(for: conversation))
-      .appendingPathExtension(ConversationExportFormat.audio.fileExtension)
     showingAudioExport = true
     do {
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let url = try ConversationExportFiles.url(for: conversation, format: .audio)
       try await audioExporter.export(
         messages: conversation.messages,
         voices: store.effectiveToolSettings(for: conversation).voices,
@@ -1642,10 +1634,12 @@ private struct CompactChatSheet: View {
   private func generateSummary() async {
     guard let conversationID else { return }
     statusText = nil
-    guard let generated = await store.generateCompactSummary(
-      conversationID: conversationID,
-      prompt: prompt
-    ) else {
+    guard
+      let generated = await store.generateCompactSummary(
+        conversationID: conversationID,
+        prompt: prompt
+      )
+    else {
       statusText = store.errorMessage ?? "Could not generate compact summary."
       return
     }

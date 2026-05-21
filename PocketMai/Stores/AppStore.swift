@@ -270,7 +270,8 @@ final class AppStore: ObservableObject {
       && conversation.showThinking == defaults.showThinking
       && conversation.reasoningLevel == defaults.reasoningLevel
       && conversation.disabledMCPTools == defaults.disabledMCPTools
-      && conversation.effectiveLanguageOverrideIdentifier == defaults.effectiveLanguageOverrideIdentifier
+      && conversation.effectiveLanguageOverrideIdentifier
+        == defaults.effectiveLanguageOverrideIdentifier
   }
 
   private func normalizedModelID(_ modelID: String) -> String {
@@ -1079,14 +1080,8 @@ final class AppStore: ObservableObject {
   func exportCurrentConversationEPUB() -> URL? {
     guard let conversation = currentConversation else { return nil }
     let data = EPUBExporter.makeEPUB(conversation: conversation)
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "PocketMaiExports",
-      isDirectory: true
-    )
     do {
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-      let filename = exportFilename(for: conversation)
-      let url = directory.appendingPathComponent(filename).appendingPathExtension("epub")
+      let url = try ConversationExportFiles.url(for: conversation, format: .epub)
       try data.write(to: url, options: .atomic)
       return url
     } catch {
@@ -1131,17 +1126,11 @@ final class AppStore: ObservableObject {
     format: ConversationExportFormat,
     content: String
   ) -> URL? {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "PocketMaiExports",
-      isDirectory: true
-    )
     do {
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-      let filename =
-        exportFilename(for: conversation)
-        + (format == .debug ? "-debug" : "")
-      let url = directory.appendingPathComponent(filename).appendingPathExtension(
-        format.fileExtension)
+      let url = try ConversationExportFiles.url(
+        for: conversation,
+        format: format,
+        suffix: format == .debug ? "-debug" : "")
       try content.write(to: url, atomically: true, encoding: .utf8)
       return url
     } catch {
@@ -2113,18 +2102,6 @@ final class AppStore: ObservableObject {
     return (toolName, argumentsJSON, result)
   }
 
-  func exportFilename(for conversation: Conversation) -> String {
-    let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
-      .union(.newlines)
-      .union(.controlCharacters)
-    let title = conversation.displayTitle
-      .components(separatedBy: invalid)
-      .joined(separator: " ")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    let base = title.isEmpty ? "Chat" : title
-    return String(base.prefix(80))
-  }
-
   // MARK: - Settings Backup (Import / Export / Clear)
 
   func exportSettingsBackupFile(scope: SettingsBackupScope, includeAudio: Bool = false) -> URL? {
@@ -2136,14 +2113,9 @@ final class AppStore: ObservableObject {
       errorMessage = "Could not encode backup."
       return nil
     }
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "PocketMaiExports",
-      isDirectory: true
-    )
     do {
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       let filename = backupFilename(scope: scope)
-      let url = directory.appendingPathComponent(filename).appendingPathExtension("json")
+      let url = try ConversationExportFiles.url(filename: filename, fileExtension: "json")
       try data.write(to: url, options: .atomic)
       return url
     } catch {
@@ -2292,11 +2264,12 @@ final class AppStore: ObservableObject {
     if wantProviders {
       guard let payload = envelope.providers else {
         if scope == .providers { throw SettingsBackupError.missingSection(.providers) }
-        if scope == .everything { /* allow */ } else { /* unreachable */ }
+        if scope == .everything { /* allow */  } else { /* unreachable */  }
         return ""
       }
       applyProvidersBackup(payload)
-      applied.append("\(payload.endpoints.count) provider\(payload.endpoints.count == 1 ? "" : "s")")
+      applied.append(
+        "\(payload.endpoints.count) provider\(payload.endpoints.count == 1 ? "" : "s")")
     }
 
     if wantPrompts {
@@ -2504,7 +2477,8 @@ final class AppStore: ObservableObject {
     }
     refreshLocalMLXModels()
     if !failed.isEmpty {
-      return "Removed \(removed) model\(removed == 1 ? "" : "s"); failed: \(failed.joined(separator: ", "))."
+      return
+        "Removed \(removed) model\(removed == 1 ? "" : "s"); failed: \(failed.joined(separator: ", "))."
     }
     return "Removed \(removed) downloaded model\(removed == 1 ? "" : "s")."
   }
@@ -2527,5 +2501,37 @@ final class AppStore: ObservableObject {
     }
     _ = try? PocketMaiDirectories.ensureFilesWorkspace()
     return "Removed \(removed) workspace item\(removed == 1 ? "" : "s")."
+  }
+}
+
+enum ConversationExportFiles {
+  static func url(
+    for conversation: Conversation,
+    format: ConversationExportFormat,
+    suffix: String = ""
+  ) throws -> URL {
+    try url(
+      filename: filename(for: conversation) + suffix,
+      fileExtension: format.fileExtension)
+  }
+
+  static func url(filename: String, fileExtension: String) throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "PocketMaiExports",
+      isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory.appendingPathComponent(filename).appendingPathExtension(fileExtension)
+  }
+
+  private static func filename(for conversation: Conversation) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+      .union(.newlines)
+      .union(.controlCharacters)
+    let title = conversation.displayTitle
+      .components(separatedBy: invalid)
+      .joined(separator: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = title.isEmpty ? "Chat" : title
+    return String(base.prefix(80))
   }
 }

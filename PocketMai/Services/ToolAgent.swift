@@ -124,33 +124,34 @@ enum BuiltInToolCatalog {
       }
       return await WeatherTool.run(
         settings: store.settings.toolSettings, locationService: { store.locationService })
-    case FileWorkspaceTool.listName:
-      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.list(arguments: call.argumentValues)
-    case FileWorkspaceTool.readName:
-      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.read(arguments: call.argumentValues)
-    case FileWorkspaceTool.writeName:
-      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.write(arguments: call.argumentValues)
-    case FileWorkspaceTool.renameName:
-      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.rename(arguments: call.argumentValues)
-    case FileWorkspaceTool.deleteName:
-      guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
-        return "Error: FilesData tools are disabled in Files settings."
-      }
-      return FileWorkspaceService.delete(arguments: call.argumentValues)
+    case FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName,
+      FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
+      return executeFileWorkspaceTool(
+        name: call.name,
+        arguments: call.argumentValues,
+        conversation: conversation,
+        settings: store.settings)
     default:
       return nil
+    }
+  }
+
+  private static func executeFileWorkspaceTool(
+    name: String,
+    arguments: [String: AgentToolArgumentValue],
+    conversation: Conversation,
+    settings: AppSettings
+  ) -> String {
+    guard fileWorkspaceToolsEnabled(conversation: conversation, settings: settings) else {
+      return "Error: FilesData tools are disabled in Files settings."
+    }
+    switch name {
+    case FileWorkspaceTool.listName: return FileWorkspaceService.list(arguments: arguments)
+    case FileWorkspaceTool.readName: return FileWorkspaceService.read(arguments: arguments)
+    case FileWorkspaceTool.writeName: return FileWorkspaceService.write(arguments: arguments)
+    case FileWorkspaceTool.renameName: return FileWorkspaceService.rename(arguments: arguments)
+    case FileWorkspaceTool.deleteName: return FileWorkspaceService.delete(arguments: arguments)
+    default: return "Error: Unknown FilesData tool."
     }
   }
 
