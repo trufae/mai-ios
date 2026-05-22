@@ -164,12 +164,6 @@ enum ProviderVisionSupport {
 
   static func openAICompatibleSupportsVision(model: String, endpoint: OpenAIEndpoint) -> Bool {
     let text = "\(model) \(endpoint.name) \(endpoint.baseURL)".lowercased()
-    let textOnlyMarkers = [
-      "text-embedding", "embedding", "rerank", "moderation", "whisper", "tts",
-    ]
-    if textOnlyMarkers.contains(where: { text.contains($0) }) {
-      return false
-    }
     let visionMarkers = [
       "gpt-5", "gpt-4.1", "gpt-4o", "vision", "multimodal", "omni", "vl",
       "llava", "bakllava", "pixtral", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
@@ -181,6 +175,20 @@ enum ProviderVisionSupport {
     ]
     if visionMarkers.contains(where: { text.contains($0) }) {
       return true
+    }
+    let textOnlyMarkers = [
+      "text-embedding", "embedding", "rerank", "moderation", "whisper", "tts",
+      "deepseek",
+    ]
+    if textOnlyMarkers.contains(where: { text.contains($0) }) {
+      return false
+    }
+    // Aggregator endpoints whose model aliases (e.g. "big-pickle") don't reveal the
+    // underlying backend. Many of their routed models are text-only and reject
+    // OpenAI-style image_url parts, so require an explicit vision marker to opt in.
+    let opaqueAggregatorMarkers = ["opencode.ai/zen", "opencode zen"]
+    if opaqueAggregatorMarkers.contains(where: { text.contains($0) }) {
+      return false
     }
 
     // OpenAI-compatible model listings do not expose a standard vision capability flag.
