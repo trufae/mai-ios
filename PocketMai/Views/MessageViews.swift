@@ -157,8 +157,7 @@ private struct MessageBubbleContent: View, Equatable {
           monospaced: false,
           dimmedContent: true,
           initiallyExpanded: showThinking,
-          markdownAppearance: canRenderMarkdown ? appearance : nil,
-          markdownFontFamily: appearance.fontFamily(for: .assistant)
+          markdownAppearance: canRenderMarkdown ? appearance : nil
         )
       }
       ForEach(prepared.transcriptSections) { section in
@@ -880,7 +879,6 @@ private struct FoldableMetaSection: View {
   var dimmedContent: Bool = false
   var initiallyExpanded: Bool = false
   var markdownAppearance: AppearanceSettings? = nil
-  var markdownFontFamily: AppearanceFontFamily? = nil
 
   @State private var expanded: Bool = false
 
@@ -891,8 +889,7 @@ private struct FoldableMetaSection: View {
     monospaced: Bool,
     dimmedContent: Bool = false,
     initiallyExpanded: Bool = false,
-    markdownAppearance: AppearanceSettings? = nil,
-    markdownFontFamily: AppearanceFontFamily? = nil
+    markdownAppearance: AppearanceSettings? = nil
   ) {
     self.title = title
     self.systemImage = systemImage
@@ -901,7 +898,6 @@ private struct FoldableMetaSection: View {
     self.dimmedContent = dimmedContent
     self.initiallyExpanded = initiallyExpanded
     self.markdownAppearance = markdownAppearance
-    self.markdownFontFamily = markdownFontFamily
     self._expanded = State(initialValue: initiallyExpanded)
   }
 
@@ -931,15 +927,11 @@ private struct FoldableMetaSection: View {
       if expanded {
         Divider().opacity(0.4)
         Group {
-          if let markdownAppearance,
-             MarkdownParser.mayContainMarkdown(content) {
+          if let markdownAppearance, MarkdownParser.mayContainMarkdown(content) {
             MarkdownContentView(
-              text: content,
-              appearance: markdownAppearance,
-              fontFamily: markdownFontFamily,
+              text: content, appearance: markdownAppearance,
               allowsTextSelection: true,
-              foregroundStyle: dimmedContent ? Color.secondary : nil
-            )
+              foregroundStyle: dimmedContent ? Color.secondary : nil)
           } else {
             Text(content)
               .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
