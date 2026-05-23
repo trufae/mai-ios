@@ -1,6 +1,7 @@
 import AVFoundation
 import Speech
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 enum DefaultProviderSelection: Hashable {
@@ -12,24 +13,27 @@ enum DefaultProviderSelection: Hashable {
 struct EndpointProviderPreset {
   let name: String
   let url: String
+  let authMethods: [EndpointAuthMethod]
   let oauthDefaults: OAuthPresetDefaults?
+  let preferredAuthMethod: EndpointAuthMethod?
 
-  init(name: String, url: String, oauthDefaults: OAuthPresetDefaults? = nil) {
+  init(
+    name: String,
+    url: String,
+    authMethods: [EndpointAuthMethod] = [.apiKey],
+    oauthDefaults: OAuthPresetDefaults? = nil,
+    preferredAuthMethod: EndpointAuthMethod? = nil
+  ) {
     self.name = name
     self.url = url
+    self.authMethods = authMethods
     self.oauthDefaults = oauthDefaults
+    self.preferredAuthMethod = preferredAuthMethod
   }
 
-  /// Stable identifier used by the provider Picker. OAuth presets get a name-derived
-  /// tag so multiple OAuth presets (and OAuth + API-key variants sharing a URL) can
-  /// coexist in the picker.
   var tag: String {
-    oauthDefaults == nil ? url : "\(Self.oauthTagPrefix)\(name)"
+    url
   }
-
-  static let oauthTagPrefix = "__oauth__:"
-
-  var isOAuth: Bool { oauthDefaults != nil }
 }
 
 private struct PendingSettingsDeletion: Identifiable {
@@ -81,19 +85,18 @@ private enum SettingsDeletionKind {
 }
 
 let endpointProviderPresets: [EndpointProviderPreset] = [
-  EndpointProviderPreset(name: "OpenAI", url: "https://api.openai.com/v1"),
   EndpointProviderPreset(
-    name: "OpenAI Auth",
-    url: OpenAIEndpoint.openAIAuthDefaults.baseURL,
+    name: "OpenAI",
+    url: "https://api.openai.com/v1",
+    authMethods: [.apiKey, .oauth],
     oauthDefaults: OpenAIEndpoint.openAIAuthDefaults
   ),
   EndpointProviderPreset(name: "Ollama Cloud", url: "https://ollama.com/v1"),
   EndpointProviderPreset(name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
   EndpointProviderPreset(name: "OpenCode Zen", url: "https://opencode.ai/zen/v1"),
   EndpointProviderPreset(name: "Hugging Face", url: "https://router.huggingface.co/v1"),
-  EndpointProviderPreset(name: "Anthropic", url: "https://api.anthropic.com/v1"),
   EndpointProviderPreset(
-    name: "Anthropic OAuth",
+    name: "Anthropic",
     url: OpenAIEndpoint.anthropicOAuthDefaults.baseURL,
     oauthDefaults: OpenAIEndpoint.anthropicOAuthDefaults
   ),
@@ -102,9 +105,11 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
     url: "https://generativelanguage.googleapis.com/v1beta/openai"
   ),
   EndpointProviderPreset(
-    name: "Google OAuth (Vertex AI)",
+    name: "Google Vertex AI",
     url: OpenAIEndpoint.googleOAuthDefaults.baseURL,
-    oauthDefaults: OpenAIEndpoint.googleOAuthDefaults
+    authMethods: [.oauth],
+    oauthDefaults: OpenAIEndpoint.googleOAuthDefaults,
+    preferredAuthMethod: .oauth
   ),
   EndpointProviderPreset(name: "Mistral", url: "https://api.mistral.ai/v1"),
   EndpointProviderPreset(name: "xAI", url: "https://api.x.ai/v1"),
@@ -793,11 +798,10 @@ struct SettingsView: View {
       pendingDeletion = PendingSettingsDeletion(kind: .endpoint, offsets: offsets)
     }
     Button {
-      let endpoint = OpenAIEndpoint()
+      let endpoint = OpenAIEndpoint(baseURL: "", authMethod: .apiKey)
       store.settings.openAIEndpoints.append(endpoint)
       store.settings.selectedEndpointID = endpoint.id
       store.saveSettings()
-      Task { await store.refreshEndpoint(endpoint) }
       endpointPath.append(endpoint.id)
     } label: {
       Label("Add Provider", systemImage: "plus")
@@ -1945,20 +1949,22 @@ private enum EndpointNameResolution {
 
   private static func providerName(for endpoint: OpenAIEndpoint) -> String? {
     let baseURL = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-    if endpoint.authMethod == .oauth,
-      let preset = matchingOAuthPreset(for: endpoint)
-    {
+    if let preset = providerPreset(forBaseURL: baseURL) {
       return preset.name
     }
-    return endpointProviderPresets.first(where: {
-      $0.url == baseURL && !$0.isOAuth
-    })?.name
+    return nil
+  }
+
+  static func providerPreset(forBaseURL baseURL: String) -> EndpointProviderPreset? {
+    let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    return endpointProviderPresets.first(where: { $0.url == trimmed })
   }
 
   static func matchingOAuthPreset(for endpoint: OpenAIEndpoint) -> EndpointProviderPreset? {
     let authorize = endpoint.oauthAuthorizeURL.trimmingCharacters(in: .whitespacesAndNewlines)
     let issuer = endpoint.oauthIssuer.trimmingCharacters(in: .whitespacesAndNewlines)
     return endpointProviderPresets.first { preset in
+      guard preset.authMethods.contains(.oauth) else { return false }
       guard let defaults = preset.oauthDefaults else { return false }
       if !authorize.isEmpty, !defaults.authorizeURL.isEmpty {
         return defaults.authorizeURL == authorize
@@ -2194,6 +2200,7 @@ private struct EndpointDetailView: View {
   @State private var modelFilter = ""
   @State private var toastMessage: String?
   @State private var isSigningIn = false
+  @State private var showAdvancedOAuthConfiguration = false
 
   init(endpoint: Binding<OpenAIEndpoint>) {
     self._savedEndpoint = endpoint
@@ -2221,18 +2228,7 @@ private struct EndpointDetailView: View {
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
           .keyboardType(.URL)
-        Picker("Authentication", selection: authMethodBinding) {
-          ForEach(EndpointAuthMethod.allCases) { method in
-            Text(method.displayName).tag(method)
-          }
-        }
-        .pickerStyle(.menu)
-        switch endpoint.authMethod {
-        case .apiKey:
-          SecureField("API Key", text: $endpoint.apiKey)
-        case .oauth:
-          oauthCredentialsView
-        }
+        authenticationControls
         Button {
           let snapshot = endpoint
           Task { await store.refreshEndpoint(snapshot) }
@@ -2258,11 +2254,11 @@ private struct EndpointDetailView: View {
         Text("Connection")
       } footer: {
         Text(
-          "Pick a provider to autofill the base URL, or choose Custom to enter your own. Any OpenAI-compatible API works (Ollama, llama.cpp, LM Studio, etc.)."
+          "Pick a provider to autofill the base URL, or choose Custom to enter your own. OAuth setup is shown only for providers that support it, or for Custom endpoints."
         )
       }
 
-      if endpoint.authMethod == .oauth {
+      if effectiveAuthMethod == .oauth {
         oauthConfigSection
       }
 
@@ -2282,7 +2278,37 @@ private struct EndpointDetailView: View {
         Button("Save") { saveEndpointAndDismiss() }
       }
     }
+    .onAppear(perform: normalizeAuthForSelectedProvider)
+    .onChange(of: endpoint.baseURL) { _, _ in normalizeAuthForSelectedProvider() }
     .settingsToast($toastMessage)
+  }
+
+  @ViewBuilder
+  private var authenticationControls: some View {
+    let methods = authMethodsForCurrentProvider
+    if methods.count > 1 {
+      Picker("Authentication", selection: authMethodBinding) {
+        ForEach(methods) { method in
+          Text(method.displayName).tag(method)
+        }
+      }
+      .pickerStyle(.menu)
+    } else if methods.first == .oauth {
+      LabeledContent("Authentication") {
+        Text(EndpointAuthMethod.oauth.displayName)
+          .foregroundStyle(.secondary)
+      }
+    }
+
+    switch effectiveAuthMethod {
+    case .apiKey:
+      SecureField("API Key", text: $endpoint.apiKey)
+      if let apiKeyOnlyProvider {
+        apiKeyOnlyGuidance(for: apiKeyOnlyProvider)
+      }
+    case .oauth:
+      oauthCredentialsView
+    }
   }
 
   @ViewBuilder
@@ -2291,6 +2317,7 @@ private struct EndpointDetailView: View {
     let expired = endpoint.oauthAccessTokenExpired
     let hasRefresh =
       !endpoint.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let setupMessage = oauthSetupMessage
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         Image(
@@ -2310,6 +2337,11 @@ private struct EndpointDetailView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
       }
+      if let setupMessage {
+        Label(setupMessage, systemImage: "info.circle")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
       HStack(spacing: 10) {
         Button {
           Task { await runSignIn() }
@@ -2323,7 +2355,7 @@ private struct EndpointDetailView: View {
             Label(signedIn ? "Sign In Again" : "Sign In", systemImage: "person.crop.circle.badge.checkmark")
           }
         }
-        .disabled(isSigningIn)
+        .disabled(isSigningIn || setupMessage != nil)
         if signedIn {
           Button(role: .destructive) { signOut() } label: {
             Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
@@ -2344,38 +2376,184 @@ private struct EndpointDetailView: View {
 
   private var oauthConfigSection: some View {
     Section {
-      TextField("Issuer (https://auth.example.com)", text: $endpoint.oauthIssuer)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
-      TextField("Client ID", text: $endpoint.oauthClientID)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-      TextField("Audience (optional)", text: $endpoint.oauthAudience)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-      TextField("Scope", text: $endpoint.oauthScope)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-      TextField("Redirect URI", text: $endpoint.oauthRedirectURI)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
-      TextField("Authorize URL (optional)", text: $endpoint.oauthAuthorizeURL)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
-      TextField("Token URL (optional)", text: $endpoint.oauthTokenURL)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
+      if isOpenAIEndpoint {
+        openAIOAuthGuidance
+      } else if let apiKeyOnlyProvider {
+        apiKeyOnlyGuidance(for: apiKeyOnlyProvider)
+      } else {
+        genericOAuthGuidance
+      }
+      DisclosureGroup(isExpanded: $showAdvancedOAuthConfiguration) {
+        TextField("Issuer (https://auth.example.com)", text: $endpoint.oauthIssuer)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+        TextField("Client ID", text: $endpoint.oauthClientID)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+        TextField("Audience (optional)", text: $endpoint.oauthAudience)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+        TextField("Scope", text: $endpoint.oauthScope)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+        TextField("Redirect URI", text: $endpoint.oauthRedirectURI)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+        TextField("Authorize URL (optional)", text: $endpoint.oauthAuthorizeURL)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+        TextField("Token URL (optional)", text: $endpoint.oauthTokenURL)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+      } label: {
+        Label("Advanced OAuth Configuration", systemImage: "slider.horizontal.3")
+      }
     } header: {
-      Text("OAuth Configuration")
+      Text("OAuth")
     } footer: {
       Text(
-        "Used for the PKCE login flow. The redirect URI must use the app's URL scheme (e.g. pocketmai://oauth/callback) and be registered with your OAuth application. Leave the Authorize/Token URLs blank to derive them from the issuer (issuer/authorize and issuer/oauth/token)."
+        "These fields are only needed for providers that require a registered OAuth application. Leave Authorize and Token URLs blank to derive them from the issuer."
       )
     }
+  }
+
+  private func apiKeyOnlyGuidance(for provider: APIKeyOnlyProvider) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("No \(provider.name) OAuth client ID", systemImage: "key.slash")
+        .font(.subheadline.weight(.semibold))
+      Text(provider.message)
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      Button {
+        endpoint.authMethod = .apiKey
+        clearCredentials()
+        UIApplication.shared.open(provider.apiKeyURL)
+      } label: {
+        Label("Open \(provider.name) API Keys", systemImage: "arrow.up.right.square")
+      }
+      .buttonStyle(.borderless)
+      if let dashboardURL = provider.dashboardURL {
+        Button {
+          UIApplication.shared.open(dashboardURL)
+        } label: {
+          Label("Open \(provider.name) Dashboard", systemImage: "safari")
+        }
+        .buttonStyle(.borderless)
+      }
+    }
+  }
+
+  private var openAIOAuthGuidance: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("OpenAI OAuth", systemImage: "person.crop.circle.badge.checkmark")
+        .font(.subheadline.weight(.semibold))
+      Text(
+        "Use OAuth here if you have an OpenAI OAuth client ID registered for pocketmai://oauth/callback. Otherwise use API Key above."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      Button {
+        if let url = URL(string: "https://platform.openai.com") {
+          UIApplication.shared.open(url)
+        }
+      } label: {
+        Label("Open OpenAI Dashboard", systemImage: "safari")
+      }
+      .buttonStyle(.borderless)
+    }
+  }
+
+  private var genericOAuthGuidance: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("OAuth client ID", systemImage: "person.badge.key")
+        .font(.subheadline.weight(.semibold))
+      Text(
+        "Create an OAuth client in the provider's developer console, copy its client ID here, and register pocketmai://oauth/callback as an allowed redirect URI."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      if isGoogleVertexEndpoint,
+        let url = URL(string: "https://console.cloud.google.com/apis/credentials")
+      {
+        Link(destination: url) {
+          Label("Open Google OAuth Clients", systemImage: "arrow.up.right.square")
+        }
+      }
+    }
+  }
+
+  private var oauthSetupMessage: String? {
+    guard effectiveAuthMethod == .oauth else { return nil }
+    let clientID = endpoint.oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard clientID.isEmpty else { return nil }
+    if isOpenAIEndpoint {
+      return "OpenAI OAuth needs a client ID before Sign In can open."
+    }
+    if isAnthropicEndpoint {
+      return "Anthropic API auth uses API keys here. Use the button below."
+    }
+    return "OAuth needs a client ID before Sign In can open."
+  }
+
+  private struct APIKeyOnlyProvider {
+    let name: String
+    let message: String
+    let apiKeyURL: URL
+    let dashboardURL: URL?
+  }
+
+  private var apiKeyOnlyProvider: APIKeyOnlyProvider? {
+    if isAnthropicEndpoint,
+      let apiKeyURL = URL(string: "https://console.anthropic.com/settings/keys"),
+      let dashboardURL = URL(string: "https://console.anthropic.com")
+    {
+      return APIKeyOnlyProvider(
+        name: "Anthropic",
+        message:
+          "There is no Anthropic OAuth client ID you can generate here for the public API. Use OAuth only if you own a registered OAuth app that allows pocketmai://oauth/callback.",
+        apiKeyURL: apiKeyURL,
+        dashboardURL: dashboardURL
+      )
+    }
+    return nil
+  }
+
+  private var isOpenAIEndpoint: Bool {
+    endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+      == OpenAIEndpoint.openAIAuthDefaults.baseURL
+  }
+
+  private var isAnthropicEndpoint: Bool {
+    endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+      == OpenAIEndpoint.anthropicOAuthDefaults.baseURL
+  }
+
+  private var isGoogleVertexEndpoint: Bool {
+    endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+      == OpenAIEndpoint.googleOAuthDefaults.baseURL
+  }
+
+  private var selectedProviderPreset: EndpointProviderPreset? {
+    EndpointNameResolution.providerPreset(forBaseURL: endpoint.baseURL)
+  }
+
+  private var authMethodsForCurrentProvider: [EndpointAuthMethod] {
+    if let selectedProviderPreset {
+      return selectedProviderPreset.authMethods
+    }
+    return [.apiKey]
+  }
+
+  private var effectiveAuthMethod: EndpointAuthMethod {
+    let methods = authMethodsForCurrentProvider
+    if methods.contains(endpoint.authMethod) {
+      return endpoint.authMethod
+    }
+    return methods.first ?? .apiKey
   }
 
   private func oauthStatusText(signedIn: Bool, expired: Bool) -> String {
@@ -2523,6 +2701,7 @@ private struct EndpointDetailView: View {
   }
 
   private func saveEndpointAndDismiss() {
+    normalizeAuthForSelectedProvider()
     if let message = EndpointNameResolution.validationMessage(
       for: endpoint,
       in: store.settings.openAIEndpoints)
@@ -2552,33 +2731,45 @@ private struct EndpointDetailView: View {
   private var providerPresetBinding: Binding<String> {
     Binding(
       get: {
-        if endpoint.authMethod == .oauth,
-          let preset = EndpointNameResolution.matchingOAuthPreset(for: endpoint)
-        {
-          return preset.tag
-        }
         let trimmed = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let preset = endpointProviderPresets.first(where: {
-          $0.url == trimmed && !$0.isOAuth
-        }) {
+        if let preset = EndpointNameResolution.providerPreset(forBaseURL: trimmed) {
           return preset.tag
         }
         return customProviderTag
       },
       set: { newValue in
         if newValue == customProviderTag {
+          if endpoint.authMethod != .apiKey {
+            clearCredentials()
+            endpoint.authMethod = .apiKey
+          }
           endpoint.baseURL = ""
           return
         }
         guard let preset = endpointProviderPresets.first(where: { $0.tag == newValue }) else {
           return
         }
+        let oldAuthMethod = endpoint.authMethod
+        let oldBaseURL = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         endpoint.baseURL = preset.url
-        if let defaults = preset.oauthDefaults {
-          applyOAuthDefaults(defaults)
-        } else if endpoint.authMethod == .oauth {
-          // Switching to a non-OAuth preset reverts to API key auth.
-          endpoint.authMethod = .apiKey
+        if let preferredAuthMethod = preset.preferredAuthMethod,
+          preset.authMethods.contains(preferredAuthMethod)
+        {
+          endpoint.authMethod = preferredAuthMethod
+        } else if !preset.authMethods.contains(endpoint.authMethod) {
+          endpoint.authMethod = preset.authMethods.first ?? .apiKey
+        }
+        let authChanged = oldAuthMethod != endpoint.authMethod
+        let oauthProviderChanged =
+          endpoint.authMethod == .oauth && oldBaseURL != preset.url
+        if authChanged || oauthProviderChanged {
+          clearCredentials()
+        }
+        if endpoint.authMethod == .oauth,
+          preset.authMethods.contains(.oauth),
+          let defaults = preset.oauthDefaults
+        {
+          applyOAuthDefaults(defaults, overwriteExisting: true)
         }
       }
     )
@@ -2589,6 +2780,7 @@ private struct EndpointDetailView: View {
       get: { endpoint.authMethod },
       set: { newValue in
         guard newValue != endpoint.authMethod else { return }
+        clearCredentials()
         endpoint.authMethod = newValue
         if newValue == .oauth {
           applyOAuthDefaultsIfMissing()
@@ -2597,40 +2789,84 @@ private struct EndpointDetailView: View {
     )
   }
 
-  private func applyOAuthDefaults(_ defaults: OAuthPresetDefaults) {
+  private func applyOAuthDefaults(
+    _ defaults: OAuthPresetDefaults,
+    overwriteExisting: Bool = false
+  ) {
     endpoint.authMethod = .oauth
     endpoint.baseURL = defaults.baseURL
-    fillOAuthDefaultsIfEmpty(defaults)
+    fillOAuthDefaults(defaults, overwriteExisting: overwriteExisting)
   }
 
-  private func fillOAuthDefaultsIfEmpty(_ defaults: OAuthPresetDefaults) {
-    if endpoint.oauthIssuer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+  private func fillOAuthDefaults(_ defaults: OAuthPresetDefaults, overwriteExisting: Bool) {
+    if overwriteExisting
+      || endpoint.oauthIssuer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthIssuer = defaults.issuer
     }
-    if endpoint.oauthAudience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthAudience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthAudience = defaults.audience
     }
-    if endpoint.oauthScope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthScope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthScope = defaults.scope
     }
-    if endpoint.oauthRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthRedirectURI = defaults.redirectURI
     }
-    if endpoint.oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthClientID = defaults.clientID
     }
-    if endpoint.oauthAuthorizeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthAuthorizeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthAuthorizeURL = defaults.authorizeURL
     }
-    if endpoint.oauthTokenURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if overwriteExisting
+      || endpoint.oauthTokenURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       endpoint.oauthTokenURL = defaults.tokenURL
     }
   }
 
   private func applyOAuthDefaultsIfMissing() {
-    let defaults = EndpointNameResolution.matchingOAuthPreset(for: endpoint)?.oauthDefaults
-      ?? OpenAIEndpoint.openAIAuthDefaults
-    fillOAuthDefaultsIfEmpty(defaults)
+    let providerPreset = EndpointNameResolution.providerPreset(forBaseURL: endpoint.baseURL)
+    let matchingPreset = EndpointNameResolution.matchingOAuthPreset(for: endpoint)
+    let defaults: OAuthPresetDefaults?
+    if let providerPreset, providerPreset.authMethods.contains(.oauth) {
+      defaults = providerPreset.oauthDefaults
+    } else {
+      defaults = matchingPreset?.oauthDefaults
+    }
+    guard let defaults else { return }
+    let shouldOverwrite =
+      providerPreset?.oauthDefaults != nil
+      && matchingPreset != nil
+      && providerPreset?.tag != matchingPreset?.tag
+    fillOAuthDefaults(defaults, overwriteExisting: shouldOverwrite)
+  }
+
+  private func normalizeAuthForSelectedProvider() {
+    let methods = authMethodsForCurrentProvider
+    guard !methods.contains(endpoint.authMethod) else { return }
+    clearCredentials()
+    endpoint.authMethod = methods.first ?? .apiKey
+    if endpoint.authMethod == .oauth {
+      applyOAuthDefaultsIfMissing()
+    }
+  }
+
+  private func clearCredentials() {
+    endpoint.apiKey = ""
+    endpoint.oauthRefreshToken = ""
+    endpoint.oauthAccessTokenExpiresAt = nil
   }
 }
 
