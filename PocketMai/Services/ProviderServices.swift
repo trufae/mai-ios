@@ -142,6 +142,48 @@ enum ChatProviderRouter {
   }
 }
 
+// Per-endpoint, per-model capability flags learned at runtime — either from the
+// provider's /models response (when it exposes modality info) or from a prior
+// 400 response that rejected our request. Consulted before any name-based
+// heuristic so the answer reflects what the provider actually accepts.
+final class ModelCapabilityCache: @unchecked Sendable {
+  struct Entry {
+    var supportsImageInput: Bool?
+  }
+
+  static let shared = ModelCapabilityCache()
+
+  private var store: [String: Entry] = [:]
+  private let lock = NSLock()
+
+  private static func key(endpointID: UUID, model: String) -> String {
+    let normalizedModel = model.lowercased().trimmingCharacters(in: .whitespaces)
+    return "\(endpointID.uuidString)|\(normalizedModel)"
+  }
+
+  func entry(endpointID: UUID, model: String) -> Entry? {
+    lock.lock()
+    defer { lock.unlock() }
+    return store[Self.key(endpointID: endpointID, model: model)]
+  }
+
+  func record(supportsImageInput: Bool, endpointID: UUID, model: String) {
+    lock.lock()
+    defer { lock.unlock() }
+    let k = Self.key(endpointID: endpointID, model: model)
+    var entry = store[k] ?? Entry()
+    entry.supportsImageInput = supportsImageInput
+    store[k] = entry
+  }
+
+  func resetEndpoint(_ endpointID: UUID) {
+    lock.lock()
+    defer { lock.unlock() }
+    let prefix = "\(endpointID.uuidString)|"
+    store = store.filter { !$0.key.hasPrefix(prefix) }
+  }
+}
+
 enum ProviderVisionSupport {
   static func supportsImageInput(conversation: Conversation?, settings: AppSettings) -> Bool {
     guard let conversation else { return false }
@@ -163,13 +205,14 @@ enum ProviderVisionSupport {
   }
 
   static func openAICompatibleSupportsVision(model: String, endpoint: OpenAIEndpoint) -> Bool {
-    let text = "\(model) \(endpoint.name) \(endpoint.baseURL)".lowercased()
-    let textOnlyMarkers = [
-      "text-embedding", "embedding", "rerank", "moderation", "whisper", "tts",
-    ]
-    if textOnlyMarkers.contains(where: { text.contains($0) }) {
-      return false
+    // Authoritative info learned from the provider takes precedence over heuristics.
+    if let cached = ModelCapabilityCache.shared.entry(endpointID: endpoint.id, model: model)?
+      .supportsImageInput
+    {
+      return cached
     }
+
+    let text = "\(model) \(endpoint.name) \(endpoint.baseURL)".lowercased()
     let visionMarkers = [
       "gpt-5", "gpt-4.1", "gpt-4o", "vision", "multimodal", "omni", "vl",
       "llava", "bakllava", "pixtral", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
@@ -182,9 +225,17 @@ enum ProviderVisionSupport {
     if visionMarkers.contains(where: { text.contains($0) }) {
       return true
     }
+    let textOnlyMarkers = [
+      "text-embedding", "embedding", "rerank", "moderation", "whisper", "tts",
+    ]
+    if textOnlyMarkers.contains(where: { text.contains($0) }) {
+      return false
+    }
 
     // OpenAI-compatible model listings do not expose a standard vision capability flag.
     // Keep image input available for chat models unless the endpoint/model is clearly text-only.
+    // If we guess wrong, the send path will catch the provider's 400 rejection, record
+    // it in ModelCapabilityCache, and retry without the image attachments.
     return true
   }
 }
@@ -1421,8 +1472,35 @@ private struct OpenAIErrorResponse: Decodable {
 }
 
 private struct OpenAIModelsResponse: Decodable {
+  struct Architecture: Decodable {
+    var inputModalities: [String]?
+    var outputModalities: [String]?
+    var modality: String?
+
+    enum CodingKeys: String, CodingKey {
+      case inputModalities = "input_modalities"
+      case outputModalities = "output_modalities"
+      case modality
+    }
+  }
+
   struct Model: Decodable {
     var id: String
+    var architecture: Architecture?
+
+    // Returns true/false when the response describes input modalities; nil when
+    // the provider doesn't expose that info (we then fall back to heuristics).
+    var supportsImageInput: Bool? {
+      if let modalities = architecture?.inputModalities {
+        return modalities.contains { $0.lowercased() == "image" }
+      }
+      if let modality = architecture?.modality?.lowercased() {
+        // OpenRouter-style strings like "text+image->text".
+        let inputs = modality.split(separator: "-").first.map(String.init) ?? modality
+        return inputs.contains("image")
+      }
+      return nil
+    }
   }
 
   var data: [Model]
@@ -1470,6 +1548,16 @@ enum OpenAICompatibleProvider {
     let (data, response) = try await data(for: request)
     try validateHTTPResponse(response, data: data)
     let decoded = try JSONDecoder().decode(OpenAIModelsResponse.self, from: data)
+    // Refresh learned capabilities for this endpoint: drop stale entries and
+    // record any modality info the provider chose to expose (OpenRouter does;
+    // most others don't, in which case we keep relying on runtime learning).
+    ModelCapabilityCache.shared.resetEndpoint(endpoint.id)
+    for model in decoded.data {
+      if let supportsImage = model.supportsImageInput {
+        ModelCapabilityCache.shared.record(
+          supportsImageInput: supportsImage, endpointID: endpoint.id, model: model.id)
+      }
+    }
     let models = decoded.data
       .map(\.id)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -1543,38 +1631,72 @@ enum OpenAICompatibleProvider {
     }
     let model =
       request.conversation.modelID.isEmpty ? endpoint.defaultModel : request.conversation.modelID
-    let body = try JSONEncoder().encode(
-      OpenAIChatRequest(
-        model: model,
-        messages: PromptComposer.openAIMessages(
-          conversation: request.conversation,
-          settings: request.settings,
-          context: request.context,
-          model: model,
-          endpoint: endpoint,
-          excludingMessageID: request.nativeContinuationMessages.isEmpty
-            ? nil : request.assistantMessageID,
-          nativeContinuationMessages: request.nativeContinuationMessages,
-          toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
-          messageLimitOverride: request.messageLimitOverride
-        ),
-        stream: request.conversation.usesStreaming,
-        tools: request.nativeTools,
-        reasoningLevel: request.conversation.reasoningLevel,
-        endpoint: endpoint
-      )
-    )
-    let urlRequest = try endpointRequest(
-      endpoint: endpoint,
-      url: chatCompletionsURL(from: endpoint.baseURL),
-      method: "POST",
-      contentType: "application/json",
-      body: body)
 
-    if request.conversation.usesStreaming {
-      return try await stream(request: urlRequest, onUpdate: onUpdate)
+    func send() async throws -> String {
+      let body = try JSONEncoder().encode(
+        OpenAIChatRequest(
+          model: model,
+          messages: PromptComposer.openAIMessages(
+            conversation: request.conversation,
+            settings: request.settings,
+            context: request.context,
+            model: model,
+            endpoint: endpoint,
+            excludingMessageID: request.nativeContinuationMessages.isEmpty
+              ? nil : request.assistantMessageID,
+            nativeContinuationMessages: request.nativeContinuationMessages,
+            toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
+            messageLimitOverride: request.messageLimitOverride
+          ),
+          stream: request.conversation.usesStreaming,
+          tools: request.nativeTools,
+          reasoningLevel: request.conversation.reasoningLevel,
+          endpoint: endpoint
+        )
+      )
+      let urlRequest = try endpointRequest(
+        endpoint: endpoint,
+        url: chatCompletionsURL(from: endpoint.baseURL),
+        method: "POST",
+        contentType: "application/json",
+        body: body)
+
+      if request.conversation.usesStreaming {
+        return try await stream(request: urlRequest, onUpdate: onUpdate)
+      }
+      return try await completeOnce(request: urlRequest, onUpdate: onUpdate)
     }
-    return try await completeOnce(request: urlRequest, onUpdate: onUpdate)
+
+    // First attempt uses whatever the current capability cache + heuristics decide.
+    // If the provider rejects the request specifically because of image_url parts
+    // we just sent, remember that fact and retry once without images. The rebuilt
+    // body will skip the attachments because openAICompatibleSupportsVision now
+    // sees the cached "false" entry.
+    let visionWasEnabled = ProviderVisionSupport.openAICompatibleSupportsVision(
+      model: model, endpoint: endpoint)
+    do {
+      return try await send()
+    } catch let error as ChatProviderError where visionWasEnabled
+      && isImageInputRejection(error)
+    {
+      ModelCapabilityCache.shared.record(
+        supportsImageInput: false, endpointID: endpoint.id, model: model)
+      return try await send()
+    }
+  }
+
+  private static func isImageInputRejection(_ error: ChatProviderError) -> Bool {
+    guard case .providerRequestFailed(let message) = error else { return false }
+    let lower = message.lowercased()
+    // "image_url" only ever appears in provider errors that reject the OpenAI-style
+    // image content variant (e.g. DeepSeek's "unknown variant `image_url`, expected `text`").
+    if lower.contains("image_url") { return true }
+    if lower.contains("image input")
+      && (lower.contains("not supported") || lower.contains("unsupported"))
+    {
+      return true
+    }
+    return false
   }
 
   static func selectedEndpoint(for conversation: Conversation, settings: AppSettings)
