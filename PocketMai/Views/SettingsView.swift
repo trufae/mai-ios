@@ -88,6 +88,11 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
   EndpointProviderPreset(name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
   EndpointProviderPreset(name: "OpenCode Zen", url: "https://opencode.ai/zen/v1"),
   EndpointProviderPreset(name: "Hugging Face", url: "https://router.huggingface.co/v1"),
+  EndpointProviderPreset(name: "Anthropic", url: "https://api.anthropic.com/v1"),
+  EndpointProviderPreset(
+    name: "Google Gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta/openai"
+  ),
   EndpointProviderPreset(name: "Mistral", url: "https://api.mistral.ai/v1"),
   EndpointProviderPreset(name: "xAI", url: "https://api.x.ai/v1"),
   EndpointProviderPreset(name: "DeepSeek", url: "https://api.deepseek.com/v1"),
