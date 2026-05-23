@@ -964,7 +964,7 @@ enum EndpointAuthMethod: String, Codable, CaseIterable, Identifiable, Sendable {
   var displayName: String {
     switch self {
     case .apiKey: "API Key"
-    case .oauth: "OpenAI Auth (Auth0)"
+    case .oauth: "OAuth"
     }
   }
 }
@@ -985,6 +985,8 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   var oauthRedirectURI: String
   var oauthRefreshToken: String
   var oauthAccessTokenExpiresAt: Date?
+  var oauthAuthorizeURL: String
+  var oauthTokenURL: String
 
   init(
     id: UUID = UUID(),
@@ -1001,7 +1003,9 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     oauthScope: String = "",
     oauthRedirectURI: String = "",
     oauthRefreshToken: String = "",
-    oauthAccessTokenExpiresAt: Date? = nil
+    oauthAccessTokenExpiresAt: Date? = nil,
+    oauthAuthorizeURL: String = "",
+    oauthTokenURL: String = ""
   ) {
     self.id = id
     self.name = name
@@ -1018,12 +1022,15 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     self.oauthRedirectURI = oauthRedirectURI
     self.oauthRefreshToken = oauthRefreshToken
     self.oauthAccessTokenExpiresAt = oauthAccessTokenExpiresAt
+    self.oauthAuthorizeURL = oauthAuthorizeURL
+    self.oauthTokenURL = oauthTokenURL
   }
 
   enum CodingKeys: String, CodingKey {
     case id, name, baseURL, apiKey, defaultModel, defaultReasoningLevel, isEnabled
     case authMethod, oauthIssuer, oauthClientID, oauthAudience, oauthScope, oauthRedirectURI
     case oauthRefreshToken, oauthAccessTokenExpiresAt
+    case oauthAuthorizeURL, oauthTokenURL
   }
 
   init(from decoder: Decoder) throws {
@@ -1045,6 +1052,8 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     oauthRefreshToken = (try? c.decode(String.self, forKey: .oauthRefreshToken)) ?? ""
     oauthAccessTokenExpiresAt =
       try? c.decode(Date.self, forKey: .oauthAccessTokenExpiresAt)
+    oauthAuthorizeURL = (try? c.decode(String.self, forKey: .oauthAuthorizeURL)) ?? ""
+    oauthTokenURL = (try? c.decode(String.self, forKey: .oauthTokenURL)) ?? ""
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1064,15 +1073,39 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     try c.encode(oauthRedirectURI, forKey: .oauthRedirectURI)
     try c.encode(oauthRefreshToken, forKey: .oauthRefreshToken)
     try c.encodeIfPresent(oauthAccessTokenExpiresAt, forKey: .oauthAccessTokenExpiresAt)
+    try c.encode(oauthAuthorizeURL, forKey: .oauthAuthorizeURL)
+    try c.encode(oauthTokenURL, forKey: .oauthTokenURL)
   }
 
-  static let openAIAuthDefaults = OpenAIAuth0Defaults(
+  static let openAIAuthDefaults = OAuthPresetDefaults(
     issuer: "https://auth.openai.com",
     clientID: "",
     audience: "https://api.openai.com/v1",
     scope: "openid profile email offline_access",
     redirectURI: "pocketmai://oauth/callback",
     baseURL: "https://api.openai.com/v1"
+  )
+
+  static let anthropicOAuthDefaults = OAuthPresetDefaults(
+    issuer: "https://claude.ai",
+    clientID: "",
+    audience: "",
+    scope: "org:create_api_key user:profile user:inference",
+    redirectURI: "pocketmai://oauth/callback",
+    baseURL: "https://api.anthropic.com/v1",
+    authorizeURL: "https://claude.ai/oauth/authorize",
+    tokenURL: "https://console.anthropic.com/v1/oauth/token"
+  )
+
+  static let googleOAuthDefaults = OAuthPresetDefaults(
+    issuer: "https://accounts.google.com",
+    clientID: "",
+    audience: "",
+    scope: "https://www.googleapis.com/auth/cloud-platform",
+    redirectURI: "pocketmai://oauth/callback",
+    baseURL: "",
+    authorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenURL: "https://oauth2.googleapis.com/token"
   )
 
   var hasOAuthAccessToken: Bool {
@@ -1086,13 +1119,35 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
-struct OpenAIAuth0Defaults: Sendable {
+struct OAuthPresetDefaults: Sendable {
   let issuer: String
   let clientID: String
   let audience: String
   let scope: String
   let redirectURI: String
   let baseURL: String
+  let authorizeURL: String
+  let tokenURL: String
+
+  init(
+    issuer: String,
+    clientID: String,
+    audience: String,
+    scope: String,
+    redirectURI: String,
+    baseURL: String,
+    authorizeURL: String = "",
+    tokenURL: String = ""
+  ) {
+    self.issuer = issuer
+    self.clientID = clientID
+    self.audience = audience
+    self.scope = scope
+    self.redirectURI = redirectURI
+    self.baseURL = baseURL
+    self.authorizeURL = authorizeURL
+    self.tokenURL = tokenURL
+  }
 }
 
 struct ConversationExportEnvelope: Codable, Equatable, Sendable {
