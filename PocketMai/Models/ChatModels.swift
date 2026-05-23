@@ -955,6 +955,20 @@ extension NativeToolSettings {
   }
 }
 
+enum EndpointAuthMethod: String, Codable, CaseIterable, Identifiable, Sendable {
+  case apiKey
+  case oauth
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .apiKey: "API Key"
+    case .oauth: "OpenAI Auth (Auth0)"
+    }
+  }
+}
+
 struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   var id: UUID
   var name: String
@@ -963,6 +977,14 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
   var defaultModel: String
   var defaultReasoningLevel: ReasoningLevel
   var isEnabled: Bool
+  var authMethod: EndpointAuthMethod
+  var oauthIssuer: String
+  var oauthClientID: String
+  var oauthAudience: String
+  var oauthScope: String
+  var oauthRedirectURI: String
+  var oauthRefreshToken: String
+  var oauthAccessTokenExpiresAt: Date?
 
   init(
     id: UUID = UUID(),
@@ -971,7 +993,15 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     apiKey: String = "",
     defaultModel: String = "",
     defaultReasoningLevel: ReasoningLevel = .automatic,
-    isEnabled: Bool = true
+    isEnabled: Bool = true,
+    authMethod: EndpointAuthMethod = .apiKey,
+    oauthIssuer: String = "",
+    oauthClientID: String = "",
+    oauthAudience: String = "",
+    oauthScope: String = "",
+    oauthRedirectURI: String = "",
+    oauthRefreshToken: String = "",
+    oauthAccessTokenExpiresAt: Date? = nil
   ) {
     self.id = id
     self.name = name
@@ -980,10 +1010,20 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     self.defaultModel = defaultModel
     self.defaultReasoningLevel = defaultReasoningLevel
     self.isEnabled = isEnabled
+    self.authMethod = authMethod
+    self.oauthIssuer = oauthIssuer
+    self.oauthClientID = oauthClientID
+    self.oauthAudience = oauthAudience
+    self.oauthScope = oauthScope
+    self.oauthRedirectURI = oauthRedirectURI
+    self.oauthRefreshToken = oauthRefreshToken
+    self.oauthAccessTokenExpiresAt = oauthAccessTokenExpiresAt
   }
 
   enum CodingKeys: String, CodingKey {
     case id, name, baseURL, apiKey, defaultModel, defaultReasoningLevel, isEnabled
+    case authMethod, oauthIssuer, oauthClientID, oauthAudience, oauthScope, oauthRedirectURI
+    case oauthRefreshToken, oauthAccessTokenExpiresAt
   }
 
   init(from decoder: Decoder) throws {
@@ -996,6 +1036,15 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     defaultReasoningLevel =
       (try? c.decode(ReasoningLevel.self, forKey: .defaultReasoningLevel)) ?? .automatic
     isEnabled = try c.decode(Bool.self, forKey: .isEnabled)
+    authMethod = (try? c.decode(EndpointAuthMethod.self, forKey: .authMethod)) ?? .apiKey
+    oauthIssuer = (try? c.decode(String.self, forKey: .oauthIssuer)) ?? ""
+    oauthClientID = (try? c.decode(String.self, forKey: .oauthClientID)) ?? ""
+    oauthAudience = (try? c.decode(String.self, forKey: .oauthAudience)) ?? ""
+    oauthScope = (try? c.decode(String.self, forKey: .oauthScope)) ?? ""
+    oauthRedirectURI = (try? c.decode(String.self, forKey: .oauthRedirectURI)) ?? ""
+    oauthRefreshToken = (try? c.decode(String.self, forKey: .oauthRefreshToken)) ?? ""
+    oauthAccessTokenExpiresAt =
+      try? c.decode(Date.self, forKey: .oauthAccessTokenExpiresAt)
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1007,7 +1056,43 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     try c.encode(defaultModel, forKey: .defaultModel)
     try c.encode(defaultReasoningLevel, forKey: .defaultReasoningLevel)
     try c.encode(isEnabled, forKey: .isEnabled)
+    try c.encode(authMethod, forKey: .authMethod)
+    try c.encode(oauthIssuer, forKey: .oauthIssuer)
+    try c.encode(oauthClientID, forKey: .oauthClientID)
+    try c.encode(oauthAudience, forKey: .oauthAudience)
+    try c.encode(oauthScope, forKey: .oauthScope)
+    try c.encode(oauthRedirectURI, forKey: .oauthRedirectURI)
+    try c.encode(oauthRefreshToken, forKey: .oauthRefreshToken)
+    try c.encodeIfPresent(oauthAccessTokenExpiresAt, forKey: .oauthAccessTokenExpiresAt)
   }
+
+  static let openAIAuthDefaults = OpenAIAuth0Defaults(
+    issuer: "https://auth.openai.com",
+    clientID: "",
+    audience: "https://api.openai.com/v1",
+    scope: "openid profile email offline_access",
+    redirectURI: "pocketmai://oauth/callback",
+    baseURL: "https://api.openai.com/v1"
+  )
+
+  var hasOAuthAccessToken: Bool {
+    authMethod == .oauth
+      && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var oauthAccessTokenExpired: Bool {
+    guard authMethod == .oauth, let expiry = oauthAccessTokenExpiresAt else { return false }
+    return expiry <= Date()
+  }
+}
+
+struct OpenAIAuth0Defaults: Sendable {
+  let issuer: String
+  let clientID: String
+  let audience: String
+  let scope: String
+  let redirectURI: String
+  let baseURL: String
 }
 
 struct ConversationExportEnvelope: Codable, Equatable, Sendable {
