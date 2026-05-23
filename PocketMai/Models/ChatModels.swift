@@ -1097,13 +1097,16 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     tokenURL: "https://console.anthropic.com/v1/oauth/token"
   )
 
+  // Vertex AI's OpenAI-compatible endpoint requires the user's GCP project ID and a
+  // region — supply a placeholder so the field is editable rather than blank.
   static let googleOAuthDefaults = OAuthPresetDefaults(
     issuer: "https://accounts.google.com",
     clientID: "",
     audience: "",
     scope: "https://www.googleapis.com/auth/cloud-platform",
     redirectURI: "pocketmai://oauth/callback",
-    baseURL: "",
+    baseURL:
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/us-central1/endpoints/openapi",
     authorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenURL: "https://oauth2.googleapis.com/token"
   )
