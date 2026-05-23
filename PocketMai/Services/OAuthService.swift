@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 import UIKit
 
-enum OAuthAuth0Error: LocalizedError {
+enum OAuthError: LocalizedError {
   case invalidConfiguration(String)
   case invalidAuthorizationURL
   case invalidRedirectURL(String)
@@ -18,9 +18,9 @@ enum OAuthAuth0Error: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .invalidConfiguration(let reason):
-      return "OpenAI Auth configuration is incomplete: \(reason)"
+      return "OAuth configuration is incomplete: \(reason)"
     case .invalidAuthorizationURL:
-      return "Could not build the Auth0 authorization URL."
+      return "Could not build the OAuth authorization URL."
     case .invalidRedirectURL(let value):
       return "Invalid redirect URI: \(value)"
     case .userCancelled:
@@ -41,17 +41,17 @@ enum OAuthAuth0Error: LocalizedError {
   }
 }
 
-struct OAuthAuth0Tokens: Sendable {
+struct OAuthTokens: Sendable {
   let accessToken: String
   let refreshToken: String?
   let expiresAt: Date?
 }
 
 @MainActor
-enum OAuthAuth0Service {
+enum OAuthService {
   /// Run the full PKCE authorization-code flow for the given endpoint configuration.
   /// Returns the freshly issued tokens on success.
-  static func signIn(endpoint: OpenAIEndpoint) async throws -> OAuthAuth0Tokens {
+  static func signIn(endpoint: OpenAIEndpoint) async throws -> OAuthTokens {
     let config = try validatedConfiguration(for: endpoint)
 
     let verifier = generateCodeVerifier()
@@ -70,13 +70,13 @@ enum OAuthAuth0Service {
     let (code, returnedState, errorMessage) = parseCallback(callbackURL)
 
     if let errorMessage {
-      throw OAuthAuth0Error.authorizationServerError(errorMessage)
+      throw OAuthError.authorizationServerError(errorMessage)
     }
     guard let code, !code.isEmpty else {
-      throw OAuthAuth0Error.missingAuthorizationCode
+      throw OAuthError.missingAuthorizationCode
     }
     guard returnedState == state else {
-      throw OAuthAuth0Error.stateMismatch
+      throw OAuthError.stateMismatch
     }
 
     return try await exchangeCode(
@@ -86,11 +86,11 @@ enum OAuthAuth0Service {
   }
 
   /// Use the stored refresh token to obtain a new access token.
-  static func refresh(endpoint: OpenAIEndpoint) async throws -> OAuthAuth0Tokens {
+  static func refresh(endpoint: OpenAIEndpoint) async throws -> OAuthTokens {
     let config = try validatedConfiguration(for: endpoint)
     let refreshToken = endpoint.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !refreshToken.isEmpty else {
-      throw OAuthAuth0Error.noRefreshToken
+      throw OAuthError.noRefreshToken
     }
     return try await performTokenRequest(
       parameters: [
@@ -105,19 +105,17 @@ enum OAuthAuth0Service {
   // MARK: - Authorization request
 
   private static func buildAuthorizationURL(
-    config: Auth0Configuration,
+    config: OAuthConfiguration,
     codeChallenge: String,
     state: String
   ) throws -> URL {
-    guard var components = URLComponents(string: config.issuer) else {
-      throw OAuthAuth0Error.invalidConfiguration("issuer is not a valid URL")
+    guard var components = URLComponents(url: config.authorizeURL, resolvingAgainstBaseURL: false)
+    else {
+      throw OAuthError.invalidAuthorizationURL
     }
-    let trimmedPath = components.path.hasSuffix("/")
-      ? String(components.path.dropLast())
-      : components.path
-    components.path = trimmedPath + "/authorize"
 
-    var items: [URLQueryItem] = [
+    var items: [URLQueryItem] = components.queryItems ?? []
+    items.append(contentsOf: [
       URLQueryItem(name: "response_type", value: "code"),
       URLQueryItem(name: "client_id", value: config.clientID),
       URLQueryItem(name: "redirect_uri", value: config.redirectURI),
@@ -125,14 +123,14 @@ enum OAuthAuth0Service {
       URLQueryItem(name: "code_challenge", value: codeChallenge),
       URLQueryItem(name: "code_challenge_method", value: "S256"),
       URLQueryItem(name: "state", value: state),
-    ]
+    ])
     if !config.audience.isEmpty {
       items.append(URLQueryItem(name: "audience", value: config.audience))
     }
     components.queryItems = items
 
     guard let url = components.url else {
-      throw OAuthAuth0Error.invalidAuthorizationURL
+      throw OAuthError.invalidAuthorizationURL
     }
     return url
   }
@@ -150,7 +148,7 @@ enum OAuthAuth0Service {
         // Retain presenter for the lifetime of the session.
         _ = presenter
         if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
-          continuation.resume(throwing: OAuthAuth0Error.userCancelled)
+          continuation.resume(throwing: OAuthError.userCancelled)
           return
         }
         if let error {
@@ -158,7 +156,7 @@ enum OAuthAuth0Service {
           return
         }
         guard let callback else {
-          continuation.resume(throwing: OAuthAuth0Error.missingAuthorizationCode)
+          continuation.resume(throwing: OAuthError.missingAuthorizationCode)
           return
         }
         continuation.resume(returning: callback)
@@ -166,7 +164,7 @@ enum OAuthAuth0Service {
       session.prefersEphemeralWebBrowserSession = false
       session.presentationContextProvider = presenter
       if !session.start() {
-        continuation.resume(throwing: OAuthAuth0Error.invalidAuthorizationURL)
+        continuation.resume(throwing: OAuthError.invalidAuthorizationURL)
       }
     }
   }
@@ -197,8 +195,8 @@ enum OAuthAuth0Service {
   private static func exchangeCode(
     code: String,
     verifier: String,
-    config: Auth0Configuration
-  ) async throws -> OAuthAuth0Tokens {
+    config: OAuthConfiguration
+  ) async throws -> OAuthTokens {
     try await performTokenRequest(
       parameters: [
         "grant_type": "authorization_code",
@@ -213,11 +211,10 @@ enum OAuthAuth0Service {
 
   private static func performTokenRequest(
     parameters: [String: String],
-    config: Auth0Configuration,
+    config: OAuthConfiguration,
     existingRefreshToken: String?
-  ) async throws -> OAuthAuth0Tokens {
-    let tokenURL = try buildTokenURL(config: config)
-    var request = URLRequest(url: tokenURL)
+  ) async throws -> OAuthTokens {
+    var request = URLRequest(url: config.tokenURL)
     request.httpMethod = "POST"
     request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -227,76 +224,104 @@ enum OAuthAuth0Service {
     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
     if !(200..<300).contains(status) {
       let message = parseTokenError(data: data)
-        ?? "HTTP \(status) from \(tokenURL.absoluteString)"
-      throw OAuthAuth0Error.tokenExchangeFailed(message)
+        ?? "HTTP \(status) from \(config.tokenURL.absoluteString)"
+      throw OAuthError.tokenExchangeFailed(message)
     }
 
     let decoded = try JSONDecoder().decode(TokenResponse.self, from: data)
     let access = decoded.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     guard !access.isEmpty else {
-      throw OAuthAuth0Error.missingAccessToken
+      throw OAuthError.missingAccessToken
     }
     let refresh =
       decoded.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
       ?? existingRefreshToken
     let expiresAt: Date? = decoded.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) }
-    return OAuthAuth0Tokens(
+    return OAuthTokens(
       accessToken: access,
       refreshToken: refresh,
       expiresAt: expiresAt)
   }
 
-  private static func buildTokenURL(config: Auth0Configuration) throws -> URL {
-    guard var components = URLComponents(string: config.issuer) else {
-      throw OAuthAuth0Error.invalidConfiguration("issuer is not a valid URL")
-    }
-    let trimmedPath = components.path.hasSuffix("/")
-      ? String(components.path.dropLast())
-      : components.path
-    components.path = trimmedPath + "/oauth/token"
-    components.queryItems = nil
-    guard let url = components.url else {
-      throw OAuthAuth0Error.invalidAuthorizationURL
-    }
-    return url
-  }
-
   // MARK: - Helpers
 
   private static func validatedConfiguration(for endpoint: OpenAIEndpoint) throws
-    -> Auth0Configuration
+    -> OAuthConfiguration
   {
     let issuer = endpoint.oauthIssuer.trimmingCharacters(in: .whitespacesAndNewlines)
     let clientID = endpoint.oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
     let scope = endpoint.oauthScope.trimmingCharacters(in: .whitespacesAndNewlines)
     let redirectURI = endpoint.oauthRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines)
     let audience = endpoint.oauthAudience.trimmingCharacters(in: .whitespacesAndNewlines)
+    let authorizeOverride = endpoint.oauthAuthorizeURL
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let tokenOverride = endpoint.oauthTokenURL.trimmingCharacters(in: .whitespacesAndNewlines)
 
-    guard !issuer.isEmpty,
-      let issuerURL = URL(string: issuer),
-      let issuerScheme = issuerURL.scheme?.lowercased(),
-      issuerScheme == "https"
-    else {
-      throw OAuthAuth0Error.invalidConfiguration("Issuer must be an https:// URL.")
-    }
     guard !clientID.isEmpty else {
-      throw OAuthAuth0Error.invalidConfiguration("Client ID is required.")
+      throw OAuthError.invalidConfiguration("Client ID is required.")
     }
     guard !redirectURI.isEmpty,
       let redirectURL = URL(string: redirectURI),
       let scheme = redirectURL.scheme?.lowercased(),
       !scheme.isEmpty
     else {
-      throw OAuthAuth0Error.invalidRedirectURL(redirectURI)
+      throw OAuthError.invalidRedirectURL(redirectURI)
     }
 
-    return Auth0Configuration(
+    let authorizeURL = try resolveEndpointURL(
+      override: authorizeOverride,
       issuer: issuer,
+      path: "/authorize",
+      fieldDescription: "authorize URL")
+    let tokenURL = try resolveEndpointURL(
+      override: tokenOverride,
+      issuer: issuer,
+      path: "/oauth/token",
+      fieldDescription: "token URL")
+
+    return OAuthConfiguration(
+      authorizeURL: authorizeURL,
+      tokenURL: tokenURL,
       clientID: clientID,
       audience: audience,
       scope: scope.isEmpty ? "openid profile email offline_access" : scope,
       redirectURI: redirectURI,
       callbackScheme: scheme)
+  }
+
+  /// Returns the explicit override URL when set, otherwise composes `<issuer><path>`.
+  /// Throws `invalidConfiguration` when neither source produces a valid https URL.
+  private static func resolveEndpointURL(
+    override: String,
+    issuer: String,
+    path: String,
+    fieldDescription: String
+  ) throws -> URL {
+    if !override.isEmpty {
+      guard let url = URL(string: override),
+        url.scheme?.lowercased() == "https"
+      else {
+        throw OAuthError.invalidConfiguration("\(fieldDescription) must be an https:// URL.")
+      }
+      return url
+    }
+
+    guard !issuer.isEmpty,
+      var components = URLComponents(string: issuer),
+      components.scheme?.lowercased() == "https"
+    else {
+      throw OAuthError.invalidConfiguration(
+        "Issuer must be an https:// URL when no \(fieldDescription) is provided.")
+    }
+    let trimmedPath = components.path.hasSuffix("/")
+      ? String(components.path.dropLast())
+      : components.path
+    components.path = trimmedPath + path
+    components.queryItems = nil
+    guard let url = components.url else {
+      throw OAuthError.invalidConfiguration("Could not build \(fieldDescription) from issuer.")
+    }
+    return url
   }
 
   private static func generateCodeVerifier(length: Int = 64) -> String {
@@ -352,8 +377,9 @@ enum OAuthAuth0Service {
   }
 }
 
-private struct Auth0Configuration: Sendable {
-  let issuer: String
+private struct OAuthConfiguration: Sendable {
+  let authorizeURL: URL
+  let tokenURL: URL
   let clientID: String
   let audience: String
   let scope: String
