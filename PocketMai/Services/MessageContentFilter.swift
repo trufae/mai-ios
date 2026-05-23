@@ -72,10 +72,11 @@ enum MessageContentFilter {
     var result = text
     let tags = includeReasoning ? promptStripTags.subtracting(["think"]) : promptStripTags
     for tag in tags {
-      let pattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
+      let anchor = tag == "think" ? "\\A\\s*" : ""
+      let pattern = "\(anchor)<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
       result = result.replacingOccurrences(
         of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
-      let unclosedPattern = "<\\s*\(tag)\\b[^>]*>[\\s\\S]*$"
+      let unclosedPattern = "\(anchor)<\\s*\(tag)\\b[^>]*>[\\s\\S]*$"
       result = result.replacingOccurrences(
         of: unclosedPattern, with: "", options: [.regularExpression, .caseInsensitive])
     }
@@ -94,12 +95,20 @@ enum MessageContentFilter {
   private static func nextOpening(in text: String, from start: String.Index) -> (
     tag: String, range: Range<String.Index>
   )? {
-    hiddenTags.compactMap { tag in
-      text.range(
-        of: openingPattern(for: tag),
-        options: [.regularExpression, .caseInsensitive],
-        range: start..<text.endIndex
-      ).map { (tag, $0) }
+    hiddenTags.compactMap { tag -> (tag: String, range: Range<String.Index>)? in
+      guard
+        let range = text.range(
+          of: openingPattern(for: tag),
+          options: [.regularExpression, .caseInsensitive],
+          range: start..<text.endIndex
+        )
+      else { return nil }
+      // <think> only counts as reasoning when it leads the message; otherwise
+      // it's a literal mention (code spans, blockquoted examples, etc.).
+      if tag == "think", text[..<range.lowerBound].contains(where: { !$0.isWhitespace }) {
+        return nil
+      }
+      return (tag, range)
     }
     .min { lhs, rhs in lhs.range.lowerBound < rhs.range.lowerBound }
   }

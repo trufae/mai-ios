@@ -156,7 +156,8 @@ private struct MessageBubbleContent: View, Equatable {
           content: isStreaming ? Self.tailWindow(section.content) : section.content,
           monospaced: false,
           dimmedContent: true,
-          initiallyExpanded: showThinking
+          initiallyExpanded: showThinking,
+          markdownAppearance: canRenderMarkdown ? appearance : nil
         )
       }
       ForEach(prepared.transcriptSections) { section in
@@ -877,6 +878,7 @@ private struct FoldableMetaSection: View {
   var monospaced: Bool
   var dimmedContent: Bool = false
   var initiallyExpanded: Bool = false
+  var markdownAppearance: AppearanceSettings? = nil
 
   @State private var expanded: Bool = false
 
@@ -886,7 +888,8 @@ private struct FoldableMetaSection: View {
     content: String,
     monospaced: Bool,
     dimmedContent: Bool = false,
-    initiallyExpanded: Bool = false
+    initiallyExpanded: Bool = false,
+    markdownAppearance: AppearanceSettings? = nil
   ) {
     self.title = title
     self.systemImage = systemImage
@@ -894,6 +897,7 @@ private struct FoldableMetaSection: View {
     self.monospaced = monospaced
     self.dimmedContent = dimmedContent
     self.initiallyExpanded = initiallyExpanded
+    self.markdownAppearance = markdownAppearance
     self._expanded = State(initialValue: initiallyExpanded)
   }
 
@@ -922,13 +926,22 @@ private struct FoldableMetaSection: View {
       .buttonStyle(.plain)
       if expanded {
         Divider().opacity(0.4)
-        Text(content)
-          .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
-          .foregroundStyle(dimmedContent ? Color.secondary : Color.primary)
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
+        Group {
+          if let markdownAppearance, MarkdownParser.mayContainMarkdown(content) {
+            MarkdownContentView(
+              text: content, appearance: markdownAppearance,
+              allowsTextSelection: true,
+              foregroundStyle: dimmedContent ? Color.secondary : nil)
+          } else {
+            Text(content)
+              .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
+              .foregroundStyle(dimmedContent ? Color.secondary : Color.primary)
+              .textSelection(.enabled)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
       }
     }
     .background(.thinMaterial.opacity(0.55))
