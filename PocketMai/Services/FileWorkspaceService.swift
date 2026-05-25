@@ -30,6 +30,13 @@ enum PocketMaiDirectories {
     appDataURL.appendingPathComponent("voice-recordings", isDirectory: true)
   }
 
+  static var localMLXModelCacheURL: URL {
+    documentsURL
+      .appendingPathComponent("Models", isDirectory: true)
+      .appendingPathComponent("huggingface", isDirectory: true)
+      .appendingPathComponent("hub", isDirectory: true)
+  }
+
   private static var legacyDocumentsAppDataURL: URL {
     documentsURL.appendingPathComponent(appPrivateDirectoryName, isDirectory: true)
   }
@@ -51,6 +58,7 @@ enum PocketMaiDirectories {
   static func prepareStorage(fileManager: FileManager = .default) {
     try? fileManager.createDirectory(at: appDataURL, withIntermediateDirectories: true)
     try? fileManager.createDirectory(at: voiceRecordingsURL, withIntermediateDirectories: true)
+    try? ensureLocalMLXModelCache(fileManager: fileManager)
     try? fileManager.createDirectory(at: filesWorkspaceURL, withIntermediateDirectories: true)
     migrateLegacyDocumentsAppData(fileManager: fileManager)
   }
@@ -59,6 +67,19 @@ enum PocketMaiDirectories {
   static func ensureVoiceRecordings() throws -> URL {
     let url = voiceRecordingsURL
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  @discardableResult
+  static func ensureLocalMLXModelCache(fileManager: FileManager = .default) throws -> URL {
+    let url = localMLXModelCacheURL
+    try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+
+    var modelsRoot = documentsURL.appendingPathComponent("Models", isDirectory: true)
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try? modelsRoot.setResourceValues(values)
+
     return url
   }
 

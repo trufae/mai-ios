@@ -20,14 +20,29 @@ struct CachedMLXModel: Identifiable, Equatable {
   }
 }
 
+enum LocalMLXHub {
+  static let cache = HubCache(cacheDirectory: PocketMaiDirectories.localMLXModelCacheURL)
+  static let client = HubClient(cache: cache)
+}
+
 enum LocalMLXModelCache {
   private static let modelDirectoryPrefix = "models--"
+  private static let modelWeightFileExtensions: Set<String> = [
+    "bin", "gguf", "npz", "safetensors",
+  ]
 
   static var cacheRootURL: URL {
-    HubClient.default.cache.cacheDirectory
+    LocalMLXHub.cache.cacheDirectory
+  }
+
+  private static var legacyDefaultCacheRootURL: URL {
+    URL.cachesDirectory
+      .appendingPathComponent("huggingface", isDirectory: true)
+      .appendingPathComponent("hub", isDirectory: true)
   }
 
   static func listModels() -> [CachedMLXModel] {
+    prepareCacheRoot()
     let root = cacheRootURL
     let fileManager = FileManager.default
     guard
@@ -43,6 +58,7 @@ enum LocalMLXModelCache {
     return urls.compactMap { url in
       let directoryName = url.lastPathComponent
       guard let repoID = repoID(fromCacheDirectoryName: directoryName) else { return nil }
+      guard isUsableModelCacheDirectory(url) else { return nil }
       guard
         let resourceValues = try? url.resourceValues(forKeys: [
           .isDirectoryKey, .contentModificationDateKey,
@@ -66,6 +82,7 @@ enum LocalMLXModelCache {
   }
 
   static func listRepositoryIDs() -> [String] {
+    prepareCacheRoot()
     let root = cacheRootURL
     let fileManager = FileManager.default
     guard
@@ -88,6 +105,7 @@ enum LocalMLXModelCache {
       else {
         return nil
       }
+      guard isUsableModelCacheDirectory(url) else { return nil }
       return repoID
     }
     .sorted {
@@ -96,10 +114,12 @@ enum LocalMLXModelCache {
   }
 
   static func containsRepository(_ repoID: String) -> Bool {
+    prepareCacheRoot()
     guard let url = cacheDirectoryURL(forRepoID: repoID) else { return false }
     var isDirectory: ObjCBool = false
     return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
       && isDirectory.boolValue
+      && isUsableModelCacheDirectory(url)
   }
 
   static func cacheDirectoryName(for repoID: String) -> String? {
@@ -142,16 +162,182 @@ enum LocalMLXModelCache {
   }
 
   private static func deleteCacheEntries(named cacheDirectoryName: String) throws {
-    let root = cacheRootURL
-    let cacheEntries = [
+    prepareCacheRoot()
+    var firstError: Error?
+    for root in cacheRootsForDeletion() {
+      for url in cacheEntryURLs(named: cacheDirectoryName, under: root) {
+        do {
+          try removeItemIfPresent(url, under: root)
+        } catch {
+          if firstError == nil {
+            firstError = error
+          }
+        }
+      }
+    }
+    if let firstError {
+      throw firstError
+    }
+  }
+
+  private static func cacheRootsForDeletion() -> [URL] {
+    let roots = [
+      cacheRootURL,
+      legacyDefaultCacheRootURL,
+    ]
+    var seen = Set<String>()
+    return roots.compactMap { url in
+      let path = url.standardizedFileURL.path
+      guard seen.insert(path).inserted else { return nil }
+      return url
+    }
+  }
+
+  private static func cacheEntryURLs(named cacheDirectoryName: String, under root: URL) -> [URL] {
+    [
       root.appendingPathComponent(cacheDirectoryName),
       root.appendingPathComponent(".metadata").appendingPathComponent(cacheDirectoryName),
       root.appendingPathComponent(".locks").appendingPathComponent(cacheDirectoryName),
     ]
+  }
 
-    for url in cacheEntries {
-      try removeItemIfPresent(url, under: root)
+  private static func prepareCacheRoot() {
+    _ = try? PocketMaiDirectories.ensureLocalMLXModelCache()
+    migrateLegacyDefaultCacheIfNeeded()
+  }
+
+  private static func migrateLegacyDefaultCacheIfNeeded(fileManager: FileManager = .default) {
+    let sourceRoot = legacyDefaultCacheRootURL.standardizedFileURL
+    let destinationRoot = cacheRootURL.standardizedFileURL
+    guard sourceRoot.path != destinationRoot.path else { return }
+
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(atPath: sourceRoot.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      return
     }
+
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: sourceRoot,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return
+    }
+
+    try? fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+    for entry in entries {
+      let name = entry.lastPathComponent
+      guard repoID(fromCacheDirectoryName: name) != nil else { continue }
+      migrateCacheEntry(named: name, from: sourceRoot, to: destinationRoot, fileManager: fileManager)
+    }
+  }
+
+  private static func migrateCacheEntry(
+    named cacheDirectoryName: String,
+    from sourceRoot: URL,
+    to destinationRoot: URL,
+    fileManager: FileManager
+  ) {
+    for sourceURL in cacheEntryURLs(named: cacheDirectoryName, under: sourceRoot) {
+      let relativePath = String(sourceURL.path.dropFirst(sourceRoot.path.count + 1))
+      let destinationURL = appendingRelativePath(relativePath, to: destinationRoot)
+      guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+
+      if fileManager.fileExists(atPath: destinationURL.path) {
+        try? fileManager.removeItem(at: sourceURL)
+        continue
+      }
+
+      try? fileManager.createDirectory(
+        at: destinationURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true)
+
+      do {
+        try fileManager.moveItem(at: sourceURL, to: destinationURL)
+      } catch {
+        do {
+          try fileManager.copyItem(at: sourceURL, to: destinationURL)
+          try? fileManager.removeItem(at: sourceURL)
+        } catch {
+          try? fileManager.removeItem(at: destinationURL)
+        }
+      }
+    }
+  }
+
+  private static func appendingRelativePath(_ relativePath: String, to root: URL) -> URL {
+    var url = root
+    for component in relativePath.split(separator: "/", omittingEmptySubsequences: true) {
+      url.appendPathComponent(String(component))
+    }
+    return url
+  }
+
+  private static func isUsableModelCacheDirectory(_ url: URL) -> Bool {
+    let snapshotsURL = url.appendingPathComponent("snapshots", isDirectory: true)
+    guard
+      let snapshotURLs = try? FileManager.default.contentsOfDirectory(
+        at: snapshotsURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return false
+    }
+
+    return snapshotURLs.contains { isUsableSnapshotDirectory($0) }
+  }
+
+  private static func isUsableSnapshotDirectory(_ url: URL) -> Bool {
+    guard isDirectory(url) else { return false }
+    guard isReachableFile(url.appendingPathComponent("config.json")) else { return false }
+    return containsReachableModelWeights(in: url)
+  }
+
+  private static func containsReachableModelWeights(in url: URL) -> Bool {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: url,
+        includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return false
+    }
+
+    for case let fileURL as URL in enumerator {
+      guard modelWeightFileExtensions.contains(fileURL.pathExtension.lowercased()) else {
+        continue
+      }
+      if isReachableFile(fileURL) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private static func isDirectory(_ url: URL) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+      && isDirectory.boolValue
+  }
+
+  private static func isReachableFile(_ url: URL) -> Bool {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+      !isDirectory.boolValue
+    else {
+      return false
+    }
+
+    let resolvedURL = url.resolvingSymlinksInPath()
+    var resolvedIsDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &resolvedIsDirectory)
+      && !resolvedIsDirectory.boolValue
   }
 
   private static func directorySize(_ url: URL) -> Int64 {

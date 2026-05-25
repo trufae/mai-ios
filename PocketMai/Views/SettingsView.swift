@@ -1192,7 +1192,7 @@ struct SettingsView: View {
         "Enable FilesData tools",
         isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
       Text(
-        "The callable Files tools can list folders, read, write, append, rename, and delete UTF-8 text files in FilesData. Writes can create folders. Downloaded MLX models are available read-only under Models."
+        "The callable Files tools can list folders, read, write, append, rename, and delete UTF-8 text files in FilesData. Writes can create folders. Downloaded MLX models are visible in the iOS Files app under Models, but unavailable to FilesData tools."
       )
       .font(.caption)
       .foregroundStyle(.secondary)

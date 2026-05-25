@@ -4,7 +4,7 @@ import MLXLMCommon
 
 // Owns the URLSession tasks used by Settings downloads so cancellation can close them immediately.
 struct LocalMLXImmediateCancelDownloader: Downloader {
-  private let hub = HubClient.default
+  private let hub = LocalMLXHub.client
 
   func download(
     id: String,
