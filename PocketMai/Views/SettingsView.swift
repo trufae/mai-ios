@@ -542,6 +542,15 @@ struct SettingsView: View {
     .font(.caption)
     .foregroundStyle(.secondary)
 
+    Toggle(
+      "Run PocketMai tools",
+      isOn: settingsBinding(\.openAPIServer.allowToolExecution))
+    Text(
+      "Off serves only the provider and model. On lets served requests use the selected tool configuration and returns tool run details when tools are called."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
     if let port = store.openAPIServerState.port {
       let configuredPort = store.settings.openAPIServer.port
       let statusText =

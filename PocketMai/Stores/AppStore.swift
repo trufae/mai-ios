@@ -914,10 +914,12 @@ final class AppStore: ObservableObject {
     _ input: OpenAPIServerCompletionInput,
     baseConversation: Conversation
   ) async throws -> OpenAPIServerCompletionOutput {
-    let requestSettings = openAPIServerRequestSettings()
+    let allowTools = settings.openAPIServer.allowToolExecution
+    let requestSettings = openAPIServerRequestSettings(allowTools: allowTools)
     let conversation = openAPIServerRequestConversation(
       from: baseConversation,
-      input: input)
+      input: input,
+      allowTools: allowTools)
     guard !conversation.messages.isEmpty else { throw OpenAPIServerAppError.emptyPrompt }
     guard !input.latestUserText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw OpenAPIServerAppError.emptyPrompt
@@ -927,6 +929,24 @@ final class AppStore: ObservableObject {
       settings: requestSettings)
     {
       throw OpenAPIServerAppError.unavailable(message)
+    }
+
+    if allowTools {
+      let result = try await AssistantToolLoop.runIsolated(
+        conversation: conversation,
+        settings: requestSettings,
+        baseContext: "",
+        store: self)
+      return OpenAPIServerCompletionOutput(
+        text: result.text,
+        model: effectiveModelName(for: conversation),
+        toolRuns: result.toolRuns.map {
+          OpenAPIServerToolRun(
+            name: $0.name,
+            argumentsJSON: $0.argumentsJSON,
+            result: $0.result,
+            isError: $0.isError)
+        })
     }
 
     let request = ChatCompletionRequest(
@@ -942,7 +962,8 @@ final class AppStore: ObservableObject {
 
   private func openAPIServerRequestConversation(
     from baseConversation: Conversation,
-    input: OpenAPIServerCompletionInput
+    input: OpenAPIServerCompletionInput,
+    allowTools: Bool
   ) -> Conversation {
     var conversation = baseConversation
     conversation.id = UUID()
@@ -951,15 +972,17 @@ final class AppStore: ObservableObject {
     conversation.updatedAt = Date()
     conversation.messages = input.chatMessagesForProxy()
     conversation.systemPromptID = Self.openAPIServerSystemPromptID
-    conversation.toolsEnabled = false
-    conversation.enabledTools = []
-    conversation.enabledMCPServers = []
-    conversation.enabledMCPTools = []
-    conversation.disabledMCPTools = []
     conversation.usesStreaming = false
     conversation.isPinned = false
     conversation.isArchived = false
     conversation.lastContextSignature = nil
+    if !allowTools {
+      conversation.toolsEnabled = false
+      conversation.enabledTools = []
+      conversation.enabledMCPServers = []
+      conversation.enabledMCPTools = []
+      conversation.disabledMCPTools = []
+    }
     if settings.openAPIServer.allowClientOverrides,
       let model = input.model?.trimmingCharacters(in: .whitespacesAndNewlines),
       !model.isEmpty
@@ -969,7 +992,7 @@ final class AppStore: ObservableObject {
     return conversation
   }
 
-  private func openAPIServerRequestSettings() -> AppSettings {
+  private func openAPIServerRequestSettings(allowTools: Bool) -> AppSettings {
     var requestSettings = settings
     requestSettings.systemPrompts = [
       SystemPrompt(
@@ -978,11 +1001,13 @@ final class AppStore: ObservableObject {
         text: "")
     ]
     requestSettings.defaultSystemPromptID = Self.openAPIServerSystemPromptID
-    requestSettings.defaultEnabledTools = []
-    requestSettings.defaultEnabledMCPServers = []
-    requestSettings.defaultEnabledMCPTools = []
-    requestSettings.mcpServers = []
     requestSettings.memory = ""
+    if !allowTools {
+      requestSettings.defaultEnabledTools = []
+      requestSettings.defaultEnabledMCPServers = []
+      requestSettings.defaultEnabledMCPTools = []
+      requestSettings.mcpServers = []
+    }
     return requestSettings
   }
 
@@ -1039,23 +1064,27 @@ final class AppStore: ObservableObject {
         "message": ["role": "assistant", "content": output.text],
         "done": false,
       ])
-      let doneChunk = jsonLine([
+      var done: [String: Any] = [
         "model": output.model,
         "created_at": timestamp,
         "done": true,
         "done_reason": "stop",
-      ])
+      ]
+      addOpenAPIServerToolRuns(output, to: &done)
+      let doneChunk = jsonLine(done)
       return .text(
         contentChunk + doneChunk,
         contentType: "application/x-ndjson; charset=utf-8")
     }
-    return .json([
+    var body: [String: Any] = [
       "model": output.model,
       "created_at": timestamp,
       "message": ["role": "assistant", "content": output.text],
       "done": true,
       "done_reason": "stop",
-    ])
+    ]
+    addOpenAPIServerToolRuns(output, to: &body)
+    return .json(body)
   }
 
   private func ollamaGenerateResponse(
@@ -1070,24 +1099,28 @@ final class AppStore: ObservableObject {
         "response": output.text,
         "done": false,
       ])
-      let doneChunk = jsonLine([
+      var done: [String: Any] = [
         "model": output.model,
         "created_at": timestamp,
         "response": "",
         "done": true,
         "done_reason": "stop",
-      ])
+      ]
+      addOpenAPIServerToolRuns(output, to: &done)
+      let doneChunk = jsonLine(done)
       return .text(
         contentChunk + doneChunk,
         contentType: "application/x-ndjson; charset=utf-8")
     }
-    return .json([
+    var body: [String: Any] = [
       "model": output.model,
       "created_at": timestamp,
       "response": output.text,
       "done": true,
       "done_reason": "stop",
-    ])
+    ]
+    addOpenAPIServerToolRuns(output, to: &body)
+    return .json(body)
   }
 
   private func openAIModelsResponse() -> OpenAPIServerHTTPResponse {
@@ -1124,7 +1157,7 @@ final class AppStore: ObservableObject {
           ]
         ],
       ])
-      let stopChunk = sseLine([
+      var stop: [String: Any] = [
         "id": id,
         "object": "chat.completion.chunk",
         "created": created,
@@ -1136,12 +1169,14 @@ final class AppStore: ObservableObject {
             "finish_reason": "stop",
           ]
         ],
-      ])
+      ]
+      addOpenAPIServerToolRuns(output, to: &stop)
+      let stopChunk = sseLine(stop)
       return .text(
         contentChunk + stopChunk + "data: [DONE]\n\n",
         contentType: "text/event-stream; charset=utf-8")
     }
-    return .json([
+    var body: [String: Any] = [
       "id": id,
       "object": "chat.completion",
       "created": created,
@@ -1153,7 +1188,24 @@ final class AppStore: ObservableObject {
           "finish_reason": "stop",
         ]
       ],
-    ])
+    ]
+    addOpenAPIServerToolRuns(output, to: &body)
+    return .json(body)
+  }
+
+  private func addOpenAPIServerToolRuns(
+    _ output: OpenAPIServerCompletionOutput,
+    to body: inout [String: Any]
+  ) {
+    guard !output.toolRuns.isEmpty else { return }
+    body["pocketmai_tool_calls"] = output.toolRuns.map {
+      [
+        "name": $0.name,
+        "arguments": $0.argumentsJSON,
+        "result": $0.result,
+        "is_error": $0.isError,
+      ] as [String: Any]
+    }
   }
 
   private func openAPIServerModelName(requested: String? = nil) -> String {
@@ -1753,11 +1805,23 @@ final class AppStore: ObservableObject {
     mode: ToolCallingMode,
     conversationID: UUID
   ) async -> ToolCallApprovalDecision {
+    await requestToolCallApproval(
+      call: call,
+      definitions: definitions,
+      mode: mode,
+      conversationTitle: conversation(withID: conversationID)?.displayTitle)
+  }
+
+  func requestToolCallApproval(
+    call: ParsedToolCall,
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversationTitle: String?
+  ) async -> ToolCallApprovalDecision {
     guard !settings.yoloModeEnabled else { return .approved(call) }
 
     let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
     let requestID = UUID()
-    let conversationTitle = conversation(withID: conversationID)?.displayTitle
     let originalText = AgentTooling.editableToolCallText(for: normalizedCall, mode: mode)
 
     return await withTaskCancellationHandler(

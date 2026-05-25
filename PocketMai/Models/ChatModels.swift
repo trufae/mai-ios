@@ -618,11 +618,12 @@ struct OpenAPIServerSettings: Codable, Equatable, Sendable {
   var port: Int = OpenAPIServerSettings.defaultPort
   var conversationScope: OpenAPIServerConversationScope = .currentChat
   var allowClientOverrides: Bool = false
+  var allowToolExecution: Bool = false
 
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case port, conversationScope, allowClientOverrides
+    case port, conversationScope, allowClientOverrides, allowToolExecution
   }
 
   init(from decoder: Decoder) throws {
@@ -633,6 +634,8 @@ struct OpenAPIServerSettings: Codable, Equatable, Sendable {
       ?? .currentChat
     allowClientOverrides =
       (try? c.decode(Bool.self, forKey: .allowClientOverrides)) ?? false
+    allowToolExecution =
+      (try? c.decode(Bool.self, forKey: .allowToolExecution)) ?? false
   }
 
   func encode(to encoder: Encoder) throws {
@@ -640,6 +643,7 @@ struct OpenAPIServerSettings: Codable, Equatable, Sendable {
     try c.encode(Self.clampedPort(port), forKey: .port)
     try c.encode(conversationScope, forKey: .conversationScope)
     try c.encode(allowClientOverrides, forKey: .allowClientOverrides)
+    try c.encode(allowToolExecution, forKey: .allowToolExecution)
   }
 
   static func clampedPort(_ value: Int) -> Int {

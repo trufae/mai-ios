@@ -2,6 +2,18 @@ import Foundation
 
 @MainActor
 enum AssistantToolLoop {
+  struct ToolRunDetail: Sendable {
+    let name: String
+    let argumentsJSON: String
+    let result: String
+    let isError: Bool
+  }
+
+  struct IsolatedResult: Sendable {
+    let text: String
+    let toolRuns: [ToolRunDetail]
+  }
+
   private struct RequestState {
     let definitions: [ToolDefinition]
     let nativeTools: [OpenAITool]?
@@ -175,6 +187,90 @@ enum AssistantToolLoop {
     }
   }
 
+  static func runIsolated(
+    conversation initialConversation: Conversation,
+    settings: AppSettings,
+    baseContext: String,
+    store: AppStore
+  ) async throws -> IsolatedResult {
+    var conversation = initialConversation
+    let assistantID = UUID()
+    conversation.messages.append(ChatMessage(id: assistantID, role: .assistant, text: ""))
+
+    var state = State()
+    var toolRuns: [ToolRunDetail] = []
+    let maxToolCalls = maxToolCallsPerTurn(settings: settings)
+    let maxRepairTurns = maxRepairTurnsPerTurn(settings: settings)
+
+    while state.toolCallCount < maxToolCalls && state.repairTurnCount < maxRepairTurns {
+      try Task.checkCancellation()
+      let requestState = makeRequestState(
+        conversation: conversation,
+        baseContext: baseContext,
+        settings: settings,
+        mcpTools: store.mcpTools)
+      let response = try await requestModelResponseIsolated(
+        conversation: conversation,
+        requestState: requestState,
+        state: state,
+        assistantID: assistantID,
+        settings: settings)
+
+      let outcome = try await isolatedOutcome(
+        response: response,
+        requestState: requestState,
+        conversation: conversation,
+        settings: settings,
+        mcpTools: store.mcpTools,
+        store: store,
+        completedToolRuns: state.completedToolRuns,
+        remainingToolCalls: maxToolCalls - state.toolCallCount)
+
+      switch outcome {
+      case .final(let turnText):
+        let text = state.append(turnText)
+        updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
+        return IsolatedResult(
+          text: userVisibleResponseText(from: text),
+          toolRuns: toolRuns)
+      case .retry(let feedback):
+        state.debugRoundIndex += 1
+        state.repairTurnCount += 1
+        let text = state.append(feedback)
+        updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
+        state.nativeContinuationMessages.removeAll()
+      case .toolRun(let output):
+        state.debugRoundIndex += 1
+        let text = state.append(output.text)
+        updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
+        toolRuns.append(
+          contentsOf: output.results.map {
+            ToolRunDetail(
+              name: $0.call.name,
+              argumentsJSON: $0.call.argsJSON,
+              result: $0.result,
+              isError: isToolResultError($0.result))
+          })
+        for completedRun in output.completedRuns where isSuccessfulToolResult(completedRun.result) {
+          state.completedToolRuns[completedRun.fingerprint] = completedRun.result
+        }
+        state.toolCallCount += output.results.count
+        state.applyNativeContinuation(
+          output.nativeMessages,
+          conversation: conversation,
+          requestState: requestState)
+      }
+    }
+
+    let suffix =
+      "\n\nTool loop stopped after \(state.toolCallCount) of \(maxToolCalls) allowed tool call\(maxToolCalls == 1 ? "" : "s") and \(state.repairTurnCount) repair turn\(state.repairTurnCount == 1 ? "" : "s") before the model produced a final answer."
+    let text = state.assistantText + suffix
+    updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
+    return IsolatedResult(
+      text: userVisibleResponseText(from: text),
+      toolRuns: toolRuns)
+  }
+
   private static func requestModelResponse(
     conversation: Conversation,
     requestState: RequestState,
@@ -211,6 +307,36 @@ enum AssistantToolLoop {
         touch: false,
         streaming: true)
     }
+    try Task.checkCancellation()
+    return requestState.definitions.isEmpty
+      ? AppStore.strippedSpuriousToolCallText(response)
+      : response
+  }
+
+  private static func requestModelResponseIsolated(
+    conversation: Conversation,
+    requestState: RequestState,
+    state: State,
+    assistantID: UUID,
+    settings: AppSettings
+  ) async throws -> String {
+    let tailToolPrompt: String = {
+      guard requestState.usesTextProtocol else { return "" }
+      return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
+    }()
+    let request = ChatCompletionRequest(
+      conversation: conversation,
+      settings: settings,
+      context: requestState.context,
+      assistantMessageID: assistantID,
+      nativeTools: requestState.nativeTools,
+      nativeContinuationMessages: state.nativeContinuation(
+        conversation: conversation,
+        requestState: requestState),
+      hasToolCalling: !requestState.definitions.isEmpty,
+      toolPrompt: tailToolPrompt
+    )
+    let response = try await ChatProviderRouter.complete(request: request) { _ in }
     try Task.checkCancellation()
     return requestState.definitions.isEmpty
       ? AppStore.strippedSpuriousToolCallText(response)
@@ -277,6 +403,71 @@ enum AssistantToolLoop {
     return .toolRun(output)
   }
 
+  private static func isolatedOutcome(
+    response: String,
+    requestState: RequestState,
+    conversation: Conversation,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]],
+    store: AppStore,
+    completedToolRuns: [String: String],
+    remainingToolCalls: Int
+  ) async throws -> Outcome {
+    guard !requestState.definitions.isEmpty else { return .final(response) }
+
+    let currentDefinitions = currentVisibleDefinitions(
+      conversation: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+    let parseDefinitions =
+      currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
+    let calls = ToolAgentRegistry.parseCalls(
+      in: response,
+      definitions: parseDefinitions,
+      mode: requestState.activeMode)
+
+    guard !calls.isEmpty else {
+      if AgentTooling.containsToolCallMarker(in: response, mode: requestState.activeMode) {
+        return .retry(
+          AgentTooling.malformedToolCallFeedback(
+            from: response,
+            mode: requestState.activeMode,
+            tools: parseDefinitions
+          ).trimmingCharacters(in: .whitespacesAndNewlines))
+      }
+      if AgentTooling.containsNonToolJSONToolLoopObject(in: response, tools: parseDefinitions) {
+        return .retry(
+          AgentTooling.nonToolJSONToolLoopFeedback(
+            from: response,
+            mode: requestState.activeMode,
+            tools: parseDefinitions
+          ).trimmingCharacters(in: .whitespacesAndNewlines))
+      }
+      return .final(response)
+    }
+
+    if let repeated = repeatedCompletedToolResult(
+      calls: calls,
+      definitions: parseDefinitions,
+      completedToolRuns: completedToolRuns)
+    {
+      return .final(repeated)
+    }
+    guard remainingToolCalls > 0 else { return .final(response) }
+
+    let output = try await runToolCalls(
+      response: response,
+      calls: calls,
+      remainingToolCalls: remainingToolCalls,
+      parseDefinitions: parseDefinitions,
+      mode: requestState.activeMode,
+      conversation: conversation,
+      settings: settings,
+      mcpTools: mcpTools,
+      store: store)
+    return .toolRun(output)
+  }
+
   private static func runToolCalls(
     response: String,
     calls: [ParsedToolCall],
@@ -321,6 +512,59 @@ enum AssistantToolLoop {
         echoReasoningContent: shouldEchoReasoningContent(
           conversationID: conversationID,
           store: store)),
+      completedRuns: completedRuns,
+      parsedCalls: calls,
+      results: results)
+  }
+
+  private static func runToolCalls(
+    response: String,
+    calls: [ParsedToolCall],
+    remainingToolCalls: Int,
+    parseDefinitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversation: Conversation,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]],
+    store: AppStore
+  ) async throws -> RunOutput {
+    var visibleText = response
+    var runBlocks: [String] = []
+    var results: [CallResult] = []
+    var completedRuns: [(fingerprint: String, result: String)] = []
+    var executedCount = 0
+
+    for call in calls {
+      try Task.checkCancellation()
+      visibleText = visibleText.replacingOccurrences(of: call.rawBlock, with: "")
+      guard executedCount < remainingToolCalls else { continue }
+      let result = try await runToolCall(
+        call,
+        parseDefinitions: parseDefinitions,
+        mode: mode,
+        conversation: conversation,
+        settings: settings,
+        mcpTools: mcpTools,
+        store: store)
+      runBlocks.append(ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result))
+      results.append(result)
+      completedRuns.append((toolCallFingerprint(result.call), result.result))
+      executedCount += 1
+    }
+
+    let text = ([visibleText.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      .joined(separator: "\n\n")
+    return RunOutput(
+      text: text,
+      nativeMessages: nativeMessages(
+        assistantContent: visibleText,
+        results: results,
+        definitions: parseDefinitions,
+        mode: mode,
+        echoReasoningContent: shouldEchoReasoningContent(
+          conversation: conversation,
+          settings: settings)),
       completedRuns: completedRuns,
       parsedCalls: calls,
       results: results)
@@ -392,22 +636,105 @@ enum AssistantToolLoop {
     return CallResult(call: executableCall, result: result)
   }
 
+  private static func runToolCall(
+    _ call: ParsedToolCall,
+    parseDefinitions: [ToolDefinition],
+    mode: ToolCallingMode,
+    conversation: Conversation,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]],
+    store: AppStore
+  ) async throws -> CallResult {
+    let currentDefinitions = currentVisibleDefinitions(
+      conversation: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+    let fallbackCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
+    guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
+      return CallResult(
+        call: fallbackCall,
+        result: ToolAgentRegistry.unavailableToolError(name: fallbackCall.name))
+    }
+
+    let approvedCall: ParsedToolCall
+    let shouldExecute: Bool
+    switch await store.requestToolCallApproval(
+      call: normalizedCall,
+      definitions: currentDefinitions,
+      mode: mode,
+      conversationTitle: conversation.displayTitle)
+    {
+    case .approved(let call):
+      approvedCall = call
+      shouldExecute = true
+    case .cancelled:
+      approvedCall = normalizedCall
+      shouldExecute = false
+    case .interrupted:
+      throw CancellationError()
+    }
+
+    try Task.checkCancellation()
+    guard shouldExecute else {
+      return CallResult(call: approvedCall, result: "Error: tool call cancelled by user.")
+    }
+
+    let executionDefinitions = currentVisibleDefinitions(
+      conversation: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+    guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
+    else {
+      let unavailableCall = ToolAgentRegistry.normalized(
+        call: approvedCall,
+        definitions: currentDefinitions)
+      return CallResult(
+        call: unavailableCall,
+        result: ToolAgentRegistry.unavailableToolError(name: unavailableCall.name))
+    }
+    if let validationError = ToolAgentRegistry.requiredArgumentsError(
+      call: executableCall,
+      definitions: executionDefinitions)
+    {
+      return CallResult(call: executableCall, result: validationError)
+    }
+
+    let result = await ToolAgentRegistry.execute(
+      call: executableCall,
+      conversation: conversation,
+      store: store)
+    return CallResult(call: executableCall, result: result)
+  }
+
   private static func makeRequestState(
     conversation: Conversation,
     baseContext: String,
     store: AppStore
   ) -> RequestState {
-    let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
-      for: conversation,
+    makeRequestState(
+      conversation: conversation,
+      baseContext: baseContext,
       settings: store.settings,
       mcpTools: store.mcpTools)
+  }
+
+  private static func makeRequestState(
+    conversation: Conversation,
+    baseContext: String,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]]
+  ) -> RequestState {
+    let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
+      for: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
-      settings: store.settings,
+      settings: settings,
       definitions: visibleDefinitions)
     let activeMode =
       nativeTools == nil
-      ? store.settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
+      ? settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
       : .native
     let promptDefinitions = nativeTools == nil ? visibleDefinitions : []
     let toolPrompt = ToolAgentRegistry.promptDescription(
@@ -667,6 +994,17 @@ enum AssistantToolLoop {
       mcpTools: store.mcpTools)
   }
 
+  private static func currentVisibleDefinitions(
+    conversation: Conversation,
+    settings: AppSettings,
+    mcpTools: [UUID: [MCPToolDescriptor]]
+  ) -> [ToolDefinition] {
+    ToolAgentRegistry.visibleDefinitions(
+      for: conversation,
+      settings: settings,
+      mcpTools: mcpTools)
+  }
+
   private static func availableCall(
     _ call: ParsedToolCall,
     definitions: [ToolDefinition]
@@ -711,11 +1049,19 @@ enum AssistantToolLoop {
   }
 
   private static func maxToolCallsPerTurn(store: AppStore) -> Int {
-    min(20, max(1, store.settings.maxToolCallsPerTurn))
+    maxToolCallsPerTurn(settings: store.settings)
+  }
+
+  private static func maxToolCallsPerTurn(settings: AppSettings) -> Int {
+    min(20, max(1, settings.maxToolCallsPerTurn))
   }
 
   private static func maxRepairTurnsPerTurn(store: AppStore) -> Int {
-    min(4, maxToolCallsPerTurn(store: store) + 1)
+    maxRepairTurnsPerTurn(settings: store.settings)
+  }
+
+  private static func maxRepairTurnsPerTurn(settings: AppSettings) -> Int {
+    min(4, maxToolCallsPerTurn(settings: settings) + 1)
   }
 
   private static func nativeToolCallingUnavailableReason(
@@ -751,7 +1097,11 @@ enum AssistantToolLoop {
   }
 
   private static func isSuccessfulToolResult(_ result: String) -> Bool {
-    !result.trimmingCharacters(in: .whitespacesAndNewlines)
+    !isToolResultError(result)
+  }
+
+  private static func isToolResultError(_ result: String) -> Bool {
+    result.trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
       .hasPrefix("error:")
   }
@@ -766,6 +1116,31 @@ enum AssistantToolLoop {
     return OpenAICompatibleProvider.shouldEchoReasoningContent(
       conversation: conversation,
       settings: store.settings)
+  }
+
+  private static func shouldEchoReasoningContent(
+    conversation: Conversation,
+    settings: AppSettings
+  ) -> Bool {
+    OpenAICompatibleProvider.shouldEchoReasoningContent(
+      conversation: conversation,
+      settings: settings)
+  }
+
+  private static func updateLocalAssistantMessage(
+    id: UUID,
+    text: String,
+    conversation: inout Conversation
+  ) {
+    guard let index = conversation.messages.firstIndex(where: { $0.id == id }) else {
+      return
+    }
+    conversation.messages[index].text = text
+  }
+
+  private static func userVisibleResponseText(from text: String) -> String {
+    let visible = MessageContentFilter.render(text).visibleText
+    return visible.isEmpty ? text.trimmingCharacters(in: .whitespacesAndNewlines) : visible
   }
 
   private static func combinedAssistantText(baseline: String, turnText: String) -> String {

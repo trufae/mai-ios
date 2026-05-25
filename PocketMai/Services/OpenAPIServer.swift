@@ -477,9 +477,17 @@ struct OpenAPIServerCompletionInput: Sendable {
   }
 }
 
+struct OpenAPIServerToolRun: Sendable {
+  var name: String
+  var argumentsJSON: String
+  var result: String
+  var isError: Bool
+}
+
 struct OpenAPIServerCompletionOutput: Sendable {
   var text: String
   var model: String
+  var toolRuns: [OpenAPIServerToolRun] = []
 }
 
 struct OpenAPIServerOllamaChatRequest: Decodable, Sendable {

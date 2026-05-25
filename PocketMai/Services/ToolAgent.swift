@@ -318,6 +318,14 @@ enum ToolAgentRegistry {
     guard let conversation = store.conversation(withID: conversationID) else {
       return "Error: conversation is no longer available."
     }
+    return await execute(call: call, conversation: conversation, store: store)
+  }
+
+  static func execute(
+    call: ParsedToolCall,
+    conversation: Conversation,
+    store: AppStore
+  ) async -> String {
     let fullDefinitions = ToolAgentRegistry.definitions(
       for: conversation,
       settings: store.settings,
