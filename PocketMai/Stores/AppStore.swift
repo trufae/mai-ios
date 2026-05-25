@@ -60,6 +60,34 @@ enum ToolCallApprovalDecision: Sendable {
   case interrupted
 }
 
+private enum OpenAPIServerAppError: LocalizedError {
+  case emptyPrompt
+  case busy
+  case unavailable(String)
+
+  var statusCode: Int {
+    switch self {
+    case .emptyPrompt:
+      return 400
+    case .busy:
+      return 409
+    case .unavailable:
+      return 503
+    }
+  }
+
+  var errorDescription: String? {
+    switch self {
+    case .emptyPrompt:
+      return "The request did not include a prompt or user message."
+    case .busy:
+      return "The selected chat is already generating a response."
+    case .unavailable(let message):
+      return message
+    }
+  }
+}
+
 private enum ToolCallApprovalParseResult {
   case success(ParsedToolCall)
   case failure(String)
@@ -135,9 +163,11 @@ final class AppStore: ObservableObject {
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityReport: AppleFoundationAvailabilityReport
   @Published var appleAvailabilityMessage: String?
+  @Published var openAPIServerState: OpenAPIServerRuntimeState = .stopped
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
+  private let openAPIServer = OpenAPIServer()
   private let persistence: PersistenceStore
   private var conversationDrafts: [UUID: String] = [:]
   private var conversationIndexByID: [UUID: Int] = [:]
@@ -742,6 +772,481 @@ final class AppStore: ObservableObject {
       voiceRecordingFilename: voiceRecordingFilename,
       attachments: attachments)
     return true
+  }
+
+  var isOpenAPIServerRunning: Bool {
+    openAPIServerState.isRunning
+  }
+
+  var isOpenAPIServerActive: Bool {
+    openAPIServerState.isActive
+  }
+
+  func toggleOpenAPIServer() {
+    if isOpenAPIServerActive {
+      stopOpenAPIServer()
+    } else {
+      startOpenAPIServer()
+    }
+  }
+
+  func startOpenAPIServer() {
+    let port = OpenAPIServerSettings.clampedPort(settings.openAPIServer.port)
+    if settings.openAPIServer.port != port {
+      settings.openAPIServer.port = port
+      saveSettings()
+    }
+    errorMessage = nil
+    openAPIServerState = .starting(port)
+    openAPIServer.start(
+      port: port,
+      requestHandler: { [weak self] request in
+        guard let self else {
+          return .error(statusCode: 503, message: "PocketMai is unavailable.")
+        }
+        return await self.openAPIServerResponse(for: request)
+      },
+      stateHandler: { [weak self] state in
+        Task { @MainActor [weak self] in
+          self?.openAPIServerState = state
+          if case .failed(let message) = state {
+            self?.errorMessage = "OpenAPI Server: \(message)"
+          }
+        }
+      })
+  }
+
+  func stopOpenAPIServer() {
+    openAPIServer.stop()
+    openAPIServerState = .stopped
+  }
+
+  private func openAPIServerResponse(for request: OpenAPIServerHTTPRequest) async
+    -> OpenAPIServerHTTPResponse
+  {
+    if request.method == "OPTIONS" {
+      return OpenAPIServerHTTPResponse(statusCode: 204, reason: "No Content", headers: [:], body: Data())
+    }
+
+    do {
+      switch (request.method, request.path) {
+      case ("GET", "/"), ("GET", "/health"):
+        return .json([
+          "status": "ok",
+          "server": "PocketMai",
+          "model": openAPIServerModelName()
+        ])
+      case ("GET", "/api/version"):
+        return .json(["version": ConversationExportEnvelope.currentPocketMaiVersion])
+      case ("GET", "/api/tags"):
+        return ollamaTagsResponse()
+      case ("POST", "/api/show"):
+        return ollamaShowResponse()
+      case ("POST", "/api/chat"):
+        let body = try request.decodedBody(OpenAPIServerOllamaChatRequest.self)
+        let input = OpenAPIServerCompletionInput(
+          model: body.model,
+          messages: body.messages,
+          prompt: nil,
+          system: nil,
+          stream: body.stream ?? true)
+        let output = try await completeOpenAPIServerRequest(input)
+        return ollamaChatResponse(output: output, stream: input.stream)
+      case ("POST", "/api/generate"):
+        let body = try request.decodedBody(OpenAPIServerOllamaGenerateRequest.self)
+        let input = OpenAPIServerCompletionInput(
+          model: body.model,
+          messages: [],
+          prompt: body.prompt,
+          system: body.system,
+          stream: body.stream ?? true)
+        let output = try await completeOpenAPIServerRequest(input)
+        return ollamaGenerateResponse(output: output, stream: input.stream)
+      case ("GET", "/v1/models"):
+        return openAIModelsResponse()
+      case ("POST", "/v1/chat/completions"):
+        let body = try request.decodedBody(OpenAPIServerOpenAIChatRequest.self)
+        let input = OpenAPIServerCompletionInput(
+          model: body.model,
+          messages: body.messages,
+          prompt: nil,
+          system: nil,
+          stream: body.stream ?? false)
+        let output = try await completeOpenAPIServerRequest(input)
+        return openAIChatCompletionsResponse(output: output, stream: input.stream)
+      default:
+        return .error(statusCode: 404, message: "Unsupported endpoint \(request.path).")
+      }
+    } catch let error as DecodingError {
+      return .error(statusCode: 400, message: "Invalid JSON request: \(error.localizedDescription)")
+    } catch let error as OpenAPIServerAppError {
+      return .error(statusCode: error.statusCode, message: error.localizedDescription)
+    } catch {
+      return .error(statusCode: 500, message: error.localizedDescription)
+    }
+  }
+
+  private func completeOpenAPIServerRequest(_ input: OpenAPIServerCompletionInput) async throws
+    -> OpenAPIServerCompletionOutput
+  {
+    switch settings.openAPIServer.conversationScope {
+    case .currentChat:
+      return try await completeCurrentChatOpenAPIServerRequest(input)
+    case .defaultSettings:
+      return try await completeDefaultOpenAPIServerRequest(input)
+    }
+  }
+
+  private func completeCurrentChatOpenAPIServerRequest(
+    _ input: OpenAPIServerCompletionInput
+  ) async throws -> OpenAPIServerCompletionOutput {
+    let allowOverrides = settings.openAPIServer.allowClientOverrides
+    let prompt = input.promptForCurrentChat(allowClientOverrides: allowOverrides)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !prompt.isEmpty else { throw OpenAPIServerAppError.emptyPrompt }
+
+    createInitialConversationIfNeeded()
+    guard let index = currentConversationIndex else {
+      throw OpenAPIServerAppError.unavailable("No selected chat is available.")
+    }
+    let conversationID = conversations[index].id
+    guard !respondingConversationIDs.contains(conversationID) else {
+      throw OpenAPIServerAppError.busy
+    }
+    if let message = ChatProviderRouter.preflightMessage(
+      conversation: conversations[index], settings: settings)
+    {
+      throw OpenAPIServerAppError.unavailable(message)
+    }
+
+    let originalModel = conversations[index].modelID
+    let requestedModel = input.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let modelOverride = allowOverrides && requestedModel?.isEmpty == false ? requestedModel : nil
+    if let modelOverride {
+      conversations[index].modelID = modelOverride
+    }
+    defer {
+      if let modelOverride,
+        let restoreIndex = indexedConversationIndex(for: conversationID),
+        conversations[restoreIndex].modelID == modelOverride
+      {
+        conversations[restoreIndex].modelID = originalModel
+        saveConversations()
+      }
+    }
+
+    let context = await ContextBuilder.build(
+      input: prompt,
+      conversation: conversations[index],
+      settings: settings,
+      locationService: { self.locationService })
+
+    guard let userIndex = indexedConversationIndex(for: conversationID) else {
+      throw OpenAPIServerAppError.unavailable("The selected chat is no longer available.")
+    }
+    conversations[userIndex].messages.append(ChatMessage(role: .user, text: prompt))
+    conversations[userIndex].refreshTitle(from: prompt)
+    conversations[userIndex].lastContextSignature = context.signature
+    conversations[userIndex].updatedAt = Date()
+    upsertSummary(for: conversations[userIndex])
+    saveConversations()
+
+    if let idx = indexedConversationIndex(for: conversationID),
+      conversations[idx].provider == .mlx,
+      settings.mlxAutoCompact
+    {
+      await autoCompactIfNeeded(conversationID: conversationID)
+    }
+
+    guard let assistantID = appendAssistantMessage(to: conversationID) else {
+      throw OpenAPIServerAppError.unavailable("Could not append the assistant response.")
+    }
+
+    respondingConversationIDs.insert(conversationID)
+    defer {
+      respondingConversationIDs.remove(conversationID)
+      saveConversations()
+    }
+
+    do {
+      try await AssistantToolLoop.run(
+        conversationID: conversationID,
+        assistantID: assistantID,
+        baseContext: context.text,
+        store: self)
+    } catch is CancellationError {
+      markAssistantStopped(id: assistantID)
+      throw OpenAPIServerAppError.unavailable("The response was cancelled.")
+    } catch {
+      let text = error.localizedDescription
+      setAssistantMessage(id: assistantID, text: text, role: .error)
+      throw error
+    }
+
+    return OpenAPIServerCompletionOutput(
+      text: currentTextOfMessage(id: assistantID),
+      model: openAPIServerModelName(requested: modelOverride))
+  }
+
+  private func completeDefaultOpenAPIServerRequest(
+    _ input: OpenAPIServerCompletionInput
+  ) async throws -> OpenAPIServerCompletionOutput {
+    let allowOverrides = settings.openAPIServer.allowClientOverrides
+    var conversation = makeNewConversation()
+    conversation.title = "OpenAPI Server"
+    conversation.messages = input.chatMessagesForDefaultScope(allowClientOverrides: allowOverrides)
+    guard !conversation.messages.isEmpty else { throw OpenAPIServerAppError.emptyPrompt }
+    if allowOverrides,
+      let model = input.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !model.isEmpty
+    {
+      conversation.modelID = model
+    }
+    if let message = ChatProviderRouter.preflightMessage(conversation: conversation, settings: settings) {
+      throw OpenAPIServerAppError.unavailable(message)
+    }
+
+    let latestPrompt = conversation.messages.last(where: { $0.role == .user })?.text
+      ?? conversation.messages.last?.text
+      ?? ""
+    let context = await ContextBuilder.build(
+      input: latestPrompt,
+      conversation: conversation,
+      settings: settings,
+      locationService: { self.locationService })
+    let request = ChatCompletionRequest(
+      conversation: conversation,
+      settings: settings,
+      context: context.text,
+      assistantMessageID: UUID())
+    let text = try await ChatProviderRouter.complete(request: request) { _ in }
+    return OpenAPIServerCompletionOutput(
+      text: text,
+      model: effectiveModelName(for: conversation))
+  }
+
+  private func ollamaTagsResponse() -> OpenAPIServerHTTPResponse {
+    let model = openAPIServerModelName()
+    return .json([
+      "models": [
+        [
+          "name": model,
+          "model": model,
+          "modified_at": openAPIServerTimestamp(),
+          "size": 0,
+          "digest": "pocketmai",
+          "details": [
+            "parent_model": "",
+            "format": "pocketmai",
+            "family": "pocketmai",
+            "families": ["pocketmai"],
+            "parameter_size": "",
+            "quantization_level": "",
+          ],
+        ]
+      ]
+    ])
+  }
+
+  private func ollamaShowResponse() -> OpenAPIServerHTTPResponse {
+    .json([
+      "license": "",
+      "modelfile": "",
+      "parameters": "",
+      "template": "",
+      "details": [
+        "parent_model": "",
+        "format": "pocketmai",
+        "family": "pocketmai",
+        "families": ["pocketmai"],
+        "parameter_size": "",
+        "quantization_level": "",
+      ],
+      "model_info": [:],
+    ])
+  }
+
+  private func ollamaChatResponse(
+    output: OpenAPIServerCompletionOutput,
+    stream: Bool
+  ) -> OpenAPIServerHTTPResponse {
+    let timestamp = openAPIServerTimestamp()
+    if stream {
+      let contentChunk = jsonLine([
+        "model": output.model,
+        "created_at": timestamp,
+        "message": ["role": "assistant", "content": output.text],
+        "done": false,
+      ])
+      let doneChunk = jsonLine([
+        "model": output.model,
+        "created_at": timestamp,
+        "done": true,
+        "done_reason": "stop",
+      ])
+      return .text(
+        contentChunk + doneChunk,
+        contentType: "application/x-ndjson; charset=utf-8")
+    }
+    return .json([
+      "model": output.model,
+      "created_at": timestamp,
+      "message": ["role": "assistant", "content": output.text],
+      "done": true,
+      "done_reason": "stop",
+    ])
+  }
+
+  private func ollamaGenerateResponse(
+    output: OpenAPIServerCompletionOutput,
+    stream: Bool
+  ) -> OpenAPIServerHTTPResponse {
+    let timestamp = openAPIServerTimestamp()
+    if stream {
+      let contentChunk = jsonLine([
+        "model": output.model,
+        "created_at": timestamp,
+        "response": output.text,
+        "done": false,
+      ])
+      let doneChunk = jsonLine([
+        "model": output.model,
+        "created_at": timestamp,
+        "response": "",
+        "done": true,
+        "done_reason": "stop",
+      ])
+      return .text(
+        contentChunk + doneChunk,
+        contentType: "application/x-ndjson; charset=utf-8")
+    }
+    return .json([
+      "model": output.model,
+      "created_at": timestamp,
+      "response": output.text,
+      "done": true,
+      "done_reason": "stop",
+    ])
+  }
+
+  private func openAIModelsResponse() -> OpenAPIServerHTTPResponse {
+    .json([
+      "object": "list",
+      "data": [
+        [
+          "id": openAPIServerModelName(),
+          "object": "model",
+          "created": Int(Date().timeIntervalSince1970),
+          "owned_by": "pocketmai",
+        ]
+      ],
+    ])
+  }
+
+  private func openAIChatCompletionsResponse(
+    output: OpenAPIServerCompletionOutput,
+    stream: Bool
+  ) -> OpenAPIServerHTTPResponse {
+    let id = "chatcmpl-\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    let created = Int(Date().timeIntervalSince1970)
+    if stream {
+      let contentChunk = sseLine([
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": output.model,
+        "choices": [
+          [
+            "index": 0,
+            "delta": ["role": "assistant", "content": output.text],
+            "finish_reason": NSNull(),
+          ]
+        ],
+      ])
+      let stopChunk = sseLine([
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": output.model,
+        "choices": [
+          [
+            "index": 0,
+            "delta": [:],
+            "finish_reason": "stop",
+          ]
+        ],
+      ])
+      return .text(
+        contentChunk + stopChunk + "data: [DONE]\n\n",
+        contentType: "text/event-stream; charset=utf-8")
+    }
+    return .json([
+      "id": id,
+      "object": "chat.completion",
+      "created": created,
+      "model": output.model,
+      "choices": [
+        [
+          "index": 0,
+          "message": ["role": "assistant", "content": output.text],
+          "finish_reason": "stop",
+        ]
+      ],
+    ])
+  }
+
+  private func openAPIServerModelName(requested: String? = nil) -> String {
+    if settings.openAPIServer.allowClientOverrides,
+      settings.openAPIServer.conversationScope == .defaultSettings,
+      let requested = requested?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !requested.isEmpty
+    {
+      return requested
+    }
+    if settings.openAPIServer.conversationScope == .currentChat,
+      let conversation = currentConversation
+    {
+      return effectiveModelName(for: conversation)
+    }
+    let defaults = makeNewConversation()
+    return effectiveModelName(for: defaults)
+  }
+
+  private func effectiveModelName(for conversation: Conversation) -> String {
+    let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !model.isEmpty { return model }
+    switch conversation.provider {
+    case .apple:
+      return "apple-intelligence"
+    case .mlx:
+      return "mlx-local"
+    case .openAICompatible:
+      guard let endpoint = OpenAICompatibleProvider.selectedEndpoint(
+        for: conversation,
+        settings: settings)
+      else {
+        return "openai-compatible"
+      }
+      let endpointModel = endpoint.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
+      return endpointModel.isEmpty ? endpoint.displayName : endpointModel
+    }
+  }
+
+  private func openAPIServerTimestamp() -> String {
+    ISO8601DateFormatter().string(from: Date())
+  }
+
+  private func jsonLine(_ object: Any) -> String {
+    guard let data = try? JSONSerialization.data(withJSONObject: object),
+      let text = String(data: data, encoding: .utf8)
+    else {
+      return #"{"error":"Could not encode JSON."}"# + "\n"
+    }
+    return text + "\n"
+  }
+
+  private func sseLine(_ object: Any) -> String {
+    "data: \(jsonLine(object))\n"
   }
 
   func trimAndResubmit(from message: ChatMessage) async {

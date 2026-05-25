@@ -584,6 +584,69 @@ enum ContextWindowMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum OpenAPIServerConversationScope: String, Codable, CaseIterable, Identifiable, Sendable {
+  case currentChat
+  case defaultSettings
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .currentChat:
+      return "Current Chat"
+    case .defaultSettings:
+      return "Default Settings"
+    }
+  }
+
+  var summary: String {
+    switch self {
+    case .currentChat:
+      return
+        "Requests use the selected chat, including its provider, system prompt, enabled tools, and conversation history."
+    case .defaultSettings:
+      return
+        "Requests use the default provider and prompt without adding messages to the selected chat."
+    }
+  }
+}
+
+struct OpenAPIServerSettings: Codable, Equatable, Sendable {
+  static let defaultPort = 11_434
+  static let portRange: ClosedRange<Int> = 1_024...65_535
+
+  var port: Int = OpenAPIServerSettings.defaultPort
+  var conversationScope: OpenAPIServerConversationScope = .currentChat
+  var allowClientOverrides: Bool = false
+
+  init() {}
+
+  enum CodingKeys: String, CodingKey {
+    case port, conversationScope, allowClientOverrides
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    port = Self.clampedPort((try? c.decode(Int.self, forKey: .port)) ?? Self.defaultPort)
+    conversationScope =
+      (try? c.decode(OpenAPIServerConversationScope.self, forKey: .conversationScope))
+      ?? .currentChat
+    allowClientOverrides =
+      (try? c.decode(Bool.self, forKey: .allowClientOverrides)) ?? false
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(Self.clampedPort(port), forKey: .port)
+    try c.encode(conversationScope, forKey: .conversationScope)
+    try c.encode(allowClientOverrides, forKey: .allowClientOverrides)
+  }
+
+  static func clampedPort(_ value: Int) -> Int {
+    min(max(value, portRange.lowerBound), portRange.upperBound)
+  }
+}
+
 enum MLXKVCacheSize: Int, Codable, CaseIterable, Identifiable, Sendable {
   case auto = 0
   case size1024 = 1024
@@ -1832,6 +1895,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var mlxAutoCompact: Bool = false
   var startupBehavior: AppStartupBehavior = .newChat
   var lastSelectedConversationID: UUID? = nil
+  var openAPIServer: OpenAPIServerSettings = OpenAPIServerSettings()
 
   static let defaults = AppSettings()
 
@@ -1881,6 +1945,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case airplaneModeEnabled, attachmentImageSize
     case mlxMaxKVSize, mlxAutoCompact
     case startupBehavior, lastSelectedConversationID
+    case openAPIServer
   }
 
   init(from decoder: Decoder) throws {
@@ -1965,6 +2030,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     startupBehavior =
       (try? c.decode(AppStartupBehavior.self, forKey: .startupBehavior)) ?? .newChat
     lastSelectedConversationID = try? c.decode(UUID.self, forKey: .lastSelectedConversationID)
+    openAPIServer =
+      (try? c.decode(OpenAPIServerSettings.self, forKey: .openAPIServer))
+      ?? OpenAPIServerSettings()
   }
 }
 

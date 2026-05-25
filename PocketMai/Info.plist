@@ -25,7 +25,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>PocketMai can include your current location in prompts when the Location tool is enabled.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>PocketMai scans your local network to find Ollama servers you choose to add as chat providers.</string>
+	<string>PocketMai scans for Ollama servers and can serve the selected chat to local Ollama or OpenAI-compatible clients.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>PocketMai uses the microphone for active voice conversations. When Native iOS Live is selected, raw microphone audio stays on this device.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

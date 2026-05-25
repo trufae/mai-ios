@@ -198,6 +198,13 @@ struct ChatView: View {
       }
       Divider()
       Button {
+        store.toggleOpenAPIServer()
+      } label: {
+        Label(
+          store.isOpenAPIServerActive ? "Stop serving" : "Serve",
+          systemImage: store.isOpenAPIServerActive ? "stop.circle" : "network")
+      }
+      Button {
         showingCompactSheet = true
       } label: {
         Label("Compact Chat", systemImage: "rectangle.compress.vertical")

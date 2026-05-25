@@ -498,8 +498,59 @@ struct SettingsView: View {
       } label: {
         Label("Advanced Options", systemImage: "slider.horizontal.3")
       }
+
+      DisclosureGroup {
+        openAPIServerContent
+      } label: {
+        Label("OpenAPI Server", systemImage: "server.rack")
+      }
     } header: {
       Text("Inference")
+    }
+  }
+
+  @ViewBuilder
+  private var openAPIServerContent: some View {
+    LabeledContent("Port") {
+      TextField(
+        "\(OpenAPIServerSettings.defaultPort)",
+        value: openAPIServerPortBinding,
+        format: .number)
+        .keyboardType(.numberPad)
+        .multilineTextAlignment(.trailing)
+    }
+    Text("Ollama and OpenAI-compatible clients can connect to this port while serving is enabled.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+    Picker("Expose", selection: settingsBinding(\.openAPIServer.conversationScope)) {
+      ForEach(OpenAPIServerConversationScope.allCases) { scope in
+        Text(scope.displayName).tag(scope)
+      }
+    }
+    .pickerStyle(.menu)
+    Text(store.settings.openAPIServer.conversationScope.summary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+    Toggle(
+      "Allow caller overrides",
+      isOn: settingsBinding(\.openAPIServer.allowClientOverrides))
+    Text(
+      "Off keeps clients bound to the selected app configuration. On lets callers pass their own model name and system/chat messages where supported."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    if let port = store.openAPIServerState.port {
+      let configuredPort = store.settings.openAPIServer.port
+      let statusText =
+        store.isOpenAPIServerRunning && port != configuredPort
+        ? "Serving on port \(port). Stop and start serving to use port \(configuredPort)."
+        : (store.isOpenAPIServerRunning ? "Serving on port \(port)." : "Starting on port \(port)…")
+      Text(statusText)
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 
@@ -1631,6 +1682,16 @@ struct SettingsView: View {
       get: { store.settings[keyPath: keyPath] },
       set: { value in
         store.settings[keyPath: keyPath] = value
+        store.saveSettings()
+      }
+    )
+  }
+
+  private var openAPIServerPortBinding: Binding<Int> {
+    Binding(
+      get: { store.settings.openAPIServer.port },
+      set: { value in
+        store.settings.openAPIServer.port = OpenAPIServerSettings.clampedPort(value)
         store.saveSettings()
       }
     )
