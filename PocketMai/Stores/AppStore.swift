@@ -145,6 +145,7 @@ final class AppStore: ObservableObject {
   private var pendingConversationSave = false
   private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
   private var deletedConversationIDsBeforeLoad: Set<UUID> = []
+  private var launchPlaceholderConversationID: UUID?
   private var dataGeneration = 0
 
   init(
@@ -190,9 +191,10 @@ final class AppStore: ObservableObject {
 
   private func startFreshConversationForLaunch() {
     let conversation = makeNewConversation()
+    launchPlaceholderConversationID = conversation.id
     conversations.insert(conversation, at: 0)
     sortConversations()
-    selectedConversationID = conversation.id
+    setSelectedConversationID(conversation.id, remember: false)
     selectedConversationIDs.removeAll()
   }
 
@@ -217,9 +219,63 @@ final class AppStore: ObservableObject {
 
     guard generation == dataGeneration else { return }
     mergeLoadedConversations(loadedConversations)
+    applyStartupConversationSelectionIfNeeded()
     let availabilityReport = await availabilityTask.value
     appleAvailabilityReport = availabilityReport
     appleAvailabilityMessage = availabilityReport.unavailableMessage
+  }
+
+  private func applyStartupConversationSelectionIfNeeded() {
+    let placeholderID = launchPlaceholderConversationID
+    launchPlaceholderConversationID = nil
+    guard settings.startupBehavior == .lastConversation,
+      selectedConversationID == placeholderID,
+      startupPlaceholderIsStillDisposable(placeholderID),
+      let id = startupConversationID(excluding: placeholderID)
+    else {
+      return
+    }
+    setSelectedConversationID(id)
+    selectedConversationIDs.removeAll()
+    _ = discardDisposableConversation(id: placeholderID)
+  }
+
+  private func startupPlaceholderIsStillDisposable(_ id: UUID?) -> Bool {
+    guard let id,
+      let conversation = conversation(withID: id)
+    else {
+      return true
+    }
+    return isDisposableNewConversation(conversation)
+  }
+
+  private func startupConversationID(excluding excludedID: UUID?) -> UUID? {
+    if let rememberedID = settings.lastSelectedConversationID,
+      let remembered = conversation(withID: rememberedID),
+      isStartupConversationCandidate(remembered, excluding: excludedID, allowArchived: true)
+    {
+      return rememberedID
+    }
+
+    return conversations
+      .filter { isStartupConversationCandidate($0, excluding: excludedID, allowArchived: false) }
+      .max { lhs, rhs in
+        if lhs.updatedAt != rhs.updatedAt {
+          return lhs.updatedAt < rhs.updatedAt
+        }
+        return lhs.createdAt < rhs.createdAt
+      }?
+      .id
+  }
+
+  private func isStartupConversationCandidate(
+    _ conversation: Conversation,
+    excluding excludedID: UUID?,
+    allowArchived: Bool
+  ) -> Bool {
+    conversation.id != excludedID
+      && !conversation.messages.isEmpty
+      && (allowArchived || !conversation.isArchived)
   }
 
   private func makeNewConversation() -> Conversation {
@@ -252,9 +308,22 @@ final class AppStore: ObservableObject {
       languageOverrideIdentifier)
     conversations.insert(conversation, at: 0)
     sortConversations()
-    selectedConversationID = conversation.id
+    setSelectedConversationID(conversation.id)
     selectedConversationIDs.removeAll()
     saveConversations()
+  }
+
+  private func setSelectedConversationID(_ id: UUID?, remember: Bool = true) {
+    selectedConversationID = id
+    if remember {
+      rememberSelectedConversationID(id)
+    }
+  }
+
+  private func rememberSelectedConversationID(_ id: UUID?) {
+    guard settings.lastSelectedConversationID != id else { return }
+    settings.lastSelectedConversationID = id
+    saveSettings()
   }
 
   private func conversationUsesNewConversationDefaults(_ conversation: Conversation) -> Bool {
@@ -283,7 +352,7 @@ final class AppStore: ObservableObject {
     let previousID = selectedConversationID
     await ensureConversationLoaded(id)
     guard indexedConversationIndex(for: id) != nil else { return }
-    selectedConversationID = id
+    setSelectedConversationID(id)
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
@@ -390,7 +459,7 @@ final class AppStore: ObservableObject {
     conversations = archived
     rebuildConversationIndexes()
     conversationSummaries = Self.sortedSummaries(archived.map(ConversationSummary.init))
-    selectedConversationID = nil
+    setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
@@ -410,7 +479,7 @@ final class AppStore: ObservableObject {
     settings = .defaults
     conversations.removeAll()
     conversationSummaries.removeAll()
-    selectedConversationID = nil
+    setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
     endpointStatuses.removeAll()
     endpointModels.removeAll()
@@ -485,7 +554,7 @@ final class AppStore: ObservableObject {
     }
     conversations.insert(conversation, at: 0)
     sortConversations()
-    selectedConversationID = conversation.id
+    setSelectedConversationID(conversation.id)
     selectedConversationIDs.removeAll()
     saveConversations()
 
@@ -532,10 +601,10 @@ final class AppStore: ObservableObject {
     removeSummaries(for: ids)
     selectedConversationIDs.removeAll()
     if let selectedConversationID, ids.contains(selectedConversationID) {
-      self.selectedConversationID = conversations.first?.id
+      setSelectedConversationID(conversations.first?.id)
     }
     if conversations.isEmpty {
-      selectedConversationID = nil
+      setSelectedConversationID(nil)
       createInitialConversationIfNeeded()
     }
     saveConversations()
@@ -619,7 +688,7 @@ final class AppStore: ObservableObject {
       conversations.insert(cloned, at: 0)
     }
     sortConversations()
-    selectedConversationID = cloned.id
+    setSelectedConversationID(cloned.id)
     saveConversations()
   }
 
@@ -665,6 +734,7 @@ final class AppStore: ObservableObject {
     }
 
     errorMessage = nil
+    rememberSelectedConversationID(conversationID)
     await composeUserTurn(
       prompt: prompt,
       conversationID: conversationID,
@@ -1098,7 +1168,7 @@ final class AppStore: ObservableObject {
       conversation.updatedAt = Date()
       conversations.insert(conversation, at: 0)
       sortConversations()
-      selectedConversationID = conversation.id
+      setSelectedConversationID(conversation.id)
       selectedConversationIDs.removeAll()
       saveConversations()
     case .updateExisting:
@@ -1121,7 +1191,7 @@ final class AppStore: ObservableObject {
       conversation.updatedAt = Date()
       conversations[index] = conversation
       sortConversations()
-      selectedConversationID = conversation.id
+      setSelectedConversationID(conversation.id)
       selectedConversationIDs.removeAll()
       saveConversations()
       deleteUnreferencedVoiceRecordings(from: replacedMessages)
@@ -1669,7 +1739,7 @@ final class AppStore: ObservableObject {
     let conversation = makeNewConversation()
     conversations.insert(conversation, at: 0)
     sortConversations()
-    selectedConversationID = conversation.id
+    setSelectedConversationID(conversation.id, remember: false)
     selectedConversationIDs.removeAll()
   }
 

@@ -204,6 +204,20 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum AppStartupBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
+  case newChat
+  case lastConversation
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .newChat: "New Chat"
+    case .lastConversation: "Last Conversation"
+    }
+  }
+}
+
 struct AppearanceSettings: Codable, Equatable, Sendable {
   static let fontSizeRange: ClosedRange<Double> = 6...43
   static let fontSizeStep: Double = 0.05
@@ -1816,6 +1830,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   var attachmentImageSize: AttachmentImageSize = .medium
   var mlxMaxKVSize: MLXKVCacheSize = .auto
   var mlxAutoCompact: Bool = false
+  var startupBehavior: AppStartupBehavior = .newChat
+  var lastSelectedConversationID: UUID? = nil
 
   static let defaults = AppSettings()
 
@@ -1864,6 +1880,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case appearance, conversation, renderMarkdownInChat
     case airplaneModeEnabled, attachmentImageSize
     case mlxMaxKVSize, mlxAutoCompact
+    case startupBehavior, lastSelectedConversationID
   }
 
   init(from decoder: Decoder) throws {
@@ -1945,6 +1962,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     mlxMaxKVSize =
       (try? c.decode(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)) ?? .auto
     mlxAutoCompact = (try? c.decode(Bool.self, forKey: .mlxAutoCompact)) ?? false
+    startupBehavior =
+      (try? c.decode(AppStartupBehavior.self, forKey: .startupBehavior)) ?? .newChat
+    lastSelectedConversationID = try? c.decode(UUID.self, forKey: .lastSelectedConversationID)
   }
 }
 

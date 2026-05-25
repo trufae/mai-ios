@@ -545,6 +545,13 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
 
+    Picker("On Launch", selection: settingsBinding(\.startupBehavior)) {
+      ForEach(AppStartupBehavior.allCases) { behavior in
+        Text(behavior.displayName).tag(behavior)
+      }
+    }
+    .pickerStyle(.menu)
+
     Toggle(
       "Solid response bubbles",
       isOn: settingsBinding(\.appearance.solidResponseBubbles))
