@@ -523,7 +523,7 @@ struct SettingsView: View {
       .font(.caption)
       .foregroundStyle(.secondary)
 
-    Picker("Expose", selection: settingsBinding(\.openAPIServer.conversationScope)) {
+    Picker("Source", selection: settingsBinding(\.openAPIServer.conversationScope)) {
       ForEach(OpenAPIServerConversationScope.allCases) { scope in
         Text(scope.displayName).tag(scope)
       }
@@ -537,7 +537,7 @@ struct SettingsView: View {
       "Allow caller overrides",
       isOn: settingsBinding(\.openAPIServer.allowClientOverrides))
     Text(
-      "Off keeps clients bound to the selected app configuration. On lets callers pass their own model name and system/chat messages where supported."
+      "Off keeps clients bound to the selected app model. On lets callers pass a model name for the selected provider."
     )
     .font(.caption)
     .foregroundStyle(.secondary)

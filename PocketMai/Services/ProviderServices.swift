@@ -247,9 +247,12 @@ enum PromptComposer {
       settings.systemPrompts.first(where: { $0.id == promptID })?.text
       ?? settings.defaultPrompt().text
     let memory = settings.memory.trimmingCharacters(in: .whitespacesAndNewlines)
-    let mcp = settings.mcpServers.filter { $0.isEnabled && $0.hasValidScheme }
-      .map { "- \($0.name): \($0.baseURL)" }
-      .joined(separator: "\n")
+    let mcp: String = {
+      guard conversation.toolsEnabled else { return "" }
+      return settings.mcpServers.filter { $0.isEnabled && $0.hasValidScheme }
+        .map { "- \($0.name): \($0.baseURL)" }
+        .joined(separator: "\n")
+    }()
 
     var parts = [base]
     if conversation.toolsEnabled && conversation.enabledTools.contains(.memory) && !memory.isEmpty {

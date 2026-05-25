@@ -445,37 +445,9 @@ struct OpenAPIServerCompletionInput: Sendable {
       ?? ""
   }
 
-  func promptForCurrentChat(allowClientOverrides: Bool) -> String {
-    let latest = latestUserText
-    guard allowClientOverrides else { return latest }
-
-    let systemText = ([system] + messages.filter {
-      $0.role.caseInsensitiveCompare("system") == .orderedSame
-    }.map(\.content))
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-      .joined(separator: "\n\n")
-    let transcript = messages
-      .filter { $0.role.caseInsensitiveCompare("system") != .orderedSame }
-      .map { "\($0.role):\n\($0.content)" }
-      .joined(separator: "\n\n")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-
-    var parts: [String] = []
-    if !systemText.isEmpty {
-      parts.append("Client system instructions:\n\(systemText)")
-    }
-    if !transcript.isEmpty {
-      parts.append("Client conversation:\n\(transcript)")
-    } else if !latest.isEmpty {
-      parts.append(latest)
-    }
-    return parts.joined(separator: "\n\n")
-  }
-
-  func chatMessagesForDefaultScope(allowClientOverrides: Bool) -> [ChatMessage] {
+  func chatMessagesForProxy() -> [ChatMessage] {
     var result: [ChatMessage] = []
-    if allowClientOverrides, let system,
+    if let system,
       !system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
       result.append(ChatMessage(role: .system, text: system))
@@ -486,7 +458,7 @@ struct OpenAPIServerCompletionInput: Sendable {
         guard !text.isEmpty else { return nil }
         switch message.role.lowercased() {
         case "system":
-          return allowClientOverrides ? ChatMessage(role: .system, text: text) : nil
+          return ChatMessage(role: .system, text: text)
         case "assistant":
           return ChatMessage(role: .assistant, text: text)
         case "tool":

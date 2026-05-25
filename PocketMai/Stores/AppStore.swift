@@ -62,15 +62,12 @@ enum ToolCallApprovalDecision: Sendable {
 
 private enum OpenAPIServerAppError: LocalizedError {
   case emptyPrompt
-  case busy
   case unavailable(String)
 
   var statusCode: Int {
     switch self {
     case .emptyPrompt:
       return 400
-    case .busy:
-      return 409
     case .unavailable:
       return 503
     }
@@ -80,8 +77,6 @@ private enum OpenAPIServerAppError: LocalizedError {
     switch self {
     case .emptyPrompt:
       return "The request did not include a prompt or user message."
-    case .busy:
-      return "The selected chat is already generating a response."
     case .unavailable(let message):
       return message
     }
@@ -128,6 +123,9 @@ struct ToolCallApprovalRequest: Identifiable {
 
 @MainActor
 final class AppStore: ObservableObject {
+  private static let openAPIServerSystemPromptID = UUID(
+    uuidString: "00000000-0000-0000-0000-000000011434")!
+
   @Published var conversations: [Conversation]
   @Published var conversationSummaries: [ConversationSummary] = []
   @Published var selectedConversationID: UUID?
@@ -900,129 +898,92 @@ final class AppStore: ObservableObject {
   private func completeCurrentChatOpenAPIServerRequest(
     _ input: OpenAPIServerCompletionInput
   ) async throws -> OpenAPIServerCompletionOutput {
-    let allowOverrides = settings.openAPIServer.allowClientOverrides
-    let prompt = input.promptForCurrentChat(allowClientOverrides: allowOverrides)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty else { throw OpenAPIServerAppError.emptyPrompt }
-
-    createInitialConversationIfNeeded()
-    guard let index = currentConversationIndex else {
+    guard let conversation = currentConversation else {
       throw OpenAPIServerAppError.unavailable("No selected chat is available.")
     }
-    let conversationID = conversations[index].id
-    guard !respondingConversationIDs.contains(conversationID) else {
-      throw OpenAPIServerAppError.busy
-    }
-    if let message = ChatProviderRouter.preflightMessage(
-      conversation: conversations[index], settings: settings)
-    {
-      throw OpenAPIServerAppError.unavailable(message)
-    }
-
-    let originalModel = conversations[index].modelID
-    let requestedModel = input.model?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let modelOverride = allowOverrides && requestedModel?.isEmpty == false ? requestedModel : nil
-    if let modelOverride {
-      conversations[index].modelID = modelOverride
-    }
-    defer {
-      if let modelOverride,
-        let restoreIndex = indexedConversationIndex(for: conversationID),
-        conversations[restoreIndex].modelID == modelOverride
-      {
-        conversations[restoreIndex].modelID = originalModel
-        saveConversations()
-      }
-    }
-
-    let context = await ContextBuilder.build(
-      input: prompt,
-      conversation: conversations[index],
-      settings: settings,
-      locationService: { self.locationService })
-
-    guard let userIndex = indexedConversationIndex(for: conversationID) else {
-      throw OpenAPIServerAppError.unavailable("The selected chat is no longer available.")
-    }
-    conversations[userIndex].messages.append(ChatMessage(role: .user, text: prompt))
-    conversations[userIndex].refreshTitle(from: prompt)
-    conversations[userIndex].lastContextSignature = context.signature
-    conversations[userIndex].updatedAt = Date()
-    upsertSummary(for: conversations[userIndex])
-    saveConversations()
-
-    if let idx = indexedConversationIndex(for: conversationID),
-      conversations[idx].provider == .mlx,
-      settings.mlxAutoCompact
-    {
-      await autoCompactIfNeeded(conversationID: conversationID)
-    }
-
-    guard let assistantID = appendAssistantMessage(to: conversationID) else {
-      throw OpenAPIServerAppError.unavailable("Could not append the assistant response.")
-    }
-
-    respondingConversationIDs.insert(conversationID)
-    defer {
-      respondingConversationIDs.remove(conversationID)
-      saveConversations()
-    }
-
-    do {
-      try await AssistantToolLoop.run(
-        conversationID: conversationID,
-        assistantID: assistantID,
-        baseContext: context.text,
-        store: self)
-    } catch is CancellationError {
-      markAssistantStopped(id: assistantID)
-      throw OpenAPIServerAppError.unavailable("The response was cancelled.")
-    } catch {
-      let text = error.localizedDescription
-      setAssistantMessage(id: assistantID, text: text, role: .error)
-      throw error
-    }
-
-    return OpenAPIServerCompletionOutput(
-      text: currentTextOfMessage(id: assistantID),
-      model: openAPIServerModelName(requested: modelOverride))
+    return try await completeIsolatedOpenAPIServerRequest(input, baseConversation: conversation)
   }
 
   private func completeDefaultOpenAPIServerRequest(
     _ input: OpenAPIServerCompletionInput
   ) async throws -> OpenAPIServerCompletionOutput {
-    let allowOverrides = settings.openAPIServer.allowClientOverrides
-    var conversation = makeNewConversation()
-    conversation.title = "OpenAPI Server"
-    conversation.messages = input.chatMessagesForDefaultScope(allowClientOverrides: allowOverrides)
+    try await completeIsolatedOpenAPIServerRequest(input, baseConversation: makeNewConversation())
+  }
+
+  private func completeIsolatedOpenAPIServerRequest(
+    _ input: OpenAPIServerCompletionInput,
+    baseConversation: Conversation
+  ) async throws -> OpenAPIServerCompletionOutput {
+    let requestSettings = openAPIServerRequestSettings()
+    let conversation = openAPIServerRequestConversation(
+      from: baseConversation,
+      input: input)
     guard !conversation.messages.isEmpty else { throw OpenAPIServerAppError.emptyPrompt }
-    if allowOverrides,
-      let model = input.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !model.isEmpty
-    {
-      conversation.modelID = model
+    guard !input.latestUserText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw OpenAPIServerAppError.emptyPrompt
     }
-    if let message = ChatProviderRouter.preflightMessage(conversation: conversation, settings: settings) {
+    if let message = ChatProviderRouter.preflightMessage(
+      conversation: conversation,
+      settings: requestSettings)
+    {
       throw OpenAPIServerAppError.unavailable(message)
     }
 
-    let latestPrompt = conversation.messages.last(where: { $0.role == .user })?.text
-      ?? conversation.messages.last?.text
-      ?? ""
-    let context = await ContextBuilder.build(
-      input: latestPrompt,
-      conversation: conversation,
-      settings: settings,
-      locationService: { self.locationService })
     let request = ChatCompletionRequest(
       conversation: conversation,
-      settings: settings,
-      context: context.text,
+      settings: requestSettings,
+      context: "",
       assistantMessageID: UUID())
     let text = try await ChatProviderRouter.complete(request: request) { _ in }
     return OpenAPIServerCompletionOutput(
       text: text,
       model: effectiveModelName(for: conversation))
+  }
+
+  private func openAPIServerRequestConversation(
+    from baseConversation: Conversation,
+    input: OpenAPIServerCompletionInput
+  ) -> Conversation {
+    var conversation = baseConversation
+    conversation.id = UUID()
+    conversation.title = "OpenAPI Server"
+    conversation.createdAt = Date()
+    conversation.updatedAt = Date()
+    conversation.messages = input.chatMessagesForProxy()
+    conversation.systemPromptID = Self.openAPIServerSystemPromptID
+    conversation.toolsEnabled = false
+    conversation.enabledTools = []
+    conversation.enabledMCPServers = []
+    conversation.enabledMCPTools = []
+    conversation.disabledMCPTools = []
+    conversation.usesStreaming = false
+    conversation.isPinned = false
+    conversation.isArchived = false
+    conversation.lastContextSignature = nil
+    if settings.openAPIServer.allowClientOverrides,
+      let model = input.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !model.isEmpty
+    {
+      conversation.modelID = model
+    }
+    return conversation
+  }
+
+  private func openAPIServerRequestSettings() -> AppSettings {
+    var requestSettings = settings
+    requestSettings.systemPrompts = [
+      SystemPrompt(
+        id: Self.openAPIServerSystemPromptID,
+        name: "OpenAPI Server",
+        text: "")
+    ]
+    requestSettings.defaultSystemPromptID = Self.openAPIServerSystemPromptID
+    requestSettings.defaultEnabledTools = []
+    requestSettings.defaultEnabledMCPServers = []
+    requestSettings.defaultEnabledMCPTools = []
+    requestSettings.mcpServers = []
+    requestSettings.memory = ""
+    return requestSettings
   }
 
   private func ollamaTagsResponse() -> OpenAPIServerHTTPResponse {

@@ -593,9 +593,9 @@ enum OpenAPIServerConversationScope: String, Codable, CaseIterable, Identifiable
   var displayName: String {
     switch self {
     case .currentChat:
-      return "Current Chat"
+      return "Current Chat Model"
     case .defaultSettings:
-      return "Default Settings"
+      return "Default Model"
     }
   }
 
@@ -603,10 +603,10 @@ enum OpenAPIServerConversationScope: String, Codable, CaseIterable, Identifiable
     switch self {
     case .currentChat:
       return
-        "Requests use the selected chat, including its provider, system prompt, enabled tools, and conversation history."
+        "Requests use only the selected chat's provider and model. Client messages stay isolated and are not saved to the chat."
     case .defaultSettings:
       return
-        "Requests use the default provider and prompt without adding messages to the selected chat."
+        "Requests use the default provider and model. Client messages stay isolated and are not saved to the selected chat."
     }
   }
 }
