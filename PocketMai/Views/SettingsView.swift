@@ -91,6 +91,7 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
     authMethods: [.apiKey, .oauth],
     oauthDefaults: OpenAIEndpoint.openAIAuthDefaults
   ),
+  EndpointProviderPreset(name: "Ollama", url: "http://localhost:11434/v1"),
   EndpointProviderPreset(name: "Ollama Cloud", url: "https://ollama.com/v1"),
   EndpointProviderPreset(name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
   EndpointProviderPreset(name: "OpenCode Zen", url: "https://opencode.ai/zen/v1"),
@@ -2208,6 +2209,7 @@ private struct EndpointDetailView: View {
   @State private var toastMessage: String?
   @State private var isSigningIn = false
   @State private var showAdvancedOAuthConfiguration = false
+  @State private var showOllamaScanner = false
 
   init(endpoint: Binding<OpenAIEndpoint>) {
     self._savedEndpoint = endpoint
@@ -2236,6 +2238,13 @@ private struct EndpointDetailView: View {
           .autocorrectionDisabled()
           .keyboardType(.URL)
         authenticationControls
+        if showsOllamaScanButton {
+          Button {
+            showOllamaScanner = true
+          } label: {
+            Label("Scan Local Network", systemImage: "network")
+          }
+        }
         Button {
           let snapshot = endpoint
           Task { await store.refreshEndpoint(snapshot) }
@@ -2287,6 +2296,15 @@ private struct EndpointDetailView: View {
     }
     .onAppear(perform: normalizeAuthForSelectedProvider)
     .onChange(of: endpoint.baseURL) { _, _ in normalizeAuthForSelectedProvider() }
+    .sheet(isPresented: $showOllamaScanner) {
+      OllamaPortScanView(
+        initialRange: OllamaNetworkScanner.defaultRange(),
+        initialPort: OllamaNetworkScanner.defaultPort
+      ) { url in
+        applyScannedOllamaURL(url)
+        showOllamaScanner = false
+      }
+    }
     .settingsToast($toastMessage)
   }
 
@@ -2544,6 +2562,16 @@ private struct EndpointDetailView: View {
       == OpenAIEndpoint.googleOAuthDefaults.baseURL
   }
 
+  private var showsOllamaScanButton: Bool {
+    if selectedProviderPreset?.name == "Ollama" {
+      return true
+    }
+    if endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ollama" {
+      return true
+    }
+    return OllamaNetworkScanner.isLikelyLocalOllamaBaseURL(endpoint.baseURL)
+  }
+
   private var selectedProviderPreset: EndpointProviderPreset? {
     EndpointNameResolution.providerPreset(forBaseURL: endpoint.baseURL)
   }
@@ -2735,6 +2763,15 @@ private struct EndpointDetailView: View {
     }
   }
 
+  private func applyScannedOllamaURL(_ url: String) {
+    endpoint.baseURL = url
+    endpoint.authMethod = .apiKey
+    clearCredentials()
+    if endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      endpoint.name = "Ollama"
+    }
+  }
+
   private var providerPresetBinding: Binding<String> {
     Binding(
       get: {
@@ -2874,6 +2911,155 @@ private struct EndpointDetailView: View {
     endpoint.apiKey = ""
     endpoint.oauthRefreshToken = ""
     endpoint.oauthAccessTokenExpiresAt = nil
+  }
+}
+
+private struct OllamaPortScanView: View {
+  @Environment(\.dismiss) private var dismiss
+  @State private var rangeText: String
+  @State private var portText: String
+  @State private var isScanning = false
+  @State private var results: [OllamaScanResult] = []
+  @State private var message: String?
+  @State private var scanTask: Task<Void, Never>?
+
+  let onSelect: (String) -> Void
+
+  init(
+    initialRange: String,
+    initialPort: Int,
+    onSelect: @escaping (String) -> Void
+  ) {
+    self._rangeText = State(initialValue: initialRange)
+    self._portText = State(initialValue: String(initialPort))
+    self.onSelect = onSelect
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          TextField("192.168.1.x", text: $rangeText)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.numbersAndPunctuation)
+            .submitLabel(.search)
+            .onSubmit { startScan() }
+          TextField("Port", text: $portText)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.numberPad)
+          Button {
+            startScan()
+          } label: {
+            if isScanning {
+              HStack {
+                ProgressView()
+                Text("Scanning…")
+              }
+            } else {
+              Label("Scan", systemImage: "dot.radiowaves.left.and.right")
+            }
+          }
+          .disabled(isScanning || parsedPort == nil)
+          if let message {
+            Text(message)
+              .font(.caption)
+              .foregroundStyle(messageIsError ? .red : .secondary)
+          }
+        } header: {
+          Text("Network")
+        } footer: {
+          Text("Use x, *, a single host, or a final-octet range such as 192.168.1.20-40.")
+        }
+
+        Section {
+          if results.isEmpty {
+            Text(isScanning ? "Looking for Ollama endpoints…" : "No scan results yet.")
+              .foregroundStyle(.secondary)
+          } else {
+            ForEach(results) { result in
+              Button {
+                scanTask?.cancel()
+                onSelect(result.url)
+                dismiss()
+              } label: {
+                HStack {
+                  Text(result.url)
+                    .textSelection(.enabled)
+                  Spacer()
+                  Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+                }
+              }
+            }
+          }
+        } header: {
+          Text("Results")
+        }
+      }
+      .navigationTitle("Find Ollama")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") {
+            scanTask?.cancel()
+            dismiss()
+          }
+        }
+      }
+    }
+    .onDisappear {
+      scanTask?.cancel()
+    }
+  }
+
+  private var parsedPort: Int? {
+    let trimmed = portText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let port = Int(trimmed), (1...65535).contains(port) else { return nil }
+    return port
+  }
+
+  private var messageIsError: Bool {
+    guard let message else { return false }
+    return message.hasPrefix("Invalid") || message.hasPrefix("Enter")
+  }
+
+  private func startScan() {
+    guard !isScanning else { return }
+    guard let port = parsedPort else {
+      message = "Invalid port. Use a number from 1 to 65535."
+      return
+    }
+
+    scanTask?.cancel()
+    results = []
+    message = "Scanning \(rangeText):\(port)…"
+    isScanning = true
+    let range = rangeText
+    scanTask = Task {
+      do {
+        let found = try await OllamaNetworkScanner.scan(rangeText: range, port: port) { result in
+          if !results.contains(result) {
+            results.append(result)
+          }
+        }
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+          results = found
+          message = found.isEmpty
+            ? "No Ollama endpoints found."
+            : "Found \(found.count) endpoint\(found.count == 1 ? "" : "s")."
+          isScanning = false
+        }
+      } catch {
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+          message = error.localizedDescription
+          isScanning = false
+        }
+      }
+    }
   }
 }
 
