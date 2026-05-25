@@ -318,19 +318,21 @@ private struct MessageBubbleContent: View, Equatable {
       }
     }
 
-    if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
-      Button(action: resend) {
-        Label("Retry From Here", systemImage: "arrow.clockwise")
+    if message.role != .assistant {
+      if let resend = onTrimFromHere ?? (isUser ? onResubmit : nil) {
+        Button(action: resend) {
+          Label("Retry From Here", systemImage: "arrow.clockwise")
+        }
       }
-    }
-    if let onRestartFresh {
-      Button(action: onRestartFresh) {
-        Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+      if let onRestartFresh {
+        Button(action: onRestartFresh) {
+          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+        }
       }
-    }
-    if let onNewChatWithMessage {
-      Button(action: onNewChatWithMessage) {
-        Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
+      if let onNewChatWithMessage {
+        Button(action: onNewChatWithMessage) {
+          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
+        }
       }
     }
 
