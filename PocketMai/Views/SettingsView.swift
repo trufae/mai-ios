@@ -268,6 +268,7 @@ struct SettingsView: View {
   @State private var showingBackgroundVoiceConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var endpointPath: [UUID] = []
+  @State private var draftEndpoint: OpenAIEndpoint?
   @State private var toastMessage: String?
 
   var body: some View {
@@ -282,6 +283,15 @@ struct SettingsView: View {
       .navigationDestination(for: UUID.self) { id in
         if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
           EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
+        } else if draftEndpoint?.id == id {
+          EndpointDetailView(endpoint: draftEndpointBinding(for: id)) { endpoint in
+            if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id }) {
+              store.settings.openAIEndpoints[index] = endpoint
+            } else {
+              store.settings.openAIEndpoints.append(endpoint)
+            }
+            store.settings.selectedEndpointID = endpoint.id
+          }
         }
       }
       .alert(
@@ -358,6 +368,9 @@ struct SettingsView: View {
       }
       .onAppear {
         store.refreshLocalMLXModels()
+      }
+      .onChange(of: endpointPath) { _, path in
+        discardDraftEndpointIfNeeded(path: path)
       }
     }
     .preferredColorScheme(store.settings.appearance.theme.colorScheme)
@@ -807,9 +820,7 @@ struct SettingsView: View {
     }
     Button {
       let endpoint = OpenAIEndpoint(baseURL: "", authMethod: .apiKey)
-      store.settings.openAIEndpoints.append(endpoint)
-      store.settings.selectedEndpointID = endpoint.id
-      store.saveSettings()
+      draftEndpoint = endpoint
       endpointPath.append(endpoint.id)
     } label: {
       Label("Add Provider", systemImage: "plus")
@@ -1493,7 +1504,7 @@ struct SettingsView: View {
       let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard trimmedName.isEmpty else { continue }
 
-      if let message = EndpointNameResolution.validationMessage(
+      if let message = EndpointNameResolution.nameValidationMessage(
         for: endpoint,
         in: store.settings.openAIEndpoints)
       {
@@ -1506,6 +1517,22 @@ struct SettingsView: View {
       }
     }
     return true
+  }
+
+  private func draftEndpointBinding(for id: UUID) -> Binding<OpenAIEndpoint> {
+    Binding(
+      get: {
+        draftEndpoint ?? OpenAIEndpoint(id: id, baseURL: "", authMethod: .apiKey)
+      },
+      set: { endpoint in
+        draftEndpoint = endpoint
+      }
+    )
+  }
+
+  private func discardDraftEndpointIfNeeded(path: [UUID]) {
+    guard let draftEndpoint, !path.contains(draftEndpoint.id) else { return }
+    self.draftEndpoint = nil
   }
 
   private func showToast(_ message: String) {
@@ -1944,15 +1971,66 @@ private enum EndpointNameResolution {
   static func validationMessage(for endpoint: OpenAIEndpoint, in endpoints: [OpenAIEndpoint])
     -> String?
   {
-    let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmedName.isEmpty else { return nil }
-    guard let fallbackName = providerName(for: endpoint) else {
-      return "Specify a name for this provider."
+    if let message = baseURLValidationMessage(for: endpoint) {
+      return message
     }
-    if hasDuplicateName(fallbackName, excluding: endpoint.id, in: endpoints) {
-      return "Another provider is already named \"\(fallbackName)\". Specify a name."
+    if let message = nameValidationMessage(for: endpoint, in: endpoints) {
+      return message
+    }
+    if let message = apiKeyValidationMessage(for: endpoint) {
+      return message
     }
     return nil
+  }
+
+  static func nameValidationMessage(for endpoint: OpenAIEndpoint, in endpoints: [OpenAIEndpoint])
+    -> String?
+  {
+    let trimmedName = endpoint.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedName: String
+    if trimmedName.isEmpty {
+      guard let fallbackName = providerName(for: endpoint) else {
+        return "Specify a name for this provider."
+      }
+      resolvedName = fallbackName
+    } else {
+      resolvedName = trimmedName
+    }
+    if hasDuplicateName(resolvedName, excluding: endpoint.id, in: endpoints) {
+      return "Another provider is already named \"\(resolvedName)\". Specify a name."
+    }
+    return nil
+  }
+
+  static func connectionValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
+    if let message = baseURLValidationMessage(for: endpoint) {
+      return message
+    }
+    return apiKeyValidationMessage(for: endpoint)
+  }
+
+  private static func baseURLValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
+    let baseURL = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !baseURL.isEmpty else {
+      return "Specify a base URL for this provider."
+    }
+    guard let components = URLComponents(string: baseURL),
+      let scheme = components.scheme?.lowercased(),
+      ["http", "https"].contains(scheme),
+      let host = components.host,
+      !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return "Specify a valid http or https base URL."
+    }
+    return nil
+  }
+
+  private static func apiKeyValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
+    guard requiresAPIKey(for: endpoint) else { return nil }
+    let apiKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard apiKey.isEmpty else { return nil }
+    let name = savedName(for: endpoint) ?? "this provider"
+    return "Specify an API key for \(name)."
   }
 
   private static func providerName(for endpoint: OpenAIEndpoint) -> String? {
@@ -1961,6 +2039,13 @@ private enum EndpointNameResolution {
       return preset.name
     }
     return nil
+  }
+
+  private static func requiresAPIKey(for endpoint: OpenAIEndpoint) -> Bool {
+    guard endpoint.authMethod == .apiKey else { return false }
+    guard let preset = providerPreset(forBaseURL: endpoint.baseURL) else { return false }
+    return preset.name != "Ollama"
+      && !OllamaNetworkScanner.isLikelyLocalOllamaBaseURL(endpoint.baseURL)
   }
 
   static func providerPreset(forBaseURL baseURL: String) -> EndpointProviderPreset? {
@@ -2210,10 +2295,12 @@ private struct EndpointDetailView: View {
   @State private var isSigningIn = false
   @State private var showAdvancedOAuthConfiguration = false
   @State private var showOllamaScanner = false
+  private let onSave: ((OpenAIEndpoint) -> Void)?
 
-  init(endpoint: Binding<OpenAIEndpoint>) {
+  init(endpoint: Binding<OpenAIEndpoint>, onSave: ((OpenAIEndpoint) -> Void)? = nil) {
     self._savedEndpoint = endpoint
     self._endpoint = State(initialValue: endpoint.wrappedValue)
+    self.onSave = onSave
   }
 
   var body: some View {
@@ -2246,6 +2333,10 @@ private struct EndpointDetailView: View {
           }
         }
         Button {
+          if let message = EndpointNameResolution.connectionValidationMessage(for: endpoint) {
+            showToast(message)
+            return
+          }
           let snapshot = endpoint
           Task { await store.refreshEndpoint(snapshot) }
         } label: {
@@ -2750,6 +2841,7 @@ private struct EndpointDetailView: View {
     let connectionChanged =
       endpoint.baseURL != savedEndpoint.baseURL || endpoint.apiKey != savedEndpoint.apiKey
     savedEndpoint = endpoint
+    onSave?(endpoint)
     if connectionChanged {
       store.resetEndpointStatus(endpoint.id)
     }
