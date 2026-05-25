@@ -460,6 +460,7 @@ struct ChatView: View {
                 onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
                 onSpeakFromHere: { speakFromHere(message) },
                 showThinking: store.currentConversation?.showThinking ?? false,
+                isWaitingForResponse: isWaitingForResponse(message),
                 onStreamingTextChange: { _ in
                   guard !userScrolledAfterLastMessage else { return }
                   scrollToBottom(proxy, animated: false)
@@ -479,7 +480,8 @@ struct ChatView: View {
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
                 onDelete: {},
-                showThinking: store.currentConversation?.showThinking ?? false
+                showThinking: store.currentConversation?.showThinking ?? false,
+                isWaitingForResponse: false
               )
               .id(preview.id)
             }
@@ -575,6 +577,11 @@ struct ChatView: View {
     let convo = store.currentConversation
     let last = convo?.messages.last
     return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: last?.text)
+  }
+
+  private func isWaitingForResponse(_ message: ChatMessage) -> Bool {
+    guard currentChatIsResponding, message.role == .assistant else { return false }
+    return store.currentConversation?.messages.last?.id == message.id
   }
 
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {

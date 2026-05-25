@@ -28,6 +28,7 @@ struct MessageBubble: View {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
+  var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
   var body: some View {
@@ -46,6 +47,7 @@ struct MessageBubble: View {
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
       showThinking: showThinking,
+      isWaitingForResponse: isWaitingForResponse,
       onStreamingTextChange: onStreamingTextChange
     )
   }
@@ -66,6 +68,7 @@ private struct StreamingMessageBubble: View {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
+  var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
 
   var body: some View {
@@ -83,7 +86,8 @@ private struct StreamingMessageBubble: View {
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
-      showThinking: showThinking
+      showThinking: showThinking,
+      isWaitingForResponse: isWaitingForResponse
     )
     .equatable()
     .onChange(of: streamingText.text) { _, newText in
@@ -108,12 +112,16 @@ private struct MessageBubbleContent: View, Equatable {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var showThinking: Bool = false
+  var isWaitingForResponse: Bool = false
   @State private var showingTextSelection = false
   @State private var selectedTextAttachment: ChatAttachment?
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
   private var isStreaming: Bool { streamingOverride != nil }
+  private var isLiveAssistantResponse: Bool {
+    message.role == .assistant && (isWaitingForResponse || isStreaming)
+  }
 
   /// Identity for SwiftUI's EquatableView: skip body re-evaluation when neither
   /// the canonical message nor the streaming override has changed. Closure
@@ -126,6 +134,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.appearance == rhs.appearance
       && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.showThinking == rhs.showThinking
+      && lhs.isWaitingForResponse == rhs.isWaitingForResponse
   }
 
   var body: some View {
@@ -214,9 +223,13 @@ private struct MessageBubbleContent: View, Equatable {
         }
       }
       if visibleText.isEmpty {
-        Text("...")
-          .font(messageFont)
-          .foregroundStyle(.secondary)
+        if isLiveAssistantResponse {
+          AssistantTypingIndicator(fontSize: appearance.fontSize)
+        } else {
+          Text("...")
+            .font(messageFont)
+            .foregroundStyle(.secondary)
+        }
       } else if usesMarkdown {
         MarkdownContentView(
           blocks: markdownBlocks,
@@ -255,7 +268,7 @@ private struct MessageBubbleContent: View, Equatable {
           initialLineSpacing: appearance.lineSpacing,
           fontFamily: appearance.fontFamily(for: message.role))
       }
-    if !isStreaming {
+    if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
           messageContextMenu(visibleText: visibleText, rawText: rawText)
@@ -442,6 +455,49 @@ private struct MessageAttachmentRow: View {
       }
       return "Image"
     }
+  }
+}
+
+private struct AssistantTypingIndicator: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  let fontSize: Double
+
+  private var dotDiameter: CGFloat {
+    min(8, max(5, CGFloat(fontSize) * 0.36))
+  }
+
+  private var waveAmplitude: CGFloat {
+    dotDiameter * 0.55
+  }
+
+  var body: some View {
+    Group {
+      if reduceMotion {
+        dots(progress: 0)
+      } else {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+          dots(progress: timeline.date.timeIntervalSinceReferenceDate)
+        }
+      }
+    }
+    .frame(height: dotDiameter + waveAmplitude * 2)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Assistant is thinking")
+  }
+
+  private func dots(progress: TimeInterval) -> some View {
+    HStack(spacing: dotDiameter * 0.75) {
+      ForEach(0..<3, id: \.self) { index in
+        let phase = progress * 2.0 * Double.pi / 1.15 - Double(index) * 0.48
+        let lift = max(0, sin(phase))
+        Circle()
+          .fill(Color.secondary.opacity(reduceMotion ? 0.55 : 0.38 + lift * 0.24))
+          .frame(width: dotDiameter, height: dotDiameter)
+          .offset(y: reduceMotion ? 0 : -CGFloat(lift) * waveAmplitude)
+      }
+    }
+    .padding(.vertical, waveAmplitude)
   }
 }
 
