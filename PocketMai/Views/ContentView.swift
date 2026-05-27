@@ -34,17 +34,23 @@ struct ContentView: View {
         .accessibilityHidden(panelOffset == 0)
         .zIndex(0)
 
-        NavigationStack {
-          ChatView(
-            onShowHistory: {
-              withAnimation(.snappy) {
-                showingHistory.toggle()
+        ZStack {
+          ChatScreenBackground()
+
+          NavigationStack {
+            ChatView(
+              onShowHistory: {
+                withAnimation(.snappy) {
+                  showingHistory.toggle()
+                }
               }
-            }
-          )
-          .equatable()
+            )
+            .equatable()
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(edges: .top)
         .clipShape(RoundedRectangle(cornerRadius: panelOffset > 0 ? 28 : 0, style: .continuous))
         .allowsHitTesting(panelOffset == 0)
         .overlay {
@@ -66,6 +72,7 @@ struct ContentView: View {
           activationWidth: historyDragActivationWidth)
       )
     }
+    .ignoresSafeArea()
     .sheet(isPresented: $showingSettings) {
       SettingsView()
         .environmentObject(store)
@@ -81,7 +88,6 @@ struct ContentView: View {
       Text(store.errorMessage ?? "")
     }
     .background(ChatScreenshotServiceInstaller(service: screenshotService))
-    .background(Color(uiColor: .systemBackground).ignoresSafeArea())
     .onAppear {
       screenshotService.store = store
     }
@@ -169,6 +175,17 @@ struct ContentView: View {
   }
 }
 
+struct ChatScreenBackground: View {
+  var body: some View {
+    LinearGradient(
+      colors: [Color(uiColor: .systemBackground), Color.accentColor.opacity(0.05)],
+      startPoint: .top,
+      endPoint: .bottom
+    )
+    .ignoresSafeArea()
+  }
+}
+
 private struct ToolCallApprovalView: View {
   @EnvironmentObject private var store: AppStore
   let request: ToolCallApprovalRequest
@@ -240,4 +257,3 @@ private struct SidebarBlurBackground: View, Equatable {
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
-

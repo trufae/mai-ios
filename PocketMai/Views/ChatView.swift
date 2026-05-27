@@ -41,14 +41,6 @@ struct ChatView: View {
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbarBackground(.hidden, for: .navigationBar)
-    .background(
-      LinearGradient(
-        colors: [Color(uiColor: .systemBackground), Color.accentColor.opacity(0.05)],
-        startPoint: .top,
-        endPoint: .bottom
-      )
-      .ignoresSafeArea()
-    )
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button(action: onShowHistory) {
