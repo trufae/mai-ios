@@ -81,6 +81,7 @@ struct ContentView: View {
       Text(store.errorMessage ?? "")
     }
     .background(ChatScreenshotServiceInstaller(service: screenshotService))
+    .background(Color(uiColor: .systemBackground).ignoresSafeArea())
     .onAppear {
       screenshotService.store = store
     }
