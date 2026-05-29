@@ -588,6 +588,12 @@ struct SettingsView: View {
       }
 
       DisclosureGroup {
+        hapticsContent
+      } label: {
+        Label("Haptics", systemImage: "waveform.path")
+      }
+
+      DisclosureGroup {
         conversationOptionsContent
       } label: {
         Label("Conversation", systemImage: "mic.badge.plus")
@@ -713,6 +719,28 @@ struct SettingsView: View {
     Text("Voices are used by Speak Message and the assistant's text-to-speech tool.")
       .font(.caption)
       .foregroundStyle(.secondary)
+  }
+
+  @ViewBuilder
+  private var hapticsContent: some View {
+    Toggle("Enable Haptics", isOn: settingsBinding(\.appearance.hapticsEnabled))
+    Toggle(
+      "Vibrate on Stream Packets",
+      isOn: settingsBinding(\.appearance.vibrateOnEveryStreamPacket))
+      .disabled(!store.settings.appearance.hapticsEnabled)
+    Button {
+      store.previewResponseHaptic()
+    } label: {
+      Label("Test Haptic", systemImage: "iphone.radiowaves.left.and.right")
+    }
+    .disabled(!store.settings.appearance.hapticsEnabled)
+    Text(
+      store.settings.appearance.vibrateOnEveryStreamPacket
+        ? "Light taps are rate-limited while the assistant streams."
+        : "When off, a gentle tap plays when the assistant response completes."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   @ViewBuilder

@@ -134,6 +134,7 @@ enum AssistantToolLoop {
       switch outcome {
       case .final(let turnText):
         store.setAssistantMessage(id: assistantID, text: state.append(turnText), role: .assistant)
+        store.assistantResponseCompleted(streamingWasEnabled: conversation.usesStreaming)
         didFinish = true
         return
       case .retry(let feedback):
@@ -300,6 +301,9 @@ enum AssistantToolLoop {
     let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
       let turnText =
         requestState.definitions.isEmpty ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
+      if request.conversation.usesStreaming {
+        store?.assistantStreamPacketReceived()
+      }
       store?.setAssistantMessage(
         id: assistantID,
         text: combinedAssistantText(baseline: state.assistantText, turnText: turnText),

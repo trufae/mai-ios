@@ -165,6 +165,7 @@ final class AppStore: ObservableObject {
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
+  private let responseHaptics = ResponseHaptics()
   private let openAPIServer = OpenAPIServer()
   private let persistence: PersistenceStore
   private var conversationDrafts: [UUID: String] = [:]
@@ -1464,6 +1465,32 @@ final class AppStore: ObservableObject {
     } else {
       setAssistantMessage(
         id: id, text: "\(current)\n\n[stopped]", role: .assistant)
+    }
+  }
+
+  func assistantStreamPacketReceived() {
+    guard settings.appearance.hapticsEnabled,
+      settings.appearance.vibrateOnEveryStreamPacket
+    else {
+      return
+    }
+    responseHaptics.streamPacketReceived()
+  }
+
+  func assistantResponseCompleted(streamingWasEnabled: Bool) {
+    guard settings.appearance.hapticsEnabled else {
+      return
+    }
+    if settings.appearance.vibrateOnEveryStreamPacket && streamingWasEnabled { return }
+    responseHaptics.responseCompleted()
+  }
+
+  func previewResponseHaptic() {
+    guard settings.appearance.hapticsEnabled else { return }
+    if settings.appearance.vibrateOnEveryStreamPacket {
+      responseHaptics.streamPacketReceived(force: true)
+    } else {
+      responseHaptics.responseCompleted()
     }
   }
 

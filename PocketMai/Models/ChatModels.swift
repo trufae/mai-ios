@@ -234,6 +234,8 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   var liveMarkdown: Bool = true
   var justifyText: Bool = false
   var unwrappedTables: Bool = false
+  var hapticsEnabled: Bool = true
+  var vibrateOnEveryStreamPacket: Bool = false
 
   static let defaults = AppearanceSettings()
 
@@ -250,6 +252,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   enum CodingKeys: String, CodingKey {
     case userFontFamily, assistantFontFamily, fontFamily, fontSize, lineSpacing, tint, theme
     case solidResponseBubbles, colorizeResponseBubbles, liveMarkdown, justifyText, unwrappedTables
+    case hapticsEnabled, vibrateOnEveryStreamPacket
   }
 
   init(from decoder: Decoder) throws {
@@ -271,6 +274,9 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     liveMarkdown = (try? c.decode(Bool.self, forKey: .liveMarkdown)) ?? true
     justifyText = (try? c.decode(Bool.self, forKey: .justifyText)) ?? false
     unwrappedTables = (try? c.decode(Bool.self, forKey: .unwrappedTables)) ?? false
+    hapticsEnabled = (try? c.decode(Bool.self, forKey: .hapticsEnabled)) ?? true
+    vibrateOnEveryStreamPacket =
+      (try? c.decode(Bool.self, forKey: .vibrateOnEveryStreamPacket)) ?? false
   }
 
   func encode(to encoder: Encoder) throws {
@@ -285,6 +291,8 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(liveMarkdown, forKey: .liveMarkdown)
     try c.encode(justifyText, forKey: .justifyText)
     try c.encode(unwrappedTables, forKey: .unwrappedTables)
+    try c.encode(hapticsEnabled, forKey: .hapticsEnabled)
+    try c.encode(vibrateOnEveryStreamPacket, forKey: .vibrateOnEveryStreamPacket)
   }
 }
 
