@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="PocketMai/Assets.xcassets/AppIcon.appiconset/icon-60.png" alt="PocketMai logo" width="180" />
+  <img src="mai-logo.png" alt="MAI logo" width="300" />
 </p>
 
 # PocketMai
