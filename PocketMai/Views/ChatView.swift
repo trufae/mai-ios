@@ -212,6 +212,8 @@ struct ChatView: View {
         Label("Compact Chat", systemImage: "rectangle.compress.vertical")
       }
       .disabled(!canCompactCurrentChat)
+      Divider()
+      exportConversationMenu
     } label: {
       VStack(spacing: 1) {
         Text(store.currentConversation?.displayTitle ?? "Chat")
@@ -349,34 +351,36 @@ struct ChatView: View {
   }
 
   private var trailingMenu: some View {
-    Menu {
-      Button {
-        store.newConversation()
-      } label: {
-        Label("New Chat", systemImage: "bubble.left.and.text.bubble.right")
-      }
-      .disabled(currentConversationIsEmpty)
-      Divider()
-      exportMenuSection
+    Button {
+      store.newConversation()
     } label: {
       Image(systemName: "square.and.pencil")
     }
+    .disabled(currentConversationIsEmpty)
     .buttonStyle(.glass)
+    .accessibilityLabel("New Chat")
+    .help("New Chat")
+  }
+
+  private var exportConversationMenu: some View {
+    Menu {
+      exportMenuItems
+    } label: {
+      Label("Export Conversation", systemImage: "square.and.arrow.up")
+    }
   }
 
   @ViewBuilder
-  private var exportMenuSection: some View {
-    Section("Export Conversation") {
-      ForEach(ConversationExportFormat.allCases) { format in
-        Button {
-          Task { await shareExport(format) }
-        } label: {
-          Label(format.displayName, systemImage: format.systemImage)
-        }
-        .disabled(format == .audio && audioExporter.isExporting)
+  private var exportMenuItems: some View {
+    ForEach(ConversationExportFormat.allCases) { format in
+      Button {
+        Task { await shareExport(format) }
+      } label: {
+        Label(format.displayName, systemImage: format.systemImage)
       }
-      .disabled(audioExporter.isExporting)
+      .disabled(format == .audio && audioExporter.isExporting)
     }
+    .disabled(audioExporter.isExporting)
   }
 
   @MainActor
