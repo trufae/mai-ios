@@ -94,6 +94,9 @@ struct SidebarView: View {
       }
     }
     .listStyle(.sidebar)
+    .safeAreaInset(edge: .top) {
+      Color.clear.frame(height: 32)
+    }
     .scrollIndicators(.hidden)
   }
 
