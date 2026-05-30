@@ -189,6 +189,7 @@ private struct MessageBubbleContent: View, Equatable {
           monospaced: false,
           dimmedContent: true,
           initiallyExpanded: showThinking,
+          italicContent: true,
           markdownAppearance: canRenderMarkdown ? appearance : nil,
           renderImages: renderImages
         )
@@ -1420,6 +1421,7 @@ private struct FoldableMetaSection: View {
   var monospaced: Bool
   var dimmedContent: Bool = false
   var initiallyExpanded: Bool = false
+  var italicContent: Bool = false
   var markdownAppearance: AppearanceSettings? = nil
   var renderImages: Bool = true
 
@@ -1432,6 +1434,7 @@ private struct FoldableMetaSection: View {
     monospaced: Bool,
     dimmedContent: Bool = false,
     initiallyExpanded: Bool = false,
+    italicContent: Bool = false,
     markdownAppearance: AppearanceSettings? = nil,
     renderImages: Bool = true
   ) {
@@ -1441,6 +1444,7 @@ private struct FoldableMetaSection: View {
     self.monospaced = monospaced
     self.dimmedContent = dimmedContent
     self.initiallyExpanded = initiallyExpanded
+    self.italicContent = italicContent
     self.markdownAppearance = markdownAppearance
     self.renderImages = renderImages
     self._expanded = State(initialValue: initiallyExpanded)
@@ -1477,10 +1481,14 @@ private struct FoldableMetaSection: View {
               text: content, appearance: markdownAppearance,
               allowsTextSelection: true,
               foregroundStyle: dimmedContent ? Color.secondary : nil,
-              renderImages: renderImages)
+              renderImages: renderImages,
+              italic: italicContent)
           } else {
+            let contentFont =
+              (monospaced ? Font.system(.footnote, design: .monospaced) : Font.callout)
+              .italicizedIf(italicContent)
             Text(content)
-              .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
+              .font(contentFont)
               .foregroundStyle(dimmedContent ? Color.secondary : Color.primary)
               .textSelection(.enabled)
           }
@@ -1711,6 +1719,7 @@ struct MarkdownContentView: View {
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
   let renderImages: Bool
+  let italic: Bool
 
   init(
     text: String,
@@ -1719,7 +1728,8 @@ struct MarkdownContentView: View {
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
     uiForegroundColor: UIColor? = nil,
-    renderImages: Bool = true
+    renderImages: Bool = true,
+    italic: Bool = false
   ) {
     self.blocks = MarkdownParser.blocks(from: text)
     self.appearance = appearance
@@ -1728,6 +1738,7 @@ struct MarkdownContentView: View {
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
     self.renderImages = renderImages
+    self.italic = italic
   }
 
   init(
@@ -1737,7 +1748,8 @@ struct MarkdownContentView: View {
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
     uiForegroundColor: UIColor? = nil,
-    renderImages: Bool = true
+    renderImages: Bool = true,
+    italic: Bool = false
   ) {
     self.blocks = blocks
     self.appearance = appearance
@@ -1746,6 +1758,7 @@ struct MarkdownContentView: View {
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
     self.renderImages = renderImages
+    self.italic = italic
   }
 
   var body: some View {
@@ -1760,7 +1773,8 @@ struct MarkdownContentView: View {
             uiFont: headingUIFont(level: level),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor
+            uiForegroundColor: uiForegroundColor,
+            italic: italic
           )
           .fixedSize(horizontal: false, vertical: true)
         case .text(let value):
@@ -1771,7 +1785,8 @@ struct MarkdownContentView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor
+            uiForegroundColor: uiForegroundColor,
+            italic: italic
           )
           .fixedSize(horizontal: false, vertical: true)
         case .blockquote(let value):
@@ -1779,7 +1794,8 @@ struct MarkdownContentView: View {
             text: value,
             appearance: appearance,
             fontFamily: fontFamily,
-            allowsTextSelection: allowsTextSelection)
+            allowsTextSelection: allowsTextSelection,
+            italic: italic)
         case .horizontalRule:
           MarkdownHorizontalRuleView(appearance: appearance)
         case .code(let language, let code):
@@ -1797,7 +1813,8 @@ struct MarkdownContentView: View {
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor
+            uiForegroundColor: uiForegroundColor,
+            italic: italic
           )
         case .taskList(let items):
           TaskListView(
@@ -1806,7 +1823,8 @@ struct MarkdownContentView: View {
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
+            uiForegroundColor: uiForegroundColor,
+            italic: italic)
         case .bulletList(let items):
           BulletListView(
             items: items,
@@ -1814,7 +1832,8 @@ struct MarkdownContentView: View {
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
+            uiForegroundColor: uiForegroundColor,
+            italic: italic)
         case .orderedList(let items):
           OrderedListView(
             items: items,
@@ -1822,7 +1841,8 @@ struct MarkdownContentView: View {
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
+            uiForegroundColor: uiForegroundColor,
+            italic: italic)
         case .footnotes(let items):
           FootnotesView(
             items: items,
@@ -1830,7 +1850,8 @@ struct MarkdownContentView: View {
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor)
+            uiForegroundColor: uiForegroundColor,
+            italic: italic)
         }
       }
     }
@@ -1893,6 +1914,7 @@ private struct MarkdownInlineText: View {
   var uiForegroundColor: UIColor? = nil
   var strikethrough: Bool = false
   var allowsJustification: Bool = true
+  var italic: Bool = false
 
   var body: some View {
     let segments = renderMarkdownImages ? MarkdownInlineImageScanner.segments(in: value) : []
@@ -1907,7 +1929,8 @@ private struct MarkdownInlineText: View {
         foregroundStyle: foregroundStyle,
         uiForegroundColor: uiForegroundColor,
         strikethrough: strikethrough,
-        allowsJustification: allowsJustification)
+        allowsJustification: allowsJustification,
+        italic: italic)
     } else {
       MarkdownPlainInlineText(
         value: value,
@@ -1919,7 +1942,8 @@ private struct MarkdownInlineText: View {
         foregroundStyle: foregroundStyle,
         uiForegroundColor: uiForegroundColor,
         strikethrough: strikethrough,
-        allowsJustification: allowsJustification)
+        allowsJustification: allowsJustification,
+        italic: italic)
     }
   }
 }
@@ -1935,6 +1959,7 @@ private struct MarkdownInlineSegmentedText: View {
   let uiForegroundColor: UIColor?
   let strikethrough: Bool
   let allowsJustification: Bool
+  let italic: Bool
 
   var body: some View {
     VStack(alignment: frameAlignment, spacing: appearance.markdownMetric(6)) {
@@ -1952,7 +1977,8 @@ private struct MarkdownInlineSegmentedText: View {
               foregroundStyle: foregroundStyle,
               uiForegroundColor: uiForegroundColor,
               strikethrough: strikethrough,
-              allowsJustification: allowsJustification)
+              allowsJustification: allowsJustification,
+              italic: italic)
             .frame(maxWidth: .infinity, alignment: swiftUIAlignment)
           }
         case .image(let image):
@@ -1991,12 +2017,13 @@ private struct MarkdownPlainInlineText: View {
   var uiForegroundColor: UIColor? = nil
   var strikethrough: Bool = false
   var allowsJustification: Bool = true
+  var italic: Bool = false
 
   var body: some View {
     if allowsJustification && appearance.justifyText && textAlignment.isLeading {
       JustifiedMarkdownTextView(
         value: value,
-        font: uiFont,
+        font: uiFont.italicizedIf(italic),
         lineSpacing: appearance.lineSpacing,
         allowsTextSelection: allowsTextSelection,
         foregroundColor: uiForegroundColor ?? .label,
@@ -2008,7 +2035,7 @@ private struct MarkdownPlainInlineText: View {
       }
     } else {
       Text(attributedInlineMarkdown(value))
-        .font(font)
+        .font(font.italicizedIf(italic))
         .lineSpacing(CGFloat(appearance.lineSpacing))
         .multilineTextAlignment(textAlignment)
         .foregroundStyleIfPresent(foregroundStyle)
@@ -2482,6 +2509,16 @@ extension UIFont {
       return self
     }
     return UIFont(descriptor: descriptor, size: pointSize)
+  }
+
+  fileprivate func italicizedIf(_ italic: Bool) -> UIFont {
+    italic ? italicized() : self
+  }
+}
+
+extension Font {
+  fileprivate func italicizedIf(_ italic: Bool) -> Font {
+    italic ? self.italic() : self
   }
 }
 
@@ -3385,6 +3422,7 @@ struct MarkdownTableView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let italic: Bool
 
   init(
     headers: [String],
@@ -3394,7 +3432,8 @@ struct MarkdownTableView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    italic: Bool = false
   ) {
     self.headers = headers
     self.rows = rows
@@ -3404,6 +3443,7 @@ struct MarkdownTableView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.italic = italic
   }
 
   var body: some View {
@@ -3468,7 +3508,8 @@ struct MarkdownTableView: View {
       textAlignment: alignment,
       foregroundStyle: foregroundStyle,
       uiForegroundColor: uiForegroundColor,
-      allowsJustification: !unwrapped
+      allowsJustification: !unwrapped,
+      italic: italic
     )
     .fixedSize(horizontal: unwrapped, vertical: false)
     .frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
@@ -3586,6 +3627,7 @@ struct TaskListView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let italic: Bool
 
   init(
     items: [TaskListItem],
@@ -3593,7 +3635,8 @@ struct TaskListView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    italic: Bool = false
   ) {
     self.items = items
     self.appearance = appearance
@@ -3601,6 +3644,7 @@ struct TaskListView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.italic = italic
   }
 
   var body: some View {
@@ -3623,7 +3667,8 @@ struct TaskListView: View {
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: item.checked ? .secondary : foregroundStyle,
             uiForegroundColor: item.checked ? .secondaryLabel : uiForegroundColor,
-            strikethrough: item.checked
+            strikethrough: item.checked,
+            italic: italic
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
@@ -3641,6 +3686,7 @@ struct BulletListView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let italic: Bool
 
   init(
     items: [String],
@@ -3648,7 +3694,8 @@ struct BulletListView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    italic: Bool = false
   ) {
     self.items = items
     self.appearance = appearance
@@ -3656,6 +3703,7 @@ struct BulletListView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.italic = italic
   }
 
   var body: some View {
@@ -3665,7 +3713,7 @@ struct BulletListView: View {
       ForEach(Array(items.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
           Text("•")
-            .font(textFont)
+            .font(textFont.italicizedIf(italic))
             .foregroundStyle(.secondary)
             .frame(width: markerWidth, alignment: .trailing)
           MarkdownInlineText(
@@ -3675,7 +3723,8 @@ struct BulletListView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor
+            uiForegroundColor: uiForegroundColor,
+            italic: italic
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
@@ -3693,6 +3742,7 @@ struct OrderedListView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let italic: Bool
 
   init(
     items: [OrderedListItem],
@@ -3700,7 +3750,8 @@ struct OrderedListView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    italic: Bool = false
   ) {
     self.items = items
     self.appearance = appearance
@@ -3708,6 +3759,7 @@ struct OrderedListView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.italic = italic
   }
 
   var body: some View {
@@ -3718,7 +3770,7 @@ struct OrderedListView: View {
       ForEach(items) { item in
         HStack(alignment: .firstTextBaseline, spacing: appearance.markdownMetric(8)) {
           Text(item.marker)
-            .font(textFont)
+            .font(textFont.italicizedIf(italic))
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .frame(width: markerWidth, alignment: .trailing)
@@ -3729,7 +3781,8 @@ struct OrderedListView: View {
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
             foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor
+            uiForegroundColor: uiForegroundColor,
+            italic: italic
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
@@ -3747,17 +3800,20 @@ struct BlockquoteView: View {
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
   let allowsTextSelection: Bool
+  let italic: Bool
 
   init(
     text: String,
     appearance: AppearanceSettings,
     fontFamily: AppearanceFontFamily? = nil,
-    allowsTextSelection: Bool = true
+    allowsTextSelection: Bool = true,
+    italic: Bool = false
   ) {
     self.text = text
     self.appearance = appearance
     self.fontFamily = fontFamily ?? appearance.assistantFontFamily
     self.allowsTextSelection = allowsTextSelection
+    self.italic = italic
   }
 
   var body: some View {
@@ -3772,7 +3828,8 @@ struct BlockquoteView: View {
         allowsTextSelection: allowsTextSelection,
         foregroundStyle: .secondary,
         uiForegroundColor: .secondaryLabel,
-        renderImages: renderImages)
+        renderImages: renderImages,
+        italic: italic)
     }
     .padding(.vertical, appearance.markdownMetric(2))
   }
@@ -3785,6 +3842,7 @@ private struct FootnotesView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let italic: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: appearance.markdownMetric(3)) {
@@ -3798,7 +3856,8 @@ private struct FootnotesView: View {
           uiFont: fontFamily.uiFont(size: appearance.fontSize * 0.82),
           allowsTextSelection: allowsTextSelection,
           foregroundStyle: foregroundStyle ?? Color.secondary,
-          uiForegroundColor: uiForegroundColor ?? .secondaryLabel)
+          uiForegroundColor: uiForegroundColor ?? .secondaryLabel,
+          italic: italic)
       }
     }
   }
