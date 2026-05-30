@@ -823,10 +823,16 @@ private enum MessageAttachmentImage {
   }
 
   static func saveToPhotoLibrary(_ attachment: ChatAttachment) async throws {
-    guard let data = data(from: attachment), UIImage(data: data) != nil else {
+    guard let data = data(from: attachment) else {
       throw MessageImageSaveError("This image could not be decoded.")
     }
+    try await saveImageDataToPhotoLibrary(data)
+  }
 
+  static func saveImageDataToPhotoLibrary(_ data: Data) async throws {
+    guard UIImage(data: data) != nil else {
+      throw MessageImageSaveError("This image could not be decoded.")
+    }
     let status = await photoLibraryAddAuthorizationStatus()
     guard isAuthorized(status) else {
       throw MessageImageSaveError("Allow photo library access to save this image.")
@@ -2062,30 +2068,86 @@ private struct MarkdownImageView: View {
 
   var body: some View {
     if let url = image.url {
-      AsyncImage(url: url) { phase in
-        switch phase {
-        case .empty:
-          placeholderView
-        case .success(let loadedImage):
-          loadedImage
-            .resizable()
-            .scaledToFit()
-            .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        case .failure:
-          failureView
-        @unknown default:
-          failureView
-        }
-      }
-      .accessibilityLabel(accessibilityLabel)
+      MarkdownRemoteImageView(image: image, url: url, appearance: appearance)
     } else {
-      failureView
+      MarkdownImageFailureView(image: image, appearance: appearance)
         .accessibilityLabel(accessibilityLabel)
     }
   }
 
-  private var placeholderView: some View {
+  private var accessibilityLabel: String {
+    image.altText.isEmpty ? "Markdown image" : image.altText
+  }
+}
+
+private struct MarkdownRemoteImageView: View {
+  let image: MarkdownInlineImage
+  let url: URL
+  let appearance: AppearanceSettings
+
+  @StateObject private var loader = MarkdownRemoteImageLoader()
+  @State private var imageSaveError: String?
+
+  var body: some View {
+    Group {
+      switch loader.phase {
+      case .idle, .loading:
+        MarkdownImagePlaceholderView()
+      case .success(let uiImage, _):
+        Image(uiImage: uiImage)
+          .resizable()
+          .scaledToFit()
+          .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+          .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .contextMenu {
+            Button {
+              saveImage()
+            } label: {
+              Label("Save Image", systemImage: "square.and.arrow.down")
+            }
+          }
+      case .failure:
+        MarkdownImageFailureView(image: image, appearance: appearance)
+      }
+    }
+    .task(id: url) {
+      await loader.load(url)
+    }
+    .accessibilityLabel(accessibilityLabel)
+    .alert(
+      "Could not save image",
+      isPresented: Binding(
+        get: { imageSaveError != nil },
+        set: { if !$0 { imageSaveError = nil } }),
+      presenting: imageSaveError
+    ) { _ in
+      Button("OK", role: .cancel) { imageSaveError = nil }
+    } message: { message in
+      Text(message)
+    }
+  }
+
+  private var accessibilityLabel: String {
+    image.altText.isEmpty ? "Markdown image" : image.altText
+  }
+
+  private func saveImage() {
+    Task {
+      do {
+        let data = try await loader.imageData(for: url)
+        try await MessageAttachmentImage.saveImageDataToPhotoLibrary(data)
+      } catch {
+        await MainActor.run {
+          imageSaveError =
+            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+      }
+    }
+  }
+}
+
+private struct MarkdownImagePlaceholderView: View {
+  var body: some View {
     ProgressView()
       .controlSize(.regular)
       .frame(maxWidth: .infinity, minHeight: 96)
@@ -2094,7 +2156,17 @@ private struct MarkdownImageView: View {
       .overlay(border)
   }
 
-  private var failureView: some View {
+  private var border: some View {
+    RoundedRectangle(cornerRadius: 10, style: .continuous)
+      .strokeBorder(.secondary.opacity(0.18), lineWidth: 1)
+  }
+}
+
+private struct MarkdownImageFailureView: View {
+  let image: MarkdownInlineImage
+  let appearance: AppearanceSettings
+
+  var body: some View {
     HStack(spacing: appearance.markdownMetric(10)) {
       ZStack(alignment: .bottomTrailing) {
         Image(systemName: "photo")
@@ -2132,9 +2204,62 @@ private struct MarkdownImageView: View {
     RoundedRectangle(cornerRadius: 10, style: .continuous)
       .strokeBorder(.secondary.opacity(0.18), lineWidth: 1)
   }
+}
 
-  private var accessibilityLabel: String {
-    image.altText.isEmpty ? "Markdown image" : image.altText
+@MainActor
+private final class MarkdownRemoteImageLoader: ObservableObject {
+  enum Phase {
+    case idle
+    case loading
+    case success(UIImage, Data)
+    case failure
+  }
+
+  @Published private(set) var phase: Phase = .idle
+  private var currentURL: URL?
+
+  func load(_ url: URL) async {
+    if currentURL == url {
+      switch phase {
+      case .loading, .success:
+        return
+      case .idle, .failure:
+        break
+      }
+    }
+
+    currentURL = url
+    phase = .loading
+
+    do {
+      let imageData = try await Self.imageDataAndDecodedImage(from: url)
+      guard currentURL == url else { return }
+      phase = .success(imageData.image, imageData.data)
+    } catch is CancellationError {
+    } catch {
+      guard currentURL == url else { return }
+      phase = .failure
+    }
+  }
+
+  func imageData(for url: URL) async throws -> Data {
+    if currentURL == url, case .success(_, let data) = phase {
+      return data
+    }
+    return try await Self.imageDataAndDecodedImage(from: url).data
+  }
+
+  private static func imageDataAndDecodedImage(from url: URL) async throws -> (data: Data, image: UIImage) {
+    let (data, response) = try await URLSession.shared.data(from: url)
+    if let httpResponse = response as? HTTPURLResponse,
+      !(200..<300).contains(httpResponse.statusCode)
+    {
+      throw MessageImageSaveError("The image could not be downloaded.")
+    }
+    guard let image = UIImage(data: data) else {
+      throw MessageImageSaveError("This image could not be decoded.")
+    }
+    return (data, image)
   }
 }
 
