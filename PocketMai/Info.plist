@@ -26,6 +26,8 @@
 	<string>PocketMai can include your current location in prompts when the Location tool is enabled.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PocketMai scans for Ollama servers and can serve the selected chat to local Ollama or OpenAI-compatible clients.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>PocketMai uses the camera to attach a picture to your chat when you choose Take picture.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>PocketMai uses the microphone for active voice conversations. When Native iOS Live is selected, raw microphone audio stays on this device.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

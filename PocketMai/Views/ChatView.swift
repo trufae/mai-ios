@@ -840,6 +840,7 @@ private struct ChatComposer: View {
   @State private var showingToolPicker = false
   @State private var showingTextFileImporter = false
   @State private var showingImagePicker = false
+  @State private var showingCameraPicker = false
   @State private var selectedPhotoItem: PhotosPickerItem?
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
@@ -856,6 +857,10 @@ private struct ChatComposer: View {
     ProviderVisionSupport.supportsImageInput(
       conversation: store.currentConversation,
       settings: store.settings)
+  }
+
+  private var canTakePicture: Bool {
+    canAttachImage && UIImagePickerController.isSourceTypeAvailable(.camera)
   }
 
   var body: some View {
@@ -898,6 +903,12 @@ private struct ChatComposer: View {
     .onChange(of: selectedPhotoItem) { _, item in
       guard let item else { return }
       Task { await importImageAttachment(item) }
+    }
+    .sheet(isPresented: $showingCameraPicker) {
+      CameraImagePicker(isPresented: $showingCameraPicker) { image in
+        importCameraImageAttachment(image)
+      }
+      .ignoresSafeArea()
     }
     .alert(
       "Attachment failed",
@@ -1192,6 +1203,18 @@ private struct ChatComposer: View {
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
       .padding(.vertical, 9)
+
+      Button {
+        showingToolMenu = false
+        showingCameraPicker = true
+      } label: {
+        toolMenuRowLabel("Take picture", systemImage: "camera")
+      }
+      .disabled(!canTakePicture)
+      .opacity(canTakePicture ? 1 : 0.45)
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
     }
     .padding(8)
     .frame(minWidth: 240)
@@ -1298,6 +1321,21 @@ private struct ChatComposer: View {
     }
   }
 
+  @MainActor
+  private func importCameraImageAttachment(_ image: UIImage) {
+    guard canAttachImage else {
+      attachmentError = "The selected provider or model does not support image input."
+      return
+    }
+    let filename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+    let imageSize = store.settings.attachmentImageSize
+    guard imageSize != .prompt else {
+      pendingImageSizePrompt = PendingImageAttachmentImport(filename: filename, image: image)
+      return
+    }
+    appendImageAttachment(image, filename: filename, size: imageSize)
+  }
+
   private func appendImageAttachment(
     _ pending: PendingImageAttachmentImport,
     size: AttachmentImageSize
@@ -1350,6 +1388,49 @@ private struct ChatComposer: View {
 private struct PendingImageAttachmentImport {
   let filename: String
   let image: UIImage
+}
+
+private struct CameraImagePicker: UIViewControllerRepresentable {
+  @Binding var isPresented: Bool
+  let onImagePicked: (UIImage) -> Void
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(isPresented: $isPresented, onImagePicked: onImagePicked)
+  }
+
+  func makeUIViewController(context: Context) -> UIImagePickerController {
+    let picker = UIImagePickerController()
+    picker.sourceType = .camera
+    picker.mediaTypes = [UTType.image.identifier]
+    picker.allowsEditing = false
+    picker.delegate = context.coordinator
+    return picker
+  }
+
+  func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+  final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+    @Binding private var isPresented: Bool
+    private let onImagePicked: (UIImage) -> Void
+
+    init(isPresented: Binding<Bool>, onImagePicked: @escaping (UIImage) -> Void) {
+      _isPresented = isPresented
+      self.onImagePicked = onImagePicked
+    }
+
+    func imagePickerController(
+      _ picker: UIImagePickerController,
+      didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+    ) {
+      isPresented = false
+      guard let image = info[.originalImage] as? UIImage else { return }
+      onImagePicked(image)
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+      isPresented = false
+    }
+  }
 }
 
 private struct AttachmentPill: View {
