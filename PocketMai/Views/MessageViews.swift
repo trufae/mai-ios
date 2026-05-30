@@ -221,12 +221,14 @@ private struct MessageBubbleContent: View, Equatable {
     let messageFont = appearance.swiftUIFont(for: message.role)
     let messageFontFamily = appearance.fontFamily(for: message.role)
     let bubbleView = VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Image(systemName: iconName)
-          .foregroundStyle(iconColor)
-        Text(message.role.displayName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.secondary)
+      if showsSenderHeader {
+        HStack(spacing: 6) {
+          Image(systemName: iconName)
+            .foregroundStyle(iconColor)
+          Text(message.role.displayName)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+        }
       }
       if hasVoiceRecording {
         VoiceRecordingPlaybackButton(message: message)
@@ -366,6 +368,15 @@ private struct MessageBubbleContent: View, Equatable {
     case .system: "gearshape"
     case .tool: "wrench.and.screwdriver"
     case .error: "exclamationmark.triangle"
+    }
+  }
+
+  private var showsSenderHeader: Bool {
+    switch message.role {
+    case .user, .assistant:
+      false
+    case .system, .tool, .error:
+      true
     }
   }
 
