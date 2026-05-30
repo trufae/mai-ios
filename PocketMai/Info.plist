@@ -28,6 +28,8 @@
 	<string>PocketMai scans for Ollama servers and can serve the selected chat to local Ollama or OpenAI-compatible clients.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>PocketMai uses the microphone for active voice conversations. When Native iOS Live is selected, raw microphone audio stays on this device.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>PocketMai saves chat images to your photo library when you choose Save Image.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>PocketMai uses speech recognition to turn your voice into chat messages. Native iOS Live transcription happens on device.</string>
 	<key>NSAppTransportSecurity</key>

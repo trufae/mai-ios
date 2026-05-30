@@ -1,4 +1,5 @@
 import SwiftUI
+import Photos
 import UIKit
 
 private struct FullChatScreenshotRenderingKey: EnvironmentKey {
@@ -134,6 +135,8 @@ private struct MessageBubbleContent: View, Equatable {
   var isWaitingForResponse: Bool = false
   @State private var showingTextSelection = false
   @State private var selectedTextAttachment: ChatAttachment?
+  @State private var selectedImageAttachment: ChatAttachment?
+  @State private var imageSaveError: String?
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.text }
@@ -238,7 +241,7 @@ private struct MessageBubbleContent: View, Equatable {
       if hasVoiceRecording {
         VoiceRecordingPlaybackButton(message: message)
       }
-      ForEach(message.attachments) { attachment in
+      ForEach(textAttachments) { attachment in
         MessageAttachmentRow(attachment: attachment) {
           if attachment.kind == .textFile {
             selectedTextAttachment = attachment
@@ -248,7 +251,7 @@ private struct MessageBubbleContent: View, Equatable {
       if visibleText.isEmpty {
         if isLiveAssistantResponse {
           AssistantTypingIndicator(fontSize: appearance.fontSize)
-        } else {
+        } else if !hasDisplayedAttachmentContent {
           Text("...")
             .font(messageFont)
             .foregroundStyle(.secondary)
@@ -267,6 +270,13 @@ private struct MessageBubbleContent: View, Equatable {
           .font(messageFont)
           .lineSpacing(CGFloat(appearance.lineSpacing))
           .fixedSize(horizontal: false, vertical: true)
+      }
+      ForEach(imageAttachments) { attachment in
+        MessageImageAttachmentView(
+          attachment: attachment,
+          onOpen: { selectedImageAttachment = attachment },
+          onSave: { saveImageAttachment(attachment) }
+        )
       }
     }
     .padding(14)
@@ -295,6 +305,22 @@ private struct MessageBubbleContent: View, Equatable {
           initialLineSpacing: appearance.lineSpacing,
           fontFamily: appearance.fontFamily(for: message.role))
       }
+      .fullScreenCover(item: $selectedImageAttachment) { attachment in
+        if let image = MessageAttachmentImage.uiImage(from: attachment) {
+          MessageImageFullscreenView(attachment: attachment, image: image)
+        }
+      }
+      .alert(
+        "Could not save image",
+        isPresented: Binding(
+          get: { imageSaveError != nil },
+          set: { if !$0 { imageSaveError = nil } }),
+        presenting: imageSaveError
+      ) { _ in
+        Button("OK", role: .cancel) { imageSaveError = nil }
+      } message: { message in
+        Text(message)
+      }
     if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
@@ -311,6 +337,17 @@ private struct MessageBubbleContent: View, Equatable {
 
   @ViewBuilder
   private func messageContextMenu(visibleText: String, rawText: String) -> some View {
+    ForEach(Array(imageAttachments.enumerated()), id: \.element.id) { index, attachment in
+      Button {
+        saveImageAttachment(attachment)
+      } label: {
+        Label(imageSaveMenuTitle(at: index), systemImage: "square.and.arrow.down")
+      }
+    }
+    if !imageAttachments.isEmpty {
+      Divider()
+    }
+
     Button {
       showingTextSelection = true
     } label: {
@@ -367,6 +404,35 @@ private struct MessageBubbleContent: View, Equatable {
 
     Button(role: .destructive, action: onDelete) {
       Label("Delete Message", systemImage: "trash")
+    }
+  }
+
+  private var textAttachments: [ChatAttachment] {
+    message.attachments.filter { $0.kind == .textFile }
+  }
+
+  private var imageAttachments: [ChatAttachment] {
+    message.attachments.filter { $0.kind == .image }
+  }
+
+  private var hasDisplayedAttachmentContent: Bool {
+    hasVoiceRecording || !message.attachments.isEmpty
+  }
+
+  private func imageSaveMenuTitle(at index: Int) -> String {
+    imageAttachments.count == 1 ? "Save Image" : "Save Image \(index + 1)"
+  }
+
+  private func saveImageAttachment(_ attachment: ChatAttachment) {
+    Task {
+      do {
+        try await MessageAttachmentImage.saveToPhotoLibrary(attachment)
+      } catch {
+        await MainActor.run {
+          imageSaveError =
+            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+      }
     }
   }
 
@@ -495,6 +561,262 @@ private struct MessageAttachmentRow: View {
       }
       return "Image"
     }
+  }
+}
+
+private struct MessageImageAttachmentView: View {
+  let attachment: ChatAttachment
+  let onOpen: () -> Void
+  let onSave: () -> Void
+
+  var body: some View {
+    if let uiImage = MessageAttachmentImage.uiImage(from: attachment) {
+      Button(action: onOpen) {
+        Image(uiImage: uiImage)
+          .resizable()
+          .scaledToFit()
+          .frame(maxWidth: .infinity, maxHeight: 380, alignment: .leading)
+          .background(Color.secondary.opacity(0.08))
+          .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+              .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
+          }
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Attached image")
+      .contextMenu {
+        Button(action: onSave) {
+          Label("Save Image", systemImage: "square.and.arrow.down")
+        }
+      }
+    } else {
+      Image(systemName: "photo")
+        .font(.title2)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, minHeight: 140)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityLabel("Image unavailable")
+    }
+  }
+}
+
+private struct MessageImageFullscreenView: View {
+  @Environment(\.dismiss) private var dismiss
+  let attachment: ChatAttachment
+  let image: UIImage
+  @State private var imageSaveError: String?
+
+  var body: some View {
+    ZStack(alignment: .top) {
+      Color.black
+        .ignoresSafeArea()
+      ZoomableUIImageView(image: image)
+        .ignoresSafeArea()
+      HStack {
+        Button {
+          dismiss()
+        } label: {
+          Image(systemName: "xmark")
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(width: 42, height: 42)
+            .background(.ultraThinMaterial, in: Circle())
+        }
+        .accessibilityLabel("Close")
+
+        Spacer()
+
+        Button {
+          saveImage()
+        } label: {
+          Image(systemName: "square.and.arrow.down")
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(width: 42, height: 42)
+            .background(.ultraThinMaterial, in: Circle())
+        }
+        .accessibilityLabel("Save Image")
+      }
+      .padding(.horizontal, 18)
+      .padding(.top, 12)
+    }
+    .statusBarHidden()
+    .alert(
+      "Could not save image",
+      isPresented: Binding(
+        get: { imageSaveError != nil },
+        set: { if !$0 { imageSaveError = nil } }),
+      presenting: imageSaveError
+    ) { _ in
+      Button("OK", role: .cancel) { imageSaveError = nil }
+    } message: { message in
+      Text(message)
+    }
+  }
+
+  private func saveImage() {
+    Task {
+      do {
+        try await MessageAttachmentImage.saveToPhotoLibrary(attachment)
+      } catch {
+        await MainActor.run {
+          imageSaveError =
+            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+      }
+    }
+  }
+}
+
+private struct ZoomableUIImageView: UIViewRepresentable {
+  let image: UIImage
+
+  func makeUIView(context: Context) -> UIScrollView {
+    let scrollView = UIScrollView()
+    scrollView.delegate = context.coordinator
+    scrollView.backgroundColor = .black
+    scrollView.minimumZoomScale = 1
+    scrollView.maximumZoomScale = 8
+    scrollView.bouncesZoom = true
+    scrollView.showsHorizontalScrollIndicator = false
+    scrollView.showsVerticalScrollIndicator = false
+
+    let imageView = UIImageView(image: image)
+    imageView.contentMode = .scaleAspectFit
+    imageView.translatesAutoresizingMaskIntoConstraints = false
+    imageView.isUserInteractionEnabled = true
+    scrollView.addSubview(imageView)
+    context.coordinator.imageView = imageView
+
+    NSLayoutConstraint.activate([
+      imageView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+      imageView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+      imageView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+      imageView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+      imageView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+      imageView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor),
+    ])
+
+    let doubleTap = UITapGestureRecognizer(
+      target: context.coordinator,
+      action: #selector(Coordinator.handleDoubleTap(_:)))
+    doubleTap.numberOfTapsRequired = 2
+    scrollView.addGestureRecognizer(doubleTap)
+
+    return scrollView
+  }
+
+  func updateUIView(_ scrollView: UIScrollView, context: Context) {
+    context.coordinator.imageView?.image = image
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator()
+  }
+
+  final class Coordinator: NSObject, UIScrollViewDelegate {
+    weak var imageView: UIImageView?
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+      imageView
+    }
+
+    @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+      guard let scrollView = recognizer.view as? UIScrollView else { return }
+      if scrollView.zoomScale > scrollView.minimumZoomScale {
+        scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+      } else {
+        let point = recognizer.location(in: imageView)
+        let targetScale = min(3, scrollView.maximumZoomScale)
+        let size = CGSize(
+          width: scrollView.bounds.width / targetScale,
+          height: scrollView.bounds.height / targetScale)
+        let rect = CGRect(
+          x: point.x - size.width / 2,
+          y: point.y - size.height / 2,
+          width: size.width,
+          height: size.height)
+        scrollView.zoom(to: rect, animated: true)
+      }
+    }
+  }
+}
+
+private enum MessageAttachmentImage {
+  static func data(from attachment: ChatAttachment) -> Data? {
+    guard attachment.kind == .image,
+      let dataBase64 = attachment.dataBase64,
+      !dataBase64.isEmpty
+    else {
+      return nil
+    }
+    return Data(base64Encoded: dataBase64)
+  }
+
+  static func uiImage(from attachment: ChatAttachment) -> UIImage? {
+    guard let data = data(from: attachment) else { return nil }
+    return UIImage(data: data)
+  }
+
+  static func saveToPhotoLibrary(_ attachment: ChatAttachment) async throws {
+    guard let data = data(from: attachment), UIImage(data: data) != nil else {
+      throw MessageImageSaveError("This image could not be decoded.")
+    }
+
+    let status = await photoLibraryAddAuthorizationStatus()
+    guard isAuthorized(status) else {
+      throw MessageImageSaveError("Allow photo library access to save this image.")
+    }
+
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      PHPhotoLibrary.shared().performChanges {
+        let request = PHAssetCreationRequest.forAsset()
+        request.addResource(with: .photo, data: data, options: nil)
+      } completionHandler: { success, error in
+        if let error {
+          continuation.resume(throwing: error)
+        } else if success {
+          continuation.resume()
+        } else {
+          continuation.resume(throwing: MessageImageSaveError("The image was not saved."))
+        }
+      }
+    }
+  }
+
+  private static func photoLibraryAddAuthorizationStatus() async -> PHAuthorizationStatus {
+    let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+    guard status == .notDetermined else { return status }
+    return await withCheckedContinuation { continuation in
+      PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+        continuation.resume(returning: status)
+      }
+    }
+  }
+
+  private static func isAuthorized(_ status: PHAuthorizationStatus) -> Bool {
+    switch status {
+    case .authorized, .limited:
+      return true
+    case .denied, .notDetermined, .restricted:
+      return false
+    @unknown default:
+      return false
+    }
+  }
+}
+
+private struct MessageImageSaveError: LocalizedError {
+  let message: String
+
+  init(_ message: String) {
+    self.message = message
+  }
+
+  var errorDescription: String? {
+    message
   }
 }
 
