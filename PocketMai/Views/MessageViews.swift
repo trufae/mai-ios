@@ -307,8 +307,10 @@ private struct MessageBubbleContent: View, Equatable {
           fontFamily: appearance.fontFamily(for: message.role))
       }
       .fullScreenCover(item: $selectedImageAttachment) { attachment in
-        if let image = MessageAttachmentImage.uiImage(from: attachment) {
-          MessageImageFullscreenView(attachment: attachment, image: image)
+        if let image = MessageAttachmentImage.uiImage(from: attachment),
+          let imageData = MessageAttachmentImage.data(from: attachment)
+        {
+          MessageImageFullscreenView(image: image, imageData: imageData)
         }
       }
       .alert(
@@ -666,16 +668,18 @@ private struct MessageImageAttachmentView: View {
 
 private struct MessageImageFullscreenView: View {
   @Environment(\.dismiss) private var dismiss
-  let attachment: ChatAttachment
   let image: UIImage
+  let imageData: Data
   @State private var imageSaveError: String?
 
   var body: some View {
     ZStack(alignment: .top) {
       Color.black
         .ignoresSafeArea()
-      ZoomableUIImageView(image: image)
-        .ignoresSafeArea()
+      ZoomableUIImageView(image: image) {
+        dismiss()
+      }
+      .ignoresSafeArea()
       HStack {
         Button {
           dismiss()
@@ -721,7 +725,7 @@ private struct MessageImageFullscreenView: View {
   private func saveImage() {
     Task {
       do {
-        try await MessageAttachmentImage.saveToPhotoLibrary(attachment)
+        try await MessageAttachmentImage.saveImageDataToPhotoLibrary(imageData)
       } catch {
         await MainActor.run {
           imageSaveError =
@@ -734,6 +738,7 @@ private struct MessageImageFullscreenView: View {
 
 private struct ZoomableUIImageView: UIViewRepresentable {
   let image: UIImage
+  let onSwipeDown: () -> Void
 
   func makeUIView(context: Context) -> UIScrollView {
     let scrollView = UIScrollView()
@@ -742,6 +747,7 @@ private struct ZoomableUIImageView: UIViewRepresentable {
     scrollView.minimumZoomScale = 1
     scrollView.maximumZoomScale = 8
     scrollView.bouncesZoom = true
+    scrollView.alwaysBounceVertical = true
     scrollView.showsHorizontalScrollIndicator = false
     scrollView.showsVerticalScrollIndicator = false
 
@@ -766,20 +772,29 @@ private struct ZoomableUIImageView: UIViewRepresentable {
       action: #selector(Coordinator.handleDoubleTap(_:)))
     doubleTap.numberOfTapsRequired = 2
     scrollView.addGestureRecognizer(doubleTap)
+    scrollView.panGestureRecognizer.addTarget(
+      context.coordinator,
+      action: #selector(Coordinator.handlePan(_:)))
 
     return scrollView
   }
 
   func updateUIView(_ scrollView: UIScrollView, context: Context) {
     context.coordinator.imageView?.image = image
+    context.coordinator.onSwipeDown = onSwipeDown
   }
 
   func makeCoordinator() -> Coordinator {
-    Coordinator()
+    Coordinator(onSwipeDown: onSwipeDown)
   }
 
   final class Coordinator: NSObject, UIScrollViewDelegate {
     weak var imageView: UIImageView?
+    var onSwipeDown: () -> Void
+
+    init(onSwipeDown: @escaping () -> Void) {
+      self.onSwipeDown = onSwipeDown
+    }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
       imageView
@@ -802,6 +817,25 @@ private struct ZoomableUIImageView: UIViewRepresentable {
           height: size.height)
         scrollView.zoom(to: rect, animated: true)
       }
+    }
+
+    @objc func handlePan(_ recognizer: UIPanGestureRecognizer) {
+      guard recognizer.state == .ended,
+        let scrollView = recognizer.view as? UIScrollView,
+        scrollView.zoomScale <= scrollView.minimumZoomScale + 0.01
+      else {
+        return
+      }
+
+      let translation = recognizer.translation(in: scrollView)
+      let velocity = recognizer.velocity(in: scrollView)
+      guard translation.y > 120,
+        velocity.y > 450,
+        abs(translation.x) < translation.y
+      else {
+        return
+      }
+      onSwipeDown()
     }
   }
 }
@@ -2087,25 +2121,34 @@ private struct MarkdownRemoteImageView: View {
 
   @StateObject private var loader = MarkdownRemoteImageLoader()
   @State private var imageSaveError: String?
+  @State private var showingFullscreenImage = false
 
   var body: some View {
     Group {
       switch loader.phase {
       case .idle, .loading:
         MarkdownImagePlaceholderView()
-      case .success(let uiImage, _):
-        Image(uiImage: uiImage)
-          .resizable()
-          .scaledToFit()
-          .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
-          .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .contextMenu {
-            Button {
-              saveImage()
-            } label: {
-              Label("Save Image", systemImage: "square.and.arrow.down")
-            }
+      case .success(let uiImage, let data):
+        Button {
+          showingFullscreenImage = true
+        } label: {
+          Image(uiImage: uiImage)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+          Button {
+            saveImage()
+          } label: {
+            Label("Save Image", systemImage: "square.and.arrow.down")
           }
+        }
+        .fullScreenCover(isPresented: $showingFullscreenImage) {
+          MessageImageFullscreenView(image: uiImage, imageData: data)
+        }
       case .failure:
         MarkdownImageFailureView(image: image, appearance: appearance)
       }
