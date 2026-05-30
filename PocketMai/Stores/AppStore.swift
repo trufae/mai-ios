@@ -200,6 +200,19 @@ final class AppStore: ObservableObject {
     return conversations[index]
   }
 
+  var appleIntelligenceIsAvailable: Bool {
+    appleAvailabilityReport.isAvailable
+  }
+
+  var effectiveDefaultProviderConfiguration: (provider: ProviderKind, endpointID: UUID?, modelID: String)
+  {
+    let configuration = settings.defaultProviderConfiguration
+    guard configuration.provider == .apple, !appleIntelligenceIsAvailable else {
+      return configuration
+    }
+    return (.mlx, nil, settings.localMLXModelID)
+  }
+
   func newConversation() {
     let inheritedLanguageOverride = currentConversation?.effectiveLanguageOverrideIdentifier
     if let current = currentConversation,
@@ -250,8 +263,7 @@ final class AppStore: ObservableObject {
     mergeLoadedConversations(loadedConversations)
     applyStartupConversationSelectionIfNeeded()
     let availabilityReport = await availabilityTask.value
-    appleAvailabilityReport = availabilityReport
-    appleAvailabilityMessage = availabilityReport.unavailableMessage
+    applyAppleAvailabilityReport(availabilityReport)
   }
 
   private func applyStartupConversationSelectionIfNeeded() {
@@ -308,7 +320,7 @@ final class AppStore: ObservableObject {
   }
 
   private func makeNewConversation() -> Conversation {
-    let defaultProvider = settings.defaultProviderConfiguration
+    let defaultProvider = effectiveDefaultProviderConfiguration
     var conversation = Conversation()
     conversation.provider = defaultProvider.provider
     if defaultProvider.provider == .mlx {
@@ -434,6 +446,7 @@ final class AppStore: ObservableObject {
     guard indexedConversationIndex(for: id) == nil else { return }
     conversations.append(conversation)
     sortConversations()
+    normalizeUnavailableAppleProviderIfNeeded()
   }
 
   func draftText(for conversationID: UUID?) -> String {
@@ -754,6 +767,7 @@ final class AppStore: ObservableObject {
     }
     guard let index = currentConversationIndex else { return false }
     let conversationID = conversations[index].id
+    normalizeCurrentAppleConversationIfNeeded(index: index)
     guard !respondingConversationIDs.contains(conversationID) else { return false }
     if let message = ChatProviderRouter.preflightMessage(
       conversation: conversations[index], settings: settings)
@@ -1966,8 +1980,13 @@ final class AppStore: ObservableObject {
     let report = await Task.detached(priority: .utility) {
       AppleFoundationProvider.availabilityReport(deviceOnly: deviceOnlyApple)
     }.value
+    applyAppleAvailabilityReport(report)
+  }
+
+  private func applyAppleAvailabilityReport(_ report: AppleFoundationAvailabilityReport) {
     appleAvailabilityReport = report
     appleAvailabilityMessage = report.unavailableMessage
+    normalizeUnavailableAppleProviderIfNeeded()
   }
 
   func resetMCPStatus(_ id: UUID) {
@@ -2068,6 +2087,7 @@ final class AppStore: ObservableObject {
   func refreshLocalMLXModels() {
     localMLXModelIDs = LocalMLXModelCache.listRepositoryIDs()
     normalizeDefaultLocalMLXModelIfNeeded()
+    normalizeUnavailableAppleProviderIfNeeded()
   }
 
   func availableLocalMLXModelID(preferred rawPreferred: String? = nil) -> String? {
@@ -2085,6 +2105,46 @@ final class AppStore: ObservableObject {
     guard current != next else { return }
     settings.localMLXModelID = next
     saveSettings()
+  }
+
+  private func normalizeUnavailableAppleProviderIfNeeded() {
+    guard appleAvailabilityReport.kind != .checking, !appleIntelligenceIsAvailable else { return }
+    let fallbackModelID = availableLocalMLXModelID(preferred: settings.localMLXModelID) ?? ""
+    var settingsChanged = false
+    if settings.defaultProvider == .apple {
+      settings.defaultProvider = .mlx
+      settings.localMLXModelID = fallbackModelID
+      settingsChanged = true
+    }
+
+    var conversationsChanged = false
+    for index in conversations.indices where conversations[index].provider == .apple {
+      conversations[index].provider = .mlx
+      conversations[index].endpointID = nil
+      conversations[index].modelID = fallbackModelID
+      conversationsChanged = true
+    }
+
+    if settingsChanged {
+      saveSettings()
+    }
+    if conversationsChanged {
+      saveConversations()
+    }
+  }
+
+  private func normalizeCurrentAppleConversationIfNeeded(index: Int) {
+    guard conversations.indices.contains(index),
+      conversations[index].provider == .apple,
+      !appleIntelligenceIsAvailable
+    else {
+      return
+    }
+    let fallbackModelID = availableLocalMLXModelID(preferred: settings.localMLXModelID) ?? ""
+    conversations[index].provider = .mlx
+    conversations[index].endpointID = nil
+    conversations[index].modelID = fallbackModelID
+    saveConversations()
   }
 
   private func fetchEndpointModelsResult(_ endpoint: OpenAIEndpoint) async -> Result<
@@ -3026,8 +3086,10 @@ final class AppStore: ObservableObject {
       settings.selectedEndpointID = payload.endpoints.first?.id
     }
     if let provider = payload.defaultProvider {
-      if provider == .openAICompatible && settings.selectedEndpointID == nil {
-        settings.defaultProvider = .apple
+      if provider == .apple && !appleIntelligenceIsAvailable {
+        settings.defaultProvider = .mlx
+      } else if provider == .openAICompatible && settings.selectedEndpointID == nil {
+        settings.defaultProvider = .mlx
       } else {
         settings.defaultProvider = provider
       }
@@ -3101,7 +3163,7 @@ final class AppStore: ObservableObject {
     settings.openAIEndpoints.removeAll()
     settings.selectedEndpointID = nil
     if settings.defaultProvider == .openAICompatible {
-      settings.defaultProvider = .apple
+      settings.defaultProvider = .mlx
     }
     endpointStatuses.removeAll()
     endpointModels.removeAll()

@@ -29,7 +29,7 @@ enum ChatProviderError: LocalizedError {
     case .appleModelUnavailable(let reason): reason
     case .providerRequestFailed(let reason): reason
     case .providerUnavailableInAirplaneMode(let name):
-      "Airplane mode is enabled. Switch this chat to Apple Intelligence or MLX Local before using \(name)."
+      "Airplane mode is enabled. Switch this chat to MLX Local before using \(name)."
     }
   }
 }
@@ -674,8 +674,12 @@ struct AppleFoundationAvailabilityReport: Equatable, Sendable {
     case .available:
       return nil
     default:
-      return "Apple Foundation Models are unavailable: \(detail)"
+      return detail
     }
+  }
+
+  var isAvailable: Bool {
+    kind == .available
   }
 
   var providerListSubtitle: String {
@@ -796,10 +800,10 @@ enum AppleFoundationProvider {
     switch reason {
     case .deviceNotEligible:
       return
-        "this device or simulator is not eligible. Use an iOS 26 device that supports Apple Intelligence, or switch to an OpenAI-compatible endpoint."
+        "Apple Intelligence is not available on this device. Use MLX Local or another configured provider."
     case .appleIntelligenceNotEnabled:
       return
-        "Apple Intelligence is not enabled. Enable it in Settings, or switch to an OpenAI-compatible endpoint."
+        "Apple Intelligence is not enabled on this device. Use MLX Local or another configured provider."
     case .modelNotReady:
       return
         "the local model is not ready yet. Keep the device online until the model finishes downloading, or switch providers."

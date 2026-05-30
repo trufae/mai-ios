@@ -285,7 +285,7 @@ struct ChatView: View {
   private func providerLabel(for conversation: Conversation) -> String {
     switch conversation.provider {
     case .apple:
-      return "Apple Intelligence"
+      return store.appleIntelligenceIsAvailable ? "Apple Intelligence" : "MLX Local"
     case .mlx:
       return "MLX Local"
     case .openAICompatible:
@@ -435,17 +435,14 @@ struct ChatView: View {
       !conversation.provider.isAirplaneModeEligible
     {
       return (
-        "Airplane Mode is on. Switch this chat to Apple Intelligence or MLX Local.",
+        store.appleIntelligenceIsAvailable
+          ? "Airplane Mode is on. Switch this chat to Apple Intelligence or MLX Local."
+          : "Airplane Mode is on. Switch this chat to MLX Local.",
         "airplane",
         .orange
       )
     }
-    guard store.currentConversation?.provider == .apple,
-      let message = store.appleAvailabilityMessage
-    else {
-      return nil
-    }
-    return (message, "exclamationmark.triangle", .orange)
+    return nil
   }
 
   private var messages: some View {
@@ -2167,10 +2164,12 @@ private struct ConversationModelSettingsView: View {
         } else {
           Section("Provider") {
             Menu {
-              Button {
-                providerSelectionBinding.wrappedValue = .apple
-              } label: {
-                Label("Apple Intelligence", systemImage: "apple.logo")
+              if store.appleIntelligenceIsAvailable {
+                Button {
+                  providerSelectionBinding.wrappedValue = .apple
+                } label: {
+                  Label("Apple Intelligence", systemImage: "apple.logo")
+                }
               }
               Button {
                 providerSelectionBinding.wrappedValue = .mlx
@@ -2248,7 +2247,11 @@ private struct ConversationModelSettingsView: View {
   }
 
   private var provider: ProviderKind {
-    store.currentConversation?.provider ?? .apple
+    guard let provider = store.currentConversation?.provider else { return .mlx }
+    if provider == .apple, !store.appleIntelligenceIsAvailable {
+      return .mlx
+    }
+    return provider
   }
 
   private var selectedProviderIsBlockedByAirplaneMode: Bool {
@@ -2261,7 +2264,7 @@ private struct ConversationModelSettingsView: View {
     }
     switch provider {
     case .apple:
-      return "Apple Intelligence"
+      return store.appleIntelligenceIsAvailable ? "Apple Intelligence" : "MLX Local"
     case .mlx:
       return "MLX Local"
     case .openAICompatible:
@@ -2273,7 +2276,7 @@ private struct ConversationModelSettingsView: View {
     if selectedProviderIsBlockedByAirplaneMode { return "network.slash" }
     switch provider {
     case .apple:
-      return "apple.logo"
+      return store.appleIntelligenceIsAvailable ? "apple.logo" : "cpu"
     case .mlx:
       return "cpu"
     case .openAICompatible:
@@ -2288,7 +2291,11 @@ private struct ConversationModelSettingsView: View {
     } else if provider == .mlx {
       mlxModelControls
     } else if selectedProviderIsBlockedByAirplaneMode {
-      Text("Airplane Mode is on. Switch to Apple Intelligence or MLX Local.")
+      Text(
+        store.appleIntelligenceIsAvailable
+          ? "Airplane Mode is on. Switch to Apple Intelligence or MLX Local."
+          : "Airplane Mode is on. Switch to MLX Local."
+      )
         .foregroundStyle(.secondary)
     } else if let endpoint = selectedEndpoint {
       let models = store.endpointModels[endpoint.id] ?? []
@@ -2368,7 +2375,7 @@ private struct ConversationModelSettingsView: View {
     if isCurrentProviderModelDefault { return false }
     switch conversation.provider {
     case .apple:
-      return true
+      return store.appleIntelligenceIsAvailable
     case .mlx:
       return !store.localMLXModelIDs.isEmpty
     case .openAICompatible:
@@ -2379,7 +2386,7 @@ private struct ConversationModelSettingsView: View {
 
   private var isCurrentProviderModelDefault: Bool {
     guard let conversation = store.currentConversation else { return false }
-    let defaults = store.settings.defaultProviderConfiguration
+    let defaults = store.effectiveDefaultProviderConfiguration
     switch conversation.provider {
     case .apple:
       return defaults.provider == .apple
@@ -2427,6 +2434,9 @@ private struct ConversationModelSettingsView: View {
     guard let conversation = store.currentConversation else { return }
     switch conversation.provider {
     case .apple:
+      guard store.appleIntelligenceIsAvailable else {
+        return
+      }
       store.settings.defaultProvider = .apple
       store.settings.appleModelID = conversation.modelID
     case .mlx:
@@ -2472,10 +2482,10 @@ private struct ConversationModelSettingsView: View {
   private var providerSelectionBinding: Binding<DefaultProviderSelection> {
     Binding(
       get: {
-        guard let conversation = store.currentConversation else { return .apple }
+        guard let conversation = store.currentConversation else { return .mlx }
         switch conversation.provider {
         case .apple:
-          return .apple
+          return store.appleIntelligenceIsAvailable ? .apple : .mlx
         case .mlx:
           return .mlx
         case .openAICompatible:
@@ -2487,18 +2497,35 @@ private struct ConversationModelSettingsView: View {
           if let first = store.settings.openAIEndpoints.first(where: \.isEnabled) {
             return .endpoint(first.id)
           }
-          return .apple
+          return .mlx
         }
       },
       set: { newSelection in
+        let needsMLXModel: Bool = {
+          switch newSelection {
+          case .apple:
+            return !store.appleIntelligenceIsAvailable
+          case .mlx:
+            return true
+          case .endpoint:
+            return false
+          }
+        }()
         let selectedMLXModelID: String? = {
-          guard case .mlx = newSelection else { return nil }
+          guard needsMLXModel else { return nil }
           store.refreshLocalMLXModels()
           return store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID)
         }()
         store.updateCurrentConversation { conversation in
           switch newSelection {
           case .apple:
+            guard store.appleIntelligenceIsAvailable else {
+              conversation.provider = .mlx
+              conversation.endpointID = nil
+              conversation.modelID = selectedMLXModelID ?? ""
+              didSaveDefaults = false
+              return
+            }
             conversation.provider = .apple
             conversation.endpointID = nil
             conversation.modelID = store.settings.appleModelID

@@ -453,10 +453,12 @@ struct SettingsView: View {
   private var providerSection: some View {
     Section {
       Menu {
-        Button {
-          defaultProviderBinding.wrappedValue = .apple
-        } label: {
-          Label("Apple Intelligence", systemImage: "apple.logo")
+        if store.appleIntelligenceIsAvailable {
+          Button {
+            defaultProviderBinding.wrappedValue = .apple
+          } label: {
+            Label("Apple Intelligence", systemImage: "apple.logo")
+          }
         }
         Button {
           defaultProviderBinding.wrappedValue = .mlx
@@ -883,7 +885,9 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var endpointContent: some View {
-    appleIntelligenceProviderRow
+    if store.appleIntelligenceIsAvailable {
+      appleIntelligenceProviderRow
+    }
 
     NavigationLink {
       LocalLLMView()
@@ -911,8 +915,12 @@ struct SettingsView: View {
     .disabled(store.settings.airplaneModeEnabled)
     Text(
       store.settings.airplaneModeEnabled
-        ? "Airplane Mode is on. Apple Intelligence and MLX remain available; OpenAI-compatible providers are offline."
-        : "Apple Intelligence and MLX are built in. OpenAI-compatible providers can be added, edited, or removed."
+        ? (store.appleIntelligenceIsAvailable
+          ? "Airplane Mode is on. Apple Intelligence and MLX remain available; OpenAI-compatible providers are offline."
+          : "Airplane Mode is on. MLX remains available; OpenAI-compatible providers are offline.")
+        : (store.appleIntelligenceIsAvailable
+          ? "Apple Intelligence and MLX are built in. OpenAI-compatible providers can be added, edited, or removed."
+          : "MLX is built in. OpenAI-compatible providers can be added, edited, or removed.")
     )
     .font(.caption)
     .foregroundStyle(.secondary)
@@ -1519,7 +1527,7 @@ struct SettingsView: View {
       if let selected = store.settings.selectedEndpointID, removedIDs.contains(selected) {
         store.settings.selectedEndpointID = store.settings.openAIEndpoints.first?.id
         if store.settings.selectedEndpointID == nil {
-          store.settings.defaultProvider = .apple
+          store.settings.defaultProvider = .mlx
         }
       }
       endpointPath.removeAll { removedIDs.contains($0) }
@@ -1630,11 +1638,11 @@ struct SettingsView: View {
         if store.settings.airplaneModeEnabled
           && !store.settings.defaultProvider.isAirplaneModeEligible
         {
-          return .apple
+          return .mlx
         }
         switch store.settings.defaultProvider {
         case .apple:
-          return .apple
+          return store.appleIntelligenceIsAvailable ? .apple : .mlx
         case .mlx:
           return .mlx
         case .openAICompatible:
@@ -1646,12 +1654,20 @@ struct SettingsView: View {
           if let first = store.settings.defaultOpenAIEndpoint {
             return .endpoint(first.id)
           }
-          return .apple
+          return .mlx
         }
       },
       set: { newValue in
         switch newValue {
         case .apple:
+          guard store.appleIntelligenceIsAvailable else {
+            store.refreshLocalMLXModels()
+            store.settings.defaultProvider = .mlx
+            store.settings.localMLXModelID =
+              store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
+            store.saveSettings()
+            return
+          }
           store.settings.defaultProvider = .apple
         case .mlx:
           store.refreshLocalMLXModels()
@@ -1660,7 +1676,10 @@ struct SettingsView: View {
             store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
         case .endpoint(let id):
           guard !store.settings.airplaneModeEnabled else {
-            showToast("Airplane Mode is enabled. Choose Apple Intelligence or MLX Local.")
+            showToast(
+              store.appleIntelligenceIsAvailable
+                ? "Airplane Mode is enabled. Choose Apple Intelligence or MLX Local."
+                : "Airplane Mode is enabled. Choose MLX Local.")
             return
           }
           store.settings.defaultProvider = .openAICompatible
@@ -1674,7 +1693,7 @@ struct SettingsView: View {
   private var defaultProviderMenuTitle: String {
     switch defaultProviderBinding.wrappedValue {
     case .apple:
-      return "Apple Intelligence"
+      return store.appleIntelligenceIsAvailable ? "Apple Intelligence" : "MLX Local"
     case .mlx:
       return "MLX Local"
     case .endpoint(let id):
@@ -1686,7 +1705,7 @@ struct SettingsView: View {
   private var defaultProviderMenuIcon: String {
     switch defaultProviderBinding.wrappedValue {
     case .apple:
-      return "apple.logo"
+      return store.appleIntelligenceIsAvailable ? "apple.logo" : "cpu"
     case .mlx:
       return "cpu"
     case .endpoint:

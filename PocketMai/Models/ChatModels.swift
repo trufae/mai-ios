@@ -887,8 +887,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var messages: [ChatMessage] = []
   var createdAt: Date = Date()
   var updatedAt: Date = Date()
-  var provider: ProviderKind = .apple
-  var modelID: String = AppSettings.appleDefaultModelID
+  var provider: ProviderKind = .mlx
+  var modelID: String = AppSettings.localMLXDefaultModelID
   var endpointID: UUID? = nil
   var systemPromptID: UUID? = nil
   var toolsEnabled: Bool = true
@@ -1885,7 +1885,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     {{transcript}}
     """
 
-  var defaultProvider: ProviderKind = .apple
+  var defaultProvider: ProviderKind = .mlx
   var appleModelID: String = AppSettings.appleDefaultModelID
   var localMLXModelID: String = AppSettings.localMLXDefaultModelID
   var selectedEndpointID: UUID? = nil
@@ -1941,7 +1941,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
   var defaultProviderConfiguration: (provider: ProviderKind, endpointID: UUID?, modelID: String) {
     if airplaneModeEnabled && !defaultProvider.isAirplaneModeEligible {
-      return (.apple, nil, appleModelID)
+      return (.mlx, nil, localMLXModelID)
     }
     switch defaultProvider {
     case .apple:
@@ -1950,7 +1950,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       return (.mlx, nil, localMLXModelID)
     case .openAICompatible:
       guard let endpoint = defaultOpenAIEndpoint else {
-        return (.apple, nil, appleModelID)
+        return (.mlx, nil, localMLXModelID)
       }
       return (.openAICompatible, endpoint.id, endpoint.defaultModel)
     }
@@ -1978,7 +1978,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Int.self, forKey: .settingsVersion)) ?? 0
     settingsVersion = Self.currentSettingsVersion
     defaultProvider =
-      (try? c.decode(ProviderKind.self, forKey: .defaultProvider)) ?? .apple
+      (try? c.decode(ProviderKind.self, forKey: .defaultProvider)) ?? .mlx
     appleModelID = (try? c.decode(String.self, forKey: .appleModelID)) ?? ""
     localMLXModelID =
       (try? c.decode(String.self, forKey: .localMLXModelID))
