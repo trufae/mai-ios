@@ -1,4 +1,5 @@
 import Foundation
+import AudioToolbox
 import UIKit
 
 @MainActor
@@ -41,6 +42,7 @@ final class ResponseHaptics {
     completionGenerator.prepare()
     completionGenerator.notificationOccurred(.success)
     completionGenerator.prepare()
+    playLockedCompletionFallbackIfNeeded()
   }
 
   func sidebarVisibilitySettled() {
@@ -58,6 +60,11 @@ final class ResponseHaptics {
     default:
       return streamMediumGenerator
     }
+  }
+
+  private func playLockedCompletionFallbackIfNeeded() {
+    guard UIApplication.shared.applicationState != .active else { return }
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
   }
 
   private static func randomStreamInterval() -> TimeInterval {
