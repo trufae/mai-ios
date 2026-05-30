@@ -565,23 +565,38 @@ private struct MessageAttachmentRow: View {
 }
 
 private struct MessageImageAttachmentView: View {
+  @Environment(\.displayScale) private var displayScale
+
   let attachment: ChatAttachment
   let onOpen: () -> Void
   let onSave: () -> Void
 
   var body: some View {
     if let uiImage = MessageAttachmentImage.uiImage(from: attachment) {
+      let preview = previewMetrics(for: uiImage)
       Button(action: onOpen) {
         Image(uiImage: uiImage)
           .resizable()
-          .scaledToFit()
-          .frame(maxWidth: .infinity, maxHeight: 380, alignment: .leading)
-          .background(Color.secondary.opacity(0.08))
+          .interpolation(.high)
+          .aspectRatio(uiImage.size, contentMode: .fit)
+          .frame(
+            maxWidth: preview.size.width,
+            maxHeight: preview.size.height,
+            alignment: .center
+          )
           .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-          .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-              .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
+          .overlay(alignment: .bottomTrailing) {
+            Text(dimensionsLabel(for: uiImage))
+              .font(.system(size: 9, weight: .semibold, design: .monospaced))
+              .foregroundStyle(.white)
+              .lineLimit(1)
+              .minimumScaleFactor(0.7)
+              .padding(.horizontal, 5)
+              .padding(.vertical, 3)
+              .background(.black.opacity(0.58), in: Capsule())
+              .padding(5)
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Attached image")
@@ -594,11 +609,57 @@ private struct MessageImageAttachmentView: View {
       Image(systemName: "photo")
         .font(.title2)
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, minHeight: 140)
+        .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
         .background(Color.secondary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityLabel("Image unavailable")
     }
+  }
+
+  private func dimensionsLabel(for image: UIImage) -> String {
+    let width = attachment.width ?? Int((image.size.width * image.scale).rounded())
+    let height = attachment.height ?? Int((image.size.height * image.scale).rounded())
+    return "\(width)x\(height)"
+  }
+
+  private func nativeDisplaySize(for image: UIImage) -> CGSize {
+    let width = CGFloat(attachment.width ?? Int((image.size.width * image.scale).rounded()))
+    let height = CGFloat(attachment.height ?? Int((image.size.height * image.scale).rounded()))
+    let scale = max(displayScale, 1)
+    return CGSize(width: max(1, width / scale), height: max(1, height / scale))
+  }
+
+  private func previewMetrics(for image: UIImage) -> (size: CGSize, isUpscaled: Bool) {
+    let nativeSize = nativeDisplaySize(for: image)
+    let longEdge = max(nativeSize.width, nativeSize.height)
+    let shortEdge = min(nativeSize.width, nativeSize.height)
+    guard longEdge > 0, shortEdge > 0 else {
+      return (CGSize(width: 1, height: 1), false)
+    }
+
+    let minimumLongEdge: CGFloat = 180
+    let minimumShortEdge: CGFloat = 72
+    let maximumLongEdge: CGFloat = 420
+    let maximumHeight: CGFloat = 380
+
+    var scale: CGFloat = 1
+    if longEdge < minimumLongEdge {
+      scale = max(scale, minimumLongEdge / longEdge)
+    }
+    if shortEdge * scale < minimumShortEdge {
+      scale = max(scale, minimumShortEdge / shortEdge)
+    }
+    scale = min(scale, maximumLongEdge / longEdge)
+
+    var size = CGSize(width: nativeSize.width * scale, height: nativeSize.height * scale)
+    if size.height > maximumHeight {
+      let heightScale = maximumHeight / size.height
+      size = CGSize(width: size.width * heightScale, height: maximumHeight)
+    }
+    return (
+      CGSize(width: max(1, size.width.rounded()), height: max(1, size.height.rounded())),
+      scale > 1.01
+    )
   }
 }
 

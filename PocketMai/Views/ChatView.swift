@@ -1360,22 +1360,91 @@ private struct AttachmentPill: View {
   let onRemove: () -> Void
 
   var body: some View {
+    if attachment.kind == .image {
+      imageAttachmentPill
+    } else {
+      textAttachmentPill
+    }
+  }
+
+  private var textAttachmentPill: some View {
     HStack(spacing: 6) {
-      Image(systemName: attachment.kind == .image ? "photo" : "doc.text")
+      Image(systemName: "doc.text")
         .foregroundStyle(.secondary)
       Text(attachment.displayName)
         .font(.caption)
         .lineLimit(1)
-      Button(action: onRemove) {
-        Image(systemName: "xmark.circle.fill")
-          .foregroundStyle(.secondary)
-      }
-      .buttonStyle(.plain)
+      removeButton
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
     .background(.regularMaterial)
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+  }
+
+  private var imageAttachmentPill: some View {
+    HStack(spacing: 7) {
+      imageThumbnail
+      Text(dimensionsLabel)
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+      removeButton
+    }
+    .padding(.horizontal, 6)
+    .padding(.vertical, 5)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .accessibilityLabel("\(attachment.displayName), \(dimensionsLabel)")
+  }
+
+  @ViewBuilder
+  private var imageThumbnail: some View {
+    if let image = image {
+      Image(uiImage: image)
+        .resizable()
+        .interpolation(.high)
+        .aspectRatio(contentMode: .fill)
+        .frame(width: 40, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    } else {
+      Image(systemName: "photo")
+        .foregroundStyle(.secondary)
+        .frame(width: 40, height: 40)
+        .background(Color.secondary.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+  }
+
+  private var removeButton: some View {
+    Button(action: onRemove) {
+      Image(systemName: "xmark.circle.fill")
+        .foregroundStyle(.secondary)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Remove attachment")
+  }
+
+  private var dimensionsLabel: String {
+    if let width = attachment.width, let height = attachment.height {
+      return "\(width)x\(height)"
+    }
+    if let image {
+      let width = Int((image.size.width * image.scale).rounded())
+      let height = Int((image.size.height * image.scale).rounded())
+      return "\(width)x\(height)"
+    }
+    return "Image"
+  }
+
+  private var image: UIImage? {
+    guard attachment.kind == .image,
+      let dataBase64 = attachment.dataBase64,
+      let data = Data(base64Encoded: dataBase64)
+    else {
+      return nil
+    }
+    return UIImage(data: data)
   }
 }
 
