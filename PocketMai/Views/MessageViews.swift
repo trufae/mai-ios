@@ -239,9 +239,6 @@ private struct MessageBubbleContent: View, Equatable {
             .foregroundStyle(.secondary)
         }
       }
-      if hasVoiceRecording {
-        VoiceRecordingPlaybackButton(message: message)
-      }
       ForEach(textAttachments) { attachment in
         MessageAttachmentRow(attachment: attachment) {
           if attachment.kind == .textFile {
@@ -271,6 +268,9 @@ private struct MessageBubbleContent: View, Equatable {
           .font(messageFont)
           .lineSpacing(CGFloat(appearance.lineSpacing))
           .fixedSize(horizontal: false, vertical: true)
+      }
+      if hasVoiceRecording {
+        VoiceRecordingPlaybackButton(message: message)
       }
       ForEach(imageAttachments) { attachment in
         MessageImageAttachmentView(
