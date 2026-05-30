@@ -32,6 +32,7 @@ struct MessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -52,6 +53,7 @@ struct MessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       onDelete: onDelete,
+      onEdit: onEdit,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
@@ -74,6 +76,7 @@ private struct StreamingMessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -94,6 +97,7 @@ private struct StreamingMessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       onDelete: onDelete,
+      onEdit: onEdit,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
@@ -120,6 +124,7 @@ private struct MessageBubbleContent: View, Equatable {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -274,11 +279,13 @@ private struct MessageBubbleContent: View, Equatable {
       bubbleView
       .sheet(isPresented: $showingTextSelection) {
         MessageTextSelectionSheet(
-          title: message.role.displayName,
-          text: visibleText,
+          title: onEdit == nil ? message.role.displayName : "Edit Message",
+          text: onEdit == nil ? visibleText : rawText,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
-          fontFamily: appearance.fontFamily(for: message.role))
+          fontFamily: appearance.fontFamily(for: message.role),
+          isEditable: onEdit != nil,
+          onSave: onEdit)
       }
       .sheet(item: $selectedTextAttachment) { attachment in
         MessageTextSelectionSheet(
@@ -307,7 +314,9 @@ private struct MessageBubbleContent: View, Equatable {
     Button {
       showingTextSelection = true
     } label: {
-      Label("Select Text", systemImage: "text.cursor")
+      Label(
+        onEdit == nil ? "View Text" : "Edit Message",
+        systemImage: onEdit == nil ? "text.cursor" : "square.and.pencil")
     }
     Button {
       UIPasteboard.general.string = visibleText
@@ -539,6 +548,9 @@ private struct MessageTextSelectionSheet: View {
   let text: String
   let fontFamily: AppearanceFontFamily
   let lineSpacing: Double
+  let isEditable: Bool
+  let onSave: ((String) -> Void)?
+  @State private var draftText: String
   @State private var fontSize: Double
 
   init(
@@ -546,56 +558,98 @@ private struct MessageTextSelectionSheet: View {
     text: String,
     initialFontSize: Double = AppearanceSettings.defaults.fontSize,
     initialLineSpacing: Double = AppearanceSettings.defaults.lineSpacing,
-    fontFamily: AppearanceFontFamily = .system
+    fontFamily: AppearanceFontFamily = .system,
+    isEditable: Bool = false,
+    onSave: ((String) -> Void)? = nil
   ) {
     self.title = title
     self.text = text
     self.fontFamily = fontFamily
     self.lineSpacing = AppearanceSettings.clampedLineSpacing(initialLineSpacing)
+    self.isEditable = isEditable
+    self.onSave = onSave
+    _draftText = State(initialValue: text)
     _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
   }
 
   var body: some View {
     NavigationStack {
       SelectableMessageTextView(
-        text: text,
+        text: $draftText,
         fontSize: $fontSize,
         lineSpacing: lineSpacing,
-        fontFamily: fontFamily
+        fontFamily: fontFamily,
+        isEditable: isEditable
       )
       .navigationTitle(title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          Button("Done") {
-            dismiss()
+        if isEditable {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("Cancel") {
+              dismiss()
+            }
           }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            UIPasteboard.general.string = text
-          } label: {
-            Label("Copy All", systemImage: "doc.on.doc")
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              UIPasteboard.general.string = draftText
+            } label: {
+              Label("Copy All", systemImage: "doc.on.doc")
+            }
+          }
+          ToolbarItem(placement: .confirmationAction) {
+            Button("Save") {
+              saveEdits()
+            }
+            .disabled(draftText == text)
+          }
+        } else {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("Done") {
+              dismiss()
+            }
+          }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              UIPasteboard.general.string = draftText
+            } label: {
+              Label("Copy All", systemImage: "doc.on.doc")
+            }
           }
         }
       }
     }
   }
+
+  private func saveEdits() {
+    guard draftText != text else {
+      dismiss()
+      return
+    }
+    onSave?(draftText)
+    dismiss()
+  }
 }
 
 private struct SelectableMessageTextView: UIViewRepresentable {
-  let text: String
+  @Binding var text: String
   @Binding var fontSize: Double
   let lineSpacing: Double
   let fontFamily: AppearanceFontFamily
+  let isEditable: Bool
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(fontSize: $fontSize, fontFamily: fontFamily, lineSpacing: lineSpacing)
+    Coordinator(
+      text: $text,
+      fontSize: $fontSize,
+      fontFamily: fontFamily,
+      lineSpacing: lineSpacing)
   }
 
   func makeUIView(context: Context) -> UITextView {
     let textView = UITextView()
-    textView.isEditable = false
+    textView.delegate = context.coordinator
+    textView.isEditable = isEditable
     textView.isSelectable = true
     textView.backgroundColor = .clear
     textView.font = fontFamily.uiFont(size: fontSize)
@@ -604,13 +658,20 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     textView.text = text
     context.coordinator.installPinchGesture(in: textView)
     context.coordinator.applyTextStyle(to: textView, size: fontSize)
+    if isEditable {
+      DispatchQueue.main.async {
+        textView.becomeFirstResponder()
+      }
+    }
     return textView
   }
 
   func updateUIView(_ textView: UITextView, context: Context) {
+    context.coordinator.text = $text
     context.coordinator.fontSize = $fontSize
     context.coordinator.fontFamily = fontFamily
     context.coordinator.lineSpacing = lineSpacing
+    textView.isEditable = isEditable
     if textView.text != text {
       textView.text = text
     }
@@ -624,7 +685,8 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     context.coordinator.applyTextStyle(to: textView, size: fontSize)
   }
 
-  final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+  final class Coordinator: NSObject, UIGestureRecognizerDelegate, UITextViewDelegate {
+    var text: Binding<String>
     var fontSize: Binding<Double>
     var fontFamily: AppearanceFontFamily
     var lineSpacing: Double
@@ -640,7 +702,13 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     private var originalShowsVerticalScrollIndicator: Bool?
     private var originalShowsHorizontalScrollIndicator: Bool?
 
-    init(fontSize: Binding<Double>, fontFamily: AppearanceFontFamily, lineSpacing: Double) {
+    init(
+      text: Binding<String>,
+      fontSize: Binding<Double>,
+      fontFamily: AppearanceFontFamily,
+      lineSpacing: Double
+    ) {
+      self.text = text
       self.fontSize = fontSize
       self.fontFamily = fontFamily
       self.lineSpacing = lineSpacing
@@ -656,6 +724,10 @@ private struct SelectableMessageTextView: UIViewRepresentable {
       textView.addGestureRecognizer(gesture)
       self.textView = textView
       pinchGesture = gesture
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+      text.wrappedValue = textView.text
     }
 
     func applyTextStyle(to textView: UITextView, size: Double) {

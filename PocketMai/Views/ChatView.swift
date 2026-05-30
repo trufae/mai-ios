@@ -414,6 +414,21 @@ struct ChatView: View {
     )
   }
 
+  private func editMessage(_ message: ChatMessage, text: String) {
+    guard
+      let currentText = store.currentConversation?.messages.first(where: { $0.id == message.id })?.text,
+      currentText != text
+    else {
+      return
+    }
+    store.updateCurrentConversation { conversation in
+      guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else {
+        return
+      }
+      conversation.messages[index].text = text
+    }
+  }
+
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     if let conversation = store.currentConversation,
       store.settings.airplaneModeEnabled,
@@ -452,6 +467,7 @@ struct ChatView: View {
                 renderMarkdown: store.settings.renderMarkdownInChat,
                 renderImages: store.settings.renderMarkdownImagesInChat,
                 onDelete: { messagePendingDeletion = message },
+                onEdit: { editedText in editMessage(message, text: editedText) },
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }
                   : nil,
