@@ -1858,6 +1858,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
+  static let recentChatLanguageLimit = 3
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
   static let defaultTools: Set<BuiltInToolID> = []
@@ -1920,6 +1921,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var startupBehavior: AppStartupBehavior = .newChat
   var lastSelectedConversationID: UUID? = nil
   var openAPIServer: OpenAPIServerSettings = OpenAPIServerSettings()
+  var recentChatLanguageIdentifiers: [String] = []
 
   static let defaults = AppSettings()
 
@@ -1928,6 +1930,27 @@ struct AppSettings: Codable, Equatable, Sendable {
   func defaultPrompt() -> SystemPrompt {
     systemPrompts.first(where: { $0.id == defaultSystemPromptID }) ?? systemPrompts.first
       ?? AppSettings.defaultSystemPrompt
+  }
+
+  mutating func recordRecentChatLanguage(_ identifier: String) {
+    recentChatLanguageIdentifiers = Self.normalizedRecentChatLanguageIdentifiers(
+      [identifier] + recentChatLanguageIdentifiers)
+  }
+
+  static func normalizedRecentChatLanguageIdentifiers(_ identifiers: [String]) -> [String] {
+    var seen = Set<String>()
+    var normalizedIdentifiers: [String] = []
+    for identifier in identifiers {
+      guard let normalized = SystemLanguageSupport.normalizedLanguageIdentifier(identifier),
+        !seen.contains(normalized)
+      else { continue }
+      seen.insert(normalized)
+      normalizedIdentifiers.append(normalized)
+      if normalizedIdentifiers.count == recentChatLanguageLimit {
+        break
+      }
+    }
+    return normalizedIdentifiers
   }
 
   var defaultOpenAIEndpoint: OpenAIEndpoint? {
@@ -1970,6 +1993,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case mlxMaxKVSize, mlxAutoCompact
     case startupBehavior, lastSelectedConversationID
     case openAPIServer
+    case recentChatLanguageIdentifiers
   }
 
   init(from decoder: Decoder) throws {
@@ -2059,6 +2083,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     openAPIServer =
       (try? c.decode(OpenAPIServerSettings.self, forKey: .openAPIServer))
       ?? OpenAPIServerSettings()
+    recentChatLanguageIdentifiers = Self.normalizedRecentChatLanguageIdentifiers(
+      (try? c.decode([String].self, forKey: .recentChatLanguageIdentifiers)) ?? [])
   }
 }
 

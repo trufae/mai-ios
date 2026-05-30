@@ -471,6 +471,18 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
+  func setCurrentConversationLanguageOverride(_ identifier: String?) {
+    guard currentConversationIndex != nil else { return }
+    let normalized = Conversation.normalizedLanguageOverride(identifier)
+    updateCurrentConversation { conversation in
+      conversation.languageOverrideIdentifier = normalized
+    }
+    if let normalized {
+      settings.recordRecentChatLanguage(normalized)
+      saveSettings()
+    }
+  }
+
   func deleteMessage(_ message: ChatMessage) {
     guard let index = currentConversationIndex else { return }
     let removedMessages = conversations[index].messages.filter { $0.id == message.id }

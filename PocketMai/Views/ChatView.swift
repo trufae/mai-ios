@@ -161,9 +161,7 @@ struct ChatView: View {
       }
       Menu {
         Button {
-          store.updateCurrentConversation { conversation in
-            conversation.languageOverrideIdentifier = nil
-          }
+          store.setCurrentConversationLanguageOverride(nil)
         } label: {
           if currentLanguageOverrideIdentifier == nil {
             Label("Defaults", systemImage: "checkmark")
@@ -172,11 +170,23 @@ struct ChatView: View {
           }
         }
         Divider()
-        ForEach(languageMenuOptions, id: \.self) { identifier in
+        ForEach(recentLanguageMenuOptions, id: \.self) { identifier in
           Button {
-            store.updateCurrentConversation { conversation in
-              conversation.languageOverrideIdentifier = identifier
+            store.setCurrentConversationLanguageOverride(identifier)
+          } label: {
+            if identifier == currentLanguageOverrideIdentifier {
+              Label(SystemLanguageSupport.languageDisplayName(identifier), systemImage: "checkmark")
+            } else {
+              Text(SystemLanguageSupport.languageDisplayName(identifier))
             }
+          }
+        }
+        if !recentLanguageMenuOptions.isEmpty {
+          Divider()
+        }
+        ForEach(remainingLanguageMenuOptions, id: \.self) { identifier in
+          Button {
+            store.setCurrentConversationLanguageOverride(identifier)
           } label: {
             if identifier == currentLanguageOverrideIdentifier {
               Label(SystemLanguageSupport.languageDisplayName(identifier), systemImage: "checkmark")
@@ -249,6 +259,19 @@ struct ChatView: View {
 
   private var languageMenuOptions: [String] {
     SystemLanguageSupport.chatLanguageIdentifiers(including: currentLanguageOverrideIdentifier)
+  }
+
+  private var recentLanguageMenuOptions: [String] {
+    let availableIdentifiers = Set(languageMenuOptions)
+    return AppSettings.normalizedRecentChatLanguageIdentifiers(
+      store.settings.recentChatLanguageIdentifiers
+    )
+    .filter { availableIdentifiers.contains($0) }
+  }
+
+  private var remainingLanguageMenuOptions: [String] {
+    let recentIdentifiers = Set(recentLanguageMenuOptions)
+    return languageMenuOptions.filter { !recentIdentifiers.contains($0) }
   }
 
   private var currentToolSettings: NativeToolSettings {
