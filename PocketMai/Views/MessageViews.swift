@@ -1035,6 +1035,7 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     textView.delegate = context.coordinator
     textView.isEditable = isEditable
     textView.isSelectable = true
+    applyBareTextInputTraits(to: textView)
     textView.backgroundColor = .clear
     textView.font = fontFamily.uiFont(size: fontSize)
     textView.adjustsFontForContentSizeCategory = true
@@ -1056,6 +1057,7 @@ private struct SelectableMessageTextView: UIViewRepresentable {
     context.coordinator.fontFamily = fontFamily
     context.coordinator.lineSpacing = lineSpacing
     textView.isEditable = isEditable
+    applyBareTextInputTraits(to: textView)
     if textView.text != text {
       textView.text = text
     }
@@ -1067,6 +1069,14 @@ private struct SelectableMessageTextView: UIViewRepresentable {
       return
     }
     context.coordinator.applyTextStyle(to: textView, size: fontSize)
+  }
+
+  private func applyBareTextInputTraits(to textView: UITextView) {
+    textView.smartQuotesType = .no
+    textView.smartDashesType = .no
+    textView.smartInsertDeleteType = .no
+    textView.autocorrectionType = .no
+    textView.spellCheckingType = .no
   }
 
   final class Coordinator: NSObject, UIGestureRecognizerDelegate, UITextViewDelegate {
@@ -2034,8 +2044,9 @@ private struct MarkdownPlainInlineText: View {
         dimensions[.top] + uiFont.ascender
       }
     } else {
-      Text(attributedInlineMarkdown(value))
-        .font(font.italicizedIf(italic))
+      let effectiveFont = font.italicizedIf(italic)
+      Text(attributedInlineMarkdown(value, strongFont: effectiveFont.bold()))
+        .font(effectiveFont)
         .lineSpacing(CGFloat(appearance.lineSpacing))
         .multilineTextAlignment(textAlignment)
         .foregroundStyleIfPresent(foregroundStyle)
@@ -2377,7 +2388,7 @@ extension AppearanceSettings {
   }
 }
 
-private func attributedInlineMarkdown(_ value: String) -> AttributedString {
+private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString {
   let normalized = MarkdownInlineSymbols.displayString(value)
   let attributed =
     (try? AttributedString(
@@ -2386,7 +2397,8 @@ private func attributedInlineMarkdown(_ value: String) -> AttributedString {
         interpretedSyntax: .inlineOnlyPreservingWhitespace)))
     ?? AttributedString(normalized)
   return MarkdownInlineStyleApplier.styled(
-    MarkdownInlineTokenColorizer.colorized(attributed)
+    MarkdownInlineTokenColorizer.colorized(attributed),
+    strongFont: strongFont
   )
 }
 
@@ -2523,7 +2535,7 @@ extension Font {
 }
 
 private enum MarkdownInlineStyleApplier {
-  static func styled(_ attributed: AttributedString) -> AttributedString {
+  static func styled(_ attributed: AttributedString, strongFont: Font? = nil) -> AttributedString {
     var result = attributed
     let runs = result.runs.map { ($0.range, $0.inlinePresentationIntent) }
 
@@ -2533,6 +2545,9 @@ private enum MarkdownInlineStyleApplier {
         result[range].foregroundColor = inlineCodeColor
       } else if intent.contains(.stronglyEmphasized) {
         result[range].foregroundColor = Color.accentColor
+        if let strongFont {
+          result[range].font = strongFont
+        }
       }
       if intent.contains(.strikethrough) {
         result[range].strikethroughStyle = .single
