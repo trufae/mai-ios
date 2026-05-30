@@ -2494,6 +2494,8 @@ private enum MarkdownInlineStyleApplier {
       guard let intent else { continue }
       if intent.contains(.code) {
         result[range].foregroundColor = inlineCodeColor
+      } else if intent.contains(.stronglyEmphasized) {
+        result[range].foregroundColor = Color.accentColor
       }
       if intent.contains(.strikethrough) {
         result[range].strikethroughStyle = .single
