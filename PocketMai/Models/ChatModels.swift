@@ -697,26 +697,34 @@ enum MLXKVCacheSize: Int, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable {
+  case prompt
   case tiny
   case small
   case medium
   case big
   case full
 
+  static var concreteCases: [AttachmentImageSize] {
+    allCases.filter { $0 != .prompt }
+  }
+
   var id: String { rawValue }
 
   var displayName: String {
     switch self {
+    case .prompt: "Prompt"
     case .tiny: "Tiny"
     case .small: "Small"
     case .medium: "Medium"
     case .big: "Big"
-    case .full: "Full"
+    case .full: "Original"
     }
   }
 
   var maxDimension: Int? {
     switch self {
+    case .prompt:
+      nil
     case .tiny: 100
     case .small: 320
     case .medium: 640
@@ -1906,7 +1914,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var renderMarkdownInChat: Bool = true
   var renderMarkdownImagesInChat: Bool = true
   var airplaneModeEnabled: Bool = false
-  var attachmentImageSize: AttachmentImageSize = .medium
+  var attachmentImageSize: AttachmentImageSize = .prompt
   var mlxMaxKVSize: MLXKVCacheSize = .auto
   var mlxAutoCompact: Bool = false
   var startupBehavior: AppStartupBehavior = .newChat
@@ -2041,7 +2049,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     airplaneModeEnabled =
       (try? c.decode(Bool.self, forKey: .airplaneModeEnabled)) ?? false
     attachmentImageSize =
-      (try? c.decode(AttachmentImageSize.self, forKey: .attachmentImageSize)) ?? .medium
+      (try? c.decode(AttachmentImageSize.self, forKey: .attachmentImageSize)) ?? .prompt
     mlxMaxKVSize =
       (try? c.decode(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)) ?? .auto
     mlxAutoCompact = (try? c.decode(Bool.self, forKey: .mlxAutoCompact)) ?? false

@@ -830,6 +830,7 @@ private struct ChatComposer: View {
   @State private var selectedPhotoItem: PhotosPickerItem?
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
+  @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
   @State private var attachmentError: String?
 
   private var canSubmitDraft: Bool {
@@ -895,6 +896,25 @@ private struct ChatComposer: View {
       Button("OK", role: .cancel) { attachmentError = nil }
     } message: { message in
       Text(message)
+    }
+    .confirmationDialog(
+      "Image Size",
+      isPresented: Binding(
+        get: { pendingImageSizePrompt != nil },
+        set: { if !$0 { pendingImageSizePrompt = nil } }),
+      titleVisibility: .visible,
+      presenting: pendingImageSizePrompt
+    ) { pending in
+      ForEach(AttachmentImageSize.concreteCases) { size in
+        Button(imageSizePromptTitle(for: size)) {
+          appendImageAttachment(pending, size: size)
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        pendingImageSizePrompt = nil
+      }
+    } message: { pending in
+      Text("Choose the image size for \(pending.filename).")
     }
   }
 
@@ -1253,23 +1273,46 @@ private struct ChatComposer: View {
         attachmentError = "Could not read the selected image."
         return
       }
-      let resized = resizeImage(
-        image,
-        maxDimension: store.settings.attachmentImageSize.maxDimension)
-      guard let output = resized.image.jpegData(compressionQuality: 0.82) else {
-        attachmentError = "Could not encode the selected image."
+      let filename = "image-\(Int(Date().timeIntervalSince1970)).jpg"
+      let imageSize = store.settings.attachmentImageSize
+      guard imageSize != .prompt else {
+        pendingImageSizePrompt = PendingImageAttachmentImport(filename: filename, image: image)
         return
       }
-      pendingAttachments.append(
-        .image(
-          filename: "image-\(Int(Date().timeIntervalSince1970)).jpg",
-          data: output,
-          width: Int(resized.size.width.rounded()),
-          height: Int(resized.size.height.rounded())))
-      composerFocused = true
+      appendImageAttachment(image, filename: filename, size: imageSize)
     } catch {
       attachmentError = error.localizedDescription
     }
+  }
+
+  private func appendImageAttachment(
+    _ pending: PendingImageAttachmentImport,
+    size: AttachmentImageSize
+  ) {
+    appendImageAttachment(pending.image, filename: pending.filename, size: size)
+    pendingImageSizePrompt = nil
+  }
+
+  private func appendImageAttachment(_ image: UIImage, filename: String, size: AttachmentImageSize) {
+    let resized = resizeImage(image, maxDimension: size.maxDimension)
+    guard let output = resized.image.jpegData(compressionQuality: 0.82) else {
+      attachmentError = "Could not encode the selected image."
+      return
+    }
+    pendingAttachments.append(
+      .image(
+        filename: filename,
+        data: output,
+        width: Int(resized.size.width.rounded()),
+        height: Int(resized.size.height.rounded())))
+    composerFocused = true
+  }
+
+  private func imageSizePromptTitle(for size: AttachmentImageSize) -> String {
+    guard let maxDimension = size.maxDimension else {
+      return size.displayName
+    }
+    return "\(size.displayName) (\(maxDimension) px)"
   }
 
   private func resizeImage(_ image: UIImage, maxDimension: Int?) -> (image: UIImage, size: CGSize) {
@@ -1289,6 +1332,11 @@ private struct ChatComposer: View {
     }
     return (resized, target)
   }
+}
+
+private struct PendingImageAttachmentImport {
+  let filename: String
+  let image: UIImage
 }
 
 private struct AttachmentPill: View {
