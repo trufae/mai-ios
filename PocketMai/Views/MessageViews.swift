@@ -266,6 +266,7 @@ private struct MessageBubbleContent: View, Equatable {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(backgroundStyle)
     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
     let bubbleWithSheet =
       bubbleView
