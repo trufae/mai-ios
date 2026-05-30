@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
@@ -9,6 +10,7 @@ struct SidebarView: View {
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
+  @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
   @State private var visibleConversations: [ConversationSummary] = []
@@ -19,7 +21,7 @@ struct SidebarView: View {
     ZStack(alignment: .bottomTrailing) {
       conversationList
         .safeAreaInset(edge: .bottom) {
-          Color.clear.frame(height: 80)
+          Color.clear.frame(height: 80 + keyboardOverlap)
         }
       sidebarEdgeFades
       floatingActions
@@ -42,6 +44,12 @@ struct SidebarView: View {
     .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
     .onChange(of: searchText) { _, _ in refreshVisibleConversations() }
     .onChange(of: showingArchive) { _, _ in refreshVisibleConversations() }
+    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
+      updateKeyboardOverlap(from: $0)
+    }
+    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) {
+      updateKeyboardOverlap(from: $0)
+    }
   }
 
   private func refreshVisibleConversations() {
@@ -202,7 +210,7 @@ struct SidebarView: View {
       .frame(width: availableWidth, alignment: .trailing)
       .frame(maxHeight: .infinity, alignment: .bottomTrailing)
       .padding(.horizontal, floatingActionHorizontalInset)
-      .padding(.bottom, floatingActionBottomInset)
+      .padding(.bottom, floatingActionBottomInset + keyboardOverlap)
     }
   }
 
@@ -356,6 +364,23 @@ struct SidebarView: View {
         pendingDeletion = nil
       }
     }
+  }
+
+  private func updateKeyboardOverlap(from notification: Notification) {
+    let duration =
+      notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+    withAnimation(.easeOut(duration: duration)) {
+      keyboardOverlap = keyboardOverlap(from: notification)
+    }
+  }
+
+  private func keyboardOverlap(from notification: Notification) -> CGFloat {
+    guard
+      let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+    else {
+      return 0
+    }
+    return max(0, UIScreen.main.bounds.maxY - frame.minY)
   }
 }
 
