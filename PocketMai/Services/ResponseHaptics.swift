@@ -3,30 +3,68 @@ import UIKit
 
 @MainActor
 final class ResponseHaptics {
-  private let streamGenerator = UIImpactFeedbackGenerator(style: .light)
-  private let completionGenerator = UIImpactFeedbackGenerator(style: .medium)
+  private let streamSoftGenerator = UIImpactFeedbackGenerator(style: .soft)
+  private let streamLightGenerator = UIImpactFeedbackGenerator(style: .light)
+  private let streamMediumGenerator = UIImpactFeedbackGenerator(style: .medium)
+  private let completionGenerator = UINotificationFeedbackGenerator()
+  private let sidebarGenerator = UISelectionFeedbackGenerator()
   private var lastStreamFeedbackAt = Date.distantPast
-  private static let minimumStreamInterval: TimeInterval = 0.18
+  private var nextStreamInterval: TimeInterval
+  private static let streamIntervalRange: ClosedRange<TimeInterval> = 0.09...0.28
+  private static let streamIntensityRange: ClosedRange<Double> = 0.25...0.85
 
   init() {
-    streamGenerator.prepare()
+    nextStreamInterval = Self.randomStreamInterval()
+    streamSoftGenerator.prepare()
+    streamLightGenerator.prepare()
+    streamMediumGenerator.prepare()
     completionGenerator.prepare()
+    sidebarGenerator.prepare()
   }
 
   func streamPacketReceived(force: Bool = false) {
     let now = Date()
-    guard force || now.timeIntervalSince(lastStreamFeedbackAt) >= Self.minimumStreamInterval else {
+    guard force || now.timeIntervalSince(lastStreamFeedbackAt) >= nextStreamInterval else {
       return
     }
     lastStreamFeedbackAt = now
-    streamGenerator.prepare()
-    streamGenerator.impactOccurred()
-    streamGenerator.prepare()
+    nextStreamInterval = Self.randomStreamInterval()
+
+    let intensity = Self.randomStreamIntensity()
+    let generator = streamGenerator(for: intensity)
+    generator.prepare()
+    generator.impactOccurred(intensity: intensity)
+    generator.prepare()
   }
 
   func responseCompleted() {
     completionGenerator.prepare()
-    completionGenerator.impactOccurred()
+    completionGenerator.notificationOccurred(.success)
     completionGenerator.prepare()
+  }
+
+  func sidebarVisibilitySettled() {
+    sidebarGenerator.prepare()
+    sidebarGenerator.selectionChanged()
+    sidebarGenerator.prepare()
+  }
+
+  private func streamGenerator(for intensity: CGFloat) -> UIImpactFeedbackGenerator {
+    switch intensity {
+    case ..<0.46:
+      return streamSoftGenerator
+    case ..<0.76:
+      return streamLightGenerator
+    default:
+      return streamMediumGenerator
+    }
+  }
+
+  private static func randomStreamInterval() -> TimeInterval {
+    TimeInterval.random(in: streamIntervalRange)
+  }
+
+  private static func randomStreamIntensity() -> CGFloat {
+    CGFloat(Double.random(in: streamIntensityRange))
   }
 }

@@ -40,9 +40,7 @@ struct ContentView: View {
           NavigationStack {
             ChatView(
               onShowHistory: {
-                withAnimation(.snappy) {
-                  showingHistory.toggle()
-                }
+                toggleHistoryPanel()
               }
             )
             .equatable()
@@ -107,10 +105,27 @@ struct ContentView: View {
   }
 
   private func closeHistoryPanel() {
-    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-      showingHistory = false
+    setHistoryPanelOpen(false, animation: historyPanelAnimation)
+  }
+
+  private func toggleHistoryPanel() {
+    setHistoryPanelOpen(!showingHistory, animation: .snappy)
+  }
+
+  private var historyPanelAnimation: Animation {
+    .interactiveSpring(response: 0.32, dampingFraction: 0.86)
+  }
+
+  private func setHistoryPanelOpen(_ isOpen: Bool, animation: Animation) {
+    let visibilityChanged = showingHistory != isOpen
+    withAnimation(animation, completionCriteria: .logicallyComplete) {
+      showingHistory = isOpen
       historyDragOffset = 0
       historyDragIsActive = false
+    } completion: {
+      if visibilityChanged {
+        store.sidebarVisibilitySettled()
+      }
     }
   }
 
@@ -140,11 +155,9 @@ struct ContentView: View {
         let baseOffset = showingHistory ? panelWidth : 0
         let projectedOffset = min(
           max(baseOffset + value.predictedEndTranslation.width, 0), panelWidth)
-        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
-          showingHistory = projectedOffset > panelWidth * 0.45
-          historyDragOffset = 0
-          historyDragIsActive = false
-        }
+        setHistoryPanelOpen(
+          projectedOffset > panelWidth * 0.45,
+          animation: historyPanelAnimation)
       }
   }
 

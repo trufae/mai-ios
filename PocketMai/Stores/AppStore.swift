@@ -1477,21 +1477,16 @@ final class AppStore: ObservableObject {
     responseHaptics.streamPacketReceived()
   }
 
-  func assistantResponseCompleted(streamingWasEnabled: Bool) {
+  func assistantResponseCompleted() {
     guard settings.appearance.hapticsEnabled else {
       return
     }
-    if settings.appearance.vibrateOnEveryStreamPacket && streamingWasEnabled { return }
     responseHaptics.responseCompleted()
   }
 
-  func previewResponseHaptic() {
+  func sidebarVisibilitySettled() {
     guard settings.appearance.hapticsEnabled else { return }
-    if settings.appearance.vibrateOnEveryStreamPacket {
-      responseHaptics.streamPacketReceived(force: true)
-    } else {
-      responseHaptics.responseCompleted()
-    }
+    responseHaptics.sidebarVisibilitySettled()
   }
 
   private func currentTextOfMessage(id: UUID) -> String {

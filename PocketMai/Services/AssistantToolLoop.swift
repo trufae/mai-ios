@@ -134,7 +134,7 @@ enum AssistantToolLoop {
       switch outcome {
       case .final(let turnText):
         store.setAssistantMessage(id: assistantID, text: state.append(turnText), role: .assistant)
-        store.assistantResponseCompleted(streamingWasEnabled: conversation.usesStreaming)
+        store.assistantResponseCompleted()
         didFinish = true
         return
       case .retry(let feedback):

@@ -728,16 +728,10 @@ struct SettingsView: View {
       "Vibrate on Stream Packets",
       isOn: settingsBinding(\.appearance.vibrateOnEveryStreamPacket))
       .disabled(!store.settings.appearance.hapticsEnabled)
-    Button {
-      store.previewResponseHaptic()
-    } label: {
-      Label("Test Haptic", systemImage: "iphone.radiowaves.left.and.right")
-    }
-    .disabled(!store.settings.appearance.hapticsEnabled)
     Text(
       store.settings.appearance.vibrateOnEveryStreamPacket
-        ? "Light taps are rate-limited while the assistant streams."
-        : "When off, a gentle tap plays when the assistant response completes."
+        ? "Irregular typing-like taps play while the assistant streams; a completion pulse plays when it ends."
+        : "A completion pulse plays when the assistant response completes."
     )
     .font(.caption)
     .foregroundStyle(.secondary)
