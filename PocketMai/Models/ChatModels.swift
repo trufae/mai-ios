@@ -700,6 +700,7 @@ enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable 
   case tiny
   case small
   case medium
+  case big
   case full
 
   var id: String { rawValue }
@@ -709,15 +710,17 @@ enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable 
     case .tiny: "Tiny"
     case .small: "Small"
     case .medium: "Medium"
+    case .big: "Big"
     case .full: "Full"
     }
   }
 
   var maxDimension: Int? {
     switch self {
-    case .tiny: 32
-    case .small: 100
-    case .medium: 320
+    case .tiny: 100
+    case .small: 320
+    case .medium: 640
+    case .big: 1024
     case .full: nil
     }
   }
