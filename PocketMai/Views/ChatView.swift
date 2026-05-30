@@ -266,7 +266,7 @@ struct ChatView: View {
   }
 
   private var composerPlaceholder: String {
-    "Message"
+    "Ask anything..."
   }
 
   private var currentChatIsResponding: Bool {
