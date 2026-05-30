@@ -450,6 +450,7 @@ struct ChatView: View {
                 skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
+                renderImages: store.settings.renderMarkdownImagesInChat,
                 onDelete: { messagePendingDeletion = message },
                 onResubmit: message.role == .user
                   ? { Task { await store.resubmit(message) } }
@@ -478,6 +479,7 @@ struct ChatView: View {
                   ? [] : store.settings.openAIEndpoints,
                 appearance: store.settings.appearance,
                 renderMarkdown: store.settings.renderMarkdownInChat,
+                renderImages: store.settings.renderMarkdownImagesInChat,
                 onDelete: {},
                 showThinking: store.currentConversation?.showThinking ?? false,
                 isWaitingForResponse: false

@@ -5,10 +5,19 @@ private struct FullChatScreenshotRenderingKey: EnvironmentKey {
   static let defaultValue = false
 }
 
+private struct MarkdownRenderImagesKey: EnvironmentKey {
+  static let defaultValue = true
+}
+
 extension EnvironmentValues {
   var isFullChatScreenshotRendering: Bool {
     get { self[FullChatScreenshotRenderingKey.self] }
     set { self[FullChatScreenshotRenderingKey.self] = newValue }
+  }
+
+  var markdownRenderImages: Bool {
+    get { self[MarkdownRenderImagesKey.self] }
+    set { self[MarkdownRenderImagesKey.self] = newValue }
   }
 }
 
@@ -21,6 +30,7 @@ struct MessageBubble: View {
   var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
+  var renderImages: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -40,6 +50,7 @@ struct MessageBubble: View {
       skipTechnicalContentInTTS: skipTechnicalContentInTTS,
       appearance: appearance,
       renderMarkdown: renderMarkdown,
+      renderImages: renderImages,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -61,6 +72,7 @@ private struct StreamingMessageBubble: View {
   var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
+  var renderImages: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -80,6 +92,7 @@ private struct StreamingMessageBubble: View {
       skipTechnicalContentInTTS: skipTechnicalContentInTTS,
       appearance: appearance,
       renderMarkdown: renderMarkdown,
+      renderImages: renderImages,
       onDelete: onDelete,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -105,6 +118,7 @@ private struct MessageBubbleContent: View, Equatable {
   var skipTechnicalContentInTTS: Bool = true
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
+  var renderImages: Bool = true
   let onDelete: () -> Void
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -133,6 +147,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.skipTechnicalContentInTTS == rhs.skipTechnicalContentInTTS
       && lhs.appearance == rhs.appearance
       && lhs.renderMarkdown == rhs.renderMarkdown
+      && lhs.renderImages == rhs.renderImages
       && lhs.showThinking == rhs.showThinking
       && lhs.isWaitingForResponse == rhs.isWaitingForResponse
   }
@@ -166,7 +181,8 @@ private struct MessageBubbleContent: View, Equatable {
           monospaced: false,
           dimmedContent: true,
           initiallyExpanded: showThinking,
-          markdownAppearance: canRenderMarkdown ? appearance : nil
+          markdownAppearance: canRenderMarkdown ? appearance : nil,
+          renderImages: renderImages
         )
       }
       ForEach(prepared.transcriptSections) { section in
@@ -235,7 +251,8 @@ private struct MessageBubbleContent: View, Equatable {
           blocks: markdownBlocks,
           appearance: appearance,
           fontFamily: messageFontFamily,
-          allowsTextSelection: false
+          allowsTextSelection: false,
+          renderImages: renderImages
         )
         .fixedSize(horizontal: false, vertical: true)
       } else {
@@ -937,6 +954,7 @@ private struct FoldableMetaSection: View {
   var dimmedContent: Bool = false
   var initiallyExpanded: Bool = false
   var markdownAppearance: AppearanceSettings? = nil
+  var renderImages: Bool = true
 
   @State private var expanded: Bool = false
 
@@ -947,7 +965,8 @@ private struct FoldableMetaSection: View {
     monospaced: Bool,
     dimmedContent: Bool = false,
     initiallyExpanded: Bool = false,
-    markdownAppearance: AppearanceSettings? = nil
+    markdownAppearance: AppearanceSettings? = nil,
+    renderImages: Bool = true
   ) {
     self.title = title
     self.systemImage = systemImage
@@ -956,6 +975,7 @@ private struct FoldableMetaSection: View {
     self.dimmedContent = dimmedContent
     self.initiallyExpanded = initiallyExpanded
     self.markdownAppearance = markdownAppearance
+    self.renderImages = renderImages
     self._expanded = State(initialValue: initiallyExpanded)
   }
 
@@ -989,7 +1009,8 @@ private struct FoldableMetaSection: View {
             MarkdownContentView(
               text: content, appearance: markdownAppearance,
               allowsTextSelection: true,
-              foregroundStyle: dimmedContent ? Color.secondary : nil)
+              foregroundStyle: dimmedContent ? Color.secondary : nil,
+              renderImages: renderImages)
           } else {
             Text(content)
               .font(monospaced ? .system(.footnote, design: .monospaced) : .callout)
@@ -1222,6 +1243,7 @@ struct MarkdownContentView: View {
   let allowsTextSelection: Bool
   let foregroundStyle: Color?
   let uiForegroundColor: UIColor?
+  let renderImages: Bool
 
   init(
     text: String,
@@ -1229,7 +1251,8 @@ struct MarkdownContentView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    renderImages: Bool = true
   ) {
     self.blocks = MarkdownParser.blocks(from: text)
     self.appearance = appearance
@@ -1237,6 +1260,7 @@ struct MarkdownContentView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.renderImages = renderImages
   }
 
   init(
@@ -1245,7 +1269,8 @@ struct MarkdownContentView: View {
     fontFamily: AppearanceFontFamily? = nil,
     allowsTextSelection: Bool = true,
     foregroundStyle: Color? = nil,
-    uiForegroundColor: UIColor? = nil
+    uiForegroundColor: UIColor? = nil,
+    renderImages: Bool = true
   ) {
     self.blocks = blocks
     self.appearance = appearance
@@ -1253,6 +1278,7 @@ struct MarkdownContentView: View {
     self.allowsTextSelection = allowsTextSelection
     self.foregroundStyle = foregroundStyle
     self.uiForegroundColor = uiForegroundColor
+    self.renderImages = renderImages
   }
 
   var body: some View {
@@ -1341,6 +1367,7 @@ struct MarkdownContentView: View {
         }
       }
     }
+    .environment(\.markdownRenderImages, renderImages)
   }
 
   private func headingFont(level: Int) -> Font {
@@ -1387,6 +1414,106 @@ private struct MarkdownHorizontalRuleView: View {
 }
 
 private struct MarkdownInlineText: View {
+  @Environment(\.markdownRenderImages) private var renderMarkdownImages
+
+  let value: String
+  let appearance: AppearanceSettings
+  let font: Font
+  let uiFont: UIFont
+  let allowsTextSelection: Bool
+  var textAlignment: TextAlignment = .leading
+  var foregroundStyle: Color? = nil
+  var uiForegroundColor: UIColor? = nil
+  var strikethrough: Bool = false
+  var allowsJustification: Bool = true
+
+  var body: some View {
+    let segments = renderMarkdownImages ? MarkdownInlineImageScanner.segments(in: value) : []
+    if renderMarkdownImages && segments.containsImage {
+      MarkdownInlineSegmentedText(
+        segments: segments,
+        appearance: appearance,
+        font: font,
+        uiFont: uiFont,
+        allowsTextSelection: allowsTextSelection,
+        textAlignment: textAlignment,
+        foregroundStyle: foregroundStyle,
+        uiForegroundColor: uiForegroundColor,
+        strikethrough: strikethrough,
+        allowsJustification: allowsJustification)
+    } else {
+      MarkdownPlainInlineText(
+        value: value,
+        appearance: appearance,
+        font: font,
+        uiFont: uiFont,
+        allowsTextSelection: allowsTextSelection,
+        textAlignment: textAlignment,
+        foregroundStyle: foregroundStyle,
+        uiForegroundColor: uiForegroundColor,
+        strikethrough: strikethrough,
+        allowsJustification: allowsJustification)
+    }
+  }
+}
+
+private struct MarkdownInlineSegmentedText: View {
+  let segments: [MarkdownInlineSegment]
+  let appearance: AppearanceSettings
+  let font: Font
+  let uiFont: UIFont
+  let allowsTextSelection: Bool
+  let textAlignment: TextAlignment
+  let foregroundStyle: Color?
+  let uiForegroundColor: UIColor?
+  let strikethrough: Bool
+  let allowsJustification: Bool
+
+  var body: some View {
+    VStack(alignment: frameAlignment, spacing: appearance.markdownMetric(6)) {
+      ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+        switch segment {
+        case .text(let text):
+          if !text.trimmingCharacters(in: .newlines).isEmpty {
+            MarkdownPlainInlineText(
+              value: text,
+              appearance: appearance,
+              font: font,
+              uiFont: uiFont,
+              allowsTextSelection: allowsTextSelection,
+              textAlignment: textAlignment,
+              foregroundStyle: foregroundStyle,
+              uiForegroundColor: uiForegroundColor,
+              strikethrough: strikethrough,
+              allowsJustification: allowsJustification)
+            .frame(maxWidth: .infinity, alignment: swiftUIAlignment)
+          }
+        case .image(let image):
+          MarkdownImageView(image: image, appearance: appearance)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+  }
+
+  private var frameAlignment: HorizontalAlignment {
+    switch textAlignment {
+    case .center: return .center
+    case .trailing: return .trailing
+    default: return .leading
+    }
+  }
+
+  private var swiftUIAlignment: Alignment {
+    switch textAlignment {
+    case .center: return .center
+    case .trailing: return .trailing
+    default: return .leading
+    }
+  }
+}
+
+private struct MarkdownPlainInlineText: View {
   let value: String
   let appearance: AppearanceSettings
   let font: Font
@@ -1421,6 +1548,263 @@ private struct MarkdownInlineText: View {
         .strikethrough(strikethrough, color: .secondary)
         .textSelectionIfEnabled(allowsTextSelection)
     }
+  }
+}
+
+private struct MarkdownImageView: View {
+  let image: MarkdownInlineImage
+  let appearance: AppearanceSettings
+
+  var body: some View {
+    if let url = image.url {
+      AsyncImage(url: url) { phase in
+        switch phase {
+        case .empty:
+          placeholderView
+        case .success(let loadedImage):
+          loadedImage
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        case .failure:
+          failureView
+        @unknown default:
+          failureView
+        }
+      }
+      .accessibilityLabel(accessibilityLabel)
+    } else {
+      failureView
+        .accessibilityLabel(accessibilityLabel)
+    }
+  }
+
+  private var placeholderView: some View {
+    ProgressView()
+      .controlSize(.regular)
+      .frame(maxWidth: .infinity, minHeight: 96)
+      .background(Color.secondary.opacity(0.08))
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(border)
+  }
+
+  private var failureView: some View {
+    HStack(spacing: appearance.markdownMetric(10)) {
+      ZStack(alignment: .bottomTrailing) {
+        Image(systemName: "photo")
+          .font(.system(size: appearance.fontSize * 1.45, weight: .regular))
+          .foregroundStyle(.secondary)
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: max(9, appearance.fontSize * 0.58), weight: .semibold))
+          .foregroundStyle(.orange)
+          .background(Circle().fill(Color(uiColor: .systemBackground)))
+          .offset(x: 4, y: 3)
+      }
+      .frame(width: appearance.markdownMetric(34), height: appearance.markdownMetric(34))
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(image.altText.isEmpty ? "Image unavailable" : image.altText)
+          .font(.system(size: appearance.fontSize * 0.92, weight: .semibold))
+          .foregroundStyle(.primary)
+          .lineLimit(2)
+        Text(image.source)
+          .font(.system(size: max(10, appearance.fontSize * 0.76)))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+    }
+    .padding(.horizontal, appearance.markdownMetric(10))
+    .padding(.vertical, appearance.markdownMetric(9))
+    .frame(maxWidth: .infinity, minHeight: appearance.markdownMetric(58), alignment: .leading)
+    .background(Color.secondary.opacity(0.08))
+    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(border)
+  }
+
+  private var border: some View {
+    RoundedRectangle(cornerRadius: 10, style: .continuous)
+      .strokeBorder(.secondary.opacity(0.18), lineWidth: 1)
+  }
+
+  private var accessibilityLabel: String {
+    image.altText.isEmpty ? "Markdown image" : image.altText
+  }
+}
+
+private enum MarkdownInlineSegment: Equatable {
+  case text(String)
+  case image(MarkdownInlineImage)
+}
+
+private extension [MarkdownInlineSegment] {
+  var containsImage: Bool {
+    contains {
+      if case .image = $0 { return true }
+      return false
+    }
+  }
+}
+
+private struct MarkdownInlineImage: Equatable {
+  let altText: String
+  let source: String
+
+  var url: URL? {
+    let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed),
+      let scheme = url.scheme?.lowercased(),
+      scheme == "http" || scheme == "https"
+    else {
+      return nil
+    }
+    return url
+  }
+}
+
+private enum MarkdownInlineImageScanner {
+  static func segments(in value: String) -> [MarkdownInlineSegment] {
+    guard value.contains("![") else { return [.text(value)] }
+
+    let chars = Array(value)
+    var segments: [MarkdownInlineSegment] = []
+    var textStart = 0
+    var index = 0
+
+    while index < chars.count {
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        index = end + 1
+        continue
+      }
+
+      guard let image = imageToken(in: chars, at: index) else {
+        index += 1
+        continue
+      }
+
+      appendText(chars, range: textStart..<index, to: &segments)
+      segments.append(.image(image.value))
+      index = image.end
+      textStart = index
+    }
+
+    appendText(chars, range: textStart..<chars.count, to: &segments)
+    return segments.isEmpty ? [.text(value)] : segments
+  }
+
+  private static func imageToken(in chars: [Character], at index: Int)
+    -> (value: MarkdownInlineImage, end: Int)?
+  {
+    guard index + 1 < chars.count,
+      chars[index] == "!",
+      chars[index + 1] == "[",
+      !isEscaped(chars, at: index),
+      let altEnd = findImageAltEnd(in: chars, start: index + 2),
+      altEnd + 1 < chars.count,
+      chars[altEnd + 1] == "(",
+      let destinationEnd = findImageDestinationEnd(in: chars, start: altEnd + 2)
+    else {
+      return nil
+    }
+
+    let alt = String(chars[(index + 2)..<altEnd])
+    let destination = String(chars[(altEnd + 2)..<destinationEnd])
+    guard let source = imageSource(from: destination) else { return nil }
+    return (MarkdownInlineImage(altText: alt, source: source), destinationEnd + 1)
+  }
+
+  private static func appendText(
+    _ chars: [Character],
+    range: Range<Int>,
+    to segments: inout [MarkdownInlineSegment]
+  ) {
+    guard !range.isEmpty else { return }
+    segments.append(.text(String(chars[range])))
+  }
+
+  private static func imageSource(from destination: String) -> String? {
+    let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    if trimmed.first == "<", let close = trimmed.firstIndex(of: ">") {
+      let start = trimmed.index(after: trimmed.startIndex)
+      guard start <= close else { return nil }
+      return String(trimmed[start..<close])
+    }
+
+    let chars = Array(trimmed)
+    var end = 0
+    while end < chars.count, !chars[end].isWhitespace {
+      end += 1
+    }
+    guard end > 0 else { return nil }
+    return String(chars[0..<end])
+      .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+  }
+
+  private static func findImageAltEnd(in chars: [Character], start: Int) -> Int? {
+    var index = start
+    while index < chars.count {
+      if chars[index] == "\\" {
+        index += 2
+        continue
+      }
+      if chars[index] == "]" {
+        return index
+      }
+      if chars[index] == "\n" || chars[index] == "\r" {
+        return nil
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func findImageDestinationEnd(in chars: [Character], start: Int) -> Int? {
+    var depth = 0
+    var index = start
+    while index < chars.count {
+      if chars[index] == "\\" {
+        index += 2
+        continue
+      }
+      if chars[index] == "\n" || chars[index] == "\r" {
+        return nil
+      }
+      if chars[index] == "(" {
+        depth += 1
+      } else if chars[index] == ")" {
+        if depth == 0 {
+          return index
+        }
+        depth -= 1
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func findUnescapedBacktick(in chars: [Character], start: Int) -> Int? {
+    var index = start
+    while index < chars.count {
+      if chars[index] == "`", !isEscaped(chars, at: index) {
+        return index
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func isEscaped(_ chars: [Character], at index: Int) -> Bool {
+    guard index > 0 else { return false }
+    var slashCount = 0
+    var cursor = index - 1
+    while cursor >= 0, chars[cursor] == "\\" {
+      slashCount += 1
+      cursor -= 1
+    }
+    return slashCount % 2 == 1
   }
 }
 
@@ -2888,6 +3272,8 @@ struct OrderedListView: View {
 }
 
 struct BlockquoteView: View {
+  @Environment(\.markdownRenderImages) private var renderImages
+
   let text: String
   let appearance: AppearanceSettings
   var fontFamily: AppearanceFontFamily
@@ -2916,7 +3302,8 @@ struct BlockquoteView: View {
         fontFamily: fontFamily,
         allowsTextSelection: allowsTextSelection,
         foregroundStyle: .secondary,
-        uiForegroundColor: .secondaryLabel)
+        uiForegroundColor: .secondaryLabel,
+        renderImages: renderImages)
     }
     .padding(.vertical, appearance.markdownMetric(2))
   }

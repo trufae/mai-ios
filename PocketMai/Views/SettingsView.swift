@@ -637,6 +637,7 @@ struct SettingsView: View {
       isOn: settingsBinding(\.appearance.solidResponseBubbles))
     Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
     Toggle("Live Markdown", isOn: settingsBinding(\.appearance.liveMarkdown))
+    Toggle("Render images", isOn: settingsBinding(\.renderMarkdownImagesInChat))
     Toggle("Justify Text", isOn: settingsBinding(\.appearance.justifyText))
     Toggle("Unwrapped Tables", isOn: settingsBinding(\.appearance.unwrappedTables))
   }

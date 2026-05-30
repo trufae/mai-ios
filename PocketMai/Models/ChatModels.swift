@@ -1904,6 +1904,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var appearance: AppearanceSettings = .defaults
   var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
+  var renderMarkdownImagesInChat: Bool = true
   var airplaneModeEnabled: Bool = false
   var attachmentImageSize: AttachmentImageSize = .medium
   var mlxMaxKVSize: MLXKVCacheSize = .auto
@@ -1956,7 +1957,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case toolSettings, mcpServers, memory, toolCallingMode, maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
-    case appearance, conversation, renderMarkdownInChat
+    case appearance, conversation, renderMarkdownInChat, renderMarkdownImagesInChat
     case airplaneModeEnabled, attachmentImageSize
     case mlxMaxKVSize, mlxAutoCompact
     case startupBehavior, lastSelectedConversationID
@@ -2035,6 +2036,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(ConversationSettings.self, forKey: .conversation)) ?? .defaults
     renderMarkdownInChat =
       (try? c.decode(Bool.self, forKey: .renderMarkdownInChat)) ?? true
+    renderMarkdownImagesInChat =
+      (try? c.decode(Bool.self, forKey: .renderMarkdownImagesInChat)) ?? true
     airplaneModeEnabled =
       (try? c.decode(Bool.self, forKey: .airplaneModeEnabled)) ?? false
     attachmentImageSize =
