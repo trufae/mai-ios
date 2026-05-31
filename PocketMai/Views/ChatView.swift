@@ -357,7 +357,6 @@ struct ChatView: View {
       Image(systemName: "square.and.pencil")
     }
     .disabled(currentConversationIsEmpty)
-    .buttonStyle(.glass)
     .accessibilityLabel("New Chat")
     .help("New Chat")
   }
