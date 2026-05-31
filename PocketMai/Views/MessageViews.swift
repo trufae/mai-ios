@@ -398,11 +398,6 @@ private struct MessageBubbleContent: View, Equatable {
           Label("Reset Chat From Here", systemImage: "arrow.triangle.2.circlepath")
         }
       }
-      if let onNewChatWithMessage {
-        Button(action: onNewChatWithMessage) {
-          Label("New Chat With This", systemImage: "bubble.left.and.bubble.right")
-        }
-      }
     }
 
     Divider()
