@@ -1454,6 +1454,11 @@ struct SettingsView: View {
             .foregroundStyle(.tertiary)
         }
       }
+      NavigationLink {
+        LicensesView()
+      } label: {
+        Label("Licenses", systemImage: "doc.text")
+      }
     } header: {
       Text("About")
     }
