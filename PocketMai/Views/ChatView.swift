@@ -750,13 +750,9 @@ struct ChatView: View {
   private var emptyState: some View {
     GeometryReader { proxy in
       VStack(spacing: 12) {
-        Image("MaiLogoNoAI")
-          .renderingMode(.original)
-          .resizable()
-          .scaledToFit()
-          .frame(width: 76, height: 76)
+        EmptyChatLogo()
         Text("Your pocket assistant")
-          .font(.title3.weight(.semibold))
+          .font(.title3)
           .foregroundStyle(.primary)
           .multilineTextAlignment(.center)
       }
@@ -774,6 +770,31 @@ struct ChatView: View {
       isResponding: currentChatIsResponding,
       liveVoiceSession: liveVoiceSession
     )
+  }
+}
+
+private struct EmptyChatLogo: View {
+  @Environment(\.colorScheme) private var colorScheme
+
+  var body: some View {
+    logo
+      .frame(width: 76, height: 76)
+  }
+
+  @ViewBuilder
+  private var logo: some View {
+    if colorScheme == .dark {
+      Image("MaiLogoNoAI")
+        .renderingMode(.original)
+        .resizable()
+        .scaledToFit()
+        .colorInvert()
+    } else {
+      Image("MaiLogoNoAI")
+        .renderingMode(.original)
+        .resizable()
+        .scaledToFit()
+    }
   }
 }
 
