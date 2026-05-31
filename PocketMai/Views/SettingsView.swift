@@ -374,6 +374,8 @@ struct SettingsView: View {
       }
     }
     .preferredColorScheme(store.settings.appearance.theme.colorScheme)
+    .tint(store.settings.appearance.tintColor)
+    .accentColor(store.settings.appearance.tintColor)
   }
 
   @ViewBuilder
