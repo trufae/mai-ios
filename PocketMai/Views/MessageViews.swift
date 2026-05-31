@@ -2105,11 +2105,15 @@ private struct MarkdownPlainInlineText: View {
   var italic: Bool = false
 
   var body: some View {
-    if allowsJustification && appearance.justifyText && textAlignment.isLeading {
+    let justified = allowsJustification && appearance.justifyText && textAlignment.isLeading
+    // Links are rendered through the UITextView-backed view so they can be
+    // underlined and offer a network-free "Copy Link" long-press menu.
+    if textAlignment.isLeading && (justified || MarkdownInlineLinkScanner.containsLink(value)) {
       JustifiedMarkdownTextView(
         value: value,
         font: uiFont.italicizedIf(italic),
         lineSpacing: appearance.lineSpacing,
+        alignment: justified ? .justified : .natural,
         allowsTextSelection: allowsTextSelection,
         foregroundColor: uiForegroundColor ?? .label,
         strikethrough: strikethrough
@@ -2529,9 +2533,12 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   let value: String
   let font: UIFont
   let lineSpacing: Double
+  var alignment: NSTextAlignment = .justified
   let allowsTextSelection: Bool
   let foregroundColor: UIColor
   let strikethrough: Bool
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
 
   func makeUIView(context: Context) -> UITextView {
     let textView = UITextView()
@@ -2542,6 +2549,12 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
     textView.textContainer.lineFragmentPadding = 0
     textView.textContainer.lineBreakMode = .byWordWrapping
     textView.adjustsFontForContentSizeCategory = true
+    textView.delegate = context.coordinator
+    // Links keep the app tint but are also underlined.
+    textView.linkTextAttributes = [
+      .foregroundColor: UIColor.tintColor,
+      .underlineStyle: NSUnderlineStyle.single.rawValue,
+    ]
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
     return textView
@@ -2569,11 +2582,42 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
       value,
       font: font,
       lineSpacing: lineSpacing,
-      alignment: .justified,
+      alignment: alignment,
       foregroundColor: foregroundColor,
       strikethrough: strikethrough)
     textView.isSelectable = allowsTextSelection
     textView.isUserInteractionEnabled = allowsTextSelection
+  }
+
+  final class Coordinator: NSObject, UITextViewDelegate {
+    // Tapping a link must not open the web. Interaction is limited to the
+    // long-press menu below.
+    func textView(
+      _ textView: UITextView,
+      primaryActionFor textItem: UITextItem,
+      defaultAction: UIAction
+    ) -> UIAction? {
+      if case .link = textItem.content { return nil }
+      return defaultAction
+    }
+
+    // Long-pressing a link offers a "Copy Link" action only. Returning a
+    // configuration without a preview avoids the default link preview, which
+    // would otherwise fetch the URL over the network.
+    func textView(
+      _ textView: UITextView,
+      menuConfigurationFor textItem: UITextItem,
+      defaultMenu: UIMenu
+    ) -> UITextItem.MenuConfiguration? {
+      guard case .link(let url) = textItem.content else { return nil }
+      let copy = UIAction(
+        title: "Copy Link",
+        image: UIImage(systemName: "doc.on.doc")
+      ) { _ in
+        UIPasteboard.general.url = url
+      }
+      return UITextItem.MenuConfiguration(menu: UIMenu(children: [copy]))
+    }
   }
 }
 
@@ -2588,6 +2632,16 @@ extension AppearanceSettings {
 
   fileprivate func markdownListMarkerWidth(markerLength: Int, minimum: CGFloat = 18) -> CGFloat {
     max(markdownMetric(minimum), CGFloat(markerLength) * CGFloat(fontSize) * 0.64)
+  }
+}
+
+private enum MarkdownInlineLinkScanner {
+  /// Reports whether the inline markdown resolves to one or more links.
+  /// A cheap textual pre-check avoids parsing strings that cannot contain a
+  /// markdown link or autolink.
+  static func containsLink(_ value: String) -> Bool {
+    guard value.contains("](") || value.contains("<http") else { return false }
+    return attributedInlineMarkdown(value).runs.contains { $0.link != nil }
   }
 }
 
@@ -2740,14 +2794,18 @@ extension Font {
 private enum MarkdownInlineStyleApplier {
   static func styled(_ attributed: AttributedString, strongFont: Font? = nil) -> AttributedString {
     var result = attributed
-    let runs = result.runs.map { ($0.range, $0.inlinePresentationIntent) }
+    let runs = result.runs.map { ($0.range, $0.inlinePresentationIntent, $0.link) }
 
-    for (range, intent) in runs {
+    for (range, intent, link) in runs {
+      // Links are underlined (in addition to their tint) so they remain
+      // distinguishable from surrounding text by more than color alone.
+      if link != nil {
+        result[range].underlineStyle = .single
+      }
       guard let intent else { continue }
       if intent.contains(.code) {
         result[range].foregroundColor = inlineCodeColor
       } else if intent.contains(.stronglyEmphasized) {
-        result[range].foregroundColor = Color.accentColor
         if let strongFont {
           result[range].font = strongFont
         }
