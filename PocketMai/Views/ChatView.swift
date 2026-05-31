@@ -365,7 +365,7 @@ struct ChatView: View {
     Menu {
       exportMenuItems
     } label: {
-      Label("Export Conversation", systemImage: "square.and.arrow.up")
+      Label("Export", systemImage: "square.and.arrow.up")
     }
   }
 
