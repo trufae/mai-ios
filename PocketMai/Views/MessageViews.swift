@@ -1978,11 +1978,24 @@ private struct MarkdownHorizontalRuleView: View {
   let appearance: AppearanceSettings
 
   var body: some View {
-    Divider()
-      .overlay(Color.secondary.opacity(0.35))
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, appearance.markdownMetric(4))
-      .accessibilityHidden(true)
+    GeometryReader { proxy in
+      Capsule(style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [
+              Color.secondary.opacity(0.0),
+              Color.secondary.opacity(0.45),
+              Color.secondary.opacity(0.0),
+            ],
+            startPoint: .leading,
+            endPoint: .trailing))
+        .frame(width: proxy.size.width * 0.4, height: appearance.markdownMetric(3))
+        .frame(maxWidth: .infinity)
+    }
+    .frame(height: appearance.markdownMetric(3))
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, appearance.markdownMetric(8))
+    .accessibilityHidden(true)
   }
 }
 
