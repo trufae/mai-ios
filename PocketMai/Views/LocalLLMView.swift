@@ -416,16 +416,21 @@ struct LocalLLMView: View {
     .onChange(of: vm.cachedModels) { _, _ in
       store.refreshLocalMLXModels()
     }
-    .alert(item: $pendingModelDeletion) { model in
-      Alert(
-        title: Text("Delete Downloaded Model?"),
-        message: Text(
-          "\(model.repoID) will be removed from the local Hugging Face cache and must be downloaded again before use."
-        ),
-        primaryButton: .destructive(Text("Delete")) {
-          vm.deleteCachedModel(model)
-        },
-        secondaryButton: .cancel()
+    .alert(
+      "Delete Downloaded Model?",
+      isPresented: Binding(
+        get: { pendingModelDeletion != nil },
+        set: { if !$0 { pendingModelDeletion = nil } }
+      ),
+      presenting: pendingModelDeletion
+    ) { model in
+      Button("Delete", role: .destructive) {
+        vm.deleteCachedModel(model)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { model in
+      Text(
+        "\(model.repoID) will be removed from the local Hugging Face cache and must be downloaded again before use."
       )
     }
   }
