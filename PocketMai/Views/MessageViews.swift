@@ -592,12 +592,12 @@ private struct MessageImageAttachmentView: View {
           .overlay(alignment: .bottomTrailing) {
             Text(dimensionsLabel(for: uiImage))
               .font(.system(size: 9, weight: .semibold, design: .monospaced))
-              .foregroundStyle(.white)
+              .foregroundStyle(.primary)
               .lineLimit(1)
               .minimumScaleFactor(0.7)
               .padding(.horizontal, 5)
               .padding(.vertical, 3)
-              .background(.black.opacity(0.58), in: Capsule())
+              .background(.regularMaterial, in: Capsule())
               .padding(5)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -675,7 +675,7 @@ private struct MessageImageFullscreenView: View {
 
   var body: some View {
     ZStack(alignment: .top) {
-      Color.black
+      Color(uiColor: .systemBackground)
         .ignoresSafeArea()
       ZoomableUIImageView(image: image) {
         dismiss()
@@ -687,7 +687,7 @@ private struct MessageImageFullscreenView: View {
         } label: {
           Image(systemName: "xmark")
             .font(.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .frame(width: 42, height: 42)
             .background(.ultraThinMaterial, in: Circle())
         }
@@ -700,7 +700,7 @@ private struct MessageImageFullscreenView: View {
         } label: {
           Image(systemName: "square.and.arrow.down")
             .font(.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .frame(width: 42, height: 42)
             .background(.ultraThinMaterial, in: Circle())
         }
@@ -744,7 +744,7 @@ private struct ZoomableUIImageView: UIViewRepresentable {
   func makeUIView(context: Context) -> UIScrollView {
     let scrollView = UIScrollView()
     scrollView.delegate = context.coordinator
-    scrollView.backgroundColor = .black
+    scrollView.backgroundColor = .systemBackground
     scrollView.minimumZoomScale = 1
     scrollView.maximumZoomScale = 8
     scrollView.bouncesZoom = true
