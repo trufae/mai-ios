@@ -14,6 +14,7 @@ struct SidebarView: View {
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
   @State private var visibleConversations: [ConversationSummary] = []
+  @StateObject private var exportCoordinator = ConversationExportCoordinator()
   private let floatingActionHorizontalInset: CGFloat = 18
   private let floatingActionBottomInset: CGFloat = 22
 
@@ -50,6 +51,7 @@ struct SidebarView: View {
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) {
       updateKeyboardOverlap(from: $0)
     }
+    .modifier(ConversationExportPresentations(coordinator: exportCoordinator))
   }
 
   private func refreshVisibleConversations() {
@@ -181,6 +183,10 @@ struct SidebarView: View {
     } label: {
       Label("Clone Conversation", systemImage: "doc.on.doc")
     }
+
+    Divider()
+
+    ConversationExportMenu(conversationID: conversation.id, coordinator: exportCoordinator)
 
     Divider()
 

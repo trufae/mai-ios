@@ -2894,7 +2894,7 @@ private enum MarkdownInlineStyleApplier {
 /// Headings and bold text keep full `.label`/`.primary` contrast.
 private let markdownBodyUIColor = UIColor { traits in
   traits.userInterfaceStyle == .dark
-    ? UIColor(white: 0.74, alpha: 1)
+    ? UIColor(white: 0.84, alpha: 1)
     : UIColor(white: 0.30, alpha: 1)
 }
 private let markdownBodyColor = Color(uiColor: markdownBodyUIColor)

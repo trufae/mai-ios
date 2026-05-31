@@ -1766,6 +1766,10 @@ final class AppStore: ObservableObject {
 
   func exportCurrentConversationEPUB() -> URL? {
     guard let conversation = currentConversation else { return nil }
+    return exportConversationEPUB(conversation)
+  }
+
+  func exportConversationEPUB(_ conversation: Conversation) -> URL? {
     let data = EPUBExporter.makeEPUB(conversation: conversation)
     do {
       let url = try ConversationExportFiles.url(for: conversation, format: .epub)
@@ -1779,6 +1783,18 @@ final class AppStore: ObservableObject {
 
   func exportCurrentConversationFile(format: ConversationExportFormat) -> URL? {
     guard let conversation = currentConversation else { return nil }
+    return exportConversationFile(conversation, format: format)
+  }
+
+  func exportConversationFile(id: UUID, format: ConversationExportFormat) async -> URL? {
+    await ensureConversationLoaded(id)
+    guard let conversation = conversation(withID: id) else { return nil }
+    return exportConversationFile(conversation, format: format)
+  }
+
+  func exportConversationFile(_ conversation: Conversation, format: ConversationExportFormat)
+    -> URL?
+  {
     switch format {
     case .markdown, .json, .debug:
       return writeConversationExport(
@@ -1786,7 +1802,7 @@ final class AppStore: ObservableObject {
         format: format,
         content: export(conversation: conversation, format: format))
     case .epub:
-      return exportCurrentConversationEPUB()
+      return exportConversationEPUB(conversation)
     case .audio:
       return nil
     }
@@ -1794,6 +1810,21 @@ final class AppStore: ObservableObject {
 
   func exportCurrentConversationDebugJSONFile() async -> URL? {
     guard let conversation = currentConversation else { return nil }
+    return await exportConversationDebugJSONFile(conversation)
+  }
+
+  func exportConversationDebugJSONFile(id: UUID) async -> URL? {
+    await ensureConversationLoaded(id)
+    guard let conversation = conversation(withID: id) else { return nil }
+    return await exportConversationDebugJSONFile(conversation)
+  }
+
+  func conversationForExport(id: UUID) async -> Conversation? {
+    await ensureConversationLoaded(id)
+    return conversation(withID: id)
+  }
+
+  func exportConversationDebugJSONFile(_ conversation: Conversation) async -> URL? {
     let latestPrompt =
       conversation.messages.last(where: { $0.role == .user })
       .map { MessageContentFilter.promptSafeText(from: $0.text) } ?? ""

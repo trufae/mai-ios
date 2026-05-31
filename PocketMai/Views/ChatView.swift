@@ -12,16 +12,13 @@ struct ChatView: View {
   @State private var messagePendingDeletion: ChatMessage?
   @State private var messagePendingTrimAndResubmit: ChatMessage?
   @State private var messagePendingRestartFresh: ChatMessage?
-  @State private var exportShareFile: ExportedFile?
-  @State private var showingAudioExport: Bool = false
-  @State private var audioExportError: String?
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
   @State private var fontSizePinchBase: Double?
   @State private var fontSizePinchAnchor: MessageListPinchAnchor?
   @State private var fontSizePinchViewportY: CGFloat?
-  @StateObject private var audioExporter = TTSExporter()
+  @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
   let onShowHistory: () -> Void
@@ -73,15 +70,7 @@ struct ChatView: View {
       CompactChatSheet()
         .environmentObject(store)
     }
-    .sheet(item: $exportShareFile) { file in
-      ActivityShareSheet(activityItems: [file.url])
-    }
-    .modifier(
-      AudioExportPresentations(
-        exporter: audioExporter,
-        showingAudioExport: $showingAudioExport,
-        audioExportError: $audioExportError)
-    )
+    .modifier(ConversationExportPresentations(coordinator: exportCoordinator))
     .alert(
       "Delete this message?",
       isPresented: deleteMessageConfirmationBinding,
@@ -213,7 +202,9 @@ struct ChatView: View {
       }
       .disabled(!canCompactCurrentChat)
       Divider()
-      exportConversationMenu
+      ConversationExportMenu(
+        conversationID: store.currentConversation?.id,
+        coordinator: exportCoordinator)
     } label: {
       VStack(spacing: 1) {
         Text(store.currentConversation?.displayTitle ?? "Chat")
@@ -359,70 +350,6 @@ struct ChatView: View {
     .disabled(currentConversationIsEmpty)
     .accessibilityLabel("New Chat")
     .help("New Chat")
-  }
-
-  private var exportConversationMenu: some View {
-    Menu {
-      exportMenuItems
-    } label: {
-      Label("Export", systemImage: "square.and.arrow.up")
-    }
-  }
-
-  @ViewBuilder
-  private var exportMenuItems: some View {
-    ForEach(ConversationExportFormat.allCases) { format in
-      Button {
-        Task { await shareExport(format) }
-      } label: {
-        Label(format.displayName, systemImage: format.systemImage)
-      }
-      .disabled(format == .audio && audioExporter.isExporting)
-    }
-    .disabled(audioExporter.isExporting)
-  }
-
-  @MainActor
-  private func shareExport(_ format: ConversationExportFormat) async {
-    guard let url = await exportFileURL(for: format) else { return }
-    exportShareFile = ExportedFile(url: url)
-  }
-
-  @MainActor
-  private func exportFileURL(for format: ConversationExportFormat) async -> URL? {
-    if format == .audio {
-      return await exportAudioFile()
-    }
-    if format == .debug {
-      return await store.exportCurrentConversationDebugJSONFile()
-    }
-    return store.exportCurrentConversationFile(format: format)
-  }
-
-  @MainActor
-  private func exportAudioFile() async -> URL? {
-    guard let conversation = store.currentConversation else { return nil }
-    showingAudioExport = true
-    do {
-      let url = try ConversationExportFiles.url(for: conversation, format: .audio)
-      try await audioExporter.export(
-        messages: conversation.messages,
-        voices: store.effectiveToolSettings(for: conversation).voices,
-        skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS,
-        to: url)
-      showingAudioExport = false
-      try? await Task.sleep(for: .milliseconds(250))
-      return url
-    } catch is CancellationError {
-      showingAudioExport = false
-      return nil
-    } catch {
-      showingAudioExport = false
-      audioExportError =
-        (error as? LocalizedError)?.errorDescription
-        ?? error.localizedDescription
-      return nil
-    }
   }
 
   private func speakFromHere(_ message: ChatMessage) {
@@ -1756,71 +1683,6 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       return best?.scrollView
     }
   }
-}
-
-private struct ExportedFile: Identifiable {
-  let id = UUID()
-  let url: URL
-}
-
-private struct AudioExportPresentations: ViewModifier {
-  @ObservedObject var exporter: TTSExporter
-  @Binding var showingAudioExport: Bool
-  @Binding var audioExportError: String?
-
-  func body(content: Content) -> some View {
-    content
-      .sheet(isPresented: $showingAudioExport) {
-        AudioExportProgressView(exporter: exporter) {
-          exporter.cancel()
-        }
-      }
-      .alert(
-        "Audio export failed",
-        isPresented: Binding(
-          get: { audioExportError != nil },
-          set: { if !$0 { audioExportError = nil } }),
-        presenting: audioExportError
-      ) { _ in
-        Button("OK", role: .cancel) { audioExportError = nil }
-      } message: { message in
-        Text(message)
-      }
-  }
-}
-
-private struct AudioExportProgressView: View {
-  @ObservedObject var exporter: TTSExporter
-  let onCancel: () -> Void
-
-  var body: some View {
-    VStack(spacing: 16) {
-      Image(systemName: "waveform")
-        .font(.system(size: 32))
-        .foregroundStyle(.secondary)
-      ProgressView(value: exporter.progress)
-        .progressViewStyle(.linear)
-      Text(exporter.phase)
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-      Button("Cancel", role: .cancel, action: onCancel)
-    }
-    .padding(24)
-    .frame(maxWidth: .infinity)
-    .presentationDetents([.height(220)])
-    .interactiveDismissDisabled()
-  }
-}
-
-private struct ActivityShareSheet: UIViewControllerRepresentable {
-  let activityItems: [Any]
-
-  func makeUIViewController(context: Context) -> UIActivityViewController {
-    UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-  }
-
-  func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 private struct CompactChatSheet: View {

@@ -215,8 +215,6 @@ extension AppearanceTint {
     case .teal: .teal
     case .cyan: .cyan
     case .indigo: .indigo
-    case .white: .white
-    case .black: .black
     }
   }
 
