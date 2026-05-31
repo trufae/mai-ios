@@ -291,7 +291,8 @@ private struct MessageBubbleContent: View, Equatable {
       .sheet(isPresented: $showingTextSelection) {
         MessageTextSelectionSheet(
           title: onEdit == nil ? message.role.displayName : "",
-          text: onEdit == nil ? visibleText : rawText,
+          text: rawText,
+          canFilter: rawText != visibleText,
           appearance: appearance,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
@@ -328,7 +329,7 @@ private struct MessageBubbleContent: View, Equatable {
     if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
-          messageContextMenu(visibleText: visibleText, rawText: rawText)
+          messageContextMenu(visibleText: visibleText)
         } preview: {
           Color.clear
             .frame(width: 1, height: 1)
@@ -340,7 +341,7 @@ private struct MessageBubbleContent: View, Equatable {
   }
 
   @ViewBuilder
-  private func messageContextMenu(visibleText: String, rawText: String) -> some View {
+  private func messageContextMenu(visibleText: String) -> some View {
     ForEach(Array(imageAttachments.enumerated()), id: \.element.id) { index, attachment in
       Button {
         saveImageAttachment(attachment)
@@ -363,11 +364,6 @@ private struct MessageBubbleContent: View, Equatable {
       UIPasteboard.general.string = visibleText
     } label: {
       Label("Copy Message", systemImage: "doc.on.doc")
-    }
-    Button {
-      UIPasteboard.general.string = rawText
-    } label: {
-      Label("Copy Raw Message", systemImage: "doc.text")
     }
     Button {
       _ = TextToSpeechTool.speak(
@@ -970,7 +966,12 @@ private struct MessageTextSelectionSheet: View {
   @Environment(\.dismiss) private var dismiss
 
   let title: String
+  // The full, unfiltered message text. The editable buffer always operates on
+  // this raw form; the filtered view is derived from it on demand.
   let text: String
+  // Whether the raw text has hidden sections, i.e. a filtered form that differs
+  // from the raw form. Drives whether the Raw/Filtered toggle is offered.
+  let canFilter: Bool
   let appearance: AppearanceSettings
   let fontFamily: AppearanceFontFamily
   let lineSpacing: Double
@@ -979,10 +980,14 @@ private struct MessageTextSelectionSheet: View {
   @State private var draftText: String
   @State private var fontSize: Double
   @State private var showingPreview = false
+  // When true the raw text is shown/edited; when false the derived filtered text
+  // is shown read-only. Saving is always tied to the raw draft.
+  @State private var showingRaw: Bool
 
   init(
     title: String,
     text: String,
+    canFilter: Bool = false,
     appearance: AppearanceSettings = .defaults,
     initialFontSize: Double = AppearanceSettings.defaults.fontSize,
     initialLineSpacing: Double = AppearanceSettings.defaults.lineSpacing,
@@ -992,6 +997,7 @@ private struct MessageTextSelectionSheet: View {
   ) {
     self.title = title
     self.text = text
+    self.canFilter = canFilter
     self.appearance = appearance
     self.fontFamily = fontFamily
     self.lineSpacing = AppearanceSettings.clampedLineSpacing(initialLineSpacing)
@@ -999,11 +1005,19 @@ private struct MessageTextSelectionSheet: View {
     self.onSave = onSave
     _draftText = State(initialValue: text)
     _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
+    // Editing starts on the raw text; read-only viewing starts on the cleaner
+    // filtered text when one is available.
+    _showingRaw = State(initialValue: isEditable || !canFilter)
   }
 
   // Editing uses a monospaced font so markdown source is easy to read and align.
   private var editorFontFamily: AppearanceFontFamily {
     isEditable ? .monospaced : fontFamily
+  }
+
+  // The text currently presented: the live raw draft, or its filtered form.
+  private var displayedText: String {
+    showingRaw ? draftText : MessageContentFilter.render(draftText).visibleText
   }
 
   var body: some View {
@@ -1012,7 +1026,7 @@ private struct MessageTextSelectionSheet: View {
         if showingPreview {
           ScrollView {
             MarkdownContentView(
-              text: draftText,
+              text: displayedText,
               appearance: appearance,
               fontFamily: fontFamily,
               allowsTextSelection: true
@@ -1021,13 +1035,23 @@ private struct MessageTextSelectionSheet: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 18)
           }
-        } else {
+        } else if isEditable && showingRaw {
           SelectableMessageTextView(
             text: $draftText,
             fontSize: $fontSize,
             lineSpacing: lineSpacing,
             fontFamily: editorFontFamily,
-            isEditable: isEditable
+            isEditable: true
+          )
+        } else {
+          // Read-only: viewing a message, or showing the derived filtered text
+          // while editing (edits are made on the raw draft only).
+          SelectableMessageTextView(
+            text: .constant(displayedText),
+            fontSize: $fontSize,
+            lineSpacing: lineSpacing,
+            fontFamily: editorFontFamily,
+            isEditable: false
           )
         }
       }
@@ -1038,6 +1062,11 @@ private struct MessageTextSelectionSheet: View {
           ToolbarItem(placement: .topBarLeading) {
             Button("Cancel") {
               dismiss()
+            }
+          }
+          if canFilter {
+            ToolbarItem(placement: .topBarLeading) {
+              rawToggleButton
             }
           }
           ToolbarItem(placement: .topBarTrailing) {
@@ -1051,7 +1080,7 @@ private struct MessageTextSelectionSheet: View {
           }
           ToolbarItem(placement: .topBarTrailing) {
             Button {
-              UIPasteboard.general.string = draftText
+              UIPasteboard.general.string = displayedText
             } label: {
               Label("Copy All", systemImage: "doc.on.doc")
             }
@@ -1068,15 +1097,30 @@ private struct MessageTextSelectionSheet: View {
               dismiss()
             }
           }
+          if canFilter {
+            ToolbarItem(placement: .topBarLeading) {
+              rawToggleButton
+            }
+          }
           ToolbarItem(placement: .topBarTrailing) {
             Button {
-              UIPasteboard.general.string = draftText
+              UIPasteboard.general.string = displayedText
             } label: {
               Label("Copy All", systemImage: "doc.on.doc")
             }
           }
         }
       }
+    }
+  }
+
+  // Toggles between the raw message text and its filtered form. Highlighted
+  // (filled icon) while the raw text is shown.
+  private var rawToggleButton: some View {
+    Button {
+      showingRaw.toggle()
+    } label: {
+      Label("Raw", systemImage: showingRaw ? "doc.text.fill" : "doc.text")
     }
   }
 
