@@ -979,12 +979,16 @@ private struct ChatComposer: View {
         TextField(placeholder, text: draftBinding, axis: .vertical)
           .textFieldStyle(.plain)
           .lineLimit(1...3)
-          .submitLabel(.send)
           .padding(.vertical, 5)
           .frame(minHeight: 32, alignment: .center)
           .focused($composerFocused)
-          .onSubmit {
+          .onKeyPress(.return) { press in
+            // Only hardware keyboards reach onKeyPress, so the on-screen Return
+            // always inserts a newline. With a hardware keyboard, Shift+Return
+            // inserts a newline and a bare Return submits.
+            guard !press.modifiers.contains(.shift) else { return .ignored }
             submitDraft()
+            return .handled
           }
 
         Button {
@@ -1125,10 +1129,6 @@ private struct ChatComposer: View {
     Binding(
       get: { draftText },
       set: { newText in
-        if newText == draftText + "\n" {
-          submitDraft()
-          return
-        }
         draftText = newText
         store.setDraftText(newText, for: conversationID)
       }
