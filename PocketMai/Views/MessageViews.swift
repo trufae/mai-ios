@@ -290,8 +290,9 @@ private struct MessageBubbleContent: View, Equatable {
       bubbleView
       .sheet(isPresented: $showingTextSelection) {
         MessageTextSelectionSheet(
-          title: onEdit == nil ? message.role.displayName : "Edit Message",
+          title: onEdit == nil ? message.role.displayName : "",
           text: onEdit == nil ? visibleText : rawText,
+          appearance: appearance,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
           fontFamily: appearance.fontFamily(for: message.role),
@@ -970,16 +971,19 @@ private struct MessageTextSelectionSheet: View {
 
   let title: String
   let text: String
+  let appearance: AppearanceSettings
   let fontFamily: AppearanceFontFamily
   let lineSpacing: Double
   let isEditable: Bool
   let onSave: ((String) -> Void)?
   @State private var draftText: String
   @State private var fontSize: Double
+  @State private var showingPreview = false
 
   init(
     title: String,
     text: String,
+    appearance: AppearanceSettings = .defaults,
     initialFontSize: Double = AppearanceSettings.defaults.fontSize,
     initialLineSpacing: Double = AppearanceSettings.defaults.lineSpacing,
     fontFamily: AppearanceFontFamily = .system,
@@ -988,6 +992,7 @@ private struct MessageTextSelectionSheet: View {
   ) {
     self.title = title
     self.text = text
+    self.appearance = appearance
     self.fontFamily = fontFamily
     self.lineSpacing = AppearanceSettings.clampedLineSpacing(initialLineSpacing)
     self.isEditable = isEditable
@@ -996,15 +1001,36 @@ private struct MessageTextSelectionSheet: View {
     _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
   }
 
+  // Editing uses a monospaced font so markdown source is easy to read and align.
+  private var editorFontFamily: AppearanceFontFamily {
+    isEditable ? .monospaced : fontFamily
+  }
+
   var body: some View {
     NavigationStack {
-      SelectableMessageTextView(
-        text: $draftText,
-        fontSize: $fontSize,
-        lineSpacing: lineSpacing,
-        fontFamily: fontFamily,
-        isEditable: isEditable
-      )
+      Group {
+        if showingPreview {
+          ScrollView {
+            MarkdownContentView(
+              text: draftText,
+              appearance: appearance,
+              fontFamily: fontFamily,
+              allowsTextSelection: true
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 18)
+          }
+        } else {
+          SelectableMessageTextView(
+            text: $draftText,
+            fontSize: $fontSize,
+            lineSpacing: lineSpacing,
+            fontFamily: editorFontFamily,
+            isEditable: isEditable
+          )
+        }
+      }
       .navigationTitle(title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -1012,6 +1038,15 @@ private struct MessageTextSelectionSheet: View {
           ToolbarItem(placement: .topBarLeading) {
             Button("Cancel") {
               dismiss()
+            }
+          }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              showingPreview.toggle()
+            } label: {
+              Label(
+                showingPreview ? "Edit" : "Preview",
+                systemImage: showingPreview ? "square.and.pencil" : "eye")
             }
           }
           ToolbarItem(placement: .topBarTrailing) {
