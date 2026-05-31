@@ -1869,8 +1869,8 @@ struct MarkdownContentView: View {
             font: fontFamily.swiftUIFont(size: appearance.fontSize),
             uiFont: fontFamily.uiFont(size: appearance.fontSize),
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic
           )
           .fixedSize(horizontal: false, vertical: true)
@@ -1897,8 +1897,8 @@ struct MarkdownContentView: View {
             appearance: appearance,
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic
           )
         case .taskList(let items):
@@ -1907,8 +1907,8 @@ struct MarkdownContentView: View {
             appearance: appearance,
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic)
         case .bulletList(let items):
           BulletListView(
@@ -1916,8 +1916,8 @@ struct MarkdownContentView: View {
             appearance: appearance,
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic)
         case .orderedList(let items):
           OrderedListView(
@@ -1925,8 +1925,8 @@ struct MarkdownContentView: View {
             appearance: appearance,
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic)
         case .footnotes(let items):
           FootnotesView(
@@ -1934,8 +1934,8 @@ struct MarkdownContentView: View {
             appearance: appearance,
             fontFamily: fontFamily,
             allowsTextSelection: allowsTextSelection,
-            foregroundStyle: foregroundStyle,
-            uiForegroundColor: uiForegroundColor,
+            foregroundStyle: bodyForegroundStyle,
+            uiForegroundColor: bodyUIForegroundColor,
             italic: italic)
         }
       }
@@ -1943,7 +1943,12 @@ struct MarkdownContentView: View {
     .environment(\.markdownRenderImages, renderImages)
   }
 
-  private func headingFont(level: Int) -> Font {
+  // Body copy is dimmed by default so headings and bold runs stand out; an
+  // explicit caller-provided color (e.g. a blockquote's secondary tint) wins.
+  private var bodyForegroundStyle: Color { foregroundStyle ?? markdownBodyColor }
+  private var bodyUIForegroundColor: UIColor { uiForegroundColor ?? markdownBodyUIColor }
+
+  private func headingMetrics(level: Int) -> (scale: Double, heavy: Bool) {
     let clampedLevel = min(max(level, 1), 6)
     let scale: Double =
       switch clampedLevel {
@@ -1954,23 +1959,19 @@ struct MarkdownContentView: View {
       case 5: 0.96
       default: 0.88
       }
-    return fontFamily.swiftUIFont(size: appearance.fontSize * scale)
-      .weight(clampedLevel == 1 ? .bold : .semibold)
+    return (scale, clampedLevel == 1)
+  }
+
+  private func headingFont(level: Int) -> Font {
+    let metrics = headingMetrics(level: level)
+    return fontFamily.swiftUIFont(size: appearance.fontSize * metrics.scale)
+      .weight(metrics.heavy ? .bold : .semibold)
   }
 
   private func headingUIFont(level: Int) -> UIFont {
-    let clampedLevel = min(max(level, 1), 6)
-    let scale: Double =
-      switch clampedLevel {
-      case 1: 1.55
-      case 2: 1.32
-      case 3: 1.16
-      case 4: 1.04
-      case 5: 0.96
-      default: 0.88
-      }
-    return fontFamily.uiFont(size: appearance.fontSize * scale)
-      .withWeight(clampedLevel == 1 ? .bold : .semibold)
+    let metrics = headingMetrics(level: level)
+    return fontFamily.uiFont(size: appearance.fontSize * metrics.scale)
+      .withWeight(metrics.heavy ? .bold : .semibold)
   }
 }
 
@@ -2819,6 +2820,9 @@ private enum MarkdownInlineStyleApplier {
       if intent.contains(.code) {
         result[range].foregroundColor = inlineCodeColor
       } else if intent.contains(.stronglyEmphasized) {
+        // Bold runs are pulled back to full contrast so they stand out from the
+        // dimmed body copy (see markdownBodyColor).
+        result[range].foregroundColor = .primary
         if let strongFont {
           result[range].font = strongFont
         }
@@ -2840,6 +2844,16 @@ private enum MarkdownInlineStyleApplier {
   private static let inlineCodeColor = Color(
     uiColor: inlineCodeUIColor)
 }
+
+/// Body copy in markdown is rendered a touch dimmer than headings and bold runs
+/// so the latter read as emphasis: light grey on dark, dark grey on light.
+/// Headings and bold text keep full `.label`/`.primary` contrast.
+private let markdownBodyUIColor = UIColor { traits in
+  traits.userInterfaceStyle == .dark
+    ? UIColor(white: 0.74, alpha: 1)
+    : UIColor(white: 0.30, alpha: 1)
+}
+private let markdownBodyColor = Color(uiColor: markdownBodyUIColor)
 
 private enum MarkdownInlineTokenColorizer {
   static func colorized(_ attributed: AttributedString) -> AttributedString {
