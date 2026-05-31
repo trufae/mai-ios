@@ -477,7 +477,7 @@ struct ChatView: View {
         VStack(spacing: 14) {
           if currentConversationIsEmpty && liveVoiceSession.previewMessage == nil {
             emptyState
-              .containerRelativeFrame(.vertical, alignment: .center)
+              .containerRelativeFrame(.vertical)
           } else {
             ForEach(store.currentConversation?.messages ?? []) { message in
               MessageBubble(
@@ -821,20 +821,22 @@ struct ChatView: View {
   }
 
   private var emptyState: some View {
-    VStack(spacing: 14) {
-      Image(systemName: "bubble.left.and.bubble.right")
-        .font(.system(size: 44))
-        .foregroundStyle(.secondary)
-      Text("Ask anything")
-        .font(.title2.weight(.semibold))
-      Text("Text-only chat with local history, native tools, Markdown, and switchable providers.")
-        .font(.body)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 420)
+    GeometryReader { proxy in
+      VStack(spacing: 12) {
+        Image("MaiLogoNoAI")
+          .renderingMode(.original)
+          .resizable()
+          .scaledToFit()
+          .frame(width: 76, height: 76)
+        Text("Your pocket assistant")
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(.primary)
+          .multilineTextAlignment(.center)
+      }
+      .padding(.horizontal, 32)
+      .position(x: proxy.size.width / 2, y: proxy.size.height * (2.0 / 3.0))
     }
-    .padding(32)
-    .frame(maxWidth: .infinity, minHeight: 360)
+    .frame(maxWidth: .infinity)
   }
 
   private var composer: some View {
@@ -982,7 +984,7 @@ private struct ChatComposer: View {
           .padding(.vertical, 5)
           .frame(minHeight: 32, alignment: .center)
           .focused($composerFocused)
-          .onKeyPress(.return) { press in
+          .onKeyPress(.return, phases: .down) { press in
             // Only hardware keyboards reach onKeyPress, so the on-screen Return
             // always inserts a newline. With a hardware keyboard, Shift+Return
             // inserts a newline and a bare Return submits.
