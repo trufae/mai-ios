@@ -853,134 +853,6 @@ extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
-/// A `UITextView`-backed composer field.
-///
-/// On the on-screen keyboard the Return key always inserts a newline, because
-/// `UIKeyCommand`s only fire for hardware keyboards. With a hardware keyboard a
-/// bare Return submits the message, while Shift+Return inserts a newline (it has
-/// no matching key command, so it falls through to normal text input).
-private struct ComposerTextView: UIViewRepresentable {
-  @Binding var text: String
-  @Binding var isFocused: Bool
-  let placeholder: String
-  let onSubmit: () -> Void
-  var minHeight: CGFloat = 32
-  var maxLines: Int = 3
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(self)
-  }
-
-  func makeUIView(context: Context) -> SubmittableTextView {
-    let textView = SubmittableTextView()
-    textView.delegate = context.coordinator
-    textView.onSubmit = onSubmit
-    textView.font = UIFont.preferredFont(forTextStyle: .body)
-    textView.backgroundColor = .clear
-    textView.isScrollEnabled = true
-    textView.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
-    textView.textContainer.lineFragmentPadding = 0
-    textView.returnKeyType = .default
-    textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-    let placeholderLabel = UILabel()
-    placeholderLabel.text = placeholder
-    placeholderLabel.font = textView.font
-    placeholderLabel.textColor = .placeholderText
-    placeholderLabel.numberOfLines = 1
-    placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-    textView.addSubview(placeholderLabel)
-    NSLayoutConstraint.activate([
-      placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
-      placeholderLabel.topAnchor.constraint(
-        equalTo: textView.topAnchor, constant: textView.textContainerInset.top),
-    ])
-    textView.placeholderLabel = placeholderLabel
-
-    textView.text = text
-    placeholderLabel.isHidden = !text.isEmpty
-    return textView
-  }
-
-  func updateUIView(_ textView: SubmittableTextView, context: Context) {
-    textView.onSubmit = onSubmit
-    if textView.text != text {
-      textView.text = text
-    }
-    textView.placeholderLabel?.text = placeholder
-    textView.placeholderLabel?.isHidden = !textView.text.isEmpty
-
-    if isFocused, !textView.isFirstResponder {
-      DispatchQueue.main.async {
-        guard textView.window != nil else { return }
-        textView.becomeFirstResponder()
-      }
-    } else if !isFocused, textView.isFirstResponder {
-      DispatchQueue.main.async {
-        textView.resignFirstResponder()
-      }
-    }
-  }
-
-  func sizeThatFits(
-    _ proposal: ProposedViewSize, uiView textView: SubmittableTextView, context: Context
-  ) -> CGSize? {
-    let width = proposal.width ?? textView.bounds.width
-    guard width > 0 else { return nil }
-    let fitting = textView.sizeThatFits(
-      CGSize(width: width, height: .greatestFiniteMagnitude))
-    let lineHeight = textView.font?.lineHeight ?? 20
-    let insets = textView.textContainerInset.top + textView.textContainerInset.bottom
-    let maxHeight = lineHeight * CGFloat(maxLines) + insets
-    let height = min(max(fitting.height, minHeight), maxHeight)
-    return CGSize(width: width, height: height)
-  }
-
-  final class Coordinator: NSObject, UITextViewDelegate {
-    private let parent: ComposerTextView
-
-    init(_ parent: ComposerTextView) {
-      self.parent = parent
-    }
-
-    func textViewDidChange(_ textView: UITextView) {
-      parent.text = textView.text
-      (textView as? SubmittableTextView)?.placeholderLabel?.isHidden = !textView.text.isEmpty
-    }
-
-    func textViewDidBeginEditing(_ textView: UITextView) {
-      if !parent.isFocused {
-        parent.isFocused = true
-      }
-    }
-
-    func textViewDidEndEditing(_ textView: UITextView) {
-      if parent.isFocused {
-        parent.isFocused = false
-      }
-    }
-  }
-}
-
-/// A `UITextView` that submits on a bare hardware Return key while leaving the
-/// on-screen Return key (and Shift+Return) to insert newlines normally.
-private final class SubmittableTextView: UITextView {
-  var onSubmit: (() -> Void)?
-  weak var placeholderLabel: UILabel?
-
-  override var keyCommands: [UIKeyCommand]? {
-    let submit = UIKeyCommand(
-      input: "\r", modifierFlags: [], action: #selector(handleSubmit))
-    submit.wantsPriorityOverSystemBehavior = true
-    return [submit]
-  }
-
-  @objc private func handleSubmit() {
-    onSubmit?()
-  }
-}
-
 private struct ChatComposer: View {
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.scenePhase) private var scenePhase
@@ -989,7 +861,7 @@ private struct ChatComposer: View {
   let conversationID: UUID?
   let isResponding: Bool
   @ObservedObject var liveVoiceSession: LiveVoiceSession
-  @State private var composerFocused = false
+  @FocusState private var composerFocused: Bool
   @State private var showingToolMenu = false
   @State private var showingToolPicker = false
   @State private var showingTextFileImporter = false
@@ -1104,13 +976,20 @@ private struct ChatComposer: View {
       HStack(alignment: .bottom, spacing: 10) {
         toolMenu
 
-        ComposerTextView(
-          text: draftBinding,
-          isFocused: $composerFocused,
-          placeholder: placeholder,
-          onSubmit: { submitDraft() }
-        )
-        .frame(minHeight: 32)
+        TextField(placeholder, text: draftBinding, axis: .vertical)
+          .textFieldStyle(.plain)
+          .lineLimit(1...3)
+          .padding(.vertical, 5)
+          .frame(minHeight: 32, alignment: .center)
+          .focused($composerFocused)
+          .onKeyPress(.return) { press in
+            // Only hardware keyboards reach onKeyPress, so the on-screen Return
+            // always inserts a newline. With a hardware keyboard, Shift+Return
+            // inserts a newline and a bare Return submits.
+            guard !press.modifiers.contains(.shift) else { return .ignored }
+            submitDraft()
+            return .handled
+          }
 
         Button {
           if let id = conversationID, isResponding {
