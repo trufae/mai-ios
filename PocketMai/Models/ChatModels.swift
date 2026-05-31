@@ -167,6 +167,8 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
   case teal
   case cyan
   case indigo
+  case white
+  case black
 
   var id: String { rawValue }
 
@@ -184,6 +186,8 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
     case .teal: "Teal"
     case .cyan: "Cyan"
     case .indigo: "Indigo"
+    case .white: "White"
+    case .black: "Black"
     }
   }
 }
