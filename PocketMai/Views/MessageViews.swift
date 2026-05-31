@@ -365,6 +365,9 @@ private struct MessageBubbleContent: View, Equatable {
     } label: {
       Label("Copy Message", systemImage: "doc.on.doc")
     }
+
+    Divider()
+
     Button {
       _ = TextToSpeechTool.speak(
         arguments: ["text": .string(visibleText)],
@@ -392,7 +395,7 @@ private struct MessageBubbleContent: View, Equatable {
       }
       if let onRestartFresh {
         Button(action: onRestartFresh) {
-          Label("Restart From Here", systemImage: "arrow.triangle.2.circlepath")
+          Label("Reset Chat From Here", systemImage: "arrow.triangle.2.circlepath")
         }
       }
       if let onNewChatWithMessage {
@@ -401,6 +404,8 @@ private struct MessageBubbleContent: View, Equatable {
         }
       }
     }
+
+    Divider()
 
     Button(role: .destructive, action: onDelete) {
       Label("Delete Message", systemImage: "trash")
