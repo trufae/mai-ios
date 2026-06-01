@@ -400,7 +400,7 @@ struct ChatView: View {
 
   private var messages: some View {
     ScrollViewReader { proxy in
-      ScrollView {
+      ScrollView(.vertical) {
         VStack(spacing: 14) {
           if currentConversationIsEmpty && liveVoiceSession.previewMessage == nil {
             emptyState
@@ -458,6 +458,7 @@ struct ChatView: View {
             .id(messageListBottomID)
         }
         .padding()
+        .containerRelativeFrame(.horizontal)
         .frame(maxWidth: .infinity, alignment: .center)
         .background {
           MessageListPinchGestureBridge(
@@ -626,7 +627,7 @@ struct ChatView: View {
       let targetContentY = resolvedContentY(for: anchor, in: scrollView)
       let targetY = targetContentY - viewportY
       scrollView.setContentOffset(
-        CGPoint(x: scrollView.contentOffset.x, y: clampedScrollOffsetY(targetY, in: scrollView)),
+        CGPoint(x: 0, y: clampedScrollOffsetY(targetY, in: scrollView)),
         animated: false)
     }
   }

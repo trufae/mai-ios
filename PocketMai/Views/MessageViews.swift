@@ -2052,6 +2052,7 @@ struct MarkdownContentView: View {
       }
     }
     .environment(\.markdownRenderImages, renderImages)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   // Body copy is dimmed by default so headings and bold runs stand out; an
@@ -4338,7 +4339,10 @@ struct BlockquoteView: View {
         uiForegroundColor: .secondaryLabel,
         renderImages: renderImages,
         italic: italic)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, appearance.markdownMetric(2))
   }
 }
