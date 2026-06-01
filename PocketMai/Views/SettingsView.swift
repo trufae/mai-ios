@@ -113,6 +113,7 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
     preferredAuthMethod: .oauth
   ),
   EndpointProviderPreset(name: "Mistral", url: "https://api.mistral.ai/v1"),
+  EndpointProviderPreset(name: "MiniMax", url: "https://api.minimax.io/v1"),
   EndpointProviderPreset(name: "xAI", url: "https://api.x.ai/v1"),
   EndpointProviderPreset(name: "DeepSeek", url: "https://api.deepseek.com/v1"),
   EndpointProviderPreset(name: "Groq", url: "https://api.groq.com/openai/v1"),
