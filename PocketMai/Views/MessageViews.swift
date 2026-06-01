@@ -1,5 +1,5 @@
-import SwiftUI
 import Photos
+import SwiftUI
 import UIKit
 
 private struct FullChatScreenshotRenderingKey: EnvironmentKey {
@@ -553,8 +553,8 @@ private enum MessageBubblePalette {
   }
 }
 
-private extension AppearanceTint {
-  var uiColor: UIColor? {
+extension AppearanceTint {
+  fileprivate var uiColor: UIColor? {
     switch self {
     case .system: nil
     case .blue: UIColor.systemBlue
@@ -2106,7 +2106,8 @@ private struct MarkdownHorizontalRuleView: View {
               Color.secondary.opacity(0.0),
             ],
             startPoint: .leading,
-            endPoint: .trailing))
+            endPoint: .trailing)
+        )
         .frame(width: proxy.size.width * 0.4, height: appearance.markdownMetric(3))
         .frame(maxWidth: .infinity)
     }
@@ -2194,7 +2195,8 @@ private struct MarkdownInlineSegmentedText: View {
               uiForegroundColor: uiForegroundColor,
               strikethrough: strikethrough,
               allowsJustification: allowsJustification,
-              italic: italic)
+              italic: italic
+            )
             .frame(maxWidth: .infinity, alignment: swiftUIAlignment)
           }
         case .image(let image):
@@ -2464,7 +2466,9 @@ private final class MarkdownRemoteImageLoader: ObservableObject {
     return try await Self.imageDataAndDecodedImage(from: url).data
   }
 
-  private static func imageDataAndDecodedImage(from url: URL) async throws -> (data: Data, image: UIImage) {
+  private static func imageDataAndDecodedImage(from url: URL) async throws -> (
+    data: Data, image: UIImage
+  ) {
     let (data, response) = try await URLSession.shared.data(from: url)
     if let httpResponse = response as? HTTPURLResponse,
       !(200..<300).contains(httpResponse.statusCode)
@@ -2483,8 +2487,8 @@ private enum MarkdownInlineSegment: Equatable {
   case image(MarkdownInlineImage)
 }
 
-private extension [MarkdownInlineSegment] {
-  var containsImage: Bool {
+extension [MarkdownInlineSegment] {
+  fileprivate var containsImage: Bool {
     contains {
       if case .image = $0 { return true }
       return false
@@ -2838,7 +2842,8 @@ private enum MarkdownInlineLinkScanner {
   }
 }
 
-private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString {
+private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString
+{
   let normalized = MarkdownInlineSymbols.displayString(value)
   let attributed =
     (try? AttributedString(
@@ -4597,9 +4602,10 @@ struct BlockquoteView: View {
         foregroundStyle: .secondary,
         uiForegroundColor: .secondaryLabel,
         renderImages: renderImages,
-        italic: italic)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+        italic: italic
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, appearance.markdownMetric(2))

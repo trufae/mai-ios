@@ -165,7 +165,8 @@ enum AssistantToolLoop {
           store: store,
           parsedCalls: output.parsedCalls,
           results: output.results)
-        store.setAssistantMessage(id: assistantID, text: state.append(output.text), role: .assistant)
+        store.setAssistantMessage(
+          id: assistantID, text: state.append(output.text), role: .assistant)
         store.saveConversations()
         for completedRun in output.completedRuns where isSuccessfulToolResult(completedRun.result) {
           state.completedToolRuns[completedRun.fingerprint] = completedRun.result
@@ -209,7 +210,8 @@ enum AssistantToolLoop {
         conversation: conversation,
         baseContext: baseContext,
         settings: settings,
-        mcpTools: store.mcpTools)
+        mcpTools: store.mcpTools,
+        mcpResources: store.mcpResources)
       let response = try await requestModelResponseIsolated(
         conversation: conversation,
         requestState: requestState,
@@ -223,6 +225,7 @@ enum AssistantToolLoop {
         conversation: conversation,
         settings: settings,
         mcpTools: store.mcpTools,
+        mcpResources: store.mcpResources,
         store: store,
         completedToolRuns: state.completedToolRuns,
         remainingToolCalls: maxToolCalls - state.toolCallCount)
@@ -299,9 +302,11 @@ enum AssistantToolLoop {
       toolPrompt: tailToolPrompt,
       toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
-    let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
+    let response = try await ChatProviderRouter.complete(request: request) {
+      [weak store] streamed in
       let turnText =
-        requestState.definitions.isEmpty ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
+        requestState.definitions.isEmpty
+        ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
       if request.conversation.usesStreaming {
         store?.assistantStreamPacketReceived()
       }
@@ -415,6 +420,7 @@ enum AssistantToolLoop {
     conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
+    mcpResources: [UUID: [MCPResourceDescriptor]],
     store: AppStore,
     completedToolRuns: [String: String],
     remainingToolCalls: Int
@@ -424,7 +430,8 @@ enum AssistantToolLoop {
     let currentDefinitions = currentVisibleDefinitions(
       conversation: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     let parseDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let calls = ToolAgentRegistry.parseCalls(
@@ -470,6 +477,7 @@ enum AssistantToolLoop {
       conversation: conversation,
       settings: settings,
       mcpTools: mcpTools,
+      mcpResources: mcpResources,
       store: store)
     return .toolRun(output)
   }
@@ -532,6 +540,7 @@ enum AssistantToolLoop {
     conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
+    mcpResources: [UUID: [MCPResourceDescriptor]],
     store: AppStore
   ) async throws -> RunOutput {
     var visibleText = response
@@ -551,6 +560,7 @@ enum AssistantToolLoop {
         conversation: conversation,
         settings: settings,
         mcpTools: mcpTools,
+        mcpResources: mcpResources,
         store: store)
       runBlocks.append(ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result))
       results.append(result)
@@ -649,12 +659,14 @@ enum AssistantToolLoop {
     conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
+    mcpResources: [UUID: [MCPResourceDescriptor]],
     store: AppStore
   ) async throws -> CallResult {
     let currentDefinitions = currentVisibleDefinitions(
       conversation: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     let fallbackCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
     guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
       return CallResult(
@@ -688,7 +700,8 @@ enum AssistantToolLoop {
     let executionDefinitions = currentVisibleDefinitions(
       conversation: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
     else {
       let unavailableCall = ToolAgentRegistry.normalized(
@@ -721,19 +734,22 @@ enum AssistantToolLoop {
       conversation: conversation,
       baseContext: baseContext,
       settings: store.settings,
-      mcpTools: store.mcpTools)
+      mcpTools: store.mcpTools,
+      mcpResources: store.mcpResources)
   }
 
   private static func makeRequestState(
     conversation: Conversation,
     baseContext: String,
     settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]]
+    mcpTools: [UUID: [MCPToolDescriptor]],
+    mcpResources: [UUID: [MCPResourceDescriptor]]
   ) -> RequestState {
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
       settings: settings,
@@ -1003,18 +1019,21 @@ enum AssistantToolLoop {
     return ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: store.settings,
-      mcpTools: store.mcpTools)
+      mcpTools: store.mcpTools,
+      mcpResources: store.mcpResources)
   }
 
   private static func currentVisibleDefinitions(
     conversation: Conversation,
     settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]]
+    mcpTools: [UUID: [MCPToolDescriptor]],
+    mcpResources: [UUID: [MCPResourceDescriptor]]
   ) -> [ToolDefinition] {
     ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
   }
 
   private static func availableCall(
@@ -1042,7 +1061,8 @@ enum AssistantToolLoop {
       return completedToolRuns[toolCallFingerprint(normalizedCall)]
     }
     guard results.count == calls.count, !results.isEmpty else { return nil }
-    return results
+    return
+      results
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
       .joined(separator: "\n\n")

@@ -1009,6 +1009,44 @@ enum MCPHTTPClient {
   private static let sessionIDHeader = "Mcp-Session-Id"
   private static let sessions = MCPSessionStore()
 
+  struct Catalog: Sendable {
+    var tools: [MCPToolDescriptor]
+    var resources: [MCPResourceDescriptor]
+  }
+
+  static func fetchCatalog(server: MCPServer) async throws -> Catalog {
+    var firstError: Error?
+
+    let tools: [MCPToolDescriptor]
+    do {
+      tools = try await fetchTools(server: server)
+    } catch {
+      if isMethodNotFound(error) {
+        tools = []
+      } else {
+        firstError = error
+        tools = []
+      }
+    }
+
+    let resources: [MCPResourceDescriptor]
+    do {
+      resources = try await fetchResources(server: server)
+    } catch {
+      if isMethodNotFound(error) {
+        resources = []
+      } else {
+        firstError = firstError ?? error
+        resources = []
+      }
+    }
+
+    if tools.isEmpty, resources.isEmpty, let firstError {
+      throw firstError
+    }
+    return Catalog(tools: tools, resources: resources)
+  }
+
   static func fetchTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
     let data = try await send(server: server, method: "tools/list")
     guard let raw = jsonObject(from: data) else {
@@ -1032,6 +1070,53 @@ enum MCPHTTPClient {
       return MCPToolDescriptor(
         name: name, description: description, parametersJSON: parametersJSON)
     }
+  }
+
+  static func fetchResources(server: MCPServer) async throws -> [MCPResourceDescriptor] {
+    let data = try await send(server: server, method: "resources/list")
+    guard let raw = jsonObject(from: data) else {
+      throw ChatProviderError.providerRequestFailed("MCP returned non-JSON response.")
+    }
+    if let error = responseError(from: raw) {
+      throw error
+    }
+    let result = raw["result"] as? [String: Any] ?? [:]
+    let resources = result["resources"] as? [[String: Any]] ?? []
+    return resources.compactMap { resource -> MCPResourceDescriptor? in
+      guard let uri = resource["uri"] as? String, !uri.isEmpty else { return nil }
+      return MCPResourceDescriptor(
+        uri: uri,
+        name: (resource["name"] as? String) ?? "",
+        description: (resource["description"] as? String) ?? "",
+        mimeType: (resource["mimeType"] as? String) ?? "")
+    }
+  }
+
+  static func readResource(server: MCPServer, uri: String) async throws -> String {
+    let params: [String: AnyCodable] = ["uri": AnyCodable(uri)]
+    let data = try await send(server: server, method: "resources/read", params: params)
+    let responseData: Data
+    if let raw = jsonObject(from: data),
+      let error = responseError(from: raw)
+    {
+      throw error
+    } else if let raw = jsonObject(from: data),
+      let normalized = try? JSONSerialization.data(withJSONObject: raw)
+    {
+      responseData = normalized
+    } else {
+      responseData = data
+    }
+    let decoded = try JSONDecoder().decode(MCPResourceReadResponse.self, from: responseData)
+    if let err = decoded.error {
+      let message = err.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let codeSuffix = err.code.map { " (code \($0))" } ?? ""
+      throw ChatProviderError.providerRequestFailed(
+        "MCP error\(codeSuffix): \(message.isEmpty ? "unknown" : message)")
+    }
+    let rendered = decoded.result?.contents?.compactMap(renderResourceContent) ?? []
+    let text = rendered.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty ? "(empty resource)" : text
   }
 
   static func callTool(
@@ -1236,6 +1321,13 @@ enum MCPHTTPClient {
     return error.localizedDescription.localizedCaseInsensitiveContains("invalid session")
   }
 
+  private static func isMethodNotFound(_ error: Error) -> Bool {
+    if let error = error as? MCPResponseError {
+      return error.isMethodNotFound
+    }
+    return error.localizedDescription.localizedCaseInsensitiveContains("method not found")
+  }
+
   private static func jsonObject(from data: Data) -> [String: Any]? {
     if let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
       return raw
@@ -1277,6 +1369,34 @@ enum MCPHTTPClient {
     case .null:
       return nil
     }
+  }
+
+  private static func renderResourceContent(_ content: MCPResourceReadResponse.Content) -> String? {
+    let headerParts = [content.uri, content.mimeType]
+      .compactMap { value -> String? in
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+      }
+    let header = headerParts.isEmpty ? "" : "[\(headerParts.joined(separator: " "))]\n"
+    if let text = content.text, !text.isEmpty {
+      return header + text
+    }
+    guard let blob = content.blob, !blob.isEmpty else {
+      return header.isEmpty ? nil : header + "(empty resource content)"
+    }
+    guard let data = Data(base64Encoded: blob) else {
+      return header + "(binary resource, invalid base64 payload)"
+    }
+    if let text = String(data: data, encoding: .utf8), isTextLikeMIMEType(content.mimeType) {
+      return header + text
+    }
+    return header + "(binary resource, \(data.count) bytes)"
+  }
+
+  private static func isTextLikeMIMEType(_ value: String?) -> Bool {
+    let lower = value?.lowercased() ?? ""
+    return lower.contains("text") || lower.contains("json") || lower.contains("xml")
+      || lower.contains("javascript") || lower.contains("markdown")
   }
 }
 
@@ -1363,6 +1483,24 @@ private struct MCPToolCallResponse: Decodable {
   struct ContentPart: Decodable {
     var type: String?
     var text: String?
+  }
+  struct Err: Decodable {
+    var code: Int?
+    var message: String?
+  }
+  var result: Result?
+  var error: Err?
+}
+
+private struct MCPResourceReadResponse: Decodable {
+  struct Result: Decodable {
+    var contents: [Content]?
+  }
+  struct Content: Decodable {
+    var uri: String?
+    var mimeType: String?
+    var text: String?
+    var blob: String?
   }
   struct Err: Decodable {
     var code: Int?

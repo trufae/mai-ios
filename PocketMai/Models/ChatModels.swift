@@ -1633,6 +1633,34 @@ struct MCPToolDescriptor: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct MCPResourceDescriptor: Identifiable, Codable, Equatable, Sendable {
+  var uri: String
+  var name: String
+  var description: String
+  var mimeType: String
+
+  var id: String { uri }
+
+  init(uri: String, name: String = "", description: String = "", mimeType: String = "") {
+    self.uri = uri
+    self.name = name
+    self.description = description
+    self.mimeType = mimeType
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case uri, name, description, mimeType
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    uri = try c.decode(String.self, forKey: .uri)
+    name = (try? c.decode(String.self, forKey: .name)) ?? ""
+    description = (try? c.decode(String.self, forKey: .description)) ?? ""
+    mimeType = (try? c.decode(String.self, forKey: .mimeType)) ?? ""
+  }
+}
+
 enum MCPToolSelection {
   static func key(serverID: UUID, toolName: String) -> String {
     "\(serverID.uuidString):\(toolName)"

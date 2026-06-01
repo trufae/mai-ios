@@ -176,7 +176,8 @@ actor LocalMLXProvider {
     let temperature: Float = request.hasToolCalling ? 0.2 : 0.7
     let stream = try await container.generate(
       input: input,
-      parameters: GenerateParameters(maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
+      parameters: GenerateParameters(
+        maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
     )
 
     var output = ""

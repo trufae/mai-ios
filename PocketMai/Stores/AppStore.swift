@@ -156,6 +156,7 @@ final class AppStore: ObservableObject {
   @Published var localMLXModelIDs: [String] = []
   @Published var mcpStatuses: [UUID: EndpointConnectionState] = [:]
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+  @Published var mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
   @Published private(set) var toolCallApprovalRequests: [ToolCallApprovalRequest] = []
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
@@ -542,6 +543,7 @@ final class AppStore: ObservableObject {
     endpointVoices.removeAll()
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    mcpResources.removeAll()
     Task { await MCPHTTPClient.resetAllSessions() }
     errorMessage = nil
     isUpdatingMemory = false
@@ -2047,6 +2049,7 @@ final class AppStore: ObservableObject {
   func resetMCPStatus(_ id: UUID) {
     mcpStatuses[id] = .unknown
     mcpTools[id] = nil
+    mcpResources[id] = nil
     Task { await MCPHTTPClient.resetSession(for: id) }
   }
 
@@ -2057,12 +2060,14 @@ final class AppStore: ObservableObject {
     }
     mcpStatuses[server.id] = .checking
     do {
-      let tools = try await MCPHTTPClient.fetchTools(server: server)
-      mcpTools[server.id] = tools
-      seedEnabledMCPToolsIfNeeded(serverID: server.id, tools: tools)
+      let catalog = try await MCPHTTPClient.fetchCatalog(server: server)
+      mcpTools[server.id] = catalog.tools
+      mcpResources[server.id] = catalog.resources
+      seedEnabledMCPToolsIfNeeded(serverID: server.id, tools: catalog.tools)
       mcpStatuses[server.id] = .available
     } catch {
       mcpTools[server.id] = nil
+      mcpResources[server.id] = nil
       mcpStatuses[server.id] = .failed(error.localizedDescription)
     }
   }
@@ -2627,11 +2632,13 @@ final class AppStore: ObservableObject {
     let fullDefinitions = ToolAgentRegistry.definitions(
       for: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
-      mcpTools: mcpTools)
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     let providerNativeToolCalling =
       settings.toolCallingMode == .native
       && conversation.provider.supportsNativeToolCalling
@@ -3201,6 +3208,7 @@ final class AppStore: ObservableObject {
     }
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    mcpResources.removeAll()
     Task { await MCPHTTPClient.resetAllSessions() }
   }
 
@@ -3255,6 +3263,7 @@ final class AppStore: ObservableObject {
     settings.defaultEnabledMCPTools.removeAll()
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    mcpResources.removeAll()
     Task { await MCPHTTPClient.resetAllSessions() }
     saveSettings()
   }

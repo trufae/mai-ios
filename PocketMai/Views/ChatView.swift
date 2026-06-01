@@ -369,7 +369,8 @@ struct ChatView: View {
 
   private func editMessage(_ message: ChatMessage, text: String) {
     guard
-      let currentText = store.currentConversation?.messages.first(where: { $0.id == message.id })?.text,
+      let currentText = store.currentConversation?.messages.first(where: { $0.id == message.id })?
+        .text,
       currentText != text
     else {
       return
@@ -1321,7 +1322,8 @@ private struct ChatComposer: View {
     pendingImageSizePrompt = nil
   }
 
-  private func appendImageAttachment(_ image: UIImage, filename: String, size: AttachmentImageSize) {
+  private func appendImageAttachment(_ image: UIImage, filename: String, size: AttachmentImageSize)
+  {
     let resized = resizeImage(image, maxDimension: size.maxDimension)
     guard let output = resized.image.jpegData(compressionQuality: 0.82) else {
       attachmentError = "Could not encode the selected image."
@@ -1386,7 +1388,8 @@ private struct CameraImagePicker: UIViewControllerRepresentable {
 
   func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
 
-  final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+  final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate
+  {
     @Binding private var isPresented: Bool
     private let onImagePicked: (UIImage) -> Void
 
@@ -1916,8 +1919,10 @@ private struct ToolPickerPopover: View {
   @ViewBuilder
   private func mcpServerRow(_ server: MCPServer) -> some View {
     let tools = store.mcpTools[server.id] ?? []
+    let resources = store.mcpResources[server.id] ?? []
     let status = store.mcpStatuses[server.id] ?? .unknown
     let expanded = expandedServerIDs.contains(server.id)
+    let itemCount = tools.count + resources.count
 
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 10) {
@@ -1940,14 +1945,14 @@ private struct ToolPickerPopover: View {
 
         Spacer()
 
-        if !tools.isEmpty {
-          Text("\(tools.count)")
+        if itemCount > 0 {
+          Text("\(itemCount)")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
 
         Button {
-          if tools.isEmpty {
+          if itemCount == 0 {
             Task { await store.refreshMCP(server) }
           } else {
             withAnimation(.snappy) {
@@ -1961,7 +1966,7 @@ private struct ToolPickerPopover: View {
         } label: {
           if isCheckingServer(server.id) {
             ProgressView().controlSize(.small)
-          } else if tools.isEmpty {
+          } else if itemCount == 0 {
             Image(systemName: "arrow.clockwise")
               .imageScale(.small)
               .foregroundStyle(.secondary)
@@ -1978,26 +1983,67 @@ private struct ToolPickerPopover: View {
       .padding(.vertical, 9)
       .contentShape(Rectangle())
 
-      if expanded && !tools.isEmpty {
+      if expanded && itemCount > 0 {
         VStack(alignment: .leading, spacing: 2) {
-          ForEach(tools) { tool in
-            Button {
-              toggleMCPTool(serverID: server.id, toolName: tool.name)
-            } label: {
+          if !tools.isEmpty {
+            Text("Tools")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .padding(.leading, 38)
+              .padding(.trailing, 12)
+              .padding(.top, 4)
+            ForEach(tools) { tool in
+              Button {
+                toggleMCPTool(serverID: server.id, toolName: tool.name)
+              } label: {
+                HStack(spacing: 8) {
+                  Image(
+                    systemName: isMCPToolEnabled(serverID: server.id, toolName: tool.name)
+                      ? "checkmark.circle.fill" : "circle"
+                  )
+                  .imageScale(.small)
+                  .foregroundStyle(
+                    isMCPToolEnabled(serverID: server.id, toolName: tool.name)
+                      ? Color.accentColor : Color.secondary
+                  )
+                  Text(tool.name)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                  Spacer()
+                }
+                .padding(.leading, 38)
+                .padding(.trailing, 12)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          if !resources.isEmpty {
+            Text("Resources")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .padding(.leading, 38)
+              .padding(.trailing, 12)
+              .padding(.top, tools.isEmpty ? 4 : 8)
+            ForEach(resources) { resource in
               HStack(spacing: 8) {
-                Image(
-                  systemName: isMCPToolEnabled(serverID: server.id, toolName: tool.name)
-                    ? "checkmark.circle.fill" : "circle"
-                )
-                .imageScale(.small)
-                .foregroundStyle(
-                  isMCPToolEnabled(serverID: server.id, toolName: tool.name)
-                    ? Color.accentColor : Color.secondary
-                )
-                Text(tool.name)
-                  .font(.callout)
-                  .foregroundStyle(.primary)
-                  .lineLimit(1)
+                Image(systemName: "doc.text")
+                  .imageScale(.small)
+                  .foregroundStyle(Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(resource.uri)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                  if !resource.name.isEmpty {
+                    Text(resource.name)
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .lineLimit(1)
+                  }
+                }
                 Spacer()
               }
               .padding(.leading, 38)
@@ -2005,7 +2051,6 @@ private struct ToolPickerPopover: View {
               .padding(.vertical, 6)
               .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
           }
         }
       }
@@ -2290,7 +2335,7 @@ private struct ConversationModelSettingsView: View {
           ? "Airplane Mode is on. Switch to Apple Intelligence or MLX Local."
           : "Airplane Mode is on. Switch to MLX Local."
       )
-        .foregroundStyle(.secondary)
+      .foregroundStyle(.secondary)
     } else if let endpoint = selectedEndpoint {
       let models = store.endpointModels[endpoint.id] ?? []
       if models.isEmpty {

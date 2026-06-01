@@ -1422,7 +1422,13 @@ struct SettingsView: View {
   private func mcpRow(_ server: MCPServer) -> some View {
     let subtitle: String = {
       if let tools = store.mcpTools[server.id], !tools.isEmpty {
-        return "\(tools.count) tool\(tools.count == 1 ? "" : "s")"
+        let resources = store.mcpResources[server.id] ?? []
+        let resourceText =
+          resources.isEmpty ? "" : ", \(resources.count) resource\(resources.count == 1 ? "" : "s")"
+        return "\(tools.count) tool\(tools.count == 1 ? "" : "s")\(resourceText)"
+      }
+      if let resources = store.mcpResources[server.id], !resources.isEmpty {
+        return "\(resources.count) resource\(resources.count == 1 ? "" : "s")"
       }
       let url = server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
       if url.isEmpty || url == "https://" {
@@ -1607,6 +1613,7 @@ struct SettingsView: View {
           store.settings.defaultEnabledMCPTools.filter { !$0.hasPrefix(prefix) })
         store.mcpStatuses[id] = nil
         store.mcpTools[id] = nil
+        store.mcpResources[id] = nil
         Task { await MCPHTTPClient.resetSession(for: id) }
       }
       navigationPath.removeAll { route in
@@ -1693,6 +1700,7 @@ struct SettingsView: View {
     guard let draftMCPServer, !path.contains(.mcpServer(draftMCPServer.id)) else { return }
     store.mcpStatuses[draftMCPServer.id] = nil
     store.mcpTools[draftMCPServer.id] = nil
+    store.mcpResources[draftMCPServer.id] = nil
     Task { await MCPHTTPClient.resetSession(for: draftMCPServer.id) }
     self.draftMCPServer = nil
   }
@@ -3686,6 +3694,7 @@ private struct MCPServerDetailView: View {
   @State private var server: MCPServer
   @State private var draftStatus: EndpointConnectionState = .unknown
   @State private var draftTools: [MCPToolDescriptor] = []
+  @State private var draftResources: [MCPResourceDescriptor] = []
   @State private var draftStatusBaseURL: String
   @State private var toastMessage: String?
   @FocusState private var isNameFocused: Bool
@@ -3749,7 +3758,7 @@ private struct MCPServerDetailView: View {
               Text("Connecting…")
             }
           } else {
-            Label("Refresh Tools", systemImage: "arrow.clockwise")
+            Label("Refresh MCP", systemImage: "arrow.clockwise")
           }
         }
         .disabled(
@@ -3769,6 +3778,31 @@ private struct MCPServerDetailView: View {
                 .font(.callout.weight(.semibold))
               if !tool.description.isEmpty {
                 Text(tool.description)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .lineLimit(4)
+              }
+            }
+            .padding(.vertical, 2)
+          }
+        }
+      }
+
+      if !currentResources.isEmpty {
+        let resources = currentResources
+        Section("Available Resources (\(resources.count))") {
+          ForEach(resources) { resource in
+            VStack(alignment: .leading, spacing: 4) {
+              Text(resource.uri)
+                .font(.callout.weight(.semibold))
+              if !resource.name.isEmpty {
+                Text(resource.name)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .lineLimit(2)
+              }
+              if !resource.description.isEmpty {
+                Text(resource.description)
                   .font(.caption)
                   .foregroundStyle(.secondary)
                   .lineLimit(4)
@@ -3836,6 +3870,13 @@ private struct MCPServerDetailView: View {
     return store.mcpTools[server.id] ?? []
   }
 
+  private var currentResources: [MCPResourceDescriptor] {
+    if hasUnsavedConnectionChanges {
+      return draftStateMatchesCurrentEndpoint ? draftResources : []
+    }
+    return store.mcpResources[server.id] ?? []
+  }
+
   private var isChecking: Bool {
     if case .checking = currentStatus {
       return true
@@ -3847,16 +3888,19 @@ private struct MCPServerDetailView: View {
   private var statusFooter: some View {
     let status = currentStatus
     let tools = currentTools
+    let resources = currentResources
     switch status {
     case .unknown:
-      Text("Tap “Refresh Tools” to connect and list the tools this server provides.")
+      Text("Tap “Refresh MCP” to connect and list the tools and resources this server provides.")
     case .checking:
       Text("Connecting…")
     case .available:
-      if tools.isEmpty {
-        Text("Connected, but the server reports no tools.")
+      if tools.isEmpty && resources.isEmpty {
+        Text("Connected, but the server reports no tools or resources.")
       } else {
-        Text("Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s") available.")
+        Text(
+          "Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s"), \(resources.count) resource\(resources.count == 1 ? "" : "s") available."
+        )
       }
     case .failed(let message):
       Text(message).foregroundStyle(.red)
@@ -3872,14 +3916,16 @@ private struct MCPServerDetailView: View {
     draftStatusBaseURL = snapshot.baseURL
     draftStatus = .checking
     draftTools = []
+    draftResources = []
     Task {
       do {
-        let tools = try await MCPHTTPClient.fetchTools(server: snapshot)
+        let catalog = try await MCPHTTPClient.fetchCatalog(server: snapshot)
         await MainActor.run {
           guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
             return
           }
-          draftTools = tools
+          draftTools = catalog.tools
+          draftResources = catalog.resources
           draftStatus = .available
         }
       } catch {
@@ -3888,6 +3934,7 @@ private struct MCPServerDetailView: View {
             return
           }
           draftTools = []
+          draftResources = []
           draftStatus = .failed(error.localizedDescription)
         }
       }
@@ -3924,9 +3971,11 @@ private struct MCPServerDetailView: View {
     switch draftStatus {
     case .available:
       store.mcpTools[server.id] = draftTools
+      store.mcpResources[server.id] = draftResources
       store.mcpStatuses[server.id] = .available
     case .failed(let message):
       store.mcpTools[server.id] = nil
+      store.mcpResources[server.id] = nil
       store.mcpStatuses[server.id] = .failed(message)
     case .unknown, .checking:
       store.resetMCPStatus(server.id)

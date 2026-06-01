@@ -203,9 +203,14 @@ enum ToolAgentRegistry {
   static func visibleDefinitions(
     for conversation: Conversation,
     settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+    mcpTools: [UUID: [MCPToolDescriptor]] = [:],
+    mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
   ) -> [ToolDefinition] {
-    let fullDefinitions = definitions(for: conversation, settings: settings, mcpTools: mcpTools)
+    let fullDefinitions = definitions(
+      for: conversation,
+      settings: settings,
+      mcpTools: mcpTools,
+      mcpResources: mcpResources)
     guard settings.useToolProxy else { return fullDefinitions }
     return fullDefinitions.isEmpty ? [] : ToolProxy.definitions
   }
@@ -213,12 +218,14 @@ enum ToolAgentRegistry {
   static func definitions(
     for conversation: Conversation,
     settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]] = [:]
+    mcpTools: [UUID: [MCPToolDescriptor]] = [:],
+    mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
   ) -> [ToolDefinition] {
     guard conversation.toolsEnabled else { return [] }
     var defs = BuiltInToolCatalog.definitions(
       for: conversation.enabledTools,
       settings: settings)
+    var enabledResourceServers: [(server: MCPServer, resources: [MCPResourceDescriptor])] = []
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidEndpointURL
       && conversation.enabledMCPServers.contains(server.id)
@@ -237,6 +244,10 @@ enum ToolAgentRegistry {
             parameters: AgentTooling.parameters(fromSchemaJSON: tool.parametersJSON),
             inputSchemaJSON: tool.parametersJSON))
       }
+      enabledResourceServers.append((server, mcpResources[server.id] ?? []))
+    }
+    if !enabledResourceServers.isEmpty {
+      defs.append(MCPResourceTool.definition(for: enabledResourceServers))
     }
     return defs
   }
@@ -329,11 +340,13 @@ enum ToolAgentRegistry {
     let fullDefinitions = ToolAgentRegistry.definitions(
       for: conversation,
       settings: store.settings,
-      mcpTools: store.mcpTools)
+      mcpTools: store.mcpTools,
+      mcpResources: store.mcpResources)
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: store.settings,
-      mcpTools: store.mcpTools)
+      mcpTools: store.mcpTools,
+      mcpResources: store.mcpResources)
     let visibleCall = normalized(call: call, definitions: visibleDefinitions)
     guard definitionExists(named: visibleCall.name, in: visibleDefinitions) else {
       return unavailableToolError(name: visibleCall.name)
@@ -380,6 +393,12 @@ enum ToolAgentRegistry {
     {
       return result
     }
+    if normalizedCall.name == MCPResourceTool.readName {
+      return await MCPResourceTool.read(
+        arguments: normalizedCall.argumentValues,
+        conversation: conversation,
+        store: store)
+    }
     return await dispatchMCP(call: normalizedCall, conversation: conversation, store: store)
   }
 
@@ -418,6 +437,111 @@ enum ToolAgentRegistry {
 
   static func makeRunBlock(call: ParsedToolCall, result: String) -> String {
     AgentTooling.makeRunBlock(toolName: call.name, argumentsJSON: call.argsJSON, result: result)
+  }
+}
+
+@MainActor
+enum MCPResourceTool {
+  static let readName = "mcp_read_resource"
+
+  static func definition(
+    for servers: [(server: MCPServer, resources: [MCPResourceDescriptor])]
+  ) -> ToolDefinition {
+    let resourceLines = servers.flatMap { server, resources in
+      resources.map { resource in
+        let label = resource.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = label.isEmpty ? "" : " - \(label)"
+        return "- \(resource.uri)\(suffix) (\(server.name))"
+      }
+    }
+    let listed = resourceLines.prefix(60).joined(separator: "\n")
+    let overflow = resourceLines.count > 60 ? "\n- ...and more resources." : ""
+    let knownResources =
+      listed.isEmpty
+      ? "No cached resources are listed yet. Use a known MCP resource URI such as uapi://agent-guide when the matching server is enabled."
+      : "Known enabled MCP resources:\n\(listed)\(overflow)"
+    return ToolDefinition(
+      name: readName,
+      description:
+        "Read an MCP resource by URI through the matching enabled MCP server. Use this for resource URIs such as uapi://agent-guide. \(knownResources)",
+      parameters: [
+        ToolParameterDef(
+          name: "uri",
+          type: "string",
+          description: "Exact MCP resource URI, for example uapi://agent-guide.",
+          required: true)
+      ])
+  }
+
+  static func read(
+    arguments: [String: AgentToolArgumentValue],
+    conversation: Conversation,
+    store: AppStore
+  ) async -> String {
+    let uri =
+      arguments["uri"]?.stringValue ?? arguments["url"]?.stringValue
+      ?? arguments["resource"]?.stringValue ?? ""
+    let trimmedURI = uri.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedURI.isEmpty else {
+      return "Error: missing required argument 'uri' for tool '\(readName)'."
+    }
+    guard let server = resolveServer(for: trimmedURI, conversation: conversation, store: store)
+    else {
+      let available = availableResourceURIs(conversation: conversation, store: store)
+      let suffix =
+        available.isEmpty ? "" : " Available resources: \(available.joined(separator: ", "))"
+      return "Error: no enabled MCP server can read resource '\(trimmedURI)'.\(suffix)"
+    }
+    do {
+      return try await MCPHTTPClient.readResource(server: server, uri: trimmedURI)
+    } catch {
+      return "Error reading MCP resource '\(trimmedURI)': \(error.localizedDescription)"
+    }
+  }
+
+  private static func resolveServer(
+    for uri: String,
+    conversation: Conversation,
+    store: AppStore
+  ) -> MCPServer? {
+    let enabledServers = store.settings.mcpServers.filter {
+      $0.isEnabled && $0.hasValidEndpointURL && conversation.enabledMCPServers.contains($0.id)
+    }
+    if let exact = enabledServers.first(where: { server in
+      (store.mcpResources[server.id] ?? []).contains { $0.uri == uri }
+    }) {
+      return exact
+    }
+    if let scheme = URLComponents(string: uri)?.scheme?.lowercased(),
+      let byScheme = enabledServers.first(where: { schemeMatches(scheme, serverName: $0.name) })
+    {
+      return byScheme
+    }
+    return enabledServers.count == 1 ? enabledServers.first : nil
+  }
+
+  private static func availableResourceURIs(
+    conversation: Conversation,
+    store: AppStore
+  ) -> [String] {
+    store.settings.mcpServers
+      .filter { $0.isEnabled && conversation.enabledMCPServers.contains($0.id) }
+      .flatMap { store.mcpResources[$0.id] ?? [] }
+      .map(\.uri)
+      .sorted()
+  }
+
+  private static func normalizedScheme(_ name: String) -> String {
+    name.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "." || $0 == "-" }
+  }
+
+  private static func schemeMatches(_ scheme: String, serverName: String) -> Bool {
+    if normalizedScheme(serverName) == scheme {
+      return true
+    }
+    return serverName.lowercased()
+      .split { !$0.isLetter && !$0.isNumber && $0 != "+" && $0 != "." && $0 != "-" }
+      .contains { $0 == scheme }
   }
 }
 
