@@ -3263,6 +3263,10 @@ enum MarkdownInlineSymbols {
     }
 
     let chars = Array(raw)
+    if isCompactMathAtom(chars) {
+      return true
+    }
+
     let operators: Set<Character> = ["=", "+", "*", "/", "<", ">", "|", "±", "×", "÷"]
     for (index, char) in chars.enumerated() {
       if operators.contains(char) {
@@ -3274,6 +3278,31 @@ enum MarkdownInlineSymbols {
     }
 
     return false
+  }
+
+  private static func isCompactMathAtom(_ chars: [Character]) -> Bool {
+    var hasLetter = false
+    var hasNumber = false
+    var hasGrouping = false
+
+    for char in chars {
+      if char.isLetter {
+        hasLetter = true
+      } else if char.isNumber {
+        hasNumber = true
+      } else if char == "(" || char == ")" || char == "," {
+        hasGrouping = true
+      } else {
+        return false
+      }
+    }
+
+    guard hasLetter else {
+      return false
+    }
+
+    // Treat "$2n$" and "$T(n)$" as math, but leave pure values like "$20" alone.
+    return hasNumber || hasGrouping
   }
 
   private static func hasNonNumericNeighbor(in chars: [Character], at index: Int) -> Bool {
@@ -3308,14 +3337,19 @@ enum MarkdownInlineSymbols {
 
   private static func normalizedLatexMath(_ raw: String) -> String {
     var output = raw
+    output = replacingLatexEnvironments(in: output)
+    output = replacingLatexLineBreaks(in: output)
+    output = replacingLatexAlignmentMarkers(in: output)
+    output = replacingLatexFontCommands(in: output)
     output = replacingLatexTextCommands(in: output)
     output = replacingLatexFractions(in: output)
     output = replacingLatexSquareRoots(in: output)
     output = replacingLatexSpacing(in: output)
     output = replacingLatexCommands(in: output)
+    output = replacingLatexNamedOperators(in: output)
     output = removingStandaloneLatexCommands(
       in: output,
-      commands: textCommandNames.union(["left", "right", "middle"])
+      commands: textCommandNames.union(mathAlphabetCommandNames).union(["left", "right", "middle"])
     )
     output = replacingLatexScripts(in: output)
     output = unescapingLatexPunctuation(in: output)
@@ -3340,12 +3374,211 @@ enum MarkdownInlineSymbols {
 
   private static func normalizedLatexText(_ raw: String) -> String {
     var output = raw
+    output = replacingLatexFontCommands(in: output)
     output = replacingLatexTextCommands(in: output)
     output = replacingLatexSpacing(in: output)
     output = replacingLatexCommands(in: output)
+    output = replacingLatexNamedOperators(in: output)
     output = unescapingLatexPunctuation(in: output)
     return output.replacingOccurrences(of: "{", with: "")
       .replacingOccurrences(of: "}", with: "")
+  }
+
+  private static func replacingLatexEnvironments(in raw: String) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      guard chars[index] == "\\",
+        let begin = bracedCommandArgument(in: chars, command: "begin", at: index),
+        let end = latexEnvironmentEnd(in: chars, name: begin.value, start: begin.end)
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      let content = String(chars[begin.end..<end.contentEnd])
+      output += normalizedLatexEnvironment(begin.value, content: content)
+      index = end.end
+    }
+
+    return output
+  }
+
+  private static func normalizedLatexEnvironment(_ name: String, content: String) -> String {
+    let rows = splitLatexRows(content).compactMap { row -> String? in
+      let cells = splitLatexCells(row).map { cell in
+        normalizedLatexMath(cell).trimmingCharacters(in: .whitespacesAndNewlines)
+      }.filter { !$0.isEmpty }
+      guard !cells.isEmpty else { return nil }
+      if name == "cases", cells.count > 1 {
+        return "\(cells[0]) if \(cells.dropFirst().joined(separator: " "))"
+      }
+      return cells.joined(separator: " ")
+    }
+    guard !rows.isEmpty else { return "" }
+
+    let body = rows.joined(separator: "; ")
+    switch name {
+    case "cases":
+      return "{ \(body) }"
+    case "pmatrix":
+      return "(\(body))"
+    case "bmatrix":
+      return "[\(body)]"
+    case "vmatrix":
+      return "|\(body)|"
+    case "Vmatrix":
+      return "‖\(body)‖"
+    default:
+      return body
+    }
+  }
+
+  private static func bracedCommandArgument(
+    in chars: [Character],
+    command: String,
+    at index: Int
+  ) -> (value: String, end: Int)? {
+    guard commandName(in: chars, at: index) == command else { return nil }
+    var cursor = index + command.count + 1
+    while cursor < chars.count, chars[cursor].isWhitespace {
+      cursor += 1
+    }
+    guard cursor < chars.count, chars[cursor] == "{",
+      let close = findBalancedClose(in: chars, start: cursor, open: "{", close: "}")
+    else {
+      return nil
+    }
+    return (String(chars[(cursor + 1)..<close]), close + 1)
+  }
+
+  private static func latexEnvironmentEnd(
+    in chars: [Character],
+    name: String,
+    start: Int
+  ) -> (contentEnd: Int, end: Int)? {
+    var cursor = start
+    var depth = 1
+
+    while cursor < chars.count {
+      if chars[cursor] == "\\" {
+        if let begin = bracedCommandArgument(in: chars, command: "begin", at: cursor),
+          begin.value == name
+        {
+          depth += 1
+          cursor = begin.end
+          continue
+        }
+        if let end = bracedCommandArgument(in: chars, command: "end", at: cursor),
+          end.value == name
+        {
+          depth -= 1
+          if depth == 0 {
+            return (cursor, end.end)
+          }
+          cursor = end.end
+          continue
+        }
+      }
+      cursor += 1
+    }
+
+    return nil
+  }
+
+  private static func replacingLatexLineBreaks(in raw: String) -> String {
+    splitLatexRows(raw).joined(separator: "; ")
+  }
+
+  private static func replacingLatexAlignmentMarkers(in raw: String) -> String {
+    splitLatexCells(raw).joined(separator: " ")
+  }
+
+  private static func splitLatexRows(_ raw: String) -> [String] {
+    splitLatexTopLevel(raw) { chars, index in
+      index + 1 < chars.count && chars[index] == "\\" && chars[index + 1] == "\\"
+        && !isEscaped(chars, at: index) ? 2 : nil
+    }
+  }
+
+  private static func splitLatexCells(_ raw: String) -> [String] {
+    splitLatexTopLevel(raw) { chars, index in
+      chars[index] == "&" && !isEscaped(chars, at: index) ? 1 : nil
+    }
+  }
+
+  private static func splitLatexTopLevel(
+    _ raw: String,
+    separatorLength: ([Character], Int) -> Int?
+  ) -> [String] {
+    let chars = Array(raw)
+    var fields: [String] = []
+    var start = 0
+    var index = 0
+    var depth = 0
+
+    while index < chars.count {
+      if depth == 0, let length = separatorLength(chars, index) {
+        fields.append(String(chars[start..<index]))
+        index += length
+        start = index
+        continue
+      }
+      if (chars[index] == "{" || chars[index] == "[") && !isEscaped(chars, at: index) {
+        depth += 1
+      } else if (chars[index] == "}" || chars[index] == "]") && !isEscaped(chars, at: index) {
+        depth = max(0, depth - 1)
+      }
+      index += 1
+    }
+
+    fields.append(String(chars[start..<chars.count]))
+    return fields
+  }
+
+  private static func replacingLatexFontCommands(in raw: String) -> String {
+    var output = replacingSingleArgumentCommands(in: raw, commands: ["mathbb"]) { content in
+      doubleStruck(normalizedLatexText(content))
+    }
+    output = replacingSingleArgumentCommands(
+      in: output,
+      commands: mathAlphabetCommandNames.subtracting(["mathbb"])
+    ) { content in
+      normalizedLatexText(content)
+    }
+    return output
+  }
+
+  private static func doubleStruck(_ raw: String) -> String {
+    var output = ""
+    for char in raw {
+      output.append(doubleStruckCharacters[char] ?? char)
+    }
+    return output
+  }
+
+  private static func replacingLatexNamedOperators(in raw: String) -> String {
+    let chars = Array(raw)
+    var output = ""
+    var index = 0
+
+    while index < chars.count {
+      guard chars[index] == "\\", let command = commandName(in: chars, at: index),
+        let value = namedOperatorCommands[command]
+      else {
+        output.append(chars[index])
+        index += 1
+        continue
+      }
+
+      output += spacedNamedOperatorCommands.contains(command) ? " \(value) " : value
+      index += command.count + 1
+    }
+
+    return output
   }
 
   private static func replacingSingleArgumentCommands(
@@ -3701,6 +3934,27 @@ enum MarkdownInlineSymbols {
   private static let textCommandNames: Set<String> = [
     "text", "textrm", "textnormal", "textit", "textbf", "texttt", "mathrm", "mathit",
     "mathbf", "mathsf", "mathtt", "operatorname",
+  ]
+
+  private static let mathAlphabetCommandNames: Set<String> = [
+    "mathbb", "mathbfit", "mathcal", "mathds", "mathfrak", "mathnormal", "mathscr",
+  ]
+
+  private static let namedOperatorCommands: [String: String] = [
+    "Pr": "Pr", "arg": "arg", "arccos": "arccos", "arcsin": "arcsin", "arctan": "arctan",
+    "bmod": "mod", "cos": "cos", "cosh": "cosh", "cot": "cot", "coth": "coth", "csc": "csc",
+    "deg": "deg", "det": "det", "dim": "dim", "exp": "exp", "gcd": "gcd", "hom": "hom",
+    "inf": "inf", "ker": "ker", "lg": "lg", "lim": "lim", "liminf": "liminf",
+    "limsup": "limsup", "ln": "ln", "log": "log", "max": "max", "min": "min",
+    "mod": "mod", "pmod": "mod", "sec": "sec", "sin": "sin", "sinh": "sinh", "sup": "sup",
+    "tan": "tan", "tanh": "tanh",
+  ]
+
+  private static let spacedNamedOperatorCommands: Set<String> = ["bmod", "mod", "pmod"]
+
+  private static let doubleStruckCharacters: [Character: Character] = [
+    "C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ",
+    "c": "ℂ", "h": "ℍ", "n": "ℕ", "p": "ℙ", "q": "ℚ", "r": "ℝ", "z": "ℤ",
   ]
 
   private static let superscriptCharacters: [Character: Character] = [
