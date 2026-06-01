@@ -416,14 +416,16 @@ private struct TokenErrorResponse: Decodable {
 @MainActor
 private final class AuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
   func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-    if let window = UIApplication.shared.connectedScenes
-      .compactMap({ $0 as? UIWindowScene })
-      .flatMap({ $0.windows })
-      .first(where: { $0.isKeyWindow })
-    {
+    let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    if let window = windowScenes.flatMap(\.windows).first(where: \.isKeyWindow) {
       return window
     }
-    return ASPresentationAnchor()
+    if let windowScene = windowScenes.first(where: { $0.activationState == .foregroundActive })
+      ?? windowScenes.first
+    {
+      return ASPresentationAnchor(windowScene: windowScene)
+    }
+    return ASPresentationAnchor(frame: .zero)
   }
 }
 

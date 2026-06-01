@@ -2231,15 +2231,17 @@ private struct MarkdownPlainInlineText: View {
 
   var body: some View {
     let justified = allowsJustification && appearance.justifyText && textAlignment.isLeading
-    // Links are rendered through the UITextView-backed view so they can be
-    // underlined and offer a network-free "Copy Link" long-press menu.
-    if textAlignment.isLeading && (justified || MarkdownInlineLinkScanner.containsLink(value)) {
+    let containsLink = MarkdownInlineLinkScanner.containsLink(value)
+    // Links are rendered through the UITextView-backed view so taps and
+    // link long-presses are handled before the bubble background menu.
+    if textAlignment.isLeading && (justified || containsLink) {
       JustifiedMarkdownTextView(
         value: value,
         font: uiFont.italicizedIf(italic),
         lineSpacing: appearance.lineSpacing,
         alignment: justified ? .justified : .natural,
         allowsTextSelection: allowsTextSelection,
+        allowsLinkInteraction: containsLink,
         foregroundColor: uiForegroundColor ?? .label,
         strikethrough: strikethrough
       )
@@ -2660,13 +2662,14 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   let lineSpacing: Double
   var alignment: NSTextAlignment = .justified
   let allowsTextSelection: Bool
+  let allowsLinkInteraction: Bool
   let foregroundColor: UIColor
   let strikethrough: Bool
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
-  func makeUIView(context: Context) -> UITextView {
-    let textView = UITextView()
+  func makeUIView(context: Context) -> LinkHitTestingTextView {
+    let textView = LinkHitTestingTextView()
     textView.backgroundColor = .clear
     textView.isEditable = false
     textView.isScrollEnabled = false
@@ -2685,11 +2688,15 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
     return textView
   }
 
-  func updateUIView(_ textView: UITextView, context: Context) {
+  func updateUIView(_ textView: LinkHitTestingTextView, context: Context) {
     configure(textView)
   }
 
-  func sizeThatFits(_ proposal: ProposedViewSize, uiView textView: UITextView, context: Context)
+  func sizeThatFits(
+    _ proposal: ProposedViewSize,
+    uiView textView: LinkHitTestingTextView,
+    context: Context
+  )
     -> CGSize?
   {
     configure(textView)
@@ -2702,7 +2709,7 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
     return CGSize(width: width, height: ceil(height))
   }
 
-  private func configure(_ textView: UITextView) {
+  private func configure(_ textView: LinkHitTestingTextView) {
     textView.attributedText = nsAttributedInlineMarkdown(
       value,
       font: font,
@@ -2710,19 +2717,19 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
       alignment: alignment,
       foregroundColor: foregroundColor,
       strikethrough: strikethrough)
-    textView.isSelectable = allowsTextSelection
-    textView.isUserInteractionEnabled = allowsTextSelection
+    textView.allowsTextInteraction = allowsTextSelection
+    textView.allowsLinkInteraction = allowsLinkInteraction
+    textView.textDragInteraction?.isEnabled = allowsTextSelection
+    textView.isSelectable = allowsTextSelection || allowsLinkInteraction
+    textView.isUserInteractionEnabled = allowsTextSelection || allowsLinkInteraction
   }
 
   final class Coordinator: NSObject, UITextViewDelegate {
-    // Tapping a link must not open the web. Interaction is limited to the
-    // long-press menu below.
     func textView(
       _ textView: UITextView,
       primaryActionFor textItem: UITextItem,
       defaultAction: UIAction
     ) -> UIAction? {
-      if case .link = textItem.content { return nil }
       return defaultAction
     }
 
@@ -2746,6 +2753,57 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   }
 }
 
+private final class LinkHitTestingTextView: UITextView {
+  var allowsTextInteraction = false
+  var allowsLinkInteraction = false
+
+  override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+    guard super.point(inside: point, with: event) else { return false }
+    if allowsTextInteraction { return true }
+    return allowsLinkInteraction && linkURL(at: point) != nil
+  }
+
+  private func linkURL(at point: CGPoint) -> URL? {
+    guard textStorage.length > 0 else { return nil }
+    layoutManager.ensureLayout(for: textContainer)
+
+    let textContainerPoint = CGPoint(
+      x: point.x - textContainerInset.left,
+      y: point.y - textContainerInset.top
+    )
+    let glyphRange = layoutManager.glyphRange(for: textContainer)
+    guard glyphRange.length > 0 else { return nil }
+
+    let glyphIndex = layoutManager.glyphIndex(for: textContainerPoint, in: textContainer)
+    guard NSLocationInRange(glyphIndex, glyphRange) else { return nil }
+
+    let glyphRect = layoutManager.boundingRect(
+      forGlyphRange: NSRange(location: glyphIndex, length: 1),
+      in: textContainer)
+    guard glyphRect.insetBy(dx: -3, dy: -6).contains(textContainerPoint) else {
+      return nil
+    }
+
+    let characterIndex = layoutManager.characterIndex(
+      for: textContainerPoint,
+      in: textContainer,
+      fractionOfDistanceBetweenInsertionPoints: nil)
+    guard characterIndex < textStorage.length else { return nil }
+
+    let value = textStorage.attribute(.link, at: characterIndex, effectiveRange: nil)
+    if let url = value as? URL {
+      return url
+    }
+    if let url = value as? NSURL {
+      return url as URL
+    }
+    if let string = value as? String {
+      return URL(string: string)
+    }
+    return nil
+  }
+}
+
 extension AppearanceSettings {
   fileprivate var markdownMetricScale: CGFloat {
     CGFloat(fontSize / AppearanceSettings.defaults.fontSize)
@@ -2765,8 +2823,12 @@ private enum MarkdownInlineLinkScanner {
   /// A cheap textual pre-check avoids parsing strings that cannot contain a
   /// markdown link or autolink.
   static func containsLink(_ value: String) -> Bool {
-    guard value.contains("](") || value.contains("<http") else { return false }
-    return attributedInlineMarkdown(value).runs.contains { $0.link != nil }
+    if value.contains("](") || value.contains("<http") {
+      if attributedInlineMarkdown(value).runs.contains(where: { $0.link != nil }) {
+        return true
+      }
+    }
+    return MarkdownBareURLDetector.containsLink(in: value)
   }
 }
 
@@ -2850,6 +2912,8 @@ private func nsAttributedInlineMarkdown(
     }
   }
 
+  MarkdownBareURLDetector.addLinks(to: result, string: string)
+
   if strikethrough {
     result.addAttribute(
       .strikethroughStyle,
@@ -2858,6 +2922,36 @@ private func nsAttributedInlineMarkdown(
   }
 
   return result
+}
+
+private enum MarkdownBareURLDetector {
+  static func containsLink(in string: String) -> Bool {
+    guard !string.isEmpty, let detector = linkDetector else { return false }
+    let range = NSRange(string.startIndex..<string.endIndex, in: string)
+    return detector.firstMatch(in: string, options: [], range: range) != nil
+  }
+
+  static func addLinks(to attributed: NSMutableAttributedString, string: String) {
+    guard !string.isEmpty, let detector = linkDetector else { return }
+    let fullRange = NSRange(location: 0, length: attributed.length)
+    detector.enumerateMatches(in: string, options: [], range: fullRange) { match, _, _ in
+      guard let match, let url = match.url, match.range.length > 0,
+        NSMaxRange(match.range) <= attributed.length,
+        attributed.attribute(.link, at: match.range.location, effectiveRange: nil) == nil
+      else {
+        return
+      }
+      attributed.addAttributes(
+        [
+          .link: url,
+          .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ],
+        range: match.range)
+    }
+  }
+
+  private static let linkDetector =
+    try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 }
 
 private func nsAttributedRange(
@@ -4298,6 +4392,9 @@ struct MarkdownBlock: Identifiable {
 enum MarkdownParser {
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
+    if MarkdownInlineLinkScanner.containsLink(text) {
+      return true
+    }
     if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
       || containsOrderedListLine(text)
       || MarkdownInlineSymbols.containsMathSyntax(text)

@@ -58,7 +58,7 @@ enum PocketMaiDirectories {
   static func prepareStorage(fileManager: FileManager = .default) {
     try? fileManager.createDirectory(at: appDataURL, withIntermediateDirectories: true)
     try? fileManager.createDirectory(at: voiceRecordingsURL, withIntermediateDirectories: true)
-    try? ensureLocalMLXModelCache(fileManager: fileManager)
+    _ = try? ensureLocalMLXModelCache(fileManager: fileManager)
     try? fileManager.createDirectory(at: filesWorkspaceURL, withIntermediateDirectories: true)
     migrateLegacyDocumentsAppData(fileManager: fileManager)
   }

@@ -381,12 +381,17 @@ struct SidebarView: View {
   }
 
   private func keyboardOverlap(from notification: Notification) -> CGFloat {
+    if notification.name == UIResponder.keyboardWillHideNotification {
+      return 0
+    }
     guard
       let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
     else {
       return 0
     }
-    return max(0, UIScreen.main.bounds.maxY - frame.minY)
+    let screenMaxY = UIScreen.screens.first { $0.bounds.intersects(frame) }?.bounds.maxY
+      ?? frame.maxY
+    return max(0, screenMaxY - frame.minY)
   }
 }
 
