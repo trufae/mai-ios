@@ -26,6 +26,7 @@ final class ChatScreenshotService: NSObject, ObservableObject, UIScreenshotServi
       let store,
       let document = FullChatScreenshotRenderer.makePDF(
         conversation: store.currentConversation,
+        showThinking: store.effectiveShowThinking(for: store.currentConversation),
         toolSettings: store.settings.toolSettings,
         appearance: store.settings.appearance,
         renderMarkdown: store.settings.renderMarkdownInChat,
@@ -88,6 +89,7 @@ private enum FullChatScreenshotRenderer {
 
   static func makePDF(
     conversation: Conversation?,
+    showThinking: Bool,
     toolSettings: NativeToolSettings,
     appearance: AppearanceSettings,
     renderMarkdown: Bool,
@@ -99,6 +101,7 @@ private enum FullChatScreenshotRenderer {
 
     let content = FullChatScreenshotView(
       conversation: conversation,
+      showThinking: showThinking,
       toolSettings: toolSettings,
       appearance: appearance,
       renderMarkdown: renderMarkdown,
@@ -133,6 +136,7 @@ private enum FullChatScreenshotRenderer {
 
 private struct FullChatScreenshotView: View {
   let conversation: Conversation
+  let showThinking: Bool
   let toolSettings: NativeToolSettings
   let appearance: AppearanceSettings
   let renderMarkdown: Bool
@@ -152,7 +156,7 @@ private struct FullChatScreenshotView: View {
             renderMarkdown: renderMarkdown,
             renderImages: renderImages,
             onDelete: {},
-            showThinking: conversation.showThinking
+            showThinking: showThinking
           )
         }
       }

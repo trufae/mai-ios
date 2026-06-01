@@ -2,14 +2,18 @@ import Foundation
 import SwiftUI
 
 enum EPUBExporter {
-  static func makeEPUB(conversation: Conversation) -> Data {
+  static func makeEPUB(conversation: Conversation, includeThinking: Bool? = nil) -> Data {
     let title = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     let bookTitle = title.isEmpty ? "Chat" : title
     let identifier = "urn:uuid:\(conversation.id.uuidString.lowercased())"
     let modified = epubModifiedDate(conversation.updatedAt)
     let chatTitle = xmlEscaped(bookTitle)
+    let shouldIncludeThinking = includeThinking ?? conversation.showThinking
 
-    let chapters = buildChapters(conversation: conversation, bookTitle: bookTitle)
+    let chapters = buildChapters(
+      conversation: conversation,
+      bookTitle: bookTitle,
+      includeThinking: shouldIncludeThinking)
 
     let container = """
       <?xml version="1.0" encoding="UTF-8"?>
@@ -105,13 +109,17 @@ enum EPUBExporter {
     }
   }
 
-  private static func buildChapters(conversation: Conversation, bookTitle: String) -> [Chapter] {
+  private static func buildChapters(
+    conversation: Conversation,
+    bookTitle: String,
+    includeThinking: Bool
+  ) -> [Chapter] {
     var chapters: [Chapter] = []
     chapters.append(makeTitleChapter(conversation: conversation, bookTitle: bookTitle))
 
     var exportedMessageCount = 0
     for message in conversation.messages {
-      let content = messageContent(for: message, includeThinking: conversation.showThinking)
+      let content = messageContent(for: message, includeThinking: includeThinking)
       guard content.hasExportedBody else { continue }
 
       exportedMessageCount += 1

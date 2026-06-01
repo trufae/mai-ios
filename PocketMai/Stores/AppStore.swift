@@ -759,6 +759,11 @@ final class AppStore: ObservableObject {
     return toolSettings
   }
 
+  func effectiveShowThinking(for conversation: Conversation?) -> Bool {
+    guard settings.showThinkingByDefault else { return false }
+    return conversation?.showThinking ?? settings.showThinkingByDefault
+  }
+
   func togglePin(_ conversation: Conversation) {
     guard let index = indexedConversationIndex(for: conversation.id) else { return }
     conversations[index].isPinned.toggle()
@@ -1770,7 +1775,9 @@ final class AppStore: ObservableObject {
   }
 
   func exportConversationEPUB(_ conversation: Conversation) -> URL? {
-    let data = EPUBExporter.makeEPUB(conversation: conversation)
+    let data = EPUBExporter.makeEPUB(
+      conversation: conversation,
+      includeThinking: effectiveShowThinking(for: conversation))
     do {
       let url = try ConversationExportFiles.url(for: conversation, format: .epub)
       try data.write(to: url, options: .atomic)

@@ -425,7 +425,7 @@ struct ChatView: View {
                 onRestartFresh: { messagePendingRestartFresh = message },
                 onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
                 onSpeakFromHere: { speakFromHere(message) },
-                showThinking: store.currentConversation?.showThinking ?? false,
+                showThinking: store.effectiveShowThinking(for: store.currentConversation),
                 isWaitingForResponse: isWaitingForResponse(message),
                 onStreamingTextChange: { _ in
                   guard !userScrolledAfterLastMessage else { return }
@@ -447,7 +447,7 @@ struct ChatView: View {
                 renderMarkdown: store.settings.renderMarkdownInChat,
                 renderImages: store.settings.renderMarkdownImagesInChat,
                 onDelete: {},
-                showThinking: store.currentConversation?.showThinking ?? false,
+                showThinking: store.effectiveShowThinking(for: store.currentConversation),
                 isWaitingForResponse: false
               )
               .id(preview.id)
@@ -2211,6 +2211,7 @@ private struct ConversationModelSettingsView: View {
 
           Section {
             Toggle("Show thinking", isOn: showThinkingBinding)
+              .disabled(!store.settings.showThinkingByDefault)
             Toggle("Use memory", isOn: useMemoryBinding)
             Toggle("Stream responses", isOn: streamingBinding)
           }
@@ -2611,7 +2612,7 @@ private struct ConversationModelSettingsView: View {
 
   private var showThinkingBinding: Binding<Bool> {
     Binding(
-      get: { store.currentConversation?.showThinking ?? false },
+      get: { store.effectiveShowThinking(for: store.currentConversation) },
       set: { showThinking in
         store.updateCurrentConversation { conversation in
           conversation.showThinking = showThinking
