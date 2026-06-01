@@ -14,6 +14,7 @@ enum OAuthError: LocalizedError {
   case tokenExchangeFailed(String)
   case missingAccessToken
   case noRefreshToken
+  case presentationAnchorUnavailable
 
   var errorDescription: String? {
     switch self {
@@ -37,6 +38,8 @@ enum OAuthError: LocalizedError {
       return "The token response did not include an access_token."
     case .noRefreshToken:
       return "No refresh token is available. Please sign in again."
+    case .presentationAnchorUnavailable:
+      return "No app window is available to present sign-in."
     }
   }
 }
@@ -139,7 +142,10 @@ enum OAuthService {
     url: URL,
     callbackScheme: String
   ) async throws -> URL {
-    let presenter = AuthPresenter()
+    guard let windowScene = AuthPresenter.preferredWindowScene() else {
+      throw OAuthError.presentationAnchorUnavailable
+    }
+    let presenter = AuthPresenter(windowScene: windowScene)
     return try await withCheckedThrowingContinuation { continuation in
       let session = ASWebAuthenticationSession(
         url: url,
@@ -415,17 +421,31 @@ private struct TokenErrorResponse: Decodable {
 
 @MainActor
 private final class AuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
+  private let windowScene: UIWindowScene
+
+  init(windowScene: UIWindowScene) {
+    self.windowScene = windowScene
+    super.init()
+  }
+
   func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    if let window = windowScene.windows.first(where: \.isKeyWindow) {
+      return window
+    }
+    return ASPresentationAnchor(windowScene: windowScene)
+  }
+
+  static func preferredWindowScene() -> UIWindowScene? {
     let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     if let window = windowScenes.flatMap(\.windows).first(where: \.isKeyWindow) {
-      return window
+      return window.windowScene
     }
     if let windowScene = windowScenes.first(where: { $0.activationState == .foregroundActive })
       ?? windowScenes.first
     {
-      return ASPresentationAnchor(windowScene: windowScene)
+      return windowScene
     }
-    return ASPresentationAnchor(frame: .zero)
+    return nil
   }
 }
 

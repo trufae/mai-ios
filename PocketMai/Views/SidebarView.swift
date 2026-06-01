@@ -389,7 +389,9 @@ struct SidebarView: View {
     else {
       return 0
     }
-    let screenMaxY = UIScreen.screens.first { $0.bounds.intersects(frame) }?.bounds.maxY
+    let screenMaxY = UIApplication.shared.openSessions
+      .compactMap { ($0.scene as? UIWindowScene)?.screen }
+      .first { $0.bounds.intersects(frame) }?.bounds.maxY
       ?? frame.maxY
     return max(0, screenMaxY - frame.minY)
   }
