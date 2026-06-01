@@ -272,6 +272,7 @@ private struct MessageBubbleContent: View, Equatable {
         Text(visibleText)
           .font(messageFont)
           .lineSpacing(CGFloat(appearance.lineSpacing))
+          .foregroundStyleIfPresent(plainBodyForegroundStyle)
           .fixedSize(horizontal: false, vertical: true)
       }
       if hasVoiceRecording {
@@ -471,6 +472,10 @@ private struct MessageBubbleContent: View, Equatable {
       return false
     }
     return FileManager.default.fileExists(atPath: url.path)
+  }
+
+  private var plainBodyForegroundStyle: Color? {
+    message.role == .assistant ? markdownBodyColor : nil
   }
 
   private var backgroundStyle: some ShapeStyle {
@@ -3056,7 +3061,7 @@ private enum MarkdownInlineStyleApplier {
 /// Headings and bold text keep full `.label`/`.primary` contrast.
 private let markdownBodyUIColor = UIColor { traits in
   traits.userInterfaceStyle == .dark
-    ? UIColor(white: 1, alpha: 1)
+    ? UIColor(white: 0.74, alpha: 1)
     : UIColor(white: 0.30, alpha: 1)
 }
 private let markdownBodyColor = Color(uiColor: markdownBodyUIColor)
