@@ -15,6 +15,7 @@ enum MessageContentFilter {
   private static let hiddenTags = [
     "context", "tool_context", "tool_run", "tool_call", "think", "conversation", "speech",
   ]
+  private static let hiddenTagSet = Set(hiddenTags)
   private static let promptStripTags: Set<String> = [
     "context", "tool_context", "conversation", "think", "tool_call",
   ]
@@ -27,23 +28,51 @@ enum MessageContentFilter {
       )
     }
 
+    return scan(text, hiding: hiddenTagSet)
+  }
+
+  static func promptSafeText(from text: String) -> String {
+    conversationContextText(from: text)
+  }
+
+  static func conversationContextText(
+    from text: String,
+    includeReasoning: Bool = false
+  ) -> String {
+    let tags = includeReasoning ? promptStripTags.subtracting(["think"]) : promptStripTags
+    guard text.contains("<"), !tags.isEmpty else {
+      return normalizedVisibleText(text)
+    }
+    return scan(text, hiding: tags).visibleText
+  }
+
+  static func previewText(from text: String, maxLength: Int = 160) -> String {
+    var result = render(text).visibleText
+    let plainToolCallPattern = "(?im)^\\s*TOOL_CALL\\s*$[\\s\\S]*?(?:^\\s*END_TOOL_CALL\\s*$|\\z)"
+    result = result.replacingOccurrences(
+      of: plainToolCallPattern, with: "", options: [.regularExpression, .caseInsensitive])
+    let trimmed = collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    return String(trimmed.prefix(maxLength))
+  }
+
+  private static func scan(_ text: String, hiding tags: Set<String>) -> RenderedMessageContent {
     var cursor = text.startIndex
     var visible = ""
     var hiddenSections: [HiddenMessageSection] = []
 
-    while let opening = nextOpening(in: text, from: cursor) {
+    while let opening = nextOpening(in: text, from: cursor, hiding: tags) {
       visible += text[cursor..<opening.range.lowerBound]
-      if let closing = text.range(
-        of: closingPattern(for: opening.tag),
-        options: [.regularExpression, .caseInsensitive],
-        range: opening.range.upperBound..<text.endIndex
-      ) {
+      if opening.isSelfClosing {
+        cursor = opening.range.upperBound
+        continue
+      }
+      if let closing = matchingClose(for: opening, in: text) {
         appendHiddenSection(
           tag: opening.tag,
-          content: String(text[opening.range.upperBound..<closing.lowerBound]),
+          content: String(text[opening.range.upperBound..<closing.range.lowerBound]),
           hiddenSections: &hiddenSections
         )
-        cursor = closing.upperBound
+        cursor = closing.range.upperBound
       } else {
         appendHiddenSection(
           tag: opening.tag,
@@ -61,64 +90,266 @@ enum MessageContentFilter {
     )
   }
 
-  static func promptSafeText(from text: String) -> String {
-    conversationContextText(from: text)
+  private struct TagToken {
+    let tag: String
+    let isClosing: Bool
+    let isSelfClosing: Bool
+    let range: Range<String.Index>
   }
 
-  static func conversationContextText(
-    from text: String,
-    includeReasoning: Bool = false
-  ) -> String {
-    var result = text
-    let tags = includeReasoning ? promptStripTags.subtracting(["think"]) : promptStripTags
-    for tag in tags {
-      let anchor = tag == "think" ? "\\A\\s*" : ""
-      let pattern = "\(anchor)<\\s*\(tag)\\b[^>]*>[\\s\\S]*?<\\s*/\\s*\(tag)\\s*>"
-      result = result.replacingOccurrences(
-        of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
-      let unclosedPattern = "\(anchor)<\\s*\(tag)\\b[^>]*>[\\s\\S]*$"
-      result = result.replacingOccurrences(
-        of: unclosedPattern, with: "", options: [.regularExpression, .caseInsensitive])
-    }
-    return collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  static func previewText(from text: String, maxLength: Int = 160) -> String {
-    var result = render(text).visibleText
-    let plainToolCallPattern = "(?im)^\\s*TOOL_CALL\\s*$[\\s\\S]*?(?:^\\s*END_TOOL_CALL\\s*$|\\z)"
-    result = result.replacingOccurrences(
-      of: plainToolCallPattern, with: "", options: [.regularExpression, .caseInsensitive])
-    let trimmed = collapseBlankLines(result).trimmingCharacters(in: .whitespacesAndNewlines)
-    return String(trimmed.prefix(maxLength))
-  }
-
-  private static func nextOpening(in text: String, from start: String.Index) -> (
-    tag: String, range: Range<String.Index>
-  )? {
-    hiddenTags.compactMap { tag -> (tag: String, range: Range<String.Index>)? in
-      guard
-        let range = text.range(
-          of: openingPattern(for: tag),
-          options: [.regularExpression, .caseInsensitive],
-          range: start..<text.endIndex
-        )
-      else { return nil }
-      // <think> only counts as reasoning when it leads the message; otherwise
-      // it's a literal mention (code spans, blockquoted examples, etc.).
-      if tag == "think", text[..<range.lowerBound].contains(where: { !$0.isWhitespace }) {
-        return nil
+  private static func nextOpening(
+    in text: String,
+    from start: String.Index,
+    hiding tags: Set<String>
+  ) -> TagToken? {
+    var searchStart = start
+    while let token = nextTagToken(in: text, from: searchStart, matching: tags) {
+      searchStart = token.range.upperBound
+      if token.isClosing || !isStructuralOpening(token, in: text) {
+        continue
       }
-      return (tag, range)
+      return token
     }
-    .min { lhs, rhs in lhs.range.lowerBound < rhs.range.lowerBound }
+    return nil
   }
 
-  private static func openingPattern(for tag: String) -> String {
-    "<\\s*\(tag)\\b[^>]*>"
+  private static func matchingClose(for opening: TagToken, in text: String) -> TagToken? {
+    var searchStart = opening.range.upperBound
+    var nestedOpenings: [TagToken] = []
+    let tags = Set([opening.tag])
+    while let token = nextTagToken(in: text, from: searchStart, matching: tags) {
+      searchStart = token.range.upperBound
+      if token.isClosing {
+        let nestedOpening = nestedOpenings.last ?? opening
+        guard isStructuralClosing(token, for: nestedOpening, in: text) else {
+          continue
+        }
+        if nestedOpenings.isEmpty {
+          return token
+        }
+        nestedOpenings.removeLast()
+      } else if !token.isSelfClosing && isStructuralOpening(token, in: text) {
+        nestedOpenings.append(token)
+      }
+    }
+    return nil
   }
 
-  private static func closingPattern(for tag: String) -> String {
-    "<\\s*/\\s*\(tag)\\s*>"
+  private static func nextTagToken(
+    in text: String,
+    from start: String.Index,
+    matching tags: Set<String>
+  ) -> TagToken? {
+    var index = start
+    var fenceMarker: Character?
+    var fenceLength = 0
+    var inlineBackticks = 0
+
+    while index < text.endIndex {
+      if inlineBackticks == 0, let fence = markdownFenceDelimiter(in: text, at: index) {
+        if let marker = fenceMarker {
+          if marker == fence.marker && fence.length >= fenceLength {
+            fenceMarker = nil
+            fenceLength = 0
+          }
+        } else {
+          fenceMarker = fence.marker
+          fenceLength = fence.length
+        }
+        index = fence.end
+        continue
+      }
+
+      if fenceMarker != nil {
+        text.formIndex(after: &index)
+        continue
+      }
+
+      if text[index] == "`" {
+        let run = repeatedCharacterRun(in: text, from: index, matching: "`")
+        if inlineBackticks == 0 {
+          inlineBackticks = run.length
+        } else if run.length >= inlineBackticks {
+          inlineBackticks = 0
+        }
+        index = run.end
+        continue
+      }
+
+      if inlineBackticks != 0 {
+        text.formIndex(after: &index)
+        continue
+      }
+
+      if text[index] == "<", let token = parseTagToken(in: text, at: index, matching: tags) {
+        return token
+      }
+      text.formIndex(after: &index)
+    }
+    return nil
+  }
+
+  private static func parseTagToken(
+    in text: String,
+    at start: String.Index,
+    matching tags: Set<String>
+  ) -> TagToken? {
+    guard text[start] == "<" else { return nil }
+    var index = text.index(after: start)
+    skipTagWhitespace(in: text, from: &index)
+
+    var isClosing = false
+    if index < text.endIndex, text[index] == "/" {
+      isClosing = true
+      text.formIndex(after: &index)
+      skipTagWhitespace(in: text, from: &index)
+    }
+
+    let nameStart = index
+    while index < text.endIndex, isTagNameCharacter(text[index]) {
+      text.formIndex(after: &index)
+    }
+    guard nameStart < index else { return nil }
+
+    let tag = String(text[nameStart..<index]).lowercased()
+    guard tags.contains(tag) else { return nil }
+
+    if isClosing {
+      skipTagWhitespace(in: text, from: &index)
+      guard index < text.endIndex, text[index] == ">" else { return nil }
+      let end = text.index(after: index)
+      return TagToken(tag: tag, isClosing: true, isSelfClosing: false, range: start..<end)
+    }
+
+    guard index == text.endIndex || isTagBoundary(text[index]) else { return nil }
+    var end = index
+    var lastNonWhitespace = index
+    while end < text.endIndex, text[end] != ">" {
+      if !isTagWhitespace(text[end]) {
+        lastNonWhitespace = end
+      }
+      text.formIndex(after: &end)
+    }
+    guard end < text.endIndex else { return nil }
+    let tokenEnd = text.index(after: end)
+    let isSelfClosing = lastNonWhitespace < end && text[lastNonWhitespace] == "/"
+    return TagToken(tag: tag, isClosing: false, isSelfClosing: isSelfClosing, range: start..<tokenEnd)
+  }
+
+  private static func isStructuralOpening(_ token: TagToken, in text: String) -> Bool {
+    guard token.tag == "think" else { return true }
+    return isLinePrefixWhitespace(in: text, before: token.range.lowerBound)
+  }
+
+  private static func isStructuralClosing(
+    _ token: TagToken,
+    for opening: TagToken,
+    in text: String
+  ) -> Bool {
+    guard token.tag == "think" else { return true }
+    return isLinePrefixWhitespace(in: text, before: token.range.lowerBound)
+      || isSameLine(in: text, from: opening.range.lowerBound, to: token.range.lowerBound)
+      || (isImmediatelyAfterNonWhitespace(in: text, at: token.range.lowerBound)
+        && isLineSuffixWhitespace(in: text, after: token.range.upperBound))
+  }
+
+  private static func skipTagWhitespace(in text: String, from index: inout String.Index) {
+    while index < text.endIndex, isTagWhitespace(text[index]) {
+      text.formIndex(after: &index)
+    }
+  }
+
+  private static func isTagNameCharacter(_ character: Character) -> Bool {
+    character.isLetter || character.isNumber || character == "_" || character == "-"
+  }
+
+  private static func isTagBoundary(_ character: Character) -> Bool {
+    isTagWhitespace(character) || character == ">" || character == "/"
+  }
+
+  private static func isTagWhitespace(_ character: Character) -> Bool {
+    character == " " || character == "\t" || character == "\n" || character == "\r"
+  }
+
+  private static func markdownFenceDelimiter(
+    in text: String,
+    at index: String.Index
+  ) -> (marker: Character, length: Int, end: String.Index)? {
+    guard isLinePrefixWhitespace(in: text, before: index),
+      text[index] == "`" || text[index] == "~"
+    else {
+      return nil
+    }
+    let run = repeatedCharacterRun(in: text, from: index, matching: text[index])
+    guard run.length >= 3 else { return nil }
+    return (text[index], run.length, run.end)
+  }
+
+  private static func repeatedCharacterRun(
+    in text: String,
+    from start: String.Index,
+    matching character: Character
+  ) -> (length: Int, end: String.Index) {
+    var index = start
+    var length = 0
+    while index < text.endIndex, text[index] == character {
+      length += 1
+      text.formIndex(after: &index)
+    }
+    return (length, index)
+  }
+
+  private static func isLinePrefixWhitespace(in text: String, before index: String.Index) -> Bool {
+    var cursor = index
+    while cursor > text.startIndex {
+      let previous = text.index(before: cursor)
+      if text[previous] == "\n" || text[previous] == "\r" {
+        return true
+      }
+      if !text[previous].isWhitespace {
+        return false
+      }
+      cursor = previous
+    }
+    return true
+  }
+
+  private static func isLineSuffixWhitespace(in text: String, after index: String.Index) -> Bool {
+    var cursor = index
+    while cursor < text.endIndex {
+      if text[cursor] == "\n" || text[cursor] == "\r" {
+        return true
+      }
+      if !text[cursor].isWhitespace {
+        return false
+      }
+      text.formIndex(after: &cursor)
+    }
+    return true
+  }
+
+  private static func isImmediatelyAfterNonWhitespace(
+    in text: String,
+    at index: String.Index
+  ) -> Bool {
+    guard index > text.startIndex else { return false }
+    let previous = text.index(before: index)
+    return !text[previous].isWhitespace
+  }
+
+  private static func isSameLine(
+    in text: String,
+    from start: String.Index,
+    to end: String.Index
+  ) -> Bool {
+    var cursor = start
+    while cursor < end {
+      if text[cursor] == "\n" || text[cursor] == "\r" {
+        return false
+      }
+      text.formIndex(after: &cursor)
+    }
+    return true
   }
 
   private static func appendHiddenSection(
