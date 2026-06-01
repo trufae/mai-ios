@@ -249,7 +249,7 @@ enum PromptComposer {
     let memory = settings.memory.trimmingCharacters(in: .whitespacesAndNewlines)
     let mcp: String = {
       guard conversation.toolsEnabled else { return "" }
-      return settings.mcpServers.filter { $0.isEnabled && $0.hasValidScheme }
+      return settings.mcpServers.filter { $0.isEnabled && $0.hasValidEndpointURL }
         .map { "- \($0.name): \($0.baseURL)" }
         .joined(separator: "\n")
     }()
@@ -1683,7 +1683,8 @@ enum OpenAICompatibleProvider {
       model: model, endpoint: endpoint)
     do {
       return try await send()
-    } catch let error as ChatProviderError where visionWasEnabled
+    } catch let error as ChatProviderError
+      where visionWasEnabled
       && isImageInputRejection(error)
     {
       ModelCapabilityCache.shared.record(

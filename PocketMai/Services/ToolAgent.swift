@@ -220,7 +220,7 @@ enum ToolAgentRegistry {
       for: conversation.enabledTools,
       settings: settings)
     for server in settings.mcpServers
-    where server.isEnabled && server.hasValidScheme
+    where server.isEnabled && server.hasValidEndpointURL
       && conversation.enabledMCPServers.contains(server.id)
     {
       let tools = mcpTools[server.id] ?? []
@@ -389,7 +389,7 @@ enum ToolAgentRegistry {
     store: AppStore
   ) async -> String {
     for server in store.settings.mcpServers
-    where server.isEnabled && server.hasValidScheme
+    where server.isEnabled && server.hasValidEndpointURL
       && conversation.enabledMCPServers.contains(server.id)
     {
       let tools = store.mcpTools[server.id] ?? []

@@ -42,6 +42,11 @@ private struct PendingSettingsDeletion: Identifiable {
   let offsets: IndexSet
 }
 
+private enum SettingsRoute: Hashable {
+  case endpoint(UUID)
+  case mcpServer(UUID)
+}
+
 private enum SettingsDeletionKind {
   case endpoint
   case systemPrompt
@@ -143,7 +148,9 @@ private enum TTSVoiceCache {
     let filtered =
       normalized.isEmpty
       ? voices
-      : voices.filter { SystemLanguageSupport.canonicalLanguageIdentifier($0.language) == normalized }
+      : voices.filter {
+        SystemLanguageSupport.canonicalLanguageIdentifier($0.language) == normalized
+      }
     return filtered.sorted {
       $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
     }
@@ -268,12 +275,13 @@ struct SettingsView: View {
   @State private var showingClearMemoryConfirmation = false
   @State private var showingBackgroundVoiceConfirmation = false
   @State private var pendingDeletion: PendingSettingsDeletion?
-  @State private var endpointPath: [UUID] = []
+  @State private var navigationPath: [SettingsRoute] = []
   @State private var draftEndpoint: OpenAIEndpoint?
+  @State private var draftMCPServer: MCPServer?
   @State private var toastMessage: String?
 
   var body: some View {
-    NavigationStack(path: $endpointPath) {
+    NavigationStack(path: $navigationPath) {
       Form {
         providerSection
         appearanceSection
@@ -281,17 +289,35 @@ struct SettingsView: View {
         dangerSection
         aboutSection
       }
-      .navigationDestination(for: UUID.self) { id in
-        if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
-          EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
-        } else if draftEndpoint?.id == id {
-          EndpointDetailView(endpoint: draftEndpointBinding(for: id)) { endpoint in
-            if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id }) {
-              store.settings.openAIEndpoints[index] = endpoint
-            } else {
-              store.settings.openAIEndpoints.append(endpoint)
+      .navigationDestination(for: SettingsRoute.self) { route in
+        switch route {
+        case .endpoint(let id):
+          if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
+            EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
+          } else if draftEndpoint?.id == id {
+            EndpointDetailView(endpoint: draftEndpointBinding(for: id)) { endpoint in
+              if let index = store.settings.openAIEndpoints.firstIndex(where: {
+                $0.id == endpoint.id
+              }) {
+                store.settings.openAIEndpoints[index] = endpoint
+              } else {
+                store.settings.openAIEndpoints.append(endpoint)
+              }
+              store.settings.selectedEndpointID = endpoint.id
             }
-            store.settings.selectedEndpointID = endpoint.id
+          }
+        case .mcpServer(let id):
+          if let index = store.settings.mcpServers.firstIndex(where: { $0.id == id }) {
+            MCPServerDetailView(server: $store.settings.mcpServers[index])
+          } else if draftMCPServer?.id == id {
+            MCPServerDetailView(server: draftMCPServerBinding(for: id), isNew: true) { server in
+              if let index = store.settings.mcpServers.firstIndex(where: { $0.id == server.id }) {
+                store.settings.mcpServers[index] = server
+              } else {
+                store.settings.mcpServers.append(server)
+              }
+              draftMCPServer = nil
+            }
           }
         }
       }
@@ -370,8 +396,9 @@ struct SettingsView: View {
       .onAppear {
         store.refreshLocalMLXModels()
       }
-      .onChange(of: endpointPath) { _, path in
+      .onChange(of: navigationPath) { _, path in
         discardDraftEndpointIfNeeded(path: path)
+        discardDraftMCPServerIfNeeded(path: path)
       }
     }
     .preferredColorScheme(store.settings.appearance.theme.colorScheme)
@@ -438,9 +465,11 @@ struct SettingsView: View {
     Stepper(value: settingsBinding(\.maxToolCallsPerTurn), in: 1...20) {
       Text("Max Tool Calls: \(store.settings.maxToolCallsPerTurn)")
     }
-    Text("Stops one assistant turn after this many executed tool calls, including repeated calls and multiple calls emitted in one response.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
+    Text(
+      "Stops one assistant turn after this many executed tool calls, including repeated calls and multiple calls emitted in one response."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
@@ -520,9 +549,10 @@ struct SettingsView: View {
       TextField(
         "\(OpenAPIServerSettings.defaultPort)",
         value: openAPIServerPortBinding,
-        format: .number)
-        .keyboardType(.numberPad)
-        .multilineTextAlignment(.trailing)
+        format: .number
+      )
+      .keyboardType(.numberPad)
+      .multilineTextAlignment(.trailing)
     }
     Text("Ollama and OpenAI-compatible clients can connect to this port while serving is enabled.")
       .font(.caption)
@@ -732,8 +762,9 @@ struct SettingsView: View {
     Toggle("Enable Haptics", isOn: settingsBinding(\.appearance.hapticsEnabled))
     Toggle(
       "Vibrate on Stream Packets",
-      isOn: settingsBinding(\.appearance.vibrateOnEveryStreamPacket))
-      .disabled(!store.settings.appearance.hapticsEnabled)
+      isOn: settingsBinding(\.appearance.vibrateOnEveryStreamPacket)
+    )
+    .disabled(!store.settings.appearance.hapticsEnabled)
     Text(
       store.settings.appearance.vibrateOnEveryStreamPacket
         ? "Irregular typing-like taps play while the assistant streams; a completion pulse plays when it ends."
@@ -899,7 +930,7 @@ struct SettingsView: View {
     }
 
     ForEach(store.settings.openAIEndpoints) { endpoint in
-      NavigationLink(value: endpoint.id) {
+      NavigationLink(value: SettingsRoute.endpoint(endpoint.id)) {
         endpointRow(endpoint)
       }
       .disabled(store.settings.airplaneModeEnabled)
@@ -911,7 +942,7 @@ struct SettingsView: View {
     Button {
       let endpoint = OpenAIEndpoint(baseURL: "", authMethod: .apiKey)
       draftEndpoint = endpoint
-      endpointPath.append(endpoint.id)
+      navigationPath.append(.endpoint(endpoint.id))
     } label: {
       Label("Add Provider", systemImage: "plus")
     }
@@ -1368,10 +1399,8 @@ struct SettingsView: View {
     Text(toolProxySummary)
       .font(.caption)
       .foregroundStyle(.secondary)
-    ForEach($store.settings.mcpServers) { $server in
-      NavigationLink {
-        MCPServerDetailView(server: $server)
-      } label: {
+    ForEach(store.settings.mcpServers) { server in
+      NavigationLink(value: SettingsRoute.mcpServer(server.id)) {
         mcpRow(server)
       }
     }
@@ -1379,8 +1408,9 @@ struct SettingsView: View {
       pendingDeletion = PendingSettingsDeletion(kind: .mcpServer, offsets: offsets)
     }
     Button {
-      store.settings.mcpServers.append(MCPServer())
-      store.saveSettings()
+      let server = MCPServer(name: "", baseURL: "")
+      draftMCPServer = server
+      navigationPath.append(.mcpServer(server.id))
     } label: {
       Label("Add MCP Server", systemImage: "plus")
     }
@@ -1401,13 +1431,13 @@ struct SettingsView: View {
       return URL(string: url)?.host ?? url
     }()
     let icon: String = {
-      if server.isHTTPS { return "lock.fill" }
-      if server.hasValidScheme { return "globe" }
+      if server.isHTTPS && server.hasValidEndpointURL { return "lock.fill" }
+      if server.hasValidEndpointURL { return "globe" }
       return "lock.trianglebadge.exclamationmark"
     }()
     let iconColor: Color = {
-      if server.isHTTPS { return .green }
-      if server.hasValidScheme { return .orange }
+      if server.isHTTPS && server.hasValidEndpointURL { return .green }
+      if server.hasValidEndpointURL { return .orange }
       return .red
     }()
     return HStack(spacing: 12) {
@@ -1538,7 +1568,12 @@ struct SettingsView: View {
           store.settings.defaultProvider = .mlx
         }
       }
-      endpointPath.removeAll { removedIDs.contains($0) }
+      navigationPath.removeAll { route in
+        if case .endpoint(let id) = route {
+          return removedIDs.contains(id)
+        }
+        return false
+      }
       store.saveSettings()
     case .systemPrompt:
       guard deletion.offsets.allSatisfy({ store.settings.systemPrompts.indices.contains($0) })
@@ -1570,6 +1605,14 @@ struct SettingsView: View {
         store.settings.defaultEnabledMCPServers.remove(id)
         store.settings.defaultEnabledMCPTools = Set(
           store.settings.defaultEnabledMCPTools.filter { !$0.hasPrefix(prefix) })
+        store.mcpStatuses[id] = nil
+        store.mcpTools[id] = nil
+      }
+      navigationPath.removeAll { route in
+        if case .mcpServer(let id) = route {
+          return removedIDs.contains(id)
+        }
+        return false
       }
       store.saveSettings()
     }
@@ -1629,9 +1672,27 @@ struct SettingsView: View {
     )
   }
 
-  private func discardDraftEndpointIfNeeded(path: [UUID]) {
-    guard let draftEndpoint, !path.contains(draftEndpoint.id) else { return }
+  private func discardDraftEndpointIfNeeded(path: [SettingsRoute]) {
+    guard let draftEndpoint, !path.contains(.endpoint(draftEndpoint.id)) else { return }
     self.draftEndpoint = nil
+  }
+
+  private func draftMCPServerBinding(for id: UUID) -> Binding<MCPServer> {
+    Binding(
+      get: {
+        draftMCPServer ?? MCPServer(id: id, name: "", baseURL: "")
+      },
+      set: { server in
+        draftMCPServer = server
+      }
+    )
+  }
+
+  private func discardDraftMCPServerIfNeeded(path: [SettingsRoute]) {
+    guard let draftMCPServer, !path.contains(.mcpServer(draftMCPServer.id)) else { return }
+    store.mcpStatuses[draftMCPServer.id] = nil
+    store.mcpTools[draftMCPServer.id] = nil
+    self.draftMCPServer = nil
   }
 
   private func showToast(_ message: String) {
@@ -1898,7 +1959,8 @@ private struct RoleVoiceSettingsView: View {
           VoiceTest.toggle(
             role: role,
             voice: effectiveVoice,
-            openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints,
+            openAIEndpoints: store.settings.airplaneModeEnabled
+              ? [] : store.settings.openAIEndpoints,
             player: ttsPlayer)
         } label: {
           let isPlaying = ttsPlayer.isPlaying(tag: VoiceTest.tag(for: role))
@@ -2569,9 +2631,11 @@ private struct EndpointDetailView: View {
           .font(.subheadline)
       }
       if let expiry = endpoint.oauthAccessTokenExpiresAt {
-        Text("Access token \(expired ? "expired" : "expires") \(expiry.formatted(date: .abbreviated, time: .shortened)).")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        Text(
+          "Access token \(expired ? "expired" : "expires") \(expiry.formatted(date: .abbreviated, time: .shortened))."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
       }
       if let setupMessage {
         Label(setupMessage, systemImage: "info.circle")
@@ -2588,12 +2652,16 @@ private struct EndpointDetailView: View {
               Text("Signing in…")
             }
           } else {
-            Label(signedIn ? "Sign In Again" : "Sign In", systemImage: "person.crop.circle.badge.checkmark")
+            Label(
+              signedIn ? "Sign In Again" : "Sign In",
+              systemImage: "person.crop.circle.badge.checkmark")
           }
         }
         .disabled(isSigningIn || setupMessage != nil)
         if signedIn {
-          Button(role: .destructive) { signOut() } label: {
+          Button(role: .destructive) {
+            signOut()
+          } label: {
             Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
           }
           .disabled(isSigningIn)
@@ -2662,8 +2730,8 @@ private struct EndpointDetailView: View {
       Label("No \(provider.name) OAuth client ID", systemImage: "key.slash")
         .font(.subheadline.weight(.semibold))
       Text(provider.message)
-      .font(.caption)
-      .foregroundStyle(.secondary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
       Button {
         endpoint.authMethod = .apiKey
         clearCredentials()
@@ -3259,7 +3327,8 @@ private struct OllamaPortScanView: View {
         guard !Task.isCancelled else { return }
         await MainActor.run {
           results = found
-          message = found.isEmpty
+          message =
+            found.isEmpty
             ? "No Ollama endpoints found."
             : "Found \(found.count) endpoint\(found.count == 1 ? "" : "s")."
           isScanning = false
@@ -3555,15 +3624,86 @@ private struct CompactPromptDetailView: View {
   }
 }
 
+private enum MCPServerNameResolution {
+  static func savedName(for server: MCPServer) -> String {
+    server.name.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func savedBaseURL(for server: MCPServer) -> String {
+    server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func validationMessage(for server: MCPServer, in servers: [MCPServer]) -> String? {
+    let name = savedName(for: server)
+    guard !name.isEmpty else {
+      return "Specify a name for this MCP server."
+    }
+    if hasDuplicateName(name, excluding: server.id, in: servers) {
+      return "Another MCP server is already named \"\(name)\"."
+    }
+    return endpointValidationMessage(for: server)
+  }
+
+  static func endpointValidationMessage(for server: MCPServer) -> String? {
+    let baseURL = savedBaseURL(for: server)
+    guard !baseURL.isEmpty else {
+      return "Specify an endpoint URL for this MCP server."
+    }
+    guard let components = URLComponents(string: baseURL),
+      let scheme = components.scheme?.lowercased(),
+      ["http", "https"].contains(scheme),
+      let host = components.host,
+      !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return "Specify a valid http or https endpoint URL."
+    }
+    return nil
+  }
+
+  private static func hasDuplicateName(
+    _ name: String,
+    excluding serverID: UUID,
+    in servers: [MCPServer]
+  ) -> Bool {
+    let normalized = normalizedName(name)
+    return servers.contains { server in
+      guard server.id != serverID else { return false }
+      return normalizedName(server.name) == normalized
+    }
+  }
+
+  private static func normalizedName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+}
+
 private struct MCPServerDetailView: View {
   @EnvironmentObject private var store: AppStore
-  @Binding var server: MCPServer
+  @Environment(\.dismiss) private var dismiss
+  @Binding private var savedServer: MCPServer
+  @State private var server: MCPServer
+  @State private var toastMessage: String?
+  @FocusState private var isNameFocused: Bool
+  private let isNew: Bool
+  private let onSave: ((MCPServer) -> Void)?
+
+  init(
+    server: Binding<MCPServer>,
+    isNew: Bool = false,
+    onSave: ((MCPServer) -> Void)? = nil
+  ) {
+    self._savedServer = server
+    self._server = State(initialValue: server.wrappedValue)
+    self.isNew = isNew
+    self.onSave = onSave
+  }
 
   var body: some View {
     Form {
       Section {
         Toggle("Enabled", isOn: $server.isEnabled)
         TextField("Name", text: $server.name)
+          .focused($isNameFocused)
       } footer: {
         Text("A friendly name shown in the server list.")
       }
@@ -3574,10 +3714,12 @@ private struct MCPServerDetailView: View {
           .autocorrectionDisabled()
           .keyboardType(.URL)
         if !server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          && !server.hasValidScheme
+          && MCPServerNameResolution.endpointValidationMessage(for: server) != nil
         {
-          Label("URL must start with http:// or https://", systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.red)
+          Label(
+            "Specify a valid http or https endpoint URL.", systemImage: "exclamationmark.triangle"
+          )
+          .foregroundStyle(.red)
         }
       } header: {
         Text("Endpoint")
@@ -3587,7 +3729,15 @@ private struct MCPServerDetailView: View {
 
       Section {
         Button {
-          let snapshot = server
+          if hasUnsavedConnectionChanges {
+            showToast("Save this MCP server before refreshing tools.")
+            return
+          }
+          if let message = MCPServerNameResolution.endpointValidationMessage(for: server) {
+            showToast(message)
+            return
+          }
+          let snapshot = normalizedServerForSaving
           Task { await store.refreshMCP(snapshot) }
         } label: {
           if isChecking {
@@ -3599,14 +3749,19 @@ private struct MCPServerDetailView: View {
             Label("Refresh Tools", systemImage: "arrow.clockwise")
           }
         }
-        .disabled(isChecking || !server.hasValidScheme)
+        .disabled(
+          isChecking || hasUnsavedConnectionChanges
+            || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
       } header: {
         Text("Connection")
       } footer: {
         statusFooter
       }
 
-      if let tools = store.mcpTools[server.id], !tools.isEmpty {
+      if !hasUnsavedConnectionChanges,
+        let tools = store.mcpTools[server.id],
+        !tools.isEmpty
+      {
         Section("Available Tools (\(tools.count))") {
           ForEach(tools) { tool in
             VStack(alignment: .leading, spacing: 4) {
@@ -3624,9 +3779,38 @@ private struct MCPServerDetailView: View {
         }
       }
     }
-    .navigationTitle(server.name.isEmpty ? "MCP Server" : server.name)
+    .navigationTitle(navigationTitle)
     .navigationBarTitleDisplayMode(.inline)
-    .onChange(of: server.baseURL) { _, _ in store.resetMCPStatus(server.id) }
+    .toolbar {
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Save") {
+          saveServerAndDismiss()
+        }
+      }
+    }
+    .settingsToast($toastMessage)
+    .onAppear {
+      if isNew {
+        isNameFocused = true
+      }
+    }
+  }
+
+  private var navigationTitle: String {
+    let name = MCPServerNameResolution.savedName(for: server)
+    return name.isEmpty ? "MCP Server" : name
+  }
+
+  private var normalizedServerForSaving: MCPServer {
+    var normalized = server
+    normalized.name = MCPServerNameResolution.savedName(for: server)
+    normalized.baseURL = MCPServerNameResolution.savedBaseURL(for: server)
+    return normalized
+  }
+
+  private var hasUnsavedConnectionChanges: Bool {
+    MCPServerNameResolution.savedBaseURL(for: server)
+      != MCPServerNameResolution.savedBaseURL(for: savedServer)
   }
 
   private var isChecking: Bool {
@@ -3638,21 +3822,52 @@ private struct MCPServerDetailView: View {
 
   @ViewBuilder
   private var statusFooter: some View {
-    let status = store.mcpStatuses[server.id] ?? .unknown
-    let tools = store.mcpTools[server.id] ?? []
-    switch status {
-    case .unknown:
-      Text("Tap “Refresh Tools” to connect and list the tools this server provides.")
-    case .checking:
-      Text("Connecting…")
-    case .available:
-      if tools.isEmpty {
-        Text("Connected, but the server reports no tools.")
-      } else {
-        Text("Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s") available.")
+    if hasUnsavedConnectionChanges {
+      Text("Save this MCP server before refreshing tools.")
+    } else {
+      let status = store.mcpStatuses[server.id] ?? .unknown
+      let tools = store.mcpTools[server.id] ?? []
+      switch status {
+      case .unknown:
+        Text("Tap “Refresh Tools” to connect and list the tools this server provides.")
+      case .checking:
+        Text("Connecting…")
+      case .available:
+        if tools.isEmpty {
+          Text("Connected, but the server reports no tools.")
+        } else {
+          Text("Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s") available.")
+        }
+      case .failed(let message):
+        Text(message).foregroundStyle(.red)
       }
-    case .failed(let message):
-      Text(message).foregroundStyle(.red)
+    }
+  }
+
+  private func saveServerAndDismiss() {
+    if let message = MCPServerNameResolution.validationMessage(
+      for: server,
+      in: store.settings.mcpServers)
+    {
+      showToast(message)
+      return
+    }
+
+    let normalized = normalizedServerForSaving
+    let connectionChanged =
+      normalized.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
+    savedServer = normalized
+    onSave?(normalized)
+    if connectionChanged {
+      store.resetMCPStatus(normalized.id)
+    }
+    store.saveSettings()
+    dismiss()
+  }
+
+  private func showToast(_ message: String) {
+    withAnimation(.snappy) {
+      toastMessage = message
     }
   }
 }

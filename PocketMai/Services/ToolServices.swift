@@ -1007,7 +1007,9 @@ enum MCPHTTPClient {
   static func send(server: MCPServer, method: String, params: [String: AnyCodable]? = nil)
     async throws -> Data
   {
-    guard server.hasValidScheme, let url = URL(string: server.baseURL) else {
+    guard server.hasValidEndpointURL,
+      let url = URL(string: server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines))
+    else {
       throw ChatProviderError.invalidEndpoint(server.baseURL)
     }
     var request = URLRequest(url: url)

@@ -684,7 +684,8 @@ enum MLXKVCacheSize: Int, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .auto:
       let effective = effectiveSize
-      let formatted = effective >= 1_000
+      let formatted =
+        effective >= 1_000
         ? "\(effective / 1_000),\(String(format: "%03d", effective % 1_000))" : "\(effective)"
       return "Auto (\(formatted) tokens)"
     case .size1024: return "1,024 tokens"
@@ -1665,6 +1666,19 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
   var hasValidScheme: Bool {
     let scheme = URL(string: baseURL)?.scheme?.lowercased() ?? ""
     return scheme == "https" || scheme == "http"
+  }
+
+  var hasValidEndpointURL: Bool {
+    let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let components = URLComponents(string: trimmed),
+      let scheme = components.scheme?.lowercased(),
+      ["https", "http"].contains(scheme),
+      let host = components.host,
+      !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return false
+    }
+    return true
   }
 }
 

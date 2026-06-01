@@ -204,7 +204,8 @@ final class AppStore: ObservableObject {
     appleAvailabilityReport.isAvailable
   }
 
-  var effectiveDefaultProviderConfiguration: (provider: ProviderKind, endpointID: UUID?, modelID: String)
+  var effectiveDefaultProviderConfiguration:
+    (provider: ProviderKind, endpointID: UUID?, modelID: String)
   {
     let configuration = settings.defaultProviderConfiguration
     guard configuration.provider == .apple, !appleIntelligenceIsAvailable else {
@@ -298,7 +299,8 @@ final class AppStore: ObservableObject {
       return rememberedID
     }
 
-    return conversations
+    return
+      conversations
       .filter { isStartupConversationCandidate($0, excluding: excludedID, allowArchived: false) }
       .max { lhs, rhs in
         if lhs.updatedAt != rhs.updatedAt {
@@ -855,7 +857,8 @@ final class AppStore: ObservableObject {
     -> OpenAPIServerHTTPResponse
   {
     if request.method == "OPTIONS" {
-      return OpenAPIServerHTTPResponse(statusCode: 204, reason: "No Content", headers: [:], body: Data())
+      return OpenAPIServerHTTPResponse(
+        statusCode: 204, reason: "No Content", headers: [:], body: Data())
     }
 
     do {
@@ -864,7 +867,7 @@ final class AppStore: ObservableObject {
         return .json([
           "status": "ok",
           "server": "PocketMai",
-          "model": openAPIServerModelName()
+          "model": openAPIServerModelName(),
         ])
       case ("GET", "/api/version"):
         return .json(["version": ConversationExportEnvelope.currentPocketMaiVersion])
@@ -1266,9 +1269,10 @@ final class AppStore: ObservableObject {
     case .mlx:
       return "mlx-local"
     case .openAICompatible:
-      guard let endpoint = OpenAICompatibleProvider.selectedEndpoint(
-        for: conversation,
-        settings: settings)
+      guard
+        let endpoint = OpenAICompatibleProvider.selectedEndpoint(
+          for: conversation,
+          settings: settings)
       else {
         return "openai-compatible"
       }
@@ -2703,7 +2707,7 @@ final class AppStore: ObservableObject {
           id: server.id,
           name: server.name,
           isEnabled: server.isEnabled,
-          hasValidScheme: server.hasValidScheme)
+          hasValidScheme: server.hasValidEndpointURL)
       },
       nativeToolSettings: debugNativeToolSettings(settings.toolSettings),
       fullToolDefinitions: debugDefinitions(fullDefinitions),
