@@ -2644,6 +2644,7 @@ final class AppStore: ObservableObject {
       providerNativeToolCalling
       ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
     let toolPrompt = textToolPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    let toolPromptInContext = !providerNativeToolCalling && !toolPrompt.isEmpty
     let nativeToolNames: [String] = {
       guard providerNativeToolCalling else { return [] }
       let resolver = AgentToolNameResolver(tools: visibleDefinitions)
@@ -2665,7 +2666,8 @@ final class AppStore: ObservableObject {
       settings: settings,
       context: requestContext,
       hasTools: hasToolCalling,
-      toolPrompt: providerNativeToolCalling ? "" : toolPrompt)
+      toolPrompt: providerNativeToolCalling ? "" : toolPrompt,
+      toolPromptInContext: toolPromptInContext)
     let messageIDs = Set(conversation.messages.map(\.id))
     let runtimeIterations =
       (toolCallingDebugIterations[conversation.id] ?? [])
@@ -2725,7 +2727,8 @@ final class AppStore: ObservableObject {
         conversation: conversation,
         systemPrompt: providerSystemPrompt,
         messageLimit: settings.contextWindowMode.messageLimit,
-        toolPrompt: providerNativeToolCalling ? "" : toolPrompt),
+        toolPrompt: providerNativeToolCalling ? "" : toolPrompt,
+        toolPromptInContext: toolPromptInContext),
       iterations: runtimeIterations.isEmpty ? storedIterations : runtimeIterations,
       notes: [
         "Debug prompt data is reconstructed at export time from current settings.",
@@ -2794,7 +2797,8 @@ final class AppStore: ObservableObject {
     conversation: Conversation,
     systemPrompt: String,
     messageLimit: Int?,
-    toolPrompt: String = ""
+    toolPrompt: String = "",
+    toolPromptInContext: Bool = false
   ) -> [ConversationDebugPromptMessage] {
     let limited: [ChatMessage] = {
       if let messageLimit { return Array(conversation.messages.suffix(messageLimit)) }
@@ -2809,7 +2813,10 @@ final class AppStore: ObservableObject {
             content: entry.content)
         }
       })
-    if let reminder = PromptComposer.toolCallingReminder(toolPrompt: toolPrompt) {
+    if let reminder = PromptComposer.toolCallingReminder(
+      toolPrompt: toolPrompt,
+      includeToolPrompt: !toolPromptInContext)
+    {
       messages.append(ConversationDebugPromptMessage(role: "user", content: reminder))
     }
     return messages

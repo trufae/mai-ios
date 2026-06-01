@@ -296,7 +296,8 @@ enum AssistantToolLoop {
         conversation: conversation,
         requestState: requestState),
       hasToolCalling: !requestState.definitions.isEmpty,
-      toolPrompt: tailToolPrompt
+      toolPrompt: tailToolPrompt,
+      toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
     let response = try await ChatProviderRouter.complete(request: request) { [weak store] streamed in
       let turnText =
@@ -338,7 +339,8 @@ enum AssistantToolLoop {
         conversation: conversation,
         requestState: requestState),
       hasToolCalling: !requestState.definitions.isEmpty,
-      toolPrompt: tailToolPrompt
+      toolPrompt: tailToolPrompt,
+      toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
     let response = try await ChatProviderRouter.complete(request: request) { _ in }
     try Task.checkCancellation()
@@ -905,7 +907,9 @@ enum AssistantToolLoop {
             settings: store.settings,
             context: requestState.context,
             hasTools: !requestState.definitions.isEmpty,
-            toolPrompt: tailToolPrompt)),
+            toolPrompt: tailToolPrompt,
+            toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty)
+        ),
       ]
     }
     if conversation.provider == .openAICompatible,
@@ -924,7 +928,8 @@ enum AssistantToolLoop {
         nativeContinuationMessages: state.nativeContinuation(
           conversation: conversation,
           requestState: requestState),
-        toolPrompt: tailToolPrompt
+        toolPrompt: tailToolPrompt,
+        toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
       ).map(debugPromptMessage)
     }
 
@@ -950,7 +955,10 @@ enum AssistantToolLoop {
             content: $0.content)
         }
       })
-    if let reminder = PromptComposer.toolCallingReminder(toolPrompt: tailToolPrompt) {
+    if let reminder = PromptComposer.toolCallingReminder(
+      toolPrompt: tailToolPrompt,
+      includeToolPrompt: !(requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty))
+    {
       messages.append(ConversationDebugPromptMessage(role: "user", content: reminder))
     }
     return messages

@@ -10,6 +10,7 @@ struct ChatCompletionRequest: Sendable {
   var nativeContinuationMessages: [OpenAIMessage] = []
   var hasToolCalling: Bool = false
   var toolPrompt: String = ""
+  var toolPromptInContext: Bool = false
   var messageLimitOverride: Int? = nil
 }
 
@@ -296,6 +297,7 @@ enum PromptComposer {
     context: String,
     hasTools: Bool = false,
     toolPrompt: String = "",
+    toolPromptInContext: Bool = false,
     messageLimitOverride: Int? = nil
   ) -> String {
     var sections: [String] = []
@@ -317,7 +319,10 @@ enum PromptComposer {
       instruction = settings.toolCallingMode.textProtocolFallback.appleInstruction(
         hasToolResults: hasToolResults)
     }
-    let reminder = toolCallingReminder(toolPrompt: hasTools ? toolPrompt : "") ?? ""
+    let reminder =
+      toolCallingReminder(
+        toolPrompt: hasTools ? toolPrompt : "",
+        includeToolPrompt: !toolPromptInContext) ?? ""
     sections.append(
       """
       Conversation so far:
@@ -341,6 +346,7 @@ enum PromptComposer {
     excludingMessageID: UUID? = nil,
     nativeContinuationMessages: [OpenAIMessage] = [],
     toolPrompt: String = "",
+    toolPromptInContext: Bool = false,
     messageLimitOverride: Int? = nil
   ) -> [OpenAIMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
@@ -371,7 +377,10 @@ enum PromptComposer {
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
-    if let reminder = toolCallingReminder(toolPrompt: toolPrompt) {
+    if let reminder = toolCallingReminder(
+      toolPrompt: toolPrompt,
+      includeToolPrompt: !toolPromptInContext)
+    {
       messages.append(OpenAIMessage(role: "user", content: reminder))
     }
     if let directive = ReasoningCompatibility.promptDirective(
@@ -383,13 +392,20 @@ enum PromptComposer {
     return messages
   }
 
-  static func toolCallingReminder(toolPrompt: String) -> String? {
+  static func toolCallingReminder(
+    toolPrompt: String,
+    includeToolPrompt: Bool = true
+  ) -> String? {
     let trimmed = toolPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
+    let toolPromptSection =
+      includeToolPrompt
+      ? trimmed
+      : "Use the available tools and tool-call format already described earlier in this request."
     return """
       Tool calling reminder for the latest user message:
 
-      \(trimmed)
+      \(toolPromptSection)
 
       Follow these tool instructions now. If the latest user message needs current, external, searched, fetched, calculated, or tool-only information, emit exactly one valid tool call and stop. Do not say you cannot access tools.
       """
@@ -762,6 +778,7 @@ enum AppleFoundationProvider {
       context: request.context,
       hasTools: request.hasToolCalling,
       toolPrompt: request.toolPrompt,
+      toolPromptInContext: request.toolPromptInContext,
       messageLimitOverride: request.messageLimitOverride
     )
     let options = GenerationOptions(maximumResponseTokens: 1_200)
@@ -1653,6 +1670,7 @@ enum OpenAICompatibleProvider {
               ? nil : request.assistantMessageID,
             nativeContinuationMessages: request.nativeContinuationMessages,
             toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
+            toolPromptInContext: request.toolPromptInContext,
             messageLimitOverride: request.messageLimitOverride
           ),
           stream: request.conversation.usesStreaming,

@@ -1867,13 +1867,13 @@ enum ToolCallParser {
   private static func isToolHeader(_ line: String) -> Bool {
     let trimmed = line.trimmingCharacters(in: .whitespaces)
     guard trimmed.hasSuffix(":") else { return false }
-    var stem = String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)
-    if stem.hasSuffix(")"),
-      let parenIdx = stem.lastIndex(of: "(")
-    {
-      stem = String(stem[..<parenIdx]).trimmingCharacters(in: .whitespaces)
+    let stem = String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)
+    guard let toolRange = stem.range(of: " tool", options: [.caseInsensitive]) else {
+      return false
     }
-    return stem.lowercased().hasSuffix(" tool")
+    let name = String(stem[..<toolRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+    let suffix = String(stem[toolRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+    return !name.isEmpty && (suffix.isEmpty || (suffix.hasPrefix("(") && suffix.hasSuffix(")")))
   }
 
   private static func makeEntry(header: String, body: String) -> ToolEntry? {
