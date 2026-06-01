@@ -1004,39 +1004,18 @@ extension String {
 }
 
 enum MCPHTTPClient {
-  static func send(server: MCPServer, method: String, params: [String: AnyCodable]? = nil)
-    async throws -> Data
-  {
-    guard server.hasValidEndpointURL,
-      let url = URL(string: server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines))
-    else {
-      throw ChatProviderError.invalidEndpoint(server.baseURL)
-    }
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-    request.timeoutInterval = 8
-    let body = JSONRPCRequest(id: Int.random(in: 1...Int.max), method: method, params: params)
-    request.httpBody = try JSONEncoder().encode(body)
-    let (data, response) = try await URLSession.shared.data(for: request)
-    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-      let snippet = String(data: data.prefix(400), encoding: .utf8) ?? ""
-      throw ChatProviderError.providerRequestFailed(
-        "MCP HTTP \(http.statusCode): \(snippet)")
-    }
-    return data
-  }
+  private static let protocolVersion = "2025-06-18"
+  private static let protocolVersionHeader = "MCP-Protocol-Version"
+  private static let sessionIDHeader = "Mcp-Session-Id"
+  private static let sessions = MCPSessionStore()
 
   static func fetchTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
     let data = try await send(server: server, method: "tools/list")
-    guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    guard let raw = jsonObject(from: data) else {
       throw ChatProviderError.providerRequestFailed("MCP returned non-JSON response.")
     }
-    if let err = raw["error"] as? [String: Any] {
-      let message = (err["message"] as? String) ?? "unknown"
-      let codeSuffix = (err["code"] as? Int).map { " (code \($0))" } ?? ""
-      throw ChatProviderError.providerRequestFailed("MCP error\(codeSuffix): \(message)")
+    if let error = responseError(from: raw) {
+      throw error
     }
     let result = raw["result"] as? [String: Any] ?? [:]
     let toolList = result["tools"] as? [[String: Any]] ?? []
@@ -1064,7 +1043,19 @@ enum MCPHTTPClient {
       "arguments": AnyCodable(argsCodable),
     ]
     let data = try await send(server: server, method: "tools/call", params: params)
-    let decoded = try JSONDecoder().decode(MCPToolCallResponse.self, from: data)
+    let responseData: Data
+    if let raw = jsonObject(from: data),
+      let error = responseError(from: raw)
+    {
+      throw error
+    } else if let raw = jsonObject(from: data),
+      let normalized = try? JSONSerialization.data(withJSONObject: raw)
+    {
+      responseData = normalized
+    } else {
+      responseData = data
+    }
+    let decoded = try JSONDecoder().decode(MCPToolCallResponse.self, from: responseData)
     if let err = decoded.error {
       let message = err.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       let codeSuffix = err.code.map { " (code \($0))" } ?? ""
@@ -1077,6 +1068,196 @@ enum MCPHTTPClient {
       return "Error: \(text.isEmpty ? "tool reported failure" : text)"
     }
     return text.isEmpty ? "(no output)" : text
+  }
+
+  static func resetSession(for serverID: UUID) async {
+    await sessions.reset(serverID)
+  }
+
+  static func resetAllSessions() async {
+    await sessions.resetAll()
+  }
+
+  private static func send(
+    server: MCPServer,
+    method: String,
+    params: [String: AnyCodable]? = nil,
+    retryingInvalidSession: Bool = true
+  ) async throws -> Data {
+    let sessionID = try await ensureSession(for: server)
+    do {
+      let response = try await sendRaw(
+        server: server,
+        method: method,
+        params: params,
+        sessionID: sessionID)
+      if let raw = jsonObject(from: response.data),
+        let error = responseError(from: raw)
+      {
+        if retryingInvalidSession && error.isInvalidSessionID {
+          await sessions.reset(server.id)
+          return try await send(
+            server: server,
+            method: method,
+            params: params,
+            retryingInvalidSession: false)
+        }
+        throw error
+      }
+      return response.data
+    } catch {
+      if retryingInvalidSession && isInvalidSessionID(error) {
+        await sessions.reset(server.id)
+        return try await send(
+          server: server,
+          method: method,
+          params: params,
+          retryingInvalidSession: false)
+      }
+      throw error
+    }
+  }
+
+  private static func ensureSession(for server: MCPServer) async throws -> String? {
+    let baseURL = try normalizedBaseURL(for: server).absoluteString
+    if let cached = await sessions.session(for: server.id, baseURL: baseURL) {
+      return cached.id
+    }
+
+    let response = try await sendRaw(
+      server: server,
+      method: "initialize",
+      params: initializeParams,
+      sessionID: nil)
+    if let raw = jsonObject(from: response.data),
+      let error = responseError(from: raw)
+    {
+      if error.isMethodNotFound {
+        await sessions.set(nil, for: server.id, baseURL: baseURL)
+        return nil
+      }
+      throw error
+    }
+
+    await sessions.set(response.sessionID, for: server.id, baseURL: baseURL)
+    try await sendInitializedNotification(server: server, sessionID: response.sessionID)
+    return response.sessionID
+  }
+
+  private static func sendInitializedNotification(server: MCPServer, sessionID: String?)
+    async throws
+  {
+    let response = try await sendRaw(
+      server: server,
+      method: "notifications/initialized",
+      params: nil,
+      sessionID: sessionID,
+      isNotification: true)
+    if let raw = jsonObject(from: response.data),
+      let error = responseError(from: raw)
+    {
+      throw error
+    }
+  }
+
+  private static func sendRaw(
+    server: MCPServer,
+    method: String,
+    params: [String: AnyCodable]? = nil,
+    sessionID: String?,
+    isNotification: Bool = false
+  ) async throws -> MCPHTTPResponse {
+    let url = try normalizedBaseURL(for: server)
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+    request.setValue(protocolVersion, forHTTPHeaderField: protocolVersionHeader)
+    if let sessionID, !sessionID.isEmpty {
+      request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
+    }
+    request.timeoutInterval = 8
+    let body = JSONRPCRequest(
+      id: isNotification ? nil : Int.random(in: 1...Int.max),
+      method: method,
+      params: params)
+    request.httpBody = try JSONEncoder().encode(body)
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard let http = response as? HTTPURLResponse else {
+      return MCPHTTPResponse(data: data, sessionID: nil)
+    }
+    if !(200..<300).contains(http.statusCode) {
+      let snippet = String(data: data.prefix(400), encoding: .utf8) ?? ""
+      throw MCPHTTPError(statusCode: http.statusCode, body: snippet, hadSessionID: sessionID != nil)
+    }
+    let returnedSessionID =
+      http.value(forHTTPHeaderField: sessionIDHeader)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return MCPHTTPResponse(
+      data: data, sessionID: returnedSessionID?.isEmpty == false ? returnedSessionID : nil)
+  }
+
+  private static func normalizedBaseURL(for server: MCPServer) throws -> URL {
+    let baseURL = server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard server.hasValidEndpointURL, let url = URL(string: baseURL) else {
+      throw ChatProviderError.invalidEndpoint(server.baseURL)
+    }
+    return url
+  }
+
+  private static var initializeParams: [String: AnyCodable] {
+    [
+      "protocolVersion": AnyCodable(protocolVersion),
+      "capabilities": AnyCodable([String: AnyCodable]()),
+      "clientInfo": AnyCodable([
+        "name": AnyCodable("PocketMai"),
+        "version": AnyCodable(clientVersion),
+      ]),
+    ]
+  }
+
+  private static var clientVersion: String {
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+  }
+
+  private static func responseError(from raw: [String: Any]) -> MCPResponseError? {
+    guard let err = raw["error"] as? [String: Any] else { return nil }
+    let message = (err["message"] as? String) ?? "unknown"
+    return MCPResponseError(code: err["code"] as? Int, message: message)
+  }
+
+  private static func isInvalidSessionID(_ error: Error) -> Bool {
+    if let error = error as? MCPHTTPError {
+      return error.isInvalidSessionID
+    }
+    if let error = error as? MCPResponseError {
+      return error.isInvalidSessionID
+    }
+    return error.localizedDescription.localizedCaseInsensitiveContains("invalid session")
+  }
+
+  private static func jsonObject(from data: Data) -> [String: Any]? {
+    if let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      return raw
+    }
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
+    for event in text.components(separatedBy: "\n\n") {
+      let payload = event.split(whereSeparator: \.isNewline)
+        .compactMap { line -> String? in
+          guard line.hasPrefix("data:") else { return nil }
+          return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !payload.isEmpty,
+        let payloadData = payload.data(using: .utf8),
+        let raw = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+      else {
+        continue
+      }
+      return raw
+    }
+    return nil
   }
 
   private static func anyCodable(_ value: AgentToolArgumentValue) -> AnyCodable? {
@@ -1099,9 +1280,77 @@ enum MCPHTTPClient {
   }
 }
 
+private actor MCPSessionStore {
+  private var sessions: [UUID: MCPSession] = [:]
+
+  func session(for serverID: UUID, baseURL: String) -> MCPSession? {
+    guard let session = sessions[serverID], session.baseURL == baseURL else {
+      return nil
+    }
+    return session
+  }
+
+  func set(_ sessionID: String?, for serverID: UUID, baseURL: String) {
+    sessions[serverID] = MCPSession(id: sessionID, baseURL: baseURL)
+  }
+
+  func reset(_ serverID: UUID) {
+    sessions[serverID] = nil
+  }
+
+  func resetAll() {
+    sessions.removeAll()
+  }
+}
+
+private struct MCPSession: Sendable {
+  var id: String?
+  var baseURL: String
+}
+
+private struct MCPHTTPResponse {
+  var data: Data
+  var sessionID: String?
+}
+
+private struct MCPHTTPError: LocalizedError {
+  var statusCode: Int
+  var body: String
+  var hadSessionID: Bool
+
+  var isInvalidSessionID: Bool {
+    statusCode == 404 && hadSessionID
+      || body.localizedCaseInsensitiveContains("invalid session")
+  }
+
+  var errorDescription: String? {
+    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "MCP HTTP \(statusCode)." : "MCP HTTP \(statusCode): \(trimmed)"
+  }
+}
+
+private struct MCPResponseError: LocalizedError {
+  var code: Int?
+  var message: String
+
+  var isInvalidSessionID: Bool {
+    message.localizedCaseInsensitiveContains("invalid session")
+  }
+
+  var isMethodNotFound: Bool {
+    code == -32601
+  }
+
+  var errorDescription: String? {
+    let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    let codeSuffix = code.map { " (code \($0))" } ?? ""
+    return "MCP error\(codeSuffix): \(trimmed.isEmpty ? "unknown" : trimmed)"
+  }
+}
+
 private struct JSONRPCRequest: Encodable {
   var jsonrpc = "2.0"
-  var id: Int
+  var id: Int?
   var method: String
   var params: [String: AnyCodable]?
 }

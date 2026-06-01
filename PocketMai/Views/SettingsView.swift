@@ -1607,6 +1607,7 @@ struct SettingsView: View {
           store.settings.defaultEnabledMCPTools.filter { !$0.hasPrefix(prefix) })
         store.mcpStatuses[id] = nil
         store.mcpTools[id] = nil
+        Task { await MCPHTTPClient.resetSession(for: id) }
       }
       navigationPath.removeAll { route in
         if case .mcpServer(let id) = route {
@@ -1692,6 +1693,7 @@ struct SettingsView: View {
     guard let draftMCPServer, !path.contains(.mcpServer(draftMCPServer.id)) else { return }
     store.mcpStatuses[draftMCPServer.id] = nil
     store.mcpTools[draftMCPServer.id] = nil
+    Task { await MCPHTTPClient.resetSession(for: draftMCPServer.id) }
     self.draftMCPServer = nil
   }
 
@@ -3682,6 +3684,9 @@ private struct MCPServerDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Binding private var savedServer: MCPServer
   @State private var server: MCPServer
+  @State private var draftStatus: EndpointConnectionState = .unknown
+  @State private var draftTools: [MCPToolDescriptor] = []
+  @State private var draftStatusBaseURL: String
   @State private var toastMessage: String?
   @FocusState private var isNameFocused: Bool
   private let isNew: Bool
@@ -3694,6 +3699,8 @@ private struct MCPServerDetailView: View {
   ) {
     self._savedServer = server
     self._server = State(initialValue: server.wrappedValue)
+    self._draftStatusBaseURL = State(
+      initialValue: MCPServerNameResolution.savedBaseURL(for: server.wrappedValue))
     self.isNew = isNew
     self.onSave = onSave
   }
@@ -3729,16 +3736,12 @@ private struct MCPServerDetailView: View {
 
       Section {
         Button {
-          if hasUnsavedConnectionChanges {
-            showToast("Save this MCP server before refreshing tools.")
-            return
-          }
           if let message = MCPServerNameResolution.endpointValidationMessage(for: server) {
             showToast(message)
             return
           }
           let snapshot = normalizedServerForSaving
-          Task { await store.refreshMCP(snapshot) }
+          refreshTools(snapshot)
         } label: {
           if isChecking {
             HStack {
@@ -3750,18 +3753,15 @@ private struct MCPServerDetailView: View {
           }
         }
         .disabled(
-          isChecking || hasUnsavedConnectionChanges
-            || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
+          isChecking || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
       } header: {
         Text("Connection")
       } footer: {
         statusFooter
       }
 
-      if !hasUnsavedConnectionChanges,
-        let tools = store.mcpTools[server.id],
-        !tools.isEmpty
-      {
+      if !currentTools.isEmpty {
+        let tools = currentTools
         Section("Available Tools (\(tools.count))") {
           ForEach(tools) { tool in
             VStack(alignment: .leading, spacing: 4) {
@@ -3794,6 +3794,11 @@ private struct MCPServerDetailView: View {
         isNameFocused = true
       }
     }
+    .onDisappear {
+      if hasUnsavedConnectionChanges {
+        Task { await MCPHTTPClient.resetSession(for: server.id) }
+      }
+    }
   }
 
   private var navigationTitle: String {
@@ -3813,8 +3818,26 @@ private struct MCPServerDetailView: View {
       != MCPServerNameResolution.savedBaseURL(for: savedServer)
   }
 
+  private var draftStateMatchesCurrentEndpoint: Bool {
+    draftStatusBaseURL == MCPServerNameResolution.savedBaseURL(for: server)
+  }
+
+  private var currentStatus: EndpointConnectionState {
+    if hasUnsavedConnectionChanges {
+      return draftStateMatchesCurrentEndpoint ? draftStatus : .unknown
+    }
+    return store.mcpStatuses[server.id] ?? .unknown
+  }
+
+  private var currentTools: [MCPToolDescriptor] {
+    if hasUnsavedConnectionChanges {
+      return draftStateMatchesCurrentEndpoint ? draftTools : []
+    }
+    return store.mcpTools[server.id] ?? []
+  }
+
   private var isChecking: Bool {
-    if case .checking = store.mcpStatuses[server.id] {
+    if case .checking = currentStatus {
       return true
     }
     return false
@@ -3822,24 +3845,51 @@ private struct MCPServerDetailView: View {
 
   @ViewBuilder
   private var statusFooter: some View {
-    if hasUnsavedConnectionChanges {
-      Text("Save this MCP server before refreshing tools.")
-    } else {
-      let status = store.mcpStatuses[server.id] ?? .unknown
-      let tools = store.mcpTools[server.id] ?? []
-      switch status {
-      case .unknown:
-        Text("Tap “Refresh Tools” to connect and list the tools this server provides.")
-      case .checking:
-        Text("Connecting…")
-      case .available:
-        if tools.isEmpty {
-          Text("Connected, but the server reports no tools.")
-        } else {
-          Text("Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s") available.")
+    let status = currentStatus
+    let tools = currentTools
+    switch status {
+    case .unknown:
+      Text("Tap “Refresh Tools” to connect and list the tools this server provides.")
+    case .checking:
+      Text("Connecting…")
+    case .available:
+      if tools.isEmpty {
+        Text("Connected, but the server reports no tools.")
+      } else {
+        Text("Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s") available.")
+      }
+    case .failed(let message):
+      Text(message).foregroundStyle(.red)
+    }
+  }
+
+  private func refreshTools(_ snapshot: MCPServer) {
+    guard hasUnsavedConnectionChanges else {
+      Task { await store.refreshMCP(snapshot) }
+      return
+    }
+
+    draftStatusBaseURL = snapshot.baseURL
+    draftStatus = .checking
+    draftTools = []
+    Task {
+      do {
+        let tools = try await MCPHTTPClient.fetchTools(server: snapshot)
+        await MainActor.run {
+          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
+            return
+          }
+          draftTools = tools
+          draftStatus = .available
         }
-      case .failed(let message):
-        Text(message).foregroundStyle(.red)
+      } catch {
+        await MainActor.run {
+          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
+            return
+          }
+          draftTools = []
+          draftStatus = .failed(error.localizedDescription)
+        }
       }
     }
   }
@@ -3856,13 +3906,31 @@ private struct MCPServerDetailView: View {
     let normalized = normalizedServerForSaving
     let connectionChanged =
       normalized.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
+    server = normalized
     savedServer = normalized
     onSave?(normalized)
     if connectionChanged {
-      store.resetMCPStatus(normalized.id)
+      applyDraftConnectionStateAfterSave(for: normalized)
     }
     store.saveSettings()
     dismiss()
+  }
+
+  private func applyDraftConnectionStateAfterSave(for server: MCPServer) {
+    guard draftStatusBaseURL == server.baseURL else {
+      store.resetMCPStatus(server.id)
+      return
+    }
+    switch draftStatus {
+    case .available:
+      store.mcpTools[server.id] = draftTools
+      store.mcpStatuses[server.id] = .available
+    case .failed(let message):
+      store.mcpTools[server.id] = nil
+      store.mcpStatuses[server.id] = .failed(message)
+    case .unknown, .checking:
+      store.resetMCPStatus(server.id)
+    }
   }
 
   private func showToast(_ message: String) {

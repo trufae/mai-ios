@@ -542,6 +542,7 @@ final class AppStore: ObservableObject {
     endpointVoices.removeAll()
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    Task { await MCPHTTPClient.resetAllSessions() }
     errorMessage = nil
     isUpdatingMemory = false
     isCompacting = false
@@ -2046,6 +2047,7 @@ final class AppStore: ObservableObject {
   func resetMCPStatus(_ id: UUID) {
     mcpStatuses[id] = .unknown
     mcpTools[id] = nil
+    Task { await MCPHTTPClient.resetSession(for: id) }
   }
 
   func refreshMCP(_ server: MCPServer) async {
@@ -3192,6 +3194,7 @@ final class AppStore: ObservableObject {
     }
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    Task { await MCPHTTPClient.resetAllSessions() }
   }
 
   private func applyConversationsBackup(_ payload: [Conversation]) {
@@ -3245,6 +3248,7 @@ final class AppStore: ObservableObject {
     settings.defaultEnabledMCPTools.removeAll()
     mcpStatuses.removeAll()
     mcpTools.removeAll()
+    Task { await MCPHTTPClient.resetAllSessions() }
     saveSettings()
   }
 
