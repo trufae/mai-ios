@@ -1163,6 +1163,33 @@ enum MCPHTTPClient {
     await sessions.resetAll()
   }
 
+  static func isAvailabilityFailure(_ error: Error) -> Bool {
+    if error is URLError {
+      return true
+    }
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain {
+      return true
+    }
+    if error is DecodingError {
+      return true
+    }
+    if error is MCPHTTPError {
+      return true
+    }
+    if let error = error as? ChatProviderError {
+      switch error {
+      case .invalidEndpoint, .emptyResponse:
+        return true
+      case .providerRequestFailed(let message):
+        return message.localizedCaseInsensitiveContains("non-JSON")
+      case .missingEndpoint, .appleModelUnavailable, .providerUnavailableInAirplaneMode:
+        return false
+      }
+    }
+    return false
+  }
+
   private static func send(
     server: MCPServer,
     method: String,

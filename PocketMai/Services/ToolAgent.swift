@@ -204,13 +204,15 @@ enum ToolAgentRegistry {
     for conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]] = [:],
-    mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
+    mcpResources: [UUID: [MCPResourceDescriptor]] = [:],
+    mcpStatuses: [UUID: EndpointConnectionState] = [:]
   ) -> [ToolDefinition] {
     let fullDefinitions = definitions(
       for: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     guard settings.useToolProxy else { return fullDefinitions }
     return fullDefinitions.isEmpty ? [] : ToolProxy.definitions
   }
@@ -219,7 +221,8 @@ enum ToolAgentRegistry {
     for conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]] = [:],
-    mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
+    mcpResources: [UUID: [MCPResourceDescriptor]] = [:],
+    mcpStatuses: [UUID: EndpointConnectionState] = [:]
   ) -> [ToolDefinition] {
     guard conversation.toolsEnabled else { return [] }
     var defs = BuiltInToolCatalog.definitions(
@@ -229,6 +232,7 @@ enum ToolAgentRegistry {
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidEndpointURL
       && conversation.enabledMCPServers.contains(server.id)
+      && mcpStatuses[server.id]?.isAvailable == true
     {
       let tools = mcpTools[server.id] ?? []
       for tool in tools {
@@ -341,12 +345,14 @@ enum ToolAgentRegistry {
       for: conversation,
       settings: store.settings,
       mcpTools: store.mcpTools,
-      mcpResources: store.mcpResources)
+      mcpResources: store.mcpResources,
+      mcpStatuses: store.mcpStatuses)
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: store.settings,
       mcpTools: store.mcpTools,
-      mcpResources: store.mcpResources)
+      mcpResources: store.mcpResources,
+      mcpStatuses: store.mcpStatuses)
     let visibleCall = normalized(call: call, definitions: visibleDefinitions)
     guard definitionExists(named: visibleCall.name, in: visibleDefinitions) else {
       return unavailableToolError(name: visibleCall.name)
@@ -410,6 +416,7 @@ enum ToolAgentRegistry {
     for server in store.settings.mcpServers
     where server.isEnabled && server.hasValidEndpointURL
       && conversation.enabledMCPServers.contains(server.id)
+      && store.mcpStatuses[server.id]?.isAvailable == true
     {
       let tools = store.mcpTools[server.id] ?? []
       guard tools.contains(where: { $0.name == call.name }) else { continue }
@@ -421,6 +428,9 @@ enum ToolAgentRegistry {
         return try await MCPHTTPClient.callTool(
           server: server, name: call.name, arguments: call.argumentValues)
       } catch {
+        if MCPHTTPClient.isAvailabilityFailure(error) {
+          store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)
+        }
         return "Error calling MCP tool '\(call.name)': \(error.localizedDescription)"
       }
     }
@@ -495,6 +505,9 @@ enum MCPResourceTool {
     do {
       return try await MCPHTTPClient.readResource(server: server, uri: trimmedURI)
     } catch {
+      if MCPHTTPClient.isAvailabilityFailure(error) {
+        store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)
+      }
       return "Error reading MCP resource '\(trimmedURI)': \(error.localizedDescription)"
     }
   }
@@ -506,6 +519,7 @@ enum MCPResourceTool {
   ) -> MCPServer? {
     let enabledServers = store.settings.mcpServers.filter {
       $0.isEnabled && $0.hasValidEndpointURL && conversation.enabledMCPServers.contains($0.id)
+        && store.mcpStatuses[$0.id]?.isAvailable == true
     }
     if let exact = enabledServers.first(where: { server in
       (store.mcpResources[server.id] ?? []).contains { $0.uri == uri }
@@ -525,7 +539,10 @@ enum MCPResourceTool {
     store: AppStore
   ) -> [String] {
     store.settings.mcpServers
-      .filter { $0.isEnabled && conversation.enabledMCPServers.contains($0.id) }
+      .filter {
+        $0.isEnabled && conversation.enabledMCPServers.contains($0.id)
+          && store.mcpStatuses[$0.id]?.isAvailable == true
+      }
       .flatMap { store.mcpResources[$0.id] ?? [] }
       .map(\.uri)
       .sorted()

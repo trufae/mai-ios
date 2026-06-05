@@ -103,6 +103,10 @@ enum AssistantToolLoop {
       conversationID: conversationID,
       assistantMessageID: assistantID)
 
+    if let conversation = store.conversation(withID: conversationID) {
+      await store.refreshEnabledMCPServers(for: conversation)
+    }
+
     while state.toolCallCount < maxToolCalls && state.repairTurnCount < maxRepairTurns {
       try Task.checkCancellation()
       guard let conversation = store.conversation(withID: conversationID) else { return }
@@ -204,6 +208,8 @@ enum AssistantToolLoop {
     let maxToolCalls = maxToolCallsPerTurn(settings: settings)
     let maxRepairTurns = maxRepairTurnsPerTurn(settings: settings)
 
+    await store.refreshEnabledMCPServers(for: conversation, settings: settings)
+
     while state.toolCallCount < maxToolCalls && state.repairTurnCount < maxRepairTurns {
       try Task.checkCancellation()
       let requestState = makeRequestState(
@@ -211,7 +217,8 @@ enum AssistantToolLoop {
         baseContext: baseContext,
         settings: settings,
         mcpTools: store.mcpTools,
-        mcpResources: store.mcpResources)
+        mcpResources: store.mcpResources,
+        mcpStatuses: store.mcpStatuses)
       let response = try await requestModelResponseIsolated(
         conversation: conversation,
         requestState: requestState,
@@ -226,6 +233,7 @@ enum AssistantToolLoop {
         settings: settings,
         mcpTools: store.mcpTools,
         mcpResources: store.mcpResources,
+        mcpStatuses: store.mcpStatuses,
         store: store,
         completedToolRuns: state.completedToolRuns,
         remainingToolCalls: maxToolCalls - state.toolCallCount)
@@ -421,6 +429,7 @@ enum AssistantToolLoop {
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
     mcpResources: [UUID: [MCPResourceDescriptor]],
+    mcpStatuses: [UUID: EndpointConnectionState],
     store: AppStore,
     completedToolRuns: [String: String],
     remainingToolCalls: Int
@@ -431,7 +440,8 @@ enum AssistantToolLoop {
       conversation: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     let parseDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let calls = ToolAgentRegistry.parseCalls(
@@ -478,6 +488,7 @@ enum AssistantToolLoop {
       settings: settings,
       mcpTools: mcpTools,
       mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses,
       store: store)
     return .toolRun(output)
   }
@@ -541,6 +552,7 @@ enum AssistantToolLoop {
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
     mcpResources: [UUID: [MCPResourceDescriptor]],
+    mcpStatuses: [UUID: EndpointConnectionState],
     store: AppStore
   ) async throws -> RunOutput {
     var visibleText = response
@@ -561,6 +573,7 @@ enum AssistantToolLoop {
         settings: settings,
         mcpTools: mcpTools,
         mcpResources: mcpResources,
+        mcpStatuses: mcpStatuses,
         store: store)
       runBlocks.append(ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result))
       results.append(result)
@@ -660,13 +673,15 @@ enum AssistantToolLoop {
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
     mcpResources: [UUID: [MCPResourceDescriptor]],
+    mcpStatuses: [UUID: EndpointConnectionState],
     store: AppStore
   ) async throws -> CallResult {
     let currentDefinitions = currentVisibleDefinitions(
       conversation: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     let fallbackCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
     guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
       return CallResult(
@@ -701,7 +716,8 @@ enum AssistantToolLoop {
       conversation: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
     else {
       let unavailableCall = ToolAgentRegistry.normalized(
@@ -735,7 +751,8 @@ enum AssistantToolLoop {
       baseContext: baseContext,
       settings: store.settings,
       mcpTools: store.mcpTools,
-      mcpResources: store.mcpResources)
+      mcpResources: store.mcpResources,
+      mcpStatuses: store.mcpStatuses)
   }
 
   private static func makeRequestState(
@@ -743,13 +760,15 @@ enum AssistantToolLoop {
     baseContext: String,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]]
+    mcpResources: [UUID: [MCPResourceDescriptor]],
+    mcpStatuses: [UUID: EndpointConnectionState]
   ) -> RequestState {
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
       settings: settings,
@@ -1020,20 +1039,23 @@ enum AssistantToolLoop {
       for: conversation,
       settings: store.settings,
       mcpTools: store.mcpTools,
-      mcpResources: store.mcpResources)
+      mcpResources: store.mcpResources,
+      mcpStatuses: store.mcpStatuses)
   }
 
   private static func currentVisibleDefinitions(
     conversation: Conversation,
     settings: AppSettings,
     mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]]
+    mcpResources: [UUID: [MCPResourceDescriptor]],
+    mcpStatuses: [UUID: EndpointConnectionState]
   ) -> [ToolDefinition] {
     ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
   }
 
   private static func availableCall(

@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 import UIKit
 
-enum EndpointConnectionState: Equatable {
+enum EndpointConnectionState: Equatable, Sendable {
   case unknown
   case checking
   case available
@@ -25,6 +25,13 @@ enum EndpointConnectionState: Equatable {
     case .available: .green
     case .failed: .red
     }
+  }
+
+  var isAvailable: Bool {
+    if case .available = self {
+      return true
+    }
+    return false
   }
 }
 
@@ -2055,10 +2062,15 @@ final class AppStore: ObservableObject {
 
   func refreshMCP(_ server: MCPServer) async {
     guard !settings.airplaneModeEnabled else {
+      mcpTools[server.id] = nil
+      mcpResources[server.id] = nil
       mcpStatuses[server.id] = .failed("Airplane mode is enabled.")
+      await MCPHTTPClient.resetSession(for: server.id)
       return
     }
     mcpStatuses[server.id] = .checking
+    mcpTools[server.id] = nil
+    mcpResources[server.id] = nil
     do {
       let catalog = try await MCPHTTPClient.fetchCatalog(server: server)
       mcpTools[server.id] = catalog.tools
@@ -2069,7 +2081,39 @@ final class AppStore: ObservableObject {
       mcpTools[server.id] = nil
       mcpResources[server.id] = nil
       mcpStatuses[server.id] = .failed(error.localizedDescription)
+      await MCPHTTPClient.resetSession(for: server.id)
     }
+  }
+
+  func refreshEnabledMCPServers(
+    for conversation: Conversation,
+    settings effectiveSettings: AppSettings? = nil
+  ) async {
+    let settings = effectiveSettings ?? self.settings
+    guard conversation.toolsEnabled else { return }
+    guard !settings.airplaneModeEnabled else {
+      for server in settings.mcpServers
+      where conversation.enabledMCPServers.contains(server.id) {
+        mcpTools[server.id] = nil
+        mcpResources[server.id] = nil
+        mcpStatuses[server.id] = .failed("Airplane mode is enabled.")
+        await MCPHTTPClient.resetSession(for: server.id)
+      }
+      return
+    }
+    for server in settings.mcpServers
+    where server.isEnabled && server.hasValidEndpointURL
+      && conversation.enabledMCPServers.contains(server.id)
+    {
+      await refreshMCP(server)
+    }
+  }
+
+  func markMCPUnavailable(serverID: UUID, message: String) {
+    mcpTools[serverID] = nil
+    mcpResources[serverID] = nil
+    mcpStatuses[serverID] = .failed(message)
+    Task { await MCPHTTPClient.resetSession(for: serverID) }
   }
 
   private func seedEnabledMCPToolsIfNeeded(serverID: UUID, tools: [MCPToolDescriptor]) {
@@ -2633,12 +2677,14 @@ final class AppStore: ObservableObject {
       for: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
       for: conversation,
       settings: settings,
       mcpTools: mcpTools,
-      mcpResources: mcpResources)
+      mcpResources: mcpResources,
+      mcpStatuses: mcpStatuses)
     let providerNativeToolCalling =
       settings.toolCallingMode == .native
       && conversation.provider.supportsNativeToolCalling
@@ -2718,7 +2764,8 @@ final class AppStore: ObservableObject {
           id: server.id,
           name: server.name,
           isEnabled: server.isEnabled,
-          hasValidScheme: server.hasValidEndpointURL)
+          hasValidScheme: server.hasValidEndpointURL,
+          connectionStatus: (mcpStatuses[server.id] ?? .unknown).statusText)
       },
       nativeToolSettings: debugNativeToolSettings(settings.toolSettings),
       fullToolDefinitions: debugDefinitions(fullDefinitions),

@@ -1366,6 +1366,7 @@ struct ConversationDebugMCPServer: Codable, Equatable, Sendable {
   var name: String
   var isEnabled: Bool
   var hasValidScheme: Bool
+  var connectionStatus: String
 }
 
 struct ConversationDebugToolDefinition: Codable, Equatable, Sendable {
