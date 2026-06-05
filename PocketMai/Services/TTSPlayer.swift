@@ -21,10 +21,10 @@ final class TTSPlayer: NSObject, ObservableObject {
   private var providerSpeechTask: Task<Void, Never>?
   private var audioPlayer: AVAudioPlayer?
   private var audioFileURL: URL?
-  private var recordingEngine: AVAudioEngine?
-  private var recordingPlayerNode: AVAudioPlayerNode?
-  private var recordingGainUnit: AVAudioUnitEQ?
-  private var recordingPlaybackID: UUID?
+  private var boostedAudioEngine: AVAudioEngine?
+  private var boostedAudioPlayerNode: AVAudioPlayerNode?
+  private var boostedAudioGainUnit: AVAudioUnitEQ?
+  private var boostedAudioPlaybackID: UUID?
   private var speechGeneration = 0
 
   override init() {
@@ -216,7 +216,7 @@ final class TTSPlayer: NSObject, ObservableObject {
   ) {
     do {
       guard speechGeneration == generation else { return }
-      if try beginBoostedRecordingSpeaking(url: url, generation: generation) {
+      if try beginBoostedAudioFileSpeaking(url: url, generation: generation) {
         return
       }
       let player = try AVAudioPlayer(contentsOf: url)
@@ -232,8 +232,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     handleStopped()
   }
 
-  private func beginBoostedRecordingSpeaking(url: URL, generation: Int) throws -> Bool {
-    cleanupRecordingAudioEngine()
+  private func beginBoostedAudioFileSpeaking(url: URL, generation: Int) throws -> Bool {
+    cleanupBoostedAudioEngine()
 
     let file = try AVAudioFile(forReading: url)
     guard file.length > 0 else { return false }
@@ -242,7 +242,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     let playerNode = AVAudioPlayerNode()
     let gainUnit = AVAudioUnitEQ(numberOfBands: 1)
     gainUnit.bands.first?.bypass = true
-    gainUnit.globalGain = recordingPlaybackGainDecibels(for: file)
+    gainUnit.globalGain = speechPlaybackGainDecibels(for: file)
 
     engine.attach(playerNode)
     engine.attach(gainUnit)
@@ -251,17 +251,17 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     try engine.start()
     let playbackID = UUID()
-    recordingEngine = engine
-    recordingPlayerNode = playerNode
-    recordingGainUnit = gainUnit
-    recordingPlaybackID = playbackID
+    boostedAudioEngine = engine
+    boostedAudioPlayerNode = playerNode
+    boostedAudioGainUnit = gainUnit
+    boostedAudioPlaybackID = playbackID
 
     playerNode.scheduleFile(file, at: nil) { [weak self] in
       Task { @MainActor in
         guard
           let self,
           self.speechGeneration == generation,
-          self.recordingPlaybackID == playbackID
+          self.boostedAudioPlaybackID == playbackID
         else {
           return
         }
@@ -283,6 +283,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
     utterance.rate = Float(max(0, min(1, speech.voice.rate)))
     utterance.pitchMultiplier = Float(max(0.5, min(2, speech.voice.pitch)))
+    utterance.volume = 1.0
 
     synthesizer.speak(utterance)
   }
@@ -338,11 +339,16 @@ final class TTSPlayer: NSObject, ObservableObject {
       let url = candidateURL
       let playableData = normalizedProviderAudioData(data, fileExtension: fileExtension)
       try playableData.write(to: url, options: .atomic)
+      audioFileURL = url
+      if try beginBoostedAudioFileSpeaking(url: url, generation: generation) {
+        providerSpeechTask = nil
+        return true
+      }
       let player = try AVAudioPlayer(contentsOf: url)
       player.delegate = self
+      player.volume = 1.0
       player.prepareToPlay()
       if player.play() {
-        audioFileURL = url
         audioPlayer = player
         providerSpeechTask = nil
         return true
@@ -364,8 +370,8 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   func pause() {
-    if let recordingPlayerNode, recordingPlayerNode.isPlaying, !isPaused {
-      recordingPlayerNode.pause()
+    if let boostedAudioPlayerNode, boostedAudioPlayerNode.isPlaying, !isPaused {
+      boostedAudioPlayerNode.pause()
       isPaused = true
       updateNowPlaying()
       return
@@ -382,8 +388,8 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   func resume() {
     guard isPaused else { return }
-    if let recordingPlayerNode {
-      recordingPlayerNode.play()
+    if let boostedAudioPlayerNode {
+      boostedAudioPlayerNode.play()
       isPaused = false
       updateNowPlaying()
       return
@@ -404,7 +410,7 @@ final class TTSPlayer: NSObject, ObservableObject {
       synthesizer.stopSpeaking(at: .immediate)
       return
     }
-    if providerSpeechTask != nil || audioPlayer != nil || recordingPlayerNode != nil {
+    if providerSpeechTask != nil || audioPlayer != nil || boostedAudioPlayerNode != nil {
       cancelProviderSpeech()
       handleStopped()
       return
@@ -417,9 +423,9 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   private func handleFinished() {
-    if audioPlayer != nil || recordingPlayerNode != nil {
+    if audioPlayer != nil || boostedAudioPlayerNode != nil {
       audioPlayer = nil
-      cleanupRecordingAudioEngine()
+      cleanupBoostedAudioEngine()
       cleanupAudioFile()
     }
     if !queuedSpeech.isEmpty {
@@ -446,7 +452,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     providerSpeechTask = nil
     audioPlayer?.stop()
     audioPlayer = nil
-    cleanupRecordingAudioEngine()
+    cleanupBoostedAudioEngine()
     cleanupAudioFile()
     isSpeaking = false
     isPaused = false
@@ -461,7 +467,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   private var hasActiveSpeech: Bool {
     synthesizer.isSpeaking || providerSpeechTask != nil || audioPlayer != nil
-      || recordingPlayerNode != nil
+      || boostedAudioPlayerNode != nil
   }
 
   private func cancelActiveSpeech() {
@@ -478,27 +484,27 @@ final class TTSPlayer: NSObject, ObservableObject {
     providerSpeechTask = nil
     audioPlayer?.stop()
     audioPlayer = nil
-    cleanupRecordingAudioEngine()
+    cleanupBoostedAudioEngine()
     cleanupAudioFile()
   }
 
-  private func cleanupRecordingAudioEngine() {
-    let engine = recordingEngine
-    recordingPlayerNode?.stop()
+  private func cleanupBoostedAudioEngine() {
+    let engine = boostedAudioEngine
+    boostedAudioPlayerNode?.stop()
     engine?.stop()
-    if let recordingPlayerNode {
-      engine?.detach(recordingPlayerNode)
+    if let boostedAudioPlayerNode {
+      engine?.detach(boostedAudioPlayerNode)
     }
-    if let recordingGainUnit {
-      engine?.detach(recordingGainUnit)
+    if let boostedAudioGainUnit {
+      engine?.detach(boostedAudioGainUnit)
     }
-    recordingPlayerNode = nil
-    recordingGainUnit = nil
-    recordingPlaybackID = nil
-    recordingEngine = nil
+    boostedAudioPlayerNode = nil
+    boostedAudioGainUnit = nil
+    boostedAudioPlaybackID = nil
+    boostedAudioEngine = nil
   }
 
-  private func recordingPlaybackGainDecibels(for file: AVAudioFile) -> Float {
+  private func speechPlaybackGainDecibels(for file: AVAudioFile) -> Float {
     let originalFramePosition = file.framePosition
     defer { file.framePosition = originalFramePosition }
 
@@ -545,8 +551,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     let rms = sqrt(sumSquares / Double(sampleCount))
     guard rms > 0, rms.isFinite else { return 0 }
 
-    let targetRMS = 0.18
-    let targetPeak = 0.92
+    let targetRMS = 0.22
+    let targetPeak = 0.95
     let rmsGain = 20.0 * log10(targetRMS / rms)
     let peakHeadroom = 20.0 * log10(targetPeak / Double(peak))
     let gain = min(18.0, rmsGain, peakHeadroom)
@@ -564,9 +570,9 @@ final class TTSPlayer: NSObject, ObservableObject {
   private func activateAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
-      if session.category != .playAndRecord {
-        try session.setCategory(.playback, mode: .spokenAudio, options: [])
-      }
+      // Live voice recording leaves the session in playAndRecord. Switch TTS back
+      // to playback so assistant speech uses the normal media volume path.
+      try session.setCategory(.playback, mode: .default, options: [])
       try session.setActive(true, options: [])
     } catch {
       // Best-effort: TTS still plays in foreground without an active session.
