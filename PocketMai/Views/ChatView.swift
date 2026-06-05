@@ -863,6 +863,9 @@ private struct ChatComposer: View {
       draftText = store.draftText(for: conversationID)
     }
     .onChange(of: conversationID) { oldID, newID in
+      if oldID != newID, liveVoiceSession.isActive {
+        liveVoiceSession.stop(cancelResponse: false)
+      }
       store.setDraftText(draftText, for: oldID)
       draftText = store.draftText(for: newID)
     }
