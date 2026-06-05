@@ -208,6 +208,145 @@ final class AppStore: ObservableObject {
     return conversations[index]
   }
 
+  var conversationFolders: [ConversationFolder] {
+    [ConversationFolder.defaultFolder, ConversationFolder.archivedFolder] + settings.conversationFolders
+  }
+
+  var customConversationFolders: [ConversationFolder] {
+    settings.conversationFolders
+  }
+
+  var selectedConversationFolderID: String {
+    normalizedExistingConversationFolderID(settings.selectedConversationFolderID)
+  }
+
+  var selectedConversationFolder: ConversationFolder {
+    conversationFolders.first { $0.id == selectedConversationFolderID }
+      ?? ConversationFolder.defaultFolder
+  }
+
+  func folderDisplayName(for folderID: String) -> String {
+    conversationFolders.first { $0.id == folderID }?.displayName ?? "Default"
+  }
+
+  func selectConversationFolder(_ folderID: String) {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    guard settings.selectedConversationFolderID != normalized else { return }
+    settings.selectedConversationFolderID = normalized
+    selectedConversationIDs.removeAll()
+    saveSettings()
+  }
+
+  func createConversationFolder(named rawName: String) {
+    guard let name = validatedConversationFolderName(rawName, excluding: nil) else { return }
+    settings.conversationFolders.append(ConversationFolder(name: name))
+    saveSettings()
+  }
+
+  func renameConversationFolder(id: String, to rawName: String) {
+    guard let index = settings.conversationFolders.firstIndex(where: { $0.id == id }) else {
+      errorMessage = "This folder no longer exists."
+      return
+    }
+    guard let name = validatedConversationFolderName(rawName, excluding: id) else { return }
+    settings.conversationFolders[index].name = name
+    saveSettings()
+  }
+
+  func deleteConversationFolder(id: String) async {
+    guard !ConversationFolder.reservedIDs.contains(id) else { return }
+    guard settings.conversationFolders.contains(where: { $0.id == id }) else {
+      errorMessage = "This folder no longer exists."
+      return
+    }
+    await loadStoredConversationsForSearch()
+    settings.conversationFolders.removeAll { $0.id == id }
+    if settings.selectedConversationFolderID == id {
+      settings.selectedConversationFolderID = ConversationFolder.defaultID
+    }
+    var changedConversations = false
+    for index in conversations.indices where conversations[index].folderID == id {
+      conversations[index].folderID = ConversationFolder.defaultID
+      conversations[index].updatedAt = Date()
+      changedConversations = true
+    }
+    if changedConversations {
+      sortConversations()
+      saveConversations()
+    }
+    saveSettings()
+  }
+
+  private func validatedConversationFolderName(_ rawName: String, excluding id: String?)
+    -> String?
+  {
+    let name = ConversationFolder.normalizedCustomName(rawName)
+    guard !name.isEmpty else {
+      errorMessage = "Specify a folder name."
+      return nil
+    }
+    let normalizedName = normalizedConversationFolderName(name)
+    if conversationFolders.contains(where: { folder in
+      folder.id != id && normalizedConversationFolderName(folder.displayName) == normalizedName
+    }) {
+      errorMessage = "A folder named \"\(name)\" already exists."
+      return nil
+    }
+    return name
+  }
+
+  private func normalizedConversationFolderName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
+      .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+  }
+
+  private func normalizedExistingConversationFolderID(_ folderID: String?) -> String {
+    let normalized = Conversation.normalizedFolderID(folderID)
+    return Set(conversationFolders.map(\.id)).contains(normalized)
+      ? normalized : ConversationFolder.defaultID
+  }
+
+  private func normalizeConversationFoldersForCurrentData() {
+    var knownIDs = Set(
+      [ConversationFolder.defaultID, ConversationFolder.archivedID]
+        + settings.conversationFolders.map(\.id))
+    var existingNames = Set(
+      conversationFolders.map { normalizedConversationFolderName($0.displayName) })
+    let folderIDs = Set(conversations.map(\.folderID) + conversationSummaries.map(\.folderID))
+    var changed = false
+
+    for folderID in folderIDs.sorted()
+    where !folderID.isEmpty
+      && !ConversationFolder.reservedIDs.contains(folderID)
+      && !knownIDs.contains(folderID) {
+      let name = nextImportedConversationFolderName(existingNames: &existingNames)
+      settings.conversationFolders.append(ConversationFolder(id: folderID, name: name))
+      knownIDs.insert(folderID)
+      changed = true
+    }
+
+    let selectedFolderID = Conversation.normalizedFolderID(settings.selectedConversationFolderID)
+    if !knownIDs.contains(selectedFolderID) {
+      settings.selectedConversationFolderID = ConversationFolder.defaultID
+      changed = true
+    }
+
+    if changed {
+      saveSettings()
+    }
+  }
+
+  private func nextImportedConversationFolderName(existingNames: inout Set<String>) -> String {
+    var index = 1
+    while true {
+      let name = index == 1 ? "Imported Folder" : "Imported Folder \(index)"
+      if existingNames.insert(normalizedConversationFolderName(name)).inserted {
+        return name
+      }
+      index += 1
+    }
+  }
+
   var appleIntelligenceIsAvailable: Bool {
     appleAvailabilityReport.isAvailable
   }
@@ -332,6 +471,7 @@ final class AppStore: ObservableObject {
   private func makeNewConversation() -> Conversation {
     let defaultProvider = effectiveDefaultProviderConfiguration
     var conversation = Conversation()
+    conversation.folderID = selectedConversationFolderID
     conversation.provider = defaultProvider.provider
     if defaultProvider.provider == .mlx {
       conversation.modelID = availableLocalMLXModelID(preferred: defaultProvider.modelID) ?? ""
@@ -383,6 +523,7 @@ final class AppStore: ObservableObject {
       && conversation.endpointID == defaults.endpointID
       && normalizedModelID(conversation.modelID) == normalizedModelID(defaults.modelID)
       && conversation.systemPromptID == defaults.systemPromptID
+      && conversation.folderID == defaults.folderID
       && conversation.toolsEnabled == defaults.toolsEnabled
       && conversation.enabledTools == defaults.enabledTools
       && conversation.enabledMCPServers == defaults.enabledMCPServers
@@ -402,8 +543,9 @@ final class AppStore: ObservableObject {
   func selectConversation(id: UUID) async {
     let previousID = selectedConversationID
     await ensureConversationLoaded(id)
-    guard indexedConversationIndex(for: id) != nil else { return }
+    guard let index = indexedConversationIndex(for: id) else { return }
     setSelectedConversationID(id)
+    selectConversationFolder(conversations[index].folderID)
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
@@ -423,8 +565,35 @@ final class AppStore: ObservableObject {
   func toggleArchive(id: UUID) async {
     await ensureConversationLoaded(id)
     guard let index = indexedConversationIndex(for: id) else { return }
-    conversations[index].isArchived.toggle()
-    conversations[index].updatedAt = Date()
+    let destination =
+      conversations[index].isArchived ? ConversationFolder.defaultID : ConversationFolder.archivedID
+    moveLoadedConversations(Set([id]), to: destination)
+  }
+
+  func moveConversation(id: UUID, to folderID: String) async {
+    await ensureConversationLoaded(id)
+    guard indexedConversationIndex(for: id) != nil else { return }
+    moveLoadedConversations(Set([id]), to: folderID)
+  }
+
+  func moveConversations(_ ids: Set<UUID>, to folderID: String) async {
+    guard !ids.isEmpty else { return }
+    for id in ids {
+      await ensureConversationLoaded(id)
+    }
+    moveLoadedConversations(ids, to: folderID)
+  }
+
+  private func moveLoadedConversations(_ ids: Set<UUID>, to folderID: String) {
+    let destination = normalizedExistingConversationFolderID(folderID)
+    var changed = false
+    for index in conversations.indices where ids.contains(conversations[index].id) {
+      guard conversations[index].folderID != destination else { continue }
+      conversations[index].folderID = destination
+      conversations[index].updatedAt = Date()
+      changed = true
+    }
+    guard changed else { return }
     sortConversations()
     saveConversations()
   }
@@ -505,8 +674,7 @@ final class AppStore: ObservableObject {
   }
 
   func clearAllConversations() {
-    let archived = conversations.filter(\.isArchived)
-    let removedIDs = Set(conversationSummaries.filter { !$0.isArchived }.map(\.id))
+    let removedIDs = Set(conversationSummaries.map(\.id))
     let removedMessages = voiceRecordingMessages(in: removedIDs)
     if !hasLoadedPersistedConversations {
       deletedConversationIDsBeforeLoad.formUnion(removedIDs)
@@ -517,12 +685,11 @@ final class AppStore: ObservableObject {
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
     }
-    let archivedIDs = Set(archived.map(\.id))
-    conversationDrafts = conversationDrafts.filter { archivedIDs.contains($0.key) }
+    conversationDrafts.removeAll()
     streamingTextStore.removeAll()
-    conversations = archived
+    conversations.removeAll()
     rebuildConversationIndexes()
-    conversationSummaries = Self.sortedSummaries(archived.map(ConversationSummary.init))
+    conversationSummaries.removeAll()
     setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
     saveConversations()
@@ -566,10 +733,9 @@ final class AppStore: ObservableObject {
 
   func toggleArchive(_ conversation: Conversation) {
     guard let index = indexedConversationIndex(for: conversation.id) else { return }
-    conversations[index].isArchived.toggle()
-    conversations[index].updatedAt = Date()
-    sortConversations()
-    saveConversations()
+    let destination =
+      conversations[index].isArchived ? ConversationFolder.defaultID : ConversationFolder.archivedID
+    moveLoadedConversations(Set([conversation.id]), to: destination)
   }
 
   func resubmit(_ message: ChatMessage) async {
@@ -747,7 +913,6 @@ final class AppStore: ObservableObject {
     cloned.updatedAt = now
     cloned.isPinned = false
     cloned.lastContextSignature = nil
-    cloned.isArchived = false
     if let index = indexedConversationIndex(for: conversation.id) {
       conversations.insert(cloned, at: index)
     } else {
@@ -1019,7 +1184,7 @@ final class AppStore: ObservableObject {
     conversation.systemPromptID = Self.openAPIServerSystemPromptID
     conversation.usesStreaming = false
     conversation.isPinned = false
-    conversation.isArchived = false
+    conversation.folderID = ConversationFolder.defaultID
     conversation.lastContextSignature = nil
     if !allowTools {
       conversation.toolsEnabled = false
@@ -1772,7 +1937,7 @@ final class AppStore: ObservableObject {
       conversation.id = conflict.existingID
       conversation.title = conversations[index].title
       conversation.isPinned = conversations[index].isPinned
-      conversation.isArchived = conversations[index].isArchived
+      conversation.folderID = conversations[index].folderID
       conversation.updatedAt = Date()
       conversations[index] = conversation
       sortConversations()
@@ -2319,6 +2484,7 @@ final class AppStore: ObservableObject {
       byID[summary.id] = summary
     }
     conversationSummaries = Self.sortedSummaries(Array(byID.values))
+    normalizeConversationFoldersForCurrentData()
   }
 
   private func mergeLoadedConversations(_ loaded: [Conversation]) {
@@ -2333,6 +2499,7 @@ final class AppStore: ObservableObject {
     rebuildConversationIndexes()
     rebuildSummariesFromConversations()
     hasLoadedPersistedConversations = true
+    normalizeConversationFoldersForCurrentData()
     if pendingConversationSave {
       pendingConversationSave = false
       saveConversations()
@@ -2346,6 +2513,7 @@ final class AppStore: ObservableObject {
       byID[summary.id] = summary
     }
     conversationSummaries = Self.sortedSummaries(Array(byID.values))
+    normalizeConversationFoldersForCurrentData()
   }
 
   private func upsertSummary(for conversation: Conversation) {
@@ -2442,8 +2610,7 @@ final class AppStore: ObservableObject {
         in: .whitespacesAndNewlines
       )
       .isEmpty,
-      !conversation.isPinned,
-      !conversation.isArchived
+      !conversation.isPinned
     else {
       return false
     }
@@ -2998,6 +3165,7 @@ final class AppStore: ObservableObject {
         prompts: promptsBackup(),
         tools: toolsBackup(),
         conversations: exportedConversations,
+        conversationFolders: settings.conversationFolders,
         voiceRecordings: attachments)
     case .providers:
       return SettingsBackupEnvelope(providers: providersBackup())
@@ -3008,6 +3176,7 @@ final class AppStore: ObservableObject {
     case .conversations:
       return SettingsBackupEnvelope(
         conversations: exportedConversations,
+        conversationFolders: settings.conversationFolders,
         voiceRecordings: attachments)
     }
   }
@@ -3147,6 +3316,7 @@ final class AppStore: ObservableObject {
         if scope == .conversations { throw SettingsBackupError.missingSection(.conversations) }
         return finishApplyBackup(applied: applied)
       }
+      applyConversationFoldersBackup(envelope.conversationFolders, for: payload)
       applyConversationsBackup(payload)
       applied.append("\(payload.count) conversation\(payload.count == 1 ? "" : "s")")
 
@@ -3274,6 +3444,42 @@ final class AppStore: ObservableObject {
     rebuildConversationIndexes()
     conversationSummaries = Self.sortedSummaries(conversations.map(ConversationSummary.init))
     saveConversations()
+  }
+
+  private func applyConversationFoldersBackup(
+    _ importedFolders: [ConversationFolder]?,
+    for importedConversations: [Conversation]
+  ) {
+    var folders = settings.conversationFolders
+    var knownIDs = Set(
+      [ConversationFolder.defaultID, ConversationFolder.archivedID] + folders.map(\.id))
+
+    for folder in AppSettings.normalizedConversationFolders(importedFolders ?? []) {
+      guard !knownIDs.contains(folder.id) else { continue }
+      folders.append(folder)
+      knownIDs.insert(folder.id)
+    }
+
+    var importedFolderCount = 1
+    for conversation in importedConversations {
+      let folderID = conversation.folderID.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !folderID.isEmpty,
+        !knownIDs.contains(folderID),
+        !ConversationFolder.reservedIDs.contains(folderID)
+      else {
+        continue
+      }
+      let name =
+        importedFolderCount == 1 ? "Imported Folder" : "Imported Folder \(importedFolderCount)"
+      folders.append(ConversationFolder(id: folderID, name: name))
+      knownIDs.insert(folderID)
+      importedFolderCount += 1
+    }
+
+    settings.conversationFolders = AppSettings.normalizedConversationFolders(folders)
+    if !Set(conversationFolders.map(\.id)).contains(settings.selectedConversationFolderID) {
+      settings.selectedConversationFolderID = ConversationFolder.defaultID
+    }
   }
 
   // MARK: - Clear actions

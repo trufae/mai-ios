@@ -841,13 +841,74 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
+  static let defaultID = "default"
+  static let archivedID = "archived"
+  static let reservedIDs: Set<String> = [defaultID, archivedID]
+
+  var id: String
+  var name: String
+  var createdAt: Date
+
+  init(id: String = UUID().uuidString, name: String, createdAt: Date = Date()) {
+    self.id = Self.normalizedID(id)
+    self.name = name
+    self.createdAt = createdAt
+  }
+
+  var displayName: String {
+    switch id {
+    case Self.defaultID:
+      return "Default"
+    case Self.archivedID:
+      return "Archived"
+    default:
+      let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmedName.isEmpty ? "Untitled" : trimmedName
+    }
+  }
+
+  var systemImage: String {
+    switch id {
+    case Self.defaultID:
+      return "tray"
+    case Self.archivedID:
+      return "archivebox"
+    default:
+      return "folder"
+    }
+  }
+
+  var isSystem: Bool {
+    Self.reservedIDs.contains(id)
+  }
+
+  static let defaultFolder = ConversationFolder(
+    id: Self.defaultID,
+    name: "Default",
+    createdAt: .distantPast)
+  static let archivedFolder = ConversationFolder(
+    id: Self.archivedID,
+    name: "Archived",
+    createdAt: .distantPast)
+
+  static func normalizedID(_ id: String) -> String {
+    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? UUID().uuidString : trimmed
+  }
+
+  static func normalizedCustomName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
 struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   var id: UUID
   var title: String
   var createdAt: Date
   var updatedAt: Date
   var isPinned: Bool
-  var isArchived: Bool
+  var folderID: String
   var preview: String
   var hasMessages: Bool
 
@@ -857,9 +918,13 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     createdAt = conversation.createdAt
     updatedAt = conversation.updatedAt
     isPinned = conversation.isPinned
-    isArchived = conversation.isArchived
+    folderID = conversation.folderID
     hasMessages = !conversation.messages.isEmpty
     preview = Self.previewText(from: conversation.messages)
+  }
+
+  var isArchived: Bool {
+    folderID == ConversationFolder.archivedID
   }
 
   var displayTitle: String {
@@ -879,6 +944,46 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     let text = MessageContentFilter.previewText(from: message.text)
     guard !text.isEmpty else { return nil }
     return text
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case id
+    case title
+    case createdAt
+    case updatedAt
+    case isPinned
+    case isArchived
+    case folderID
+    case preview
+    case hasMessages
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    title = try container.decode(String.self, forKey: .title)
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    isPinned = try container.decode(Bool.self, forKey: .isPinned)
+    let legacyArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
+    folderID = Conversation.normalizedFolderID(
+      try? container.decode(String.self, forKey: .folderID),
+      legacyIsArchived: legacyArchived)
+    preview = (try? container.decode(String.self, forKey: .preview)) ?? ""
+    hasMessages = (try? container.decode(Bool.self, forKey: .hasMessages)) ?? true
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(title, forKey: .title)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(updatedAt, forKey: .updatedAt)
+    try container.encode(isPinned, forKey: .isPinned)
+    try container.encode(isArchived, forKey: .isArchived)
+    try container.encode(folderID, forKey: .folderID)
+    try container.encode(preview, forKey: .preview)
+    try container.encode(hasMessages, forKey: .hasMessages)
   }
 }
 
@@ -902,8 +1007,13 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var reasoningLevel: ReasoningLevel = .automatic
   var showThinking: Bool = false
   var lastContextSignature: String? = nil
-  var isArchived: Bool = false
+  var folderID: String = ConversationFolder.defaultID
   var languageOverrideIdentifier: String? = nil
+
+  var isArchived: Bool {
+    get { folderID == ConversationFolder.archivedID }
+    set { folderID = newValue ? ConversationFolder.archivedID : ConversationFolder.defaultID }
+  }
 
   init() {}
 
@@ -928,6 +1038,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case showThinking
     case lastContextSignature
     case lastToolContextSignature
+    case folderID
     case isArchived
     case languageOverrideIdentifier
   }
@@ -959,7 +1070,10 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     lastContextSignature =
       (try? container.decodeIfPresent(String.self, forKey: .lastContextSignature))
       ?? (try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature))
-    isArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
+    let legacyArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
+    folderID = Self.normalizedFolderID(
+      try? container.decode(String.self, forKey: .folderID),
+      legacyIsArchived: legacyArchived)
     let decodedLanguageOverride =
       (try? container.decodeIfPresent(String.self, forKey: .languageOverrideIdentifier)) ?? nil
     languageOverrideIdentifier = Self.normalizedLanguageOverride(decodedLanguageOverride)
@@ -986,6 +1100,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(reasoningLevel, forKey: .reasoningLevel)
     try container.encode(showThinking, forKey: .showThinking)
     try container.encodeIfPresent(lastContextSignature, forKey: .lastContextSignature)
+    try container.encode(folderID, forKey: .folderID)
     try container.encode(isArchived, forKey: .isArchived)
     try container.encodeIfPresent(
       Self.normalizedLanguageOverride(languageOverrideIdentifier),
@@ -994,6 +1109,14 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
 
   var displayTitle: String {
     title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New chat" : title
+  }
+
+  static func normalizedFolderID(_ id: String?, legacyIsArchived: Bool = false) -> String {
+    let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmed.isEmpty {
+      return trimmed
+    }
+    return legacyIsArchived ? ConversationFolder.archivedID : ConversationFolder.defaultID
   }
 
   mutating func refreshTitle(from message: String) {
@@ -1505,6 +1628,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
   var prompts: SettingsPromptsBackup?
   var tools: SettingsToolsBackup?
   var conversations: [Conversation]?
+  var conversationFolders: [ConversationFolder]?
   var voiceRecordings: [SettingsVoiceRecordingAttachment]?
 
   init(
@@ -1512,6 +1636,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
     prompts: SettingsPromptsBackup? = nil,
     tools: SettingsToolsBackup? = nil,
     conversations: [Conversation]? = nil,
+    conversationFolders: [ConversationFolder]? = nil,
     voiceRecordings: [SettingsVoiceRecordingAttachment]? = nil,
     exportedAt: Date = Date(),
     pocketMaiVersion: String = ConversationExportEnvelope.currentPocketMaiVersion
@@ -1524,6 +1649,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
     self.prompts = prompts
     self.tools = tools
     self.conversations = conversations
+    self.conversationFolders = conversationFolders
     self.voiceRecordings = voiceRecordings
   }
 }
@@ -1965,6 +2091,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   var lastSelectedConversationID: UUID? = nil
   var openAPIServer: OpenAPIServerSettings = OpenAPIServerSettings()
   var recentChatLanguageIdentifiers: [String] = []
+  var conversationFolders: [ConversationFolder] = []
+  var selectedConversationFolderID: String = ConversationFolder.defaultID
 
   static let defaults = AppSettings()
 
@@ -1994,6 +2122,26 @@ struct AppSettings: Codable, Equatable, Sendable {
       }
     }
     return normalizedIdentifiers
+  }
+
+  static func normalizedConversationFolders(_ folders: [ConversationFolder])
+    -> [ConversationFolder]
+  {
+    var seenIDs = Set<String>()
+    return folders.compactMap { folder in
+      let id = folder.id.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !id.isEmpty,
+        !ConversationFolder.reservedIDs.contains(id),
+        !seenIDs.contains(id)
+      else {
+        return nil
+      }
+      seenIDs.insert(id)
+      return ConversationFolder(
+        id: id,
+        name: folder.name,
+        createdAt: folder.createdAt)
+    }
   }
 
   var defaultOpenAIEndpoint: OpenAIEndpoint? {
@@ -2037,6 +2185,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case startupBehavior, lastSelectedConversationID
     case openAPIServer
     case recentChatLanguageIdentifiers
+    case conversationFolders, selectedConversationFolderID
   }
 
   init(from decoder: Decoder) throws {
@@ -2128,6 +2277,18 @@ struct AppSettings: Codable, Equatable, Sendable {
       ?? OpenAPIServerSettings()
     recentChatLanguageIdentifiers = Self.normalizedRecentChatLanguageIdentifiers(
       (try? c.decode([String].self, forKey: .recentChatLanguageIdentifiers)) ?? [])
+    conversationFolders = Self.normalizedConversationFolders(
+      (try? c.decode([ConversationFolder].self, forKey: .conversationFolders)) ?? [])
+    let decodedConversationFolderID =
+      Conversation.normalizedFolderID(
+        try? c.decode(String.self, forKey: .selectedConversationFolderID))
+    let knownConversationFolderIDs =
+      Set(
+        [ConversationFolder.defaultID, ConversationFolder.archivedID]
+          + conversationFolders.map(\.id))
+    selectedConversationFolderID =
+      knownConversationFolderIDs.contains(decodedConversationFolderID)
+      ? decodedConversationFolderID : ConversationFolder.defaultID
   }
 }
 

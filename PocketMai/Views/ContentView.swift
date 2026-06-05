@@ -9,7 +9,6 @@ struct ContentView: View {
   @State private var historyDragOffset: CGFloat = 0
   @State private var historyDragIsActive = false
   @State private var historyDragExclusionFrame: CGRect?
-  @State private var sidebarShowingArchive = false
 
   var body: some View {
     GeometryReader { proxy in
@@ -21,7 +20,6 @@ struct ContentView: View {
       ZStack(alignment: .leading) {
         SidebarView(
           showingSettings: $showingSettings,
-          showingArchive: $sidebarShowingArchive,
           onSelectConversation: closeHistoryPanel
         )
         .equatable()

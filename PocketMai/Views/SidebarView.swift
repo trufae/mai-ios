@@ -4,12 +4,12 @@ import UIKit
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
-  @Binding var showingArchive: Bool
   @State private var isSearchActive = false
   @State private var searchText = ""
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
+  @State private var showingFolderManager = false
   @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
@@ -44,7 +44,10 @@ struct SidebarView: View {
     .onAppear { refreshVisibleConversations() }
     .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
     .onChange(of: searchText) { _, _ in refreshVisibleConversations() }
-    .onChange(of: showingArchive) { _, _ in refreshVisibleConversations() }
+    .onChange(of: store.settings.selectedConversationFolderID) { _, _ in
+      refreshVisibleConversations()
+    }
+    .onChange(of: store.settings.conversationFolders) { _, _ in refreshVisibleConversations() }
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
       updateKeyboardOverlap(from: $0)
     }
@@ -52,12 +55,17 @@ struct SidebarView: View {
       updateKeyboardOverlap(from: $0)
     }
     .modifier(ConversationExportPresentations(coordinator: exportCoordinator))
+    .sheet(isPresented: $showingFolderManager) {
+      ConversationFolderManagementView()
+        .environmentObject(store)
+    }
   }
 
   private func refreshVisibleConversations() {
     let next: [ConversationSummary]
     if searchQuery.isEmpty {
-      next = store.conversationSummaries.filter { $0.isArchived == showingArchive }
+      let folderID = store.selectedConversationFolderID
+      next = store.conversationSummaries.filter { $0.folderID == folderID }
     } else {
       next = store.conversationSummaries.filter { conversationMatchesSearch($0) }
     }
@@ -125,10 +133,10 @@ struct SidebarView: View {
     if !searchQuery.isEmpty {
       return "No matching conversations."
     }
-    if showingArchive {
+    if store.selectedConversationFolderID == ConversationFolder.archivedID {
       return "No archived conversations."
     }
-    return nil
+    return "No conversations in \(store.selectedConversationFolder.displayName)."
   }
 
   private func conversationMatchesSearch(_ summary: ConversationSummary) -> Bool {
@@ -168,13 +176,20 @@ struct SidebarView: View {
       )
     }
 
-    Button {
-      Task { await store.toggleArchive(id: conversation.id) }
+    Menu {
+      ForEach(store.conversationFolders) { folder in
+        Button {
+          Task { await store.moveConversation(id: conversation.id, to: folder.id) }
+        } label: {
+          if folder.id == conversation.folderID {
+            Label(folder.displayName, systemImage: "checkmark")
+          } else {
+            Label(folder.displayName, systemImage: folder.systemImage)
+          }
+        }
+      }
     } label: {
-      Label(
-        conversation.isArchived ? "Unarchive" : "Archive Chat",
-        systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox"
-      )
+      Label("Move to Folder", systemImage: "folder")
     }
 
     Button {
@@ -219,15 +234,38 @@ struct SidebarView: View {
 
   @ViewBuilder
   private func defaultFloatingActions(compact: Bool) -> some View {
-    FloatingActionIcon(
-      systemImage: showingArchive ? "tray.full.fill" : "archivebox",
-      accessibilityLabel: showingArchive
-        ? "Show active conversations" : "Show archived conversations",
-      isActive: showingArchive,
-      compact: compact
-    ) {
-      showingArchive.toggle()
+    Menu {
+      Button {
+        store.selectConversationFolder(ConversationFolder.defaultID)
+      } label: {
+        folderPickerLabel(for: ConversationFolder.defaultFolder)
+      }
+      Button {
+        store.selectConversationFolder(ConversationFolder.archivedID)
+      } label: {
+        folderPickerLabel(for: ConversationFolder.archivedFolder)
+      }
+      ForEach(store.customConversationFolders) { folder in
+        Button {
+          store.selectConversationFolder(folder.id)
+        } label: {
+          folderPickerLabel(for: folder)
+        }
+      }
+      Divider()
+      Button {
+        showingFolderManager = true
+      } label: {
+        Label("Manage...", systemImage: "folder.badge.gearshape")
+      }
+    } label: {
+      FloatingActionMenuIcon(
+        systemImage: selectedFolderMenuIcon,
+        isActive: store.selectedConversationFolderID != ConversationFolder.defaultID,
+        compact: compact)
     }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Conversation folder")
     FloatingSearchField(
       text: $searchText,
       isFocused: $isSearchFieldFocused,
@@ -241,6 +279,26 @@ struct SidebarView: View {
     ) {
       showingSettings = true
     }
+  }
+
+  @ViewBuilder
+  private func folderPickerLabel(for folder: ConversationFolder) -> some View {
+    if store.selectedConversationFolderID == folder.id {
+      Label(folder.displayName, systemImage: "checkmark")
+    } else {
+      Label(folder.displayName, systemImage: folder.systemImage)
+    }
+  }
+
+  private var selectedFolderMenuIcon: String {
+    let folder = store.selectedConversationFolder
+    if folder.id == ConversationFolder.archivedID {
+      return "archivebox.fill"
+    }
+    if folder.id == ConversationFolder.defaultID {
+      return "tray"
+    }
+    return "folder.fill"
   }
 
   private func activateSearch() {
@@ -272,11 +330,11 @@ struct SidebarView: View {
     }
     Spacer(minLength: compact ? 0 : 4)
     FloatingActionIcon(
-      systemImage: showingArchive ? "tray.and.arrow.up" : "archivebox",
-      accessibilityLabel: showingArchive ? "Unarchive selected" : "Archive selected",
+      systemImage: selectedFolderIsArchived ? "tray.and.arrow.up" : "archivebox",
+      accessibilityLabel: selectedFolderIsArchived ? "Move selected to Default" : "Archive selected",
       compact: compact
     ) {
-      archiveSelected()
+      moveSelectedToArchiveOrDefault()
     }
     .disabled(!hasSelection)
     .opacity(hasSelection ? 1 : 0.5)
@@ -300,12 +358,16 @@ struct SidebarView: View {
     }
   }
 
-  private func archiveSelected() {
+  private var selectedFolderIsArchived: Bool {
+    store.selectedConversationFolderID == ConversationFolder.archivedID
+  }
+
+  private func moveSelectedToArchiveOrDefault() {
     let ids = selectedIDs
+    let destination =
+      selectedFolderIsArchived ? ConversationFolder.defaultID : ConversationFolder.archivedID
     Task {
-      for id in ids {
-        await store.toggleArchive(id: id)
-      }
+      await store.moveConversations(ids, to: destination)
     }
     withAnimation {
       isSelectionMode = false
@@ -392,6 +454,166 @@ private struct PendingConversationDeletion: Identifiable {
     )
   }
 
+}
+
+private struct ConversationFolderManagementView: View {
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+  @State private var nameEdit: ConversationFolderNameEdit?
+  @State private var nameDraft = ""
+  @State private var pendingDeletion: ConversationFolder?
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("Built-in") {
+          folderInfoRow(ConversationFolder.defaultFolder)
+          folderInfoRow(ConversationFolder.archivedFolder)
+        }
+
+        Section {
+          if store.customConversationFolders.isEmpty {
+            Text("No custom folders.")
+              .foregroundStyle(.secondary)
+          }
+          ForEach(store.customConversationFolders) { folder in
+            customFolderRow(folder)
+          }
+        } header: {
+          Text("Folders")
+        } footer: {
+          Text("Deleting a folder moves its conversations to Default.")
+        }
+      }
+      .navigationTitle("Folders")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }
+        }
+        ToolbarItem(placement: .primaryAction) {
+          Button {
+            beginCreate()
+          } label: {
+            Image(systemName: "plus")
+          }
+          .accessibilityLabel("New Folder")
+        }
+      }
+    }
+    .alert(nameEdit?.title ?? "Folder", isPresented: nameEditBinding) {
+      TextField("Folder name", text: $nameDraft)
+      Button("Cancel", role: .cancel) {
+        clearNameEdit()
+      }
+      Button("Save") {
+        saveNameEdit()
+      }
+    } message: {
+      Text(nameEdit?.message ?? "")
+    }
+    .alert(
+      "Delete Folder?",
+      isPresented: deletionBinding,
+      presenting: pendingDeletion
+    ) { folder in
+      Button("Cancel", role: .cancel) {
+        pendingDeletion = nil
+      }
+      Button("Delete Folder", role: .destructive) {
+        Task { await store.deleteConversationFolder(id: folder.id) }
+        pendingDeletion = nil
+      }
+    } message: { folder in
+      Text("Conversations in \(folder.displayName) will move to Default.")
+    }
+  }
+
+  private func folderInfoRow(_ folder: ConversationFolder) -> some View {
+    Label(folder.displayName, systemImage: folder.systemImage)
+      .foregroundStyle(.secondary)
+  }
+
+  private func customFolderRow(_ folder: ConversationFolder) -> some View {
+    HStack {
+      Label(folder.displayName, systemImage: folder.systemImage)
+      Spacer()
+      Menu {
+        Button {
+          beginRename(folder)
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
+        Button(role: .destructive) {
+          pendingDeletion = folder
+        } label: {
+          Label("Delete", systemImage: "trash")
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.title3)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Folder Actions")
+    }
+  }
+
+  private var nameEditBinding: Binding<Bool> {
+    Binding {
+      nameEdit != nil
+    } set: { isPresented in
+      if !isPresented {
+        clearNameEdit()
+      }
+    }
+  }
+
+  private var deletionBinding: Binding<Bool> {
+    Binding {
+      pendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        pendingDeletion = nil
+      }
+    }
+  }
+
+  private func beginCreate() {
+    nameDraft = ""
+    nameEdit = ConversationFolderNameEdit(folder: nil)
+  }
+
+  private func beginRename(_ folder: ConversationFolder) {
+    nameDraft = folder.displayName
+    nameEdit = ConversationFolderNameEdit(folder: folder)
+  }
+
+  private func saveNameEdit() {
+    guard let edit = nameEdit else { return }
+    if let folder = edit.folder {
+      store.renameConversationFolder(id: folder.id, to: nameDraft)
+    } else {
+      store.createConversationFolder(named: nameDraft)
+    }
+    clearNameEdit()
+  }
+
+  private func clearNameEdit() {
+    nameEdit = nil
+    nameDraft = ""
+  }
+}
+
+private struct ConversationFolderNameEdit: Identifiable {
+  let id = UUID()
+  let folder: ConversationFolder?
+
+  var title: String {
+    folder == nil ? "New Folder" : "Rename Folder"
+  }
+
+  var message: String {
+    folder == nil ? "Create a folder for conversations." : "Rename this folder."
+  }
 }
 
 private struct SidebarRowBackground: View {
@@ -533,6 +755,25 @@ private struct FloatingActionIcon: View {
       return Color.accentColor.opacity(0.18)
     }
     return nil
+  }
+}
+
+private struct FloatingActionMenuIcon: View {
+  let systemImage: String
+  var isActive: Bool = false
+  var compact: Bool = false
+
+  var body: some View {
+    Image(systemName: systemImage)
+      .font((compact ? Font.title3 : Font.title2).weight(.semibold))
+      .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+      .frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
+      .padding(compact ? 12 : 14)
+      .modifier(
+        FloatingGlassSurface(
+          shape: Circle(),
+          tint: isActive ? Color.accentColor.opacity(0.18) : nil))
+      .contentShape(Circle())
   }
 }
 
