@@ -165,7 +165,7 @@ enum EPUBExporter {
   private static func messageContent(for message: ChatMessage, includeThinking: Bool)
     -> MessageContent
   {
-    let rendered = MessageContentFilter.render(message.text)
+    let rendered = MessageContentFilter.render(message.presentationText)
     let reasoningSections =
       includeThinking
       ? rendered.hiddenSections.filter { $0.tag == "think" }.map(\.content)

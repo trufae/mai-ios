@@ -365,7 +365,7 @@ struct ChatView: View {
   private func editMessage(_ message: ChatMessage, text: String) {
     guard
       let currentText = store.currentConversation?.messages.first(where: { $0.id == message.id })?
-        .text,
+        .presentationText,
       currentText != text
     else {
       return
@@ -375,6 +375,7 @@ struct ChatView: View {
         return
       }
       conversation.messages[index].text = text
+      conversation.messages[index].displayText = nil
     }
   }
 
@@ -540,7 +541,10 @@ struct ChatView: View {
   private var lastMessageSnapshot: LastMessageSnapshot {
     let convo = store.currentConversation
     let last = convo?.messages.last
-    return LastMessageSnapshot(conversationID: convo?.id, messageID: last?.id, text: last?.text)
+    return LastMessageSnapshot(
+      conversationID: convo?.id,
+      messageID: last?.id,
+      text: last?.presentationText)
   }
 
   private func isWaitingForResponse(_ message: ChatMessage) -> Bool {
@@ -800,6 +804,18 @@ extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
+private struct PromptShortcutMenuOption: Identifiable, Equatable {
+  var selection: PromptShortcutSelection
+  var commandName: String
+  var displayName: String
+  var detail: String
+  var systemImage: String
+
+  var id: String {
+    "\(selection.kind.rawValue):\(selection.id.uuidString)"
+  }
+}
+
 private struct ChatComposer: View {
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.scenePhase) private var scenePhase
@@ -819,11 +835,74 @@ private struct ChatComposer: View {
   @State private var pendingAttachments: [ChatAttachment] = []
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
   @State private var attachmentError: String?
+  @State private var promptAutocompleteSuppressedCommand: String?
 
   private var canSubmitDraft: Bool {
     !isResponding
       && (!draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         || !pendingAttachments.isEmpty)
+  }
+
+  private var shouldShowPromptAutocomplete: Bool {
+    draftText.hasPrefix("/")
+      && !promptShortcutOptions.isEmpty
+      && !isResponding
+      && !promptAutocompleteIsSuppressed
+  }
+
+  private var promptAutocompleteBinding: Binding<Bool> {
+    Binding(
+      get: { shouldShowPromptAutocomplete },
+      set: { isPresented in
+        if !isPresented {
+          promptAutocompleteSuppressedCommand = currentPromptCommandFragment
+        }
+      }
+    )
+  }
+
+  private var currentPromptCommandFragment: String? {
+    guard draftText.hasPrefix("/") else { return nil }
+    return PromptSlashCommand.fragment(in: draftText)
+  }
+
+  private var promptAutocompleteIsSuppressed: Bool {
+    guard let promptAutocompleteSuppressedCommand,
+      let currentPromptCommandFragment
+    else {
+      return false
+    }
+    return PromptSlashCommand.normalized(currentPromptCommandFragment)
+      == PromptSlashCommand.normalized(promptAutocompleteSuppressedCommand)
+  }
+
+  private var promptShortcutOptions: [PromptShortcutMenuOption] {
+    let systemOptions = store.settings.systemPrompts.map { prompt in
+      PromptShortcutMenuOption(
+        selection: PromptShortcutSelection(kind: .system, id: prompt.id),
+        commandName: prompt.slashCommandName,
+        displayName: prompt.displayName,
+        detail: "System prompt",
+        systemImage: "text.bubble")
+    }
+    let userOptions = store.settings.userPrompts.map { prompt in
+      PromptShortcutMenuOption(
+        selection: PromptShortcutSelection(kind: .user, id: prompt.id),
+        commandName: prompt.slashCommandName,
+        displayName: prompt.displayName,
+        detail: "User prompt",
+        systemImage: "text.quote")
+    }
+    let options = systemOptions + userOptions
+    guard let fragment = PromptSlashCommand.fragment(in: draftText),
+      !fragment.isEmpty
+    else {
+      return options
+    }
+    return options.filter { option in
+      option.commandName.localizedCaseInsensitiveContains(fragment)
+        || option.displayName.localizedCaseInsensitiveContains(fragment)
+    }
   }
 
   private var canAttachImage: Bool {
@@ -939,6 +1018,14 @@ private struct ChatComposer: View {
           .padding(.vertical, 5)
           .frame(minHeight: 32, alignment: .center)
           .focused($composerFocused)
+          .popover(
+            isPresented: promptAutocompleteBinding,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+          ) {
+            promptAutocompletePopover
+              .presentationCompactAdaptation(.popover)
+          }
           .onKeyPress(.return, phases: .down) { press in
             // Only hardware keyboards reach onKeyPress, so the on-screen Return
             // always inserts a newline. With a hardware keyboard, Shift+Return
@@ -1101,13 +1188,65 @@ private struct ChatComposer: View {
     pendingAttachments = []
     store.setDraftText("", for: submittedConversationID)
     Task {
-      let sent = await store.send(prompt: submitted, attachments: submittedAttachments)
+      let sent = await store.send(
+        prompt: submitted,
+        attachments: submittedAttachments)
       if !sent {
         draftText = submitted
         pendingAttachments = submittedAttachments
         store.setDraftText(submitted, for: submittedConversationID)
       }
     }
+  }
+
+  private var promptAutocompletePopover: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(promptShortcutOptions) { option in
+          Button {
+            autocompletePrompt(option)
+          } label: {
+            HStack(spacing: 10) {
+              Image(systemName: option.systemImage)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18)
+              VStack(alignment: .leading, spacing: 2) {
+                Text("/\(option.commandName)")
+                  .font(.callout.weight(.semibold))
+                  .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                  Text(option.displayName)
+                    .lineLimit(1)
+                  Text(option.detail)
+                    .foregroundStyle(.tertiary)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              }
+              Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+        }
+      }
+      .padding(.vertical, 6)
+    }
+    .frame(minWidth: 280, idealWidth: 340, maxWidth: 380, maxHeight: 280)
+  }
+
+  private func autocompletePrompt(_ option: PromptShortcutMenuOption) {
+    let remainder = PromptSlashCommand.parse(draftText)?.remainder ?? ""
+    let completed =
+      remainder.isEmpty
+      ? "/\(option.commandName) "
+      : PromptSlashCommand.visualText(commandName: option.commandName, remainder: remainder)
+    draftText = completed
+    promptAutocompleteSuppressedCommand = option.commandName
+    store.setDraftText(completed, for: conversationID)
+    composerFocused = true
   }
 
   private var composerKeyboardDismissGesture: some Gesture {

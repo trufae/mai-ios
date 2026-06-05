@@ -48,7 +48,7 @@ final class TTSExporter: ObservableObject {
     let speakable = messages.compactMap { msg -> SpeakableMessage? in
       guard msg.role == .user || msg.role == .assistant else { return nil }
       let text = TTSSpeechTextSanitizer.sanitized(
-        MessageContentFilter.render(msg.text).visibleText,
+        MessageContentFilter.render(msg.presentationText).visibleText,
         skipTechnicalContent: skipTechnicalContent)
       guard !text.isEmpty else { return nil }
       return SpeakableMessage(role: msg.role, text: text)

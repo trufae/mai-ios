@@ -60,9 +60,9 @@ struct SettingsImportView: View {
           description: "Endpoints, API keys, and the default provider.",
           scope: .providers)
         importRow(
-          title: "System Prompts",
+          title: "Prompts",
           systemImage: "text.bubble",
-          description: "Replace the prompt library and compact prompt with the backup.",
+          description: "Replace system prompts, user prompts, and compact prompt with the backup.",
           scope: .prompts)
         importRow(
           title: "Tool Settings",
@@ -244,9 +244,9 @@ struct SettingsExportView: View {
           description: "Endpoints, API keys, and the default provider.",
           scope: .providers)
         exportRow(
-          title: "System Prompts",
+          title: "Prompts",
           systemImage: "text.bubble",
-          description: "The prompt library, default prompt, and compact prompt.",
+          description: "System prompts, user prompts, default prompt, and compact prompt.",
           scope: .prompts)
         exportRow(
           title: "Tool Settings",
@@ -340,7 +340,7 @@ private enum DestroyAction: Identifiable {
     case .downloadedModels: "Clear downloaded models?"
     case .filesWorkspace: "Clear files workspace?"
     case .providers: "Clear provider settings?"
-    case .prompts: "Reset system prompts?"
+    case .prompts: "Reset prompts?"
     case .toolSettings: "Reset tool settings?"
     case .mcpServers: "Remove all MCP servers?"
     case .factoryReset: "Factory reset PocketMai?"
@@ -376,7 +376,7 @@ private enum DestroyAction: Identifiable {
       return
         "All OpenAI-compatible endpoints and their stored API keys will be removed from this device."
     case .prompts:
-      return "Custom system prompts will be removed and the compact prompt restored to default."
+      return "Custom system prompts and user prompts will be removed, and the compact prompt restored to default."
     case .toolSettings:
       return
         "Tool settings, voices, todos, imported tool files, and tool-calling preferences will be reset to defaults."
@@ -432,9 +432,9 @@ struct SettingsDestroyView: View {
           description: "Remove all endpoints and their stored API keys.",
           action: .providers)
         destroyRow(
-          title: "System Prompts",
+          title: "Prompts",
           systemImage: "text.bubble",
-          description: "Restore the default prompt and drop the rest.",
+          description: "Restore the default prompt and remove user prompts.",
           action: .prompts)
         destroyRow(
           title: "Tool Settings",
@@ -531,7 +531,7 @@ struct SettingsDestroyView: View {
       showToast("Providers cleared.")
     case .prompts:
       store.clearSystemPrompts()
-      showToast("System prompts reset.")
+      showToast("Prompts reset.")
     case .toolSettings:
       store.clearToolSettings()
       showToast("Tool settings reset.")

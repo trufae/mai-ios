@@ -157,7 +157,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         return recorded
       }
       return QueuedSpeech(
-        text: MessageContentFilter.render(message.text).visibleText,
+        text: MessageContentFilter.render(message.presentationText).visibleText,
         voice: voices.settings(for: role),
         role: role,
         title: message.role.displayName,
@@ -686,7 +686,7 @@ final class TTSPlayer: NSObject, ObservableObject {
       else {
         return nil
       }
-      self.text = MessageContentFilter.render(message.text).visibleText
+      self.text = MessageContentFilter.render(message.presentationText).visibleText
       self.voice = .defaults
       self.role = .user
       self.title = title

@@ -806,18 +806,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var id: UUID = UUID()
   var role: ChatRole
   var text: String
+  var displayText: String? = nil
   var createdAt: Date = Date()
   var voiceRecordingFilename: String? = nil
   var attachments: [ChatAttachment] = []
 
   enum CodingKeys: String, CodingKey {
-    case id, role, text, createdAt, voiceRecordingFilename, attachments
+    case id, role, text, displayText, createdAt, voiceRecordingFilename, attachments
   }
 
   init(
     id: UUID = UUID(),
     role: ChatRole,
     text: String,
+    displayText: String? = nil,
     createdAt: Date = Date(),
     voiceRecordingFilename: String? = nil,
     attachments: [ChatAttachment] = []
@@ -825,9 +827,19 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     self.id = id
     self.role = role
     self.text = text
+    self.displayText = displayText
     self.createdAt = createdAt
     self.voiceRecordingFilename = voiceRecordingFilename
     self.attachments = attachments
+  }
+
+  var presentationText: String {
+    guard let displayText,
+      !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return text
+    }
+    return displayText
   }
 
   init(from decoder: Decoder) throws {
@@ -835,6 +847,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     id = try c.decode(UUID.self, forKey: .id)
     role = try c.decode(ChatRole.self, forKey: .role)
     text = try c.decode(String.self, forKey: .text)
+    displayText = try? c.decode(String.self, forKey: .displayText)
     createdAt = try c.decode(Date.self, forKey: .createdAt)
     voiceRecordingFilename = try? c.decode(String.self, forKey: .voiceRecordingFilename)
     attachments = (try? c.decode([ChatAttachment].self, forKey: .attachments)) ?? []
@@ -941,7 +954,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
 
   private static func previewText(from message: ChatMessage) -> String? {
     guard message.role == .user || message.role == .assistant else { return nil }
-    let text = MessageContentFilter.previewText(from: message.text)
+    let text = MessageContentFilter.previewText(from: message.presentationText)
     guard !text.isEmpty else { return nil }
     return text
   }
@@ -1597,6 +1610,7 @@ struct SettingsPromptsBackup: Codable, Sendable {
   var prompts: [SystemPrompt]
   var defaultSystemPromptID: UUID?
   var compactPrompt: String?
+  var userPrompts: [UserPrompt]? = nil
 }
 
 struct SettingsToolsBackup: Codable, Sendable {
@@ -1704,6 +1718,86 @@ struct SystemPrompt: Identifiable, Codable, Equatable, Sendable {
   var displayName: String {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmedName.isEmpty ? "Untitled" : trimmedName
+  }
+
+  var slashCommandName: String {
+    PromptSlashCommand.commandName(for: displayName)
+  }
+}
+
+struct UserPrompt: Identifiable, Codable, Equatable, Sendable {
+  var id: UUID
+  var name: String
+  var text: String
+
+  init(id: UUID = UUID(), name: String, text: String) {
+    self.id = id
+    self.name = name
+    self.text = text
+  }
+
+  var displayName: String {
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedName.isEmpty ? "Untitled" : trimmedName
+  }
+
+  var slashCommandName: String {
+    PromptSlashCommand.commandName(for: displayName)
+  }
+}
+
+enum PromptShortcutKind: String, Sendable {
+  case system
+  case user
+}
+
+struct PromptShortcutSelection: Equatable, Sendable {
+  var kind: PromptShortcutKind
+  var id: UUID
+}
+
+struct ParsedPromptSlashCommand: Equatable, Sendable {
+  var command: String
+  var remainder: String
+}
+
+enum PromptSlashCommand {
+  static func commandName(for displayName: String) -> String {
+    let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let collapsed = trimmed.split(whereSeparator: { $0.isWhitespace }).joined(separator: "-")
+    let sanitized = collapsed.replacingOccurrences(of: "/", with: "-")
+    let command = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    return command.isEmpty ? "prompt" : command
+  }
+
+  static func parse(_ input: String) -> ParsedPromptSlashCommand? {
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("/") else { return nil }
+    let body = trimmed.dropFirst()
+    guard let separator = body.firstIndex(where: { $0.isWhitespace }) else {
+      return ParsedPromptSlashCommand(command: String(body), remainder: "")
+    }
+    let command = String(body[..<separator])
+    let remainder = body[separator...]
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return ParsedPromptSlashCommand(command: command, remainder: remainder)
+  }
+
+  static func fragment(in input: String) -> String? {
+    guard let parsed = parse(input) else { return nil }
+    return parsed.command
+  }
+
+  static func normalized(_ command: String) -> String {
+    command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  static func visualText(commandName: String, remainder: String) -> String {
+    let trimmedRemainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedRemainder.isEmpty {
+      return "/\(commandName)"
+    }
+    return "/\(commandName) \(trimmedRemainder)"
   }
 }
 
@@ -2034,7 +2128,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   static let defaultMCPServers: Set<UUID> = []
   static let defaultMCPTools: Set<String> = []
   static let defaultSystemPrompt = SystemPrompt(
-    name: "Helpful assistant",
+    name: "Helpful",
     text:
       "You are a helpful, concise assistant for a private text-only chat app. Prefer clear answers and preserve useful formatting."
   )
@@ -2063,6 +2157,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var showThinkingByDefault: Bool = false
   var openAIEndpoints: [OpenAIEndpoint] = []
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
+  var userPrompts: [UserPrompt] = []
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
   var compactPrompt: String = AppSettings.defaultCompactPrompt
   var defaultEnabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
@@ -2174,7 +2269,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     case settingsVersion
     case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
       showThinkingByDefault
-    case openAIEndpoints, systemPrompts, defaultSystemPromptID, compactPrompt, defaultEnabledTools
+    case openAIEndpoints, systemPrompts, userPrompts, defaultSystemPromptID, compactPrompt
+    case defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
     case toolSettings, mcpServers, memory, toolCallingMode, maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
@@ -2207,6 +2303,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     systemPrompts =
       (try? c.decode([SystemPrompt].self, forKey: .systemPrompts))
       ?? [AppSettings.defaultSystemPrompt]
+    userPrompts =
+      (try? c.decode([UserPrompt].self, forKey: .userPrompts)) ?? []
     defaultSystemPromptID =
       (try? c.decode(UUID.self, forKey: .defaultSystemPromptID))
       ?? (systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)

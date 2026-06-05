@@ -143,7 +143,7 @@ private struct MessageBubbleContent: View, Equatable {
   @State private var imageSaveError: String?
 
   private var isUser: Bool { message.role == .user }
-  private var displayText: String { streamingOverride ?? message.text }
+  private var displayText: String { streamingOverride ?? message.presentationText }
   private var isStreaming: Bool { streamingOverride != nil }
   private var isLiveAssistantResponse: Bool {
     message.role == .assistant && (isWaitingForResponse || isStreaming)

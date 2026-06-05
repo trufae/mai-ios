@@ -95,6 +95,18 @@ private enum ToolCallApprovalParseResult {
   case failure(String)
 }
 
+private struct PromptShortcutTarget {
+  var selection: PromptShortcutSelection
+  var commandName: String
+  var text: String
+}
+
+private struct ResolvedPromptSubmission {
+  var prompt: String
+  var displayText: String?
+  var systemPromptID: UUID?
+}
+
 struct ToolCallApprovalRequest: Identifiable {
   let id: UUID
   let callName: String
@@ -743,7 +755,10 @@ final class AppStore: ObservableObject {
     let cleaned = MessageContentFilter.promptSafeText(from: message.text)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !cleaned.isEmpty || !message.attachments.isEmpty else { return }
-    _ = await send(prompt: cleaned, attachments: message.attachments)
+    _ = await send(
+      prompt: cleaned,
+      displayText: message.displayText,
+      attachments: message.attachments)
   }
 
   func restartFromScratch(with message: ChatMessage) async {
@@ -760,7 +775,7 @@ final class AppStore: ObservableObject {
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
 
-    _ = await send(prompt: prompt, attachments: source.attachments)
+    _ = await send(prompt: prompt, displayText: source.displayText, attachments: source.attachments)
   }
 
   func startNewConversation(with message: ChatMessage) async {
@@ -790,7 +805,7 @@ final class AppStore: ObservableObject {
     selectedConversationIDs.removeAll()
     saveConversations()
 
-    _ = await send(prompt: prompt, attachments: message.attachments)
+    _ = await send(prompt: prompt, displayText: message.displayText, attachments: message.attachments)
   }
 
   private func restartPrompt(from message: ChatMessage) -> String? {
@@ -905,6 +920,7 @@ final class AppStore: ObservableObject {
         id: UUID(),
         role: $0.role,
         text: $0.text,
+        displayText: $0.displayText,
         createdAt: $0.createdAt,
         voiceRecordingFilename: $0.voiceRecordingFilename,
         attachments: $0.attachments)
@@ -951,11 +967,18 @@ final class AppStore: ObservableObject {
 
   func send(
     prompt rawPrompt: String,
+    displayText rawDisplayText: String? = nil,
     voiceRecordingFilename: String? = nil,
-    attachments: [ChatAttachment] = []
+    attachments: [ChatAttachment] = [],
+    promptShortcutSelection: PromptShortcutSelection? = nil
   ) async -> Bool {
-    let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !prompt.isEmpty || !attachments.isEmpty else { return false }
+    let resolved = resolvedPromptSubmission(
+      rawPrompt: rawPrompt,
+      rawDisplayText: rawDisplayText,
+      shortcutSelection: promptShortcutSelection)
+    guard !resolved.prompt.isEmpty || !attachments.isEmpty || resolved.systemPromptID != nil else {
+      return false
+    }
     if currentConversation == nil {
       newConversation()
     }
@@ -963,6 +986,13 @@ final class AppStore: ObservableObject {
     let conversationID = conversations[index].id
     normalizeCurrentAppleConversationIfNeeded(index: index)
     guard !respondingConversationIDs.contains(conversationID) else { return false }
+    if let systemPromptID = resolved.systemPromptID {
+      conversations[index].systemPromptID = systemPromptID
+      conversations[index].updatedAt = Date()
+      upsertSummary(for: conversations[index])
+      saveConversations()
+    }
+    guard !resolved.prompt.isEmpty || !attachments.isEmpty else { return true }
     if let message = ChatProviderRouter.preflightMessage(
       conversation: conversations[index], settings: settings)
     {
@@ -973,12 +1003,112 @@ final class AppStore: ObservableObject {
     errorMessage = nil
     rememberSelectedConversationID(conversationID)
     await composeUserTurn(
-      prompt: prompt,
+      prompt: resolved.prompt,
+      displayText: resolved.displayText,
       conversationID: conversationID,
       mode: .append,
       voiceRecordingFilename: voiceRecordingFilename,
       attachments: attachments)
     return true
+  }
+
+  private func resolvedPromptSubmission(
+    rawPrompt: String,
+    rawDisplayText: String?,
+    shortcutSelection: PromptShortcutSelection?
+  ) -> ResolvedPromptSubmission {
+    let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    let parsed = PromptSlashCommand.parse(prompt)
+    guard parsed != nil || shortcutSelection != nil else {
+      return ResolvedPromptSubmission(
+        prompt: prompt,
+        displayText: normalizedDisplayText(rawDisplayText, prompt: prompt),
+        systemPromptID: nil)
+    }
+
+    let slashCommand = parsed ?? ParsedPromptSlashCommand(command: "", remainder: prompt)
+    let target =
+      shortcutSelection.flatMap { promptShortcutTarget(selection: $0) }
+      ?? promptShortcutTarget(command: slashCommand.command)
+    guard let target else {
+      return ResolvedPromptSubmission(
+        prompt: prompt,
+        displayText: normalizedDisplayText(rawDisplayText, prompt: prompt),
+        systemPromptID: nil)
+    }
+
+    let shortcutDisplayText =
+      rawDisplayText
+      ?? (shortcutSelection == nil
+        ? prompt
+        : PromptSlashCommand.visualText(
+          commandName: target.commandName,
+          remainder: slashCommand.remainder))
+    switch target.selection.kind {
+    case .system:
+      let modelPrompt = slashCommand.remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+      return ResolvedPromptSubmission(
+        prompt: modelPrompt,
+        displayText: normalizedDisplayText(shortcutDisplayText, prompt: modelPrompt),
+        systemPromptID: target.selection.id)
+    case .user:
+      let promptText = target.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      let remainder = slashCommand.remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+      let expanded =
+        promptText.isEmpty ? remainder
+        : (remainder.isEmpty ? promptText : "\(promptText)\n\n\(remainder)")
+      return ResolvedPromptSubmission(
+        prompt: expanded,
+        displayText: normalizedDisplayText(shortcutDisplayText, prompt: expanded),
+        systemPromptID: nil)
+    }
+  }
+
+  private func normalizedDisplayText(_ displayText: String?, prompt: String) -> String? {
+    let trimmed = displayText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty, trimmed != prompt else { return nil }
+    return trimmed
+  }
+
+  private func promptShortcutTarget(selection: PromptShortcutSelection) -> PromptShortcutTarget? {
+    switch selection.kind {
+    case .system:
+      guard let prompt = settings.systemPrompts.first(where: { $0.id == selection.id }) else {
+        return nil
+      }
+      return PromptShortcutTarget(
+        selection: selection,
+        commandName: prompt.slashCommandName,
+        text: prompt.text)
+    case .user:
+      guard let prompt = settings.userPrompts.first(where: { $0.id == selection.id }) else {
+        return nil
+      }
+      return PromptShortcutTarget(
+        selection: selection,
+        commandName: prompt.slashCommandName,
+        text: prompt.text)
+    }
+  }
+
+  private func promptShortcutTarget(command: String) -> PromptShortcutTarget? {
+    let normalized = PromptSlashCommand.normalized(command)
+    guard !normalized.isEmpty else { return nil }
+    let systemTargets = settings.systemPrompts.map { prompt in
+      PromptShortcutTarget(
+        selection: PromptShortcutSelection(kind: .system, id: prompt.id),
+        commandName: prompt.slashCommandName,
+        text: prompt.text)
+    }
+    let userTargets = settings.userPrompts.map { prompt in
+      PromptShortcutTarget(
+        selection: PromptShortcutSelection(kind: .user, id: prompt.id),
+        commandName: prompt.slashCommandName,
+        text: prompt.text)
+    }
+    return (systemTargets + userTargets).first {
+      PromptSlashCommand.normalized($0.commandName) == normalized
+    }
   }
 
   var isOpenAPIServerRunning: Bool {
@@ -1504,6 +1634,7 @@ final class AppStore: ObservableObject {
     errorMessage = nil
     await composeUserTurn(
       prompt: prompt,
+      displayText: last.displayText,
       conversationID: conversationID,
       mode: .replaceLastUser,
       voiceRecordingFilename: last.voiceRecordingFilename,
@@ -1517,6 +1648,7 @@ final class AppStore: ObservableObject {
 
   private func composeUserTurn(
     prompt: String,
+    displayText: String? = nil,
     conversationID: UUID,
     mode: UserTurnMode,
     voiceRecordingFilename: String? = nil,
@@ -1537,19 +1669,22 @@ final class AppStore: ObservableObject {
       let userMessage = ChatMessage(
         role: .user,
         text: prompt,
+        displayText: displayText,
         voiceRecordingFilename: voiceRecordingFilename,
         attachments: attachments)
       conversations[i].messages.append(userMessage)
-      let titleSource = MessageContentFilter.render(prompt).visibleText
+      let presentationText = displayText ?? prompt
+      let titleSource = MessageContentFilter.render(presentationText).visibleText
         .trimmingCharacters(in: .whitespacesAndNewlines)
       let fallbackTitle = attachments.map(\.displayName).joined(separator: ", ")
       conversations[i].refreshTitle(
         from: titleSource.isEmpty
-          ? (prompt.isEmpty ? fallbackTitle : prompt)
+          ? (presentationText.isEmpty ? fallbackTitle : presentationText)
           : titleSource)
     case .replaceLastUser:
       if let lastIndex = conversations[i].messages.indices.last {
         conversations[i].messages[lastIndex].text = prompt
+        conversations[i].messages[lastIndex].displayText = displayText
         conversations[i].messages[lastIndex].voiceRecordingFilename = voiceRecordingFilename
         conversations[i].messages[lastIndex].attachments = attachments
       }
@@ -2793,6 +2928,7 @@ final class AppStore: ObservableObject {
     return zip(lhs, rhs).allSatisfy { lhsMessage, rhsMessage in
       lhsMessage.role == rhsMessage.role
         && lhsMessage.text == rhsMessage.text
+        && lhsMessage.displayText == rhsMessage.displayText
         && lhsMessage.createdAt == rhsMessage.createdAt
         && lhsMessage.voiceRecordingFilename == rhsMessage.voiceRecordingFilename
         && lhsMessage.attachments == rhsMessage.attachments
@@ -2815,7 +2951,7 @@ final class AppStore: ObservableObject {
     switch format {
     case .markdown:
       return conversation.messages.map { message in
-        "## \(message.role.displayName)\n\n\(message.text)"
+        "## \(message.role.displayName)\n\n\(message.presentationText)"
       }.joined(separator: "\n\n")
     case .json, .debug:
       let encoder = JSONEncoder()
@@ -3213,7 +3349,8 @@ final class AppStore: ObservableObject {
     SettingsPromptsBackup(
       prompts: settings.systemPrompts,
       defaultSystemPromptID: settings.defaultSystemPromptID,
-      compactPrompt: settings.compactPrompt)
+      compactPrompt: settings.compactPrompt,
+      userPrompts: settings.userPrompts)
   }
 
   private func toolsBackup() -> SettingsToolsBackup {
@@ -3397,6 +3534,9 @@ final class AppStore: ObservableObject {
     if let compactPrompt = payload.compactPrompt {
       settings.compactPrompt = compactPrompt
     }
+    if let userPrompts = payload.userPrompts {
+      settings.userPrompts = userPrompts
+    }
   }
 
   private func applyToolsBackup(_ payload: SettingsToolsBackup) {
@@ -3498,6 +3638,7 @@ final class AppStore: ObservableObject {
 
   func clearSystemPrompts() {
     settings.systemPrompts = [AppSettings.defaultSystemPrompt]
+    settings.userPrompts = []
     settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
     settings.compactPrompt = AppSettings.defaultCompactPrompt
     saveSettings()

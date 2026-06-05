@@ -50,6 +50,7 @@ private enum SettingsRoute: Hashable {
 private enum SettingsDeletionKind {
   case endpoint
   case systemPrompt
+  case userPrompt
   case file
   case mcpServer
 
@@ -57,6 +58,7 @@ private enum SettingsDeletionKind {
     switch self {
     case .endpoint: "Delete provider?"
     case .systemPrompt: "Delete system prompt?"
+    case .userPrompt: "Delete user prompt?"
     case .file: "Delete file?"
     case .mcpServer: "Delete MCP server?"
     }
@@ -66,6 +68,7 @@ private enum SettingsDeletionKind {
     switch self {
     case .endpoint: "Delete \(itemName("Provider", count: count))"
     case .systemPrompt: "Delete \(itemName("Prompt", count: count))"
+    case .userPrompt: "Delete \(itemName("Prompt", count: count))"
     case .file: "Delete \(itemName("File", count: count))"
     case .mcpServer: "Delete \(itemName("Server", count: count))"
     }
@@ -77,6 +80,8 @@ private enum SettingsDeletionKind {
       "\(count) provider\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .systemPrompt:
       "\(count) system prompt\(count == 1 ? "" : "s") will be removed. This cannot be undone."
+    case .userPrompt:
+      "\(count) user prompt\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .file:
       "\(count) imported file\(count == 1 ? "" : "s") will be removed. This cannot be undone."
     case .mcpServer:
@@ -525,6 +530,12 @@ struct SettingsView: View {
         promptContent
       } label: {
         Label("System Prompts", systemImage: "text.bubble")
+      }
+
+      DisclosureGroup {
+        userPromptContent
+      } label: {
+        Label("User Prompts", systemImage: "text.quote")
       }
 
       DisclosureGroup {
@@ -1128,6 +1139,28 @@ struct SettingsView: View {
     .foregroundStyle(.secondary)
   }
 
+  @ViewBuilder
+  private var userPromptContent: some View {
+    ForEach(store.settings.userPrompts) { prompt in
+      NavigationLink {
+        UserPromptDetailView(prompt: prompt)
+      } label: {
+        userPromptRow(prompt)
+      }
+    }
+    .onDelete { offsets in
+      pendingDeletion = PendingSettingsDeletion(kind: .userPrompt, offsets: offsets)
+    }
+    NavigationLink {
+      UserPromptDetailView()
+    } label: {
+      Label("Add User Prompt", systemImage: "plus")
+    }
+    Text("User prompts are prepended to user messages submitted with /name text.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+  }
+
   private var compactPromptRow: some View {
     let trimmed = store.settings.compactPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let preview = trimmed.split(separator: "\n").first.map(String.init) ?? ""
@@ -1157,6 +1190,27 @@ struct SettingsView: View {
       Image(systemName: isDefault ? "star.fill" : "text.bubble")
         .imageScale(.medium)
         .foregroundStyle(isDefault ? Color.accentColor : .secondary)
+        .frame(width: 18)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(prompt.displayName)
+          .font(.body)
+        Text(preview.isEmpty ? "Empty" : preview)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+      Spacer()
+    }
+    .padding(.vertical, 2)
+  }
+
+  private func userPromptRow(_ prompt: UserPrompt) -> some View {
+    let trimmed = prompt.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let preview = trimmed.split(separator: "\n").first.map(String.init) ?? ""
+    return HStack(spacing: 12) {
+      Image(systemName: "text.quote")
+        .imageScale(.medium)
+        .foregroundStyle(.secondary)
         .frame(width: 18)
       VStack(alignment: .leading, spacing: 2) {
         Text(prompt.displayName)
@@ -1595,6 +1649,11 @@ struct SettingsView: View {
         store.settings.systemPrompts = [AppSettings.defaultSystemPrompt]
         store.settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
       }
+      store.saveSettings()
+    case .userPrompt:
+      guard deletion.offsets.allSatisfy({ store.settings.userPrompts.indices.contains($0) })
+      else { return }
+      store.settings.userPrompts.remove(atOffsets: deletion.offsets)
       store.saveSettings()
     case .file:
       guard deletion.offsets.allSatisfy({ store.settings.toolSettings.files.indices.contains($0) })
@@ -3354,35 +3413,54 @@ private struct OllamaPortScanView: View {
   }
 }
 
-private enum SystemPromptNameResolution {
+private enum PromptNameResolution {
   static func savedName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   static func validationMessage(
     forName name: String,
-    excluding promptID: UUID?,
-    in prompts: [SystemPrompt]
+    excludingSystemPromptID: UUID?,
+    excludingUserPromptID: UUID?,
+    systemPrompts: [SystemPrompt],
+    userPrompts: [UserPrompt]
   ) -> String? {
     let savedName = savedName(name)
     guard !savedName.isEmpty else {
       return "Specify a prompt name."
     }
-    if hasDuplicateDisplayName(savedName, excluding: promptID, in: prompts) {
+    if savedName.contains(where: { $0.isWhitespace }) || savedName.contains("/") {
+      return "Prompt names cannot contain spaces or /."
+    }
+    if hasDuplicateCommandName(
+      savedName,
+      excludingSystemPromptID: excludingSystemPromptID,
+      excludingUserPromptID: excludingUserPromptID,
+      systemPrompts: systemPrompts,
+      userPrompts: userPrompts)
+    {
       return "A prompt named \"\(savedName)\" already exists."
     }
     return nil
   }
 
-  private static func hasDuplicateDisplayName(
+  private static func hasDuplicateCommandName(
     _ name: String,
-    excluding promptID: UUID?,
-    in prompts: [SystemPrompt]
+    excludingSystemPromptID: UUID?,
+    excludingUserPromptID: UUID?,
+    systemPrompts: [SystemPrompt],
+    userPrompts: [UserPrompt]
   ) -> Bool {
-    let normalized = normalizedName(name)
-    return prompts.contains { prompt in
-      guard prompt.id != promptID else { return false }
-      return normalizedName(prompt.displayName) == normalized
+    let normalized = normalizedName(PromptSlashCommand.commandName(for: name))
+    if systemPrompts.contains(where: { prompt in
+      guard prompt.id != excludingSystemPromptID else { return false }
+      return normalizedName(prompt.slashCommandName) == normalized
+    }) {
+      return true
+    }
+    return userPrompts.contains { prompt in
+      guard prompt.id != excludingUserPromptID else { return false }
+      return normalizedName(prompt.slashCommandName) == normalized
     }
   }
 
@@ -3509,16 +3587,21 @@ private struct SystemPromptDetailView: View {
   }
 
   private func savePromptAndDismiss() {
-    if let message = SystemPromptNameResolution.validationMessage(
-      forName: draftName,
-      excluding: promptID,
-      in: store.settings.systemPrompts)
-    {
-      showToast(message)
-      return
+    let savedName = PromptNameResolution.savedName(draftName)
+    let originalSavedName = PromptNameResolution.savedName(originalName)
+    if isNewPrompt || savedName != originalSavedName {
+      if let message = PromptNameResolution.validationMessage(
+        forName: draftName,
+        excludingSystemPromptID: promptID,
+        excludingUserPromptID: nil,
+        systemPrompts: store.settings.systemPrompts,
+        userPrompts: store.settings.userPrompts)
+      {
+        showToast(message)
+        return
+      }
     }
 
-    let savedName = SystemPromptNameResolution.savedName(draftName)
     if let promptID {
       guard let index = store.settings.systemPrompts.firstIndex(where: { $0.id == promptID })
       else {
@@ -3536,6 +3619,149 @@ private struct SystemPromptDetailView: View {
       if draftIsDefault {
         store.settings.defaultSystemPromptID = prompt.id
       }
+    }
+
+    store.saveSettings()
+    dismiss()
+  }
+
+  private func showToast(_ message: String) {
+    withAnimation(.snappy) {
+      toastMessage = message
+    }
+  }
+}
+
+private struct UserPromptDetailView: View {
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+  @FocusState private var isNameFocused: Bool
+
+  private static let newPromptText = "Use these instructions when answering."
+
+  private let promptID: UUID?
+  private let originalName: String
+  private let originalText: String
+
+  @State private var draftName: String
+  @State private var draftText: String
+  @State private var showingLeaveConfirmation = false
+  @State private var toastMessage: String?
+
+  init(prompt: UserPrompt? = nil) {
+    let initialName = prompt?.name ?? ""
+    let initialText = prompt?.text ?? Self.newPromptText
+
+    promptID = prompt?.id
+    originalName = initialName
+    originalText = initialText
+
+    _draftName = State(initialValue: initialName)
+    _draftText = State(initialValue: initialText)
+  }
+
+  var body: some View {
+    Form {
+      Section {
+        TextField("Name", text: $draftName)
+          .focused($isNameFocused)
+      } footer: {
+        Text("Used as /name in the chat composer.")
+      }
+      Section {
+        TextEditor(text: $draftText)
+          .frame(minHeight: 220)
+          .font(.callout)
+      } header: {
+        Text("Prompt")
+      } footer: {
+        Text("Prepended to the user message before sending to the model.")
+      }
+    }
+    .navigationTitle(navigationTitle)
+    .navigationBarTitleDisplayMode(.inline)
+    .navigationBarBackButtonHidden(true)
+    .toolbar {
+      ToolbarItem(placement: .cancellationAction) {
+        Button {
+          requestDismiss()
+        } label: {
+          Label(isNewPrompt ? "Cancel" : "Back", systemImage: "chevron.left")
+        }
+      }
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Save") {
+          savePromptAndDismiss()
+        }
+      }
+    }
+    .alert("Save changes?", isPresented: $showingLeaveConfirmation) {
+      Button("Cancel", role: .cancel) {}
+      Button("Discard Changes", role: .destructive) {
+        dismiss()
+      }
+      Button("Save") {
+        savePromptAndDismiss()
+      }
+    } message: {
+      Text("Save or discard changes before leaving this prompt.")
+    }
+    .settingsToast($toastMessage)
+    .onAppear {
+      if isNewPrompt {
+        isNameFocused = true
+      }
+    }
+  }
+
+  private var isNewPrompt: Bool {
+    promptID == nil
+  }
+
+  private var navigationTitle: String {
+    let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty { return trimmed }
+    return isNewPrompt ? "New User Prompt" : "User Prompt"
+  }
+
+  private var hasUnsavedChanges: Bool {
+    draftName != originalName || draftText != originalText
+  }
+
+  private func requestDismiss() {
+    guard hasUnsavedChanges else {
+      dismiss()
+      return
+    }
+    showingLeaveConfirmation = true
+  }
+
+  private func savePromptAndDismiss() {
+    let savedName = PromptNameResolution.savedName(draftName)
+    let originalSavedName = PromptNameResolution.savedName(originalName)
+    if isNewPrompt || savedName != originalSavedName {
+      if let message = PromptNameResolution.validationMessage(
+        forName: draftName,
+        excludingSystemPromptID: nil,
+        excludingUserPromptID: promptID,
+        systemPrompts: store.settings.systemPrompts,
+        userPrompts: store.settings.userPrompts)
+      {
+        showToast(message)
+        return
+      }
+    }
+
+    if let promptID {
+      guard let index = store.settings.userPrompts.firstIndex(where: { $0.id == promptID })
+      else {
+        showToast("This prompt no longer exists.")
+        return
+      }
+      store.settings.userPrompts[index].name = savedName
+      store.settings.userPrompts[index].text = draftText
+    } else {
+      store.settings.userPrompts.append(UserPrompt(name: savedName, text: draftText))
     }
 
     store.saveSettings()
