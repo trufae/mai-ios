@@ -851,6 +851,13 @@ private struct ChatComposer: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
+    .background {
+      GeometryReader { proxy in
+        Color.clear.preference(
+          key: HistoryPanelDragExclusionFramePreferenceKey.self,
+          value: proxy.frame(in: .named(HistoryPanelDragCoordinateSpace.name)))
+      }
+    }
     .simultaneousGesture(composerKeyboardDismissGesture)
     .onAppear {
       draftText = store.draftText(for: conversationID)

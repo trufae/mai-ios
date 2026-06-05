@@ -8,6 +8,7 @@ struct ContentView: View {
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
   @State private var historyDragIsActive = false
+  @State private var historyDragExclusionFrame: CGRect?
   @State private var sidebarShowingArchive = false
 
   var body: some View {
@@ -64,10 +65,15 @@ struct ContentView: View {
       }
       .background(Color(uiColor: .systemGroupedBackground))
       .contentShape(Rectangle())
+      .coordinateSpace(name: HistoryPanelDragCoordinateSpace.name)
+      .onPreferenceChange(HistoryPanelDragExclusionFramePreferenceKey.self) { frame in
+        historyDragExclusionFrame = frame
+      }
       .simultaneousGesture(
         historyPanelDragGesture(
           panelWidth: panelWidth,
-          activationWidth: historyDragActivationWidth)
+          activationWidth: historyDragActivationWidth,
+          exclusionFrame: historyDragExclusionFrame)
       )
     }
     .ignoresSafeArea()
@@ -129,13 +135,22 @@ struct ContentView: View {
     }
   }
 
-  private func historyPanelDragGesture(panelWidth: CGFloat, activationWidth: CGFloat)
+  private func historyPanelDragGesture(
+    panelWidth: CGFloat,
+    activationWidth: CGFloat,
+    exclusionFrame: CGRect?
+  )
     -> some Gesture
   {
     DragGesture(minimumDistance: 12, coordinateSpace: .local)
       .onChanged { value in
         if !historyDragIsActive {
-          guard shouldHandleHistoryDrag(value, activationWidth: activationWidth) else { return }
+          guard
+            shouldHandleHistoryDrag(
+              value,
+              activationWidth: activationWidth,
+              exclusionFrame: exclusionFrame)
+          else { return }
           historyDragIsActive = true
         }
 
@@ -145,7 +160,11 @@ struct ContentView: View {
       }
       .onEnded { value in
         guard
-          historyDragIsActive || shouldHandleHistoryDrag(value, activationWidth: activationWidth)
+          historyDragIsActive
+            || shouldHandleHistoryDrag(
+              value,
+              activationWidth: activationWidth,
+              exclusionFrame: exclusionFrame)
         else {
           historyDragOffset = 0
           historyDragIsActive = false
@@ -161,7 +180,11 @@ struct ContentView: View {
       }
   }
 
-  private func shouldHandleHistoryDrag(_ value: DragGesture.Value, activationWidth: CGFloat) -> Bool
+  private func shouldHandleHistoryDrag(
+    _ value: DragGesture.Value,
+    activationWidth: CGFloat,
+    exclusionFrame: CGRect?
+  ) -> Bool
   {
     let horizontal = value.translation.width
     let vertical = abs(value.translation.height)
@@ -169,6 +192,9 @@ struct ContentView: View {
 
     if showingHistory {
       return true
+    }
+    if let exclusionFrame, exclusionFrame.contains(value.startLocation) {
+      return false
     }
     return horizontal > 0 && value.startLocation.x <= activationWidth
   }
@@ -185,6 +211,18 @@ struct ContentView: View {
       get: { store.errorMessage != nil },
       set: { if !$0 { store.errorMessage = nil } }
     )
+  }
+}
+
+enum HistoryPanelDragCoordinateSpace {
+  static let name = "HistoryPanelDragCoordinateSpace"
+}
+
+struct HistoryPanelDragExclusionFramePreferenceKey: PreferenceKey {
+  static let defaultValue: CGRect? = nil
+
+  static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+    value = nextValue() ?? value
   }
 }
 
