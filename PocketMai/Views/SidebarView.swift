@@ -201,87 +201,56 @@ struct SidebarView: View {
     GeometryReader { proxy in
       let availableWidth = max(proxy.size.width - floatingActionHorizontalInset * 2, 0)
       let isCompact = availableWidth < 300
-      let showsNewChatIcon = availableWidth >= 280
 
       HStack(spacing: isCompact ? 6 : 10) {
         if isSelectionMode {
           selectionFloatingActions(compact: isCompact)
         } else {
-          defaultFloatingActions(
-            searchWidth: searchFieldWidth(containerWidth: availableWidth),
-            compact: isCompact,
-            showsNewChatIcon: showsNewChatIcon)
+          defaultFloatingActions(compact: isCompact)
         }
       }
-      .frame(width: availableWidth, alignment: .trailing)
-      .frame(maxHeight: .infinity, alignment: .bottomTrailing)
+      .frame(width: availableWidth)
+      .frame(maxHeight: .infinity, alignment: .bottom)
       .padding(.horizontal, floatingActionHorizontalInset)
       .padding(.bottom, floatingActionBottomInset + keyboardOverlap)
+      .animation(.snappy, value: isSearchActive)
     }
   }
 
   @ViewBuilder
-  private func defaultFloatingActions(
-    searchWidth: CGFloat,
-    compact: Bool,
-    showsNewChatIcon: Bool
-  ) -> some View {
-    if isSearchActive {
-      FloatingSearchField(
-        text: $searchText,
-        isFocused: $isSearchFieldFocused,
-        width: searchWidth,
-        onCancel: cancelSearch
-      )
-      .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
-    } else {
-      FloatingActionPill(
-        title: "New Chat",
-        systemImage: showsNewChatIcon ? "square.and.pencil" : nil,
-        prominent: true,
-        compact: compact
-      ) {
-        store.newConversation()
-        onSelectConversation()
-      }
-      Spacer(minLength: compact ? 0 : 4)
-      FloatingActionIcon(
-        systemImage: "magnifyingglass",
-        accessibilityLabel: "Search conversations",
-        compact: compact
-      ) {
-        activateSearch()
-      }
-      FloatingActionIcon(
-        systemImage: showingArchive ? "tray.full.fill" : "archivebox",
-        accessibilityLabel: showingArchive
-          ? "Show active conversations" : "Show archived conversations",
-        isActive: showingArchive,
-        compact: compact
-      ) {
-        showingArchive.toggle()
-      }
-      FloatingActionIcon(
-        systemImage: "gearshape",
-        accessibilityLabel: "Settings",
-        compact: compact
-      ) {
-        showingSettings = true
-      }
-      .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
+  private func defaultFloatingActions(compact: Bool) -> some View {
+    FloatingActionIcon(
+      systemImage: showingArchive ? "tray.full.fill" : "archivebox",
+      accessibilityLabel: showingArchive
+        ? "Show active conversations" : "Show archived conversations",
+      isActive: showingArchive,
+      compact: compact
+    ) {
+      showingArchive.toggle()
     }
-  }
-
-  private func searchFieldWidth(containerWidth: CGFloat) -> CGFloat {
-    min(max(containerWidth - 4, 240), 320)
+    FloatingSearchField(
+      text: $searchText,
+      isFocused: $isSearchFieldFocused,
+      onActivate: activateSearch,
+      onCancel: cancelSearch
+    )
+    FloatingActionIcon(
+      systemImage: "gearshape",
+      accessibilityLabel: "Settings",
+      compact: compact
+    ) {
+      showingSettings = true
+    }
   }
 
   private func activateSearch() {
-    withAnimation(.snappy) {
-      isSearchActive = true
+    if !isSearchActive {
+      withAnimation(.snappy) {
+        isSearchActive = true
+      }
+      Task { await store.loadStoredConversationsForSearch() }
     }
     isSearchFieldFocused = true
-    Task { await store.loadStoredConversationsForSearch() }
   }
 
   private func cancelSearch() {
@@ -517,22 +486,20 @@ private struct SidebarEdgeFade: View {
   }
 }
 
-private struct FloatingChrome<Background: InsettableShape>: ViewModifier {
-  let prominent: Bool
+private struct FloatingGlassSurface<Background: InsettableShape>: ViewModifier {
+  @Environment(\.colorScheme) private var colorScheme
   let shape: Background
   var tint: Color? = nil
 
   func body(content: Content) -> some View {
     content
-      .foregroundStyle(tint ?? (prominent ? Color.white : Color.primary))
-      .background(
-        shape.fill(
-          prominent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.regularMaterial))
-      )
-      .overlay(shape.strokeBorder(.secondary.opacity(prominent ? 0 : 0.18), lineWidth: 0.5))
-      .shadow(
-        color: prominent ? Color.accentColor.opacity(0.4) : .black.opacity(0.18),
-        radius: prominent ? 12 : 8, x: 0, y: 4)
+      .glassEffect(.clear.tint(tint).interactive(), in: shape)
+      .overlay(shape.strokeBorder(borderColor, lineWidth: 0.5))
+      .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
+  }
+
+  private var borderColor: Color {
+    colorScheme == .dark ? .white.opacity(0.08) : .black.opacity(0.08)
   }
 }
 
@@ -547,25 +514,32 @@ private struct FloatingActionIcon: View {
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
-        .font(.body.weight(.semibold))
-        .frame(width: compact ? 20 : 22, height: compact ? 20 : 22)
-        .padding(compact ? 11 : 12)
-        .modifier(
-          FloatingChrome(
-            prominent: isActive,
-            shape: Circle(),
-            tint: destructive ? .red : nil
-          ))
+        .font((compact ? Font.title3 : Font.title2).weight(.semibold))
+        .foregroundStyle(destructive ? Color.red : (isActive ? Color.accentColor : Color.primary))
+        .frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
+        .padding(compact ? 12 : 14)
+        .modifier(FloatingGlassSurface(shape: Circle(), tint: glassTint))
+        .contentShape(Circle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+  }
+
+  private var glassTint: Color? {
+    if destructive {
+      return Color.red.opacity(0.16)
+    }
+    if isActive {
+      return Color.accentColor.opacity(0.18)
+    }
+    return nil
   }
 }
 
 private struct FloatingSearchField: View {
   @Binding var text: String
   let isFocused: FocusState<Bool>.Binding
-  let width: CGFloat
+  let onActivate: () -> Void
   let onCancel: () -> Void
 
   var body: some View {
@@ -575,7 +549,7 @@ private struct FloatingSearchField: View {
         .foregroundStyle(.secondary)
         .frame(width: 22, height: 22)
 
-      TextField("Search messages", text: $text)
+      TextField("Search", text: $text)
         .textFieldStyle(.plain)
         .disableAutocorrection(true)
         .textInputAutocapitalization(.never)
@@ -585,20 +559,40 @@ private struct FloatingSearchField: View {
           isFocused.wrappedValue = false
         }
 
-      Button(action: onCancel) {
-        Image(systemName: "xmark.circle.fill")
-          .font(.body.weight(.semibold))
-          .frame(width: 22, height: 22)
-          .foregroundStyle(.secondary)
+      if showsCancelButton {
+        Button(action: onCancel) {
+          Image(systemName: "xmark.circle.fill")
+            .font(.body.weight(.semibold))
+            .frame(width: 22, height: 22)
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Cancel search")
+        .transition(.opacity.combined(with: .scale(scale: 0.9)))
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Cancel search")
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(width: width)
-    .modifier(FloatingChrome(prominent: false, shape: Capsule()))
+    .padding(.vertical, 14)
+    .frame(maxWidth: .infinity)
+    .modifier(
+      FloatingGlassSurface(
+        shape: Capsule(),
+        tint: nil))
+    .contentShape(Capsule())
+    .onTapGesture {
+      onActivate()
+    }
+    .onChange(of: isFocused.wrappedValue) { _, focused in
+      if focused {
+        onActivate()
+      }
+    }
     .accessibilityElement(children: .contain)
+    .animation(.snappy, value: showsCancelButton)
+  }
+
+  private var showsCancelButton: Bool {
+    isFocused.wrappedValue || !text.isEmpty
   }
 }
 
@@ -624,7 +618,11 @@ private struct FloatingActionPill: View {
       }
       .padding(.horizontal, compact ? 12 : 16)
       .padding(.vertical, compact ? 11 : 12)
-      .modifier(FloatingChrome(prominent: prominent, shape: Capsule()))
+      .foregroundStyle(prominent ? Color.accentColor : Color.primary)
+      .modifier(
+        FloatingGlassSurface(
+          shape: Capsule(),
+          tint: prominent ? Color.accentColor.opacity(0.16) : nil))
     }
     .buttonStyle(.plain)
   }
