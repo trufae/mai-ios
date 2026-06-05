@@ -2096,24 +2096,11 @@ private struct MarkdownHorizontalRuleView: View {
   let appearance: AppearanceSettings
 
   var body: some View {
-    GeometryReader { proxy in
-      Capsule(style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [
-              Color.secondary.opacity(0.0),
-              Color.secondary.opacity(0.45),
-              Color.secondary.opacity(0.0),
-            ],
-            startPoint: .leading,
-            endPoint: .trailing)
-        )
-        .frame(width: proxy.size.width * 0.4, height: appearance.markdownMetric(3))
-        .frame(maxWidth: .infinity)
-    }
-    .frame(height: appearance.markdownMetric(3))
+    Rectangle()
+      .fill(Color.secondary.opacity(0.5))
+      .frame(height: max(CGFloat(0.5), appearance.markdownMetric(0.75)))
     .frame(maxWidth: .infinity)
-    .padding(.vertical, appearance.markdownMetric(8))
+    .padding(.vertical, appearance.markdownMetric(7))
     .accessibilityHidden(true)
   }
 }
