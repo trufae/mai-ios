@@ -25,6 +25,7 @@ final class TTSPlayer: NSObject, ObservableObject {
   private var boostedAudioPlayerNode: AVAudioPlayerNode?
   private var boostedAudioGainUnit: AVAudioUnitEQ?
   private var boostedAudioPlaybackID: UUID?
+  private var keepsVoiceInputActiveDuringPlayback = false
   private var speechGeneration = 0
 
   override init() {
@@ -422,6 +423,10 @@ final class TTSPlayer: NSObject, ObservableObject {
     isSpeaking && currentTag == tag
   }
 
+  func setKeepsVoiceInputActiveDuringPlayback(_ enabled: Bool) {
+    keepsVoiceInputActiveDuringPlayback = enabled
+  }
+
   private func handleFinished() {
     if audioPlayer != nil || boostedAudioPlayerNode != nil {
       audioPlayer = nil
@@ -570,9 +575,17 @@ final class TTSPlayer: NSObject, ObservableObject {
   private func activateAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
-      // Live voice recording leaves the session in playAndRecord. Switch TTS back
-      // to playback so assistant speech uses the normal media volume path.
-      try session.setCategory(.playback, mode: .default, options: [])
+      if keepsVoiceInputActiveDuringPlayback {
+        try session.setCategory(
+          .playAndRecord,
+          mode: .default,
+          options: [.defaultToSpeaker, .allowBluetoothHFP])
+        try? session.overrideOutputAudioPort(.speaker)
+      } else {
+        // Live voice recording leaves the session in playAndRecord. Switch TTS back
+        // to playback so assistant speech uses the normal media volume path.
+        try session.setCategory(.playback, mode: .default, options: [])
+      }
       try session.setActive(true, options: [])
     } catch {
       // Best-effort: TTS still plays in foreground without an active session.

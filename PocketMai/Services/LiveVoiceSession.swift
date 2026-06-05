@@ -39,7 +39,7 @@ struct LiveSpeechRecognitionEvent: Sendable {
 }
 
 @MainActor
-protocol LiveSpeechRecognitionEngine: AnyObject {
+private protocol LiveSpeechRecognitionEngine: AnyObject {
   var onTranscript: ((LiveSpeechRecognitionEvent) -> Void)? { get set }
   var languageIdentifier: String { get }
   var recordingFilename: String? { get }
@@ -111,11 +111,13 @@ final class LiveVoiceSession: ObservableObject {
   private weak var store: AppStore?
   private weak var ttsPlayer: TTSPlayer?
   private var engine: LiveSpeechRecognitionEngine?
+  private var speechInterruptionListener: AssistantSpeechInterruptionListener?
   private var activityTask: Task<Void, Never>?
   private var silenceTask: Task<Void, Never>?
   private var sessionGeneration = 0
   private var recognitionGeneration = 0
   private var isCommittingTurn = false
+  private var assistantSpeechInterrupted = false
   private(set) var previewMessageID = UUID()
 
   var isActive: Bool {
@@ -184,6 +186,8 @@ final class LiveVoiceSession: ObservableObject {
 
   private func beginListening(resetTranscript: Bool) {
     guard let store else { return }
+    stopSpeechInterruptionListening()
+    ttsPlayer?.setKeepsVoiceInputActiveDuringPlayback(false)
     sessionGeneration += 1
     let generation = sessionGeneration
     if resetTranscript {
@@ -215,15 +219,18 @@ final class LiveVoiceSession: ObservableObject {
     activityTask = nil
     silenceTask?.cancel()
     silenceTask = nil
+    stopSpeechInterruptionListening()
     stopRecognition()
     if cancelResponse, let conversationID = store?.currentConversation?.id {
       store?.cancelResponse(in: conversationID)
     }
     ttsPlayer?.stop()
+    ttsPlayer?.setKeepsVoiceInputActiveDuringPlayback(false)
     state = .idle
     transcript = ""
     errorMessage = nil
     isCommittingTurn = false
+    assistantSpeechInterrupted = false
     previewMessageID = UUID()
   }
 
@@ -233,6 +240,7 @@ final class LiveVoiceSession: ObservableObject {
     activityTask = nil
     silenceTask?.cancel()
     silenceTask = nil
+    stopSpeechInterruptionListening()
 
     let draft = await finalizedDraftTranscript()
     stopRecognition()
@@ -240,10 +248,12 @@ final class LiveVoiceSession: ObservableObject {
       store?.cancelResponse(in: conversationID)
     }
     ttsPlayer?.stop()
+    ttsPlayer?.setKeepsVoiceInputActiveDuringPlayback(false)
     state = .idle
     transcript = ""
     errorMessage = nil
     isCommittingTurn = false
+    assistantSpeechInterrupted = false
     previewMessageID = UUID()
     return draft
   }
@@ -352,6 +362,13 @@ final class LiveVoiceSession: ObservableObject {
     languageIdentifier = event.languageIdentifier
     let normalized = event.text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalized.isEmpty else { return }
+
+    if state == .speaking {
+      if Self.isAssistantSpeechStopCommand(normalized) {
+        handleAssistantSpeechStopCommand()
+      }
+      return
+    }
 
     if transcript != normalized {
       transcript = normalized
@@ -509,6 +526,8 @@ final class LiveVoiceSession: ObservableObject {
     transcript = ""
     previewMessageID = UUID()
     state = .speaking
+    assistantSpeechInterrupted = false
+    ttsPlayer.setKeepsVoiceInputActiveDuringPlayback(true)
     ttsPlayer.speak(
       text: assistant.text,
       voice: store.effectiveToolSettings(for: store.currentConversation).voices.assistant,
@@ -517,8 +536,12 @@ final class LiveVoiceSession: ObservableObject {
       messageID: assistant.id,
       openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints,
       skipTechnicalContent: store.settings.conversation.skipTechnicalContentInTTS)
+    await beginAssistantSpeechInterruptionRecognition(generation: generation)
     await waitForSpeechToFinish(ttsPlayer, generation: generation)
     guard generation == sessionGeneration else { return }
+    stopSpeechInterruptionListening()
+    stopRecognition()
+    ttsPlayer.setKeepsVoiceInputActiveDuringPlayback(false)
     _ = await beginRecognition(
       displayState: .listening,
       resetTranscript: true,
@@ -549,12 +572,15 @@ final class LiveVoiceSession: ObservableObject {
     transcript = ""
     previewMessageID = UUID()
     state = .speaking
+    assistantSpeechInterrupted = false
+    ttsPlayer.setKeepsVoiceInputActiveDuringPlayback(true)
+    await beginAssistantSpeechInterruptionRecognition(generation: generation)
 
     let voice = store.effectiveToolSettings(for: store.currentConversation).voices.assistant
     let endpoints = store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints
     var consumed = 0
 
-    while generation == sessionGeneration, !Task.isCancelled {
+    while generation == sessionGeneration, !Task.isCancelled, !assistantSpeechInterrupted {
       let visible = currentAssistantVisibleText(id: id)
       let stillResponding = store.isResponding(in: conversationID)
 
@@ -583,6 +609,10 @@ final class LiveVoiceSession: ObservableObject {
     }
 
     await waitForSpeechToFinish(ttsPlayer, generation: generation)
+    guard generation == sessionGeneration else { return }
+    stopSpeechInterruptionListening()
+    stopRecognition()
+    ttsPlayer.setKeepsVoiceInputActiveDuringPlayback(false)
   }
 
   private func priorAssistantMessageIDs() -> Set<UUID> {
@@ -648,6 +678,115 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
+  private func beginAssistantSpeechInterruptionRecognition(generation: Int) async {
+    stopSpeechInterruptionListening()
+    guard let store else { return }
+
+    let listener = AssistantSpeechInterruptionListener()
+    speechInterruptionListener = listener
+    let language = Self.configuredLanguageIdentifier(
+      from: store.effectiveConversationSettings(for: store.currentConversation))
+    let started = await listener.start(languageIdentifier: language) { [weak self] text in
+      guard Self.isAssistantSpeechStopCommand(text) else { return }
+      Task { @MainActor in
+        self?.handleAssistantSpeechStopCommand()
+      }
+    }
+    guard generation == sessionGeneration else {
+      listener.stop()
+      if speechInterruptionListener === listener {
+        speechInterruptionListener = nil
+      }
+      return
+    }
+    if !started {
+      speechInterruptionListener = nil
+    }
+    if !started, ttsPlayer?.isSpeaking == true {
+      errorMessage = nil
+      transcript = ""
+      state = .speaking
+    }
+  }
+
+  private func handleAssistantSpeechStopCommand() {
+    guard state == .speaking else { return }
+    assistantSpeechInterrupted = true
+    silenceTask?.cancel()
+    silenceTask = nil
+    transcript = ""
+    previewMessageID = UUID()
+    stopSpeechInterruptionListening()
+    interruptAssistantIfNeeded()
+    stopRecognition()
+  }
+
+  private func stopSpeechInterruptionListening() {
+    speechInterruptionListener?.stop()
+    speechInterruptionListener = nil
+  }
+
+  private static func isAssistantSpeechStopCommand(_ text: String) -> Bool {
+    let command =
+      text
+      .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+      .lowercased()
+      .components(separatedBy: CharacterSet.alphanumerics.inverted)
+      .filter { !$0.isEmpty }
+      .joined(separator: " ")
+    guard !command.isEmpty else { return false }
+
+    let words = command.split(separator: " ").map(String.init)
+    let commands: Set<String> = [
+      "stop",
+      "stop it",
+      "stop speaking",
+      "stop talking",
+      "cancel",
+      "cancel response",
+      "pause",
+      "enough",
+      "quiet",
+      "silence",
+      "shut up",
+      "please stop",
+      "please stop speaking",
+      "please stop talking",
+      "para",
+      "parar",
+      "detente",
+      "cancela",
+      "silencio",
+      "callate",
+    ]
+    if words.count <= 4, commands.contains(command) {
+      return true
+    }
+
+    let suffixes = [
+      ["stop"],
+      ["stop", "it"],
+      ["stop", "speaking"],
+      ["stop", "talking"],
+      ["please", "stop"],
+      ["cancel"],
+      ["pause"],
+      ["enough"],
+      ["quiet"],
+      ["silence"],
+      ["para"],
+      ["parar"],
+      ["detente"],
+      ["cancela"],
+      ["silencio"],
+      ["callate"],
+    ]
+    return suffixes.contains { suffix in
+      guard suffix.count <= words.count else { return false }
+      return Array(words.suffix(suffix.count)) == suffix
+    }
+  }
+
   private func latestSpeakableAssistantMessage(excluding priorIDs: Set<UUID>) -> ChatMessage? {
     guard
       let message = store?.currentConversation?.messages.reversed().first(where: {
@@ -670,6 +809,7 @@ final class LiveVoiceSession: ObservableObject {
     if ttsPlayer?.isSpeaking == true {
       ttsPlayer?.stop()
     }
+    ttsPlayer?.setKeepsVoiceInputActiveDuringPlayback(false)
     if let conversationID = store?.currentConversation?.id,
       store?.isResponding(in: conversationID) == true
     {
@@ -690,6 +830,128 @@ final class LiveVoiceSession: ObservableObject {
 
       \(transcript)
       """
+  }
+}
+
+@MainActor
+private final class AssistantSpeechInterruptionListener {
+  private var audioEngine: AVAudioEngine?
+  private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+  private var recognitionTask: SFSpeechRecognitionTask?
+  private var recognizer: SFSpeechRecognizer?
+  private var onText: ((String) -> Void)?
+  private var didInstallTap = false
+
+  func start(
+    languageIdentifier: String,
+    onText: @escaping (String) -> Void
+  ) async -> Bool {
+    stop()
+
+    let microphoneGranted = await LiveSpeechPermissionRequester.requestMicrophonePermission()
+    guard microphoneGranted else { return false }
+
+    let speechStatus = await LiveSpeechPermissionRequester.requestSpeechRecognitionPermission()
+    guard speechStatus == .authorized else { return false }
+
+    let identifier = languageIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    let locale = identifier.isEmpty ? Locale.current : Locale(identifier: identifier)
+    guard let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(),
+      recognizer.isAvailable
+    else {
+      return false
+    }
+
+    do {
+      let audioSession = AVAudioSession.sharedInstance()
+      try audioSession.setCategory(
+        .playAndRecord,
+        mode: .default,
+        options: [.defaultToSpeaker, .allowBluetoothHFP])
+      try? audioSession.overrideOutputAudioPort(.speaker)
+      try audioSession.setActive(true, options: [])
+
+      let request = SFSpeechAudioBufferRecognitionRequest()
+      request.shouldReportPartialResults = true
+      request.taskHint = .confirmation
+
+      let audioEngine = AVAudioEngine()
+      let inputNode = audioEngine.inputNode
+      let inputFormat = inputNode.outputFormat(forBus: 0)
+      guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+        return false
+      }
+
+      self.recognizer = recognizer
+      self.recognitionRequest = request
+      self.audioEngine = audioEngine
+      self.onText = onText
+
+      SpeechRecognitionAudioTap.install(on: inputNode, format: inputFormat, request: request)
+      didInstallTap = true
+      audioEngine.prepare()
+      try audioEngine.start()
+
+      recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+        let text = result?.bestTranscription.formattedString
+        let shouldStopTask = error != nil || result?.isFinal == true
+        Task { @MainActor in
+          guard let self else { return }
+          if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.onText?(text)
+          }
+          if shouldStopTask {
+            self.recognitionTask = nil
+          }
+        }
+      }
+      return true
+    } catch {
+      stop()
+      return false
+    }
+  }
+
+  func stop() {
+    onText = nil
+    recognitionTask?.cancel()
+    recognitionTask = nil
+    recognitionRequest?.endAudio()
+    recognitionRequest = nil
+    if let audioEngine {
+      if didInstallTap {
+        audioEngine.inputNode.removeTap(onBus: 0)
+        didInstallTap = false
+      }
+      audioEngine.stop()
+    }
+    audioEngine = nil
+    recognizer = nil
+  }
+}
+
+private enum SpeechRecognitionAudioTap {
+  static func install(
+    on inputNode: AVAudioInputNode,
+    format: AVAudioFormat,
+    request: SFSpeechAudioBufferRecognitionRequest
+  ) {
+    let appender = SpeechRecognitionAudioAppender(request: request)
+    inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+      appender.append(buffer)
+    }
+  }
+}
+
+private final class SpeechRecognitionAudioAppender: @unchecked Sendable {
+  private let request: SFSpeechAudioBufferRecognitionRequest
+
+  init(request: SFSpeechAudioBufferRecognitionRequest) {
+    self.request = request
+  }
+
+  func append(_ buffer: AVAudioPCMBuffer) {
+    request.append(buffer)
   }
 }
 
@@ -846,6 +1108,7 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
       .playAndRecord,
       mode: .voiceChat,
       options: [.defaultToSpeaker, .allowBluetoothHFP])
+    try? audioSession.overrideOutputAudioPort(.speaker)
     try audioSession.setActive(true, options: [])
     audioSessionActivated = true
     if audioSession.isInputGainSettable {
@@ -1171,6 +1434,7 @@ private final class NativeIOSSpeechRecognitionEngine: NSObject, LiveSpeechRecogn
       .playAndRecord,
       mode: .voiceChat,
       options: [.defaultToSpeaker, .allowBluetoothHFP])
+    try? audioSession.overrideOutputAudioPort(.speaker)
     try audioSession.setActive(true, options: [])
     audioSessionActivated = true
     if audioSession.isInputGainSettable {
