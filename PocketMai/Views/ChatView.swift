@@ -215,12 +215,6 @@ struct ChatView: View {
           .font(.caption2)
           .foregroundStyle(.secondary)
           .lineLimit(1)
-        if let systemPromptTitle {
-          Text(systemPromptTitle)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
       }
       .frame(maxWidth: 240)
       .contentShape(Rectangle())
@@ -295,7 +289,8 @@ struct ChatView: View {
     guard let conversation = store.currentConversation else { return "No conversation" }
     let providerName = providerLabel(for: conversation)
     let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-    return model.isEmpty ? providerName : "\(providerName) · \(model)"
+    let parts = [providerName, model.isEmpty ? nil : model, systemPromptTitle].compactMap { $0 }
+    return parts.joined(separator: " · ")
   }
 
   private func providerLabel(for conversation: Conversation) -> String {
