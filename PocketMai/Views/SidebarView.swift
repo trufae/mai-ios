@@ -725,7 +725,7 @@ private struct FloatingGlassSurface<Background: InsettableShape>: ViewModifier {
   }
 }
 
-private struct FloatingActionIcon: View {
+struct FloatingActionIcon: View {
   let systemImage: String
   let accessibilityLabel: String
   var isActive: Bool = false
@@ -837,7 +837,7 @@ private struct FloatingSearchField: View {
   }
 }
 
-private struct FloatingActionPill: View {
+struct FloatingActionPill: View {
   let title: String
   var systemImage: String? = nil
   let prominent: Bool

@@ -33,6 +33,7 @@ struct MessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -54,6 +55,7 @@ struct MessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       onDelete: onDelete,
+      onBeginSelection: onBeginSelection,
       onEdit: onEdit,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -79,6 +81,7 @@ private struct StreamingMessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -100,6 +103,7 @@ private struct StreamingMessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       onDelete: onDelete,
+      onBeginSelection: onBeginSelection,
       onEdit: onEdit,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
@@ -128,6 +132,7 @@ private struct MessageBubbleContent: View, Equatable {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   let onDelete: () -> Void
+  var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
@@ -348,6 +353,12 @@ private struct MessageBubbleContent: View, Equatable {
 
   @ViewBuilder
   private func messageContextMenu(visibleText: String) -> some View {
+    if let onBeginSelection {
+      Button(action: onBeginSelection) {
+        Label("Select...", systemImage: "checkmark.circle")
+      }
+    }
+
     ForEach(Array(imageAttachments.enumerated()), id: \.element.id) { index, attachment in
       Button {
         saveImageAttachment(attachment)

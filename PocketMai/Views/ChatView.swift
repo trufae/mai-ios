@@ -10,8 +10,11 @@ struct ChatView: View {
   @State private var showingProviderModelSheet = false
   @State private var showingCompactSheet = false
   @State private var messagePendingDeletion: ChatMessage?
+  @State private var messageBatchPendingDeletion: PendingMessageBatchDeletion?
   @State private var messagePendingTrimAndResubmit: ChatMessage?
   @State private var messagePendingRestartFresh: ChatMessage?
+  @State private var isMessageSelectionMode = false
+  @State private var selectedMessageIDs: Set<UUID> = []
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
@@ -24,6 +27,125 @@ struct ChatView: View {
   let onShowHistory: () -> Void
 
   var body: some View {
+    chatViewWithAlerts
+  }
+
+  private var chatViewWithAlerts: some View {
+    chatViewWithSheetsAndToolbar
+      .onChange(of: store.selectedConversationID) { _, _ in
+        cancelMessageSelection()
+      }
+      .onChange(of: currentMessageIDs) { _, _ in
+        pruneSelectedMessages()
+      }
+      .alert(
+        "Delete this message?",
+        isPresented: deleteMessageConfirmationBinding,
+        presenting: messagePendingDeletion
+      ) { message in
+        Button("Cancel", role: .cancel) {
+          messagePendingDeletion = nil
+        }
+        Button("Delete Message", role: .destructive) {
+          store.deleteMessage(message)
+          messagePendingDeletion = nil
+        }
+      } message: { _ in
+        Text("This message will be removed from the chat. This cannot be undone.")
+      }
+      .alert(
+        messageBatchPendingDeletion?.title ?? "Delete selected messages?",
+        isPresented: deleteMessageBatchConfirmationBinding,
+        presenting: messageBatchPendingDeletion
+      ) { deletion in
+        Button("Cancel", role: .cancel) {
+          messageBatchPendingDeletion = nil
+        }
+        Button(deletion.buttonTitle, role: .destructive) {
+          confirmMessageBatchDeletion(deletion)
+        }
+      } message: { deletion in
+        Text(deletion.message)
+      }
+      .alert(
+        "Retry from here?",
+        isPresented: trimAndResubmitConfirmationBinding,
+        presenting: messagePendingTrimAndResubmit
+      ) { message in
+        Button("Cancel", role: .cancel) {
+          messagePendingTrimAndResubmit = nil
+        }
+        Button("Retry From Here", role: .destructive) {
+          Task { await store.trimAndResubmit(from: message) }
+          messagePendingTrimAndResubmit = nil
+        }
+      } message: { _ in
+        Text("Messages after this point will be removed before the response is regenerated.")
+      }
+      .alert(
+        "Restart from here?",
+        isPresented: restartFreshConfirmationBinding,
+        presenting: messagePendingRestartFresh
+      ) { message in
+        Button("Cancel", role: .cancel) {
+          messagePendingRestartFresh = nil
+        }
+        Button("Restart From Here", role: .destructive) {
+          Task { await store.restartFromScratch(with: message) }
+          messagePendingRestartFresh = nil
+        }
+      } message: { _ in
+        Text("All current messages will be removed before starting again from this message.")
+      }
+  }
+
+  private var chatViewWithSheetsAndToolbar: some View {
+    chatViewWithToolbar
+      .alert("Change Title", isPresented: $showingRenameAlert) {
+        TextField("Chat title", text: $renameDraft)
+          .onSubmit {
+            renameCurrentConversation()
+          }
+        Button("Cancel", role: .cancel) {}
+        Button("Save") {
+          renameCurrentConversation()
+        }
+      }
+      .sheet(isPresented: $showingProviderModelSheet) {
+        ConversationModelSettingsView()
+          .environmentObject(store)
+      }
+      .sheet(isPresented: $showingCompactSheet) {
+        CompactChatSheet()
+          .environmentObject(store)
+      }
+      .modifier(ConversationExportPresentations(coordinator: exportCoordinator))
+  }
+
+  private var chatViewWithToolbar: some View {
+    chatLayout
+      .animation(.snappy, value: ttsPlayer.isSpeaking)
+      .animation(.snappy, value: isMessageSelectionMode)
+      .navigationTitle("")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbarBackground(.hidden, for: .navigationBar)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button(action: onShowHistory) {
+            Image(systemName: "sidebar.left")
+          }
+          .help("Show conversations")
+        }
+        ToolbarItem(placement: .principal) {
+          chatTitle
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+          trailingMenu
+        }
+      }
+  }
+
+  private var chatLayout: some View {
     VStack(spacing: 0) {
       if let providerStatus {
         providerStatusBanner(providerStatus)
@@ -32,89 +154,16 @@ struct ChatView: View {
         pendingScrollToMessageID = messageID
       }
       messages
+      bottomControls
+    }
+  }
+
+  @ViewBuilder
+  private var bottomControls: some View {
+    if isMessageSelectionMode {
+      messageSelectionActions
+    } else {
       composer
-    }
-    .animation(.snappy, value: ttsPlayer.isSpeaking)
-    .navigationTitle("")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbarBackground(.hidden, for: .navigationBar)
-    .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button(action: onShowHistory) {
-          Image(systemName: "sidebar.left")
-        }
-        .help("Show conversations")
-      }
-      ToolbarItem(placement: .principal) {
-        chatTitle
-      }
-      ToolbarItem(placement: .topBarTrailing) {
-        trailingMenu
-      }
-    }
-    .alert("Change Title", isPresented: $showingRenameAlert) {
-      TextField("Chat title", text: $renameDraft)
-        .onSubmit {
-          renameCurrentConversation()
-        }
-      Button("Cancel", role: .cancel) {}
-      Button("Save") {
-        renameCurrentConversation()
-      }
-    }
-    .sheet(isPresented: $showingProviderModelSheet) {
-      ConversationModelSettingsView()
-        .environmentObject(store)
-    }
-    .sheet(isPresented: $showingCompactSheet) {
-      CompactChatSheet()
-        .environmentObject(store)
-    }
-    .modifier(ConversationExportPresentations(coordinator: exportCoordinator))
-    .alert(
-      "Delete this message?",
-      isPresented: deleteMessageConfirmationBinding,
-      presenting: messagePendingDeletion
-    ) { message in
-      Button("Cancel", role: .cancel) {
-        messagePendingDeletion = nil
-      }
-      Button("Delete Message", role: .destructive) {
-        store.deleteMessage(message)
-        messagePendingDeletion = nil
-      }
-    } message: { _ in
-      Text("This message will be removed from the chat. This cannot be undone.")
-    }
-    .alert(
-      "Retry from here?",
-      isPresented: trimAndResubmitConfirmationBinding,
-      presenting: messagePendingTrimAndResubmit
-    ) { message in
-      Button("Cancel", role: .cancel) {
-        messagePendingTrimAndResubmit = nil
-      }
-      Button("Retry From Here", role: .destructive) {
-        Task { await store.trimAndResubmit(from: message) }
-        messagePendingTrimAndResubmit = nil
-      }
-    } message: { _ in
-      Text("Messages after this point will be removed before the response is regenerated.")
-    }
-    .alert(
-      "Restart from here?",
-      isPresented: restartFreshConfirmationBinding,
-      presenting: messagePendingRestartFresh
-    ) { message in
-      Button("Cancel", role: .cancel) {
-        messagePendingRestartFresh = nil
-      }
-      Button("Restart From Here", role: .destructive) {
-        Task { await store.restartFromScratch(with: message) }
-        messagePendingRestartFresh = nil
-      }
-    } message: { _ in
-      Text("All current messages will be removed before starting again from this message.")
     }
   }
 
@@ -342,7 +391,7 @@ struct ChatView: View {
     } label: {
       Image(systemName: "square.and.pencil")
     }
-    .disabled(currentConversationIsEmpty)
+    .disabled(currentConversationIsEmpty || isMessageSelectionMode)
     .accessibilityLabel("New Chat")
     .help("New Chat")
   }
@@ -404,31 +453,39 @@ struct ChatView: View {
               .containerRelativeFrame(.vertical)
           } else {
             ForEach(store.currentConversation?.messages ?? []) { message in
-              MessageBubble(
-                message: message,
-                toolSettings: currentToolSettings,
-                openAIEndpoints: store.settings.airplaneModeEnabled
-                  ? [] : store.settings.openAIEndpoints,
-                skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
-                appearance: store.settings.appearance,
-                renderMarkdown: store.settings.renderMarkdownInChat,
-                renderImages: store.settings.renderMarkdownImagesInChat,
-                onDelete: { messagePendingDeletion = message },
-                onEdit: { editedText in editMessage(message, text: editedText) },
-                onResubmit: message.role == .user
-                  ? { Task { await store.resubmit(message) } }
-                  : nil,
-                onTrimFromHere: { messagePendingTrimAndResubmit = message },
-                onRestartFresh: { messagePendingRestartFresh = message },
-                onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
-                onSpeakFromHere: { speakFromHere(message) },
-                showThinking: store.effectiveShowThinking(for: store.currentConversation),
-                isWaitingForResponse: isWaitingForResponse(message),
-                onStreamingTextChange: { _ in
-                  guard !userScrolledAfterLastMessage else { return }
-                  scrollToBottom(proxy, animated: false)
-                }
-              )
+              MessageSelectionRow(
+                isSelectionMode: isMessageSelectionMode,
+                isSelected: selectedMessageIDs.contains(message.id)
+              ) {
+                toggleMessageSelection(message.id)
+              } content: {
+                MessageBubble(
+                  message: message,
+                  toolSettings: currentToolSettings,
+                  openAIEndpoints: store.settings.airplaneModeEnabled
+                    ? [] : store.settings.openAIEndpoints,
+                  skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
+                  appearance: store.settings.appearance,
+                  renderMarkdown: store.settings.renderMarkdownInChat,
+                  renderImages: store.settings.renderMarkdownImagesInChat,
+                  onDelete: { messagePendingDeletion = message },
+                  onBeginSelection: { beginMessageSelection(with: message.id) },
+                  onEdit: { editedText in editMessage(message, text: editedText) },
+                  onResubmit: message.role == .user
+                    ? { Task { await store.resubmit(message) } }
+                    : nil,
+                  onTrimFromHere: { messagePendingTrimAndResubmit = message },
+                  onRestartFresh: { messagePendingRestartFresh = message },
+                  onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
+                  onSpeakFromHere: { speakFromHere(message) },
+                  showThinking: store.effectiveShowThinking(for: store.currentConversation),
+                  isWaitingForResponse: isWaitingForResponse(message),
+                  onStreamingTextChange: { _ in
+                    guard !userScrolledAfterLastMessage else { return }
+                    scrollToBottom(proxy, animated: false)
+                  }
+                )
+              }
               .background {
                 MessageListAnchorMarker(messageID: message.id)
               }
@@ -508,6 +565,17 @@ struct ChatView: View {
       }
     }
   }
+
+  private var deleteMessageBatchConfirmationBinding: Binding<Bool> {
+    Binding {
+      messageBatchPendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        messageBatchPendingDeletion = nil
+      }
+    }
+  }
+
   private var trimAndResubmitConfirmationBinding: Binding<Bool> {
     Binding {
       messagePendingTrimAndResubmit != nil
@@ -530,6 +598,14 @@ struct ChatView: View {
 
   private var currentConversationIsEmpty: Bool {
     store.currentConversation?.messages.isEmpty ?? true
+  }
+
+  private var currentMessageIDs: [UUID] {
+    store.currentConversation?.messages.map(\.id) ?? []
+  }
+
+  private var selectedMessages: [ChatMessage] {
+    store.currentConversation?.messages.filter { selectedMessageIDs.contains($0.id) } ?? []
   }
 
   private struct LastMessageSnapshot: Equatable {
@@ -560,6 +636,74 @@ struct ChatView: View {
     } else {
       proxy.scrollTo(messageListBottomID, anchor: .bottom)
     }
+  }
+
+  private func beginMessageSelection(with id: UUID) {
+    withAnimation(.snappy) {
+      isMessageSelectionMode = true
+      selectedMessageIDs = [id]
+    }
+  }
+
+  private func toggleMessageSelection(_ id: UUID) {
+    guard isMessageSelectionMode else { return }
+    withAnimation(.snappy) {
+      if selectedMessageIDs.contains(id) {
+        selectedMessageIDs.remove(id)
+      } else {
+        selectedMessageIDs.insert(id)
+      }
+    }
+  }
+
+  private func cancelMessageSelection() {
+    guard isMessageSelectionMode || !selectedMessageIDs.isEmpty else { return }
+    withAnimation(.snappy) {
+      isMessageSelectionMode = false
+      selectedMessageIDs.removeAll()
+      messageBatchPendingDeletion = nil
+    }
+  }
+
+  private func pruneSelectedMessages() {
+    let validIDs = Set(currentMessageIDs)
+    selectedMessageIDs.formIntersection(validIDs)
+    if currentMessageIDs.isEmpty {
+      cancelMessageSelection()
+    }
+  }
+
+  private func copySelectedMessages() {
+    let text = selectedMessagesCopyText()
+    guard !text.isEmpty else { return }
+    UIPasteboard.general.string = text
+    cancelMessageSelection()
+  }
+
+  private func selectedMessagesCopyText() -> String {
+    selectedMessages.compactMap(copyBlock(for:)).joined(separator: "\n\n")
+  }
+
+  private func copyBlock(for message: ChatMessage) -> String? {
+    let visibleText = MessageContentFilter.render(message.presentationText).visibleText
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let attachmentLines = message.attachments.map { "[Attachment: \($0.displayName)]" }
+    let body = ([visibleText].filter { !$0.isEmpty } + attachmentLines)
+      .joined(separator: "\n")
+    guard !body.isEmpty else { return nil }
+    return "\(message.role.displayName):\n\(body)"
+  }
+
+  private func deleteSelectedMessages() {
+    let ids = selectedMessageIDs.intersection(Set(currentMessageIDs))
+    guard !ids.isEmpty else { return }
+    messageBatchPendingDeletion = PendingMessageBatchDeletion(ids: ids)
+  }
+
+  private func confirmMessageBatchDeletion(_ deletion: PendingMessageBatchDeletion) {
+    store.deleteMessages(deletion.ids)
+    messageBatchPendingDeletion = nil
+    cancelMessageSelection()
   }
 
   private var messageListScrollGesture: some Gesture {
@@ -763,6 +907,43 @@ struct ChatView: View {
     .frame(maxWidth: .infinity)
   }
 
+  private var messageSelectionActions: some View {
+    GeometryReader { proxy in
+      let compact = proxy.size.width < 330
+      let hasSelection = !selectedMessageIDs.isEmpty
+
+      HStack(spacing: compact ? 6 : 10) {
+        FloatingActionPill(title: "Cancel", prominent: true, compact: compact) {
+          cancelMessageSelection()
+        }
+        Spacer(minLength: compact ? 0 : 4)
+        FloatingActionIcon(
+          systemImage: "doc.on.doc",
+          accessibilityLabel: "Copy selected messages",
+          compact: compact
+        ) {
+          copySelectedMessages()
+        }
+        .disabled(!hasSelection)
+        .opacity(hasSelection ? 1 : 0.5)
+        FloatingActionIcon(
+          systemImage: "trash",
+          accessibilityLabel: "Delete selected messages",
+          destructive: true,
+          compact: compact
+        ) {
+          deleteSelectedMessages()
+        }
+        .disabled(!hasSelection)
+        .opacity(hasSelection ? 1 : 0.5)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+      .padding(.horizontal, 18)
+    }
+    .frame(height: 82)
+    .transition(.move(edge: .bottom).combined(with: .opacity))
+  }
+
   private var composer: some View {
     ChatComposer(
       store: store,
@@ -802,6 +983,82 @@ private struct EmptyChatLogo: View {
 // Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @StateObject still re-trigger body.
 extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
+private struct PendingMessageBatchDeletion: Identifiable {
+  let id = UUID()
+  let ids: Set<UUID>
+
+  var count: Int {
+    ids.count
+  }
+
+  var title: String {
+    count == 1 ? "Delete selected message?" : "Delete selected messages?"
+  }
+
+  var buttonTitle: String {
+    "Delete \(count) Message\(count == 1 ? "" : "s")"
+  }
+
+  var message: String {
+    "\(count) selected message\(count == 1 ? "" : "s") will be removed from the chat. This cannot be undone."
+  }
+}
+
+private struct MessageSelectionRow<Content: View>: View {
+  let isSelectionMode: Bool
+  let isSelected: Bool
+  let onToggle: () -> Void
+  private let content: Content
+
+  init(
+    isSelectionMode: Bool,
+    isSelected: Bool,
+    onToggle: @escaping () -> Void,
+    @ViewBuilder content: () -> Content
+  ) {
+    self.isSelectionMode = isSelectionMode
+    self.isSelected = isSelected
+    self.onToggle = onToggle
+    self.content = content()
+  }
+
+  var body: some View {
+    ZStack(alignment: .leading) {
+      content
+        .padding(.leading, isSelectionMode ? 34 : 0)
+
+      if isSelectionMode {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+          .font(.title3)
+          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+          .frame(width: 24, height: 24)
+          .padding(.leading, 4)
+          .transition(.opacity.combined(with: .move(edge: .leading)))
+      }
+    }
+    .padding(.vertical, isSelectionMode ? 2 : 0)
+    .background {
+      if isSelectionMode && isSelected {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .fill(Color.accentColor.opacity(0.10))
+      }
+    }
+    .contentShape(Rectangle())
+    .overlay {
+      if isSelectionMode {
+        Button(action: onToggle) {
+          Color.clear
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSelected ? "Deselect message" : "Select message")
+      }
+    }
+    .animation(.snappy, value: isSelectionMode)
+    .animation(.snappy, value: isSelected)
+  }
 }
 
 private struct PromptShortcutMenuOption: Identifiable, Equatable {

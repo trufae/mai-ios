@@ -685,6 +685,17 @@ final class AppStore: ObservableObject {
     deleteUnreferencedVoiceRecordings(from: removedMessages)
   }
 
+  func deleteMessages(_ ids: Set<UUID>) {
+    guard let index = currentConversationIndex, !ids.isEmpty else { return }
+    let removedMessages = conversations[index].messages.filter { ids.contains($0.id) }
+    guard !removedMessages.isEmpty else { return }
+    conversations[index].messages.removeAll { ids.contains($0.id) }
+    conversations[index].updatedAt = Date()
+    upsertSummary(for: conversations[index])
+    saveConversations()
+    deleteUnreferencedVoiceRecordings(from: removedMessages)
+  }
+
   func clearAllConversations() {
     let removedIDs = Set(conversationSummaries.map(\.id))
     let removedMessages = voiceRecordingMessages(in: removedIDs)
