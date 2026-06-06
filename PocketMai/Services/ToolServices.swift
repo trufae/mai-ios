@@ -1012,9 +1012,13 @@ enum MCPHTTPClient {
   struct Catalog: Sendable {
     var tools: [MCPToolDescriptor]
     var resources: [MCPResourceDescriptor]
+    var transport: MCPTransport?
+    var serverName: String?
+    var protocolVersion: String?
   }
 
   static func fetchCatalog(server: MCPServer) async throws -> Catalog {
+    let handshake = try await ensureSession(for: server)
     var firstError: Error?
 
     let tools: [MCPToolDescriptor]
@@ -1044,7 +1048,12 @@ enum MCPHTTPClient {
     if tools.isEmpty, resources.isEmpty, let firstError {
       throw firstError
     }
-    return Catalog(tools: tools, resources: resources)
+    return Catalog(
+      tools: tools,
+      resources: resources,
+      transport: handshake.transport ?? server.transport,
+      serverName: handshake.serverName,
+      protocolVersion: handshake.protocolVersion)
   }
 
   static func fetchTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
@@ -1196,13 +1205,13 @@ enum MCPHTTPClient {
     params: [String: AnyCodable]? = nil,
     retryingInvalidSession: Bool = true
   ) async throws -> Data {
-    let sessionID = try await ensureSession(for: server)
+    let handshake = try await ensureSession(for: server)
     do {
       let response = try await sendRaw(
         server: server,
         method: method,
         params: params,
-        sessionID: sessionID)
+        sessionID: handshake.sessionID)
       if let raw = jsonObject(from: response.data),
         let error = responseError(from: raw)
       {
@@ -1230,10 +1239,10 @@ enum MCPHTTPClient {
     }
   }
 
-  private static func ensureSession(for server: MCPServer) async throws -> String? {
+  private static func ensureSession(for server: MCPServer) async throws -> MCPHandshake {
     let baseURL = try normalizedBaseURL(for: server).absoluteString
     if let cached = await sessions.session(for: server.id, baseURL: baseURL) {
-      return cached.id
+      return cached.handshake
     }
 
     let response = try await sendRaw(
@@ -1245,15 +1254,26 @@ enum MCPHTTPClient {
       let error = responseError(from: raw)
     {
       if error.isMethodNotFound {
-        await sessions.set(nil, for: server.id, baseURL: baseURL)
-        return nil
+        let handshake = MCPHandshake(
+          sessionID: nil,
+          transport: nil,
+          protocolVersion: nil,
+          serverName: nil)
+        await sessions.set(handshake, for: server.id, baseURL: baseURL)
+        return handshake
       }
       throw error
     }
 
-    await sessions.set(response.sessionID, for: server.id, baseURL: baseURL)
+    let metadata = initializeMetadata(from: response.data)
+    let handshake = MCPHandshake(
+      sessionID: response.sessionID,
+      transport: .streamableHTTP,
+      protocolVersion: metadata.protocolVersion,
+      serverName: metadata.serverName)
+    await sessions.set(handshake, for: server.id, baseURL: baseURL)
     try await sendInitializedNotification(server: server, sessionID: response.sessionID)
-    return response.sessionID
+    return handshake
   }
 
   private static func sendInitializedNotification(server: MCPServer, sessionID: String?)
@@ -1336,6 +1356,21 @@ enum MCPHTTPClient {
     guard let err = raw["error"] as? [String: Any] else { return nil }
     let message = (err["message"] as? String) ?? "unknown"
     return MCPResponseError(code: err["code"] as? Int, message: message)
+  }
+
+  private static func initializeMetadata(from data: Data) -> (
+    protocolVersion: String?, serverName: String?
+  ) {
+    guard let raw = jsonObject(from: data),
+      let result = raw["result"] as? [String: Any]
+    else {
+      return (nil, nil)
+    }
+    let protocolVersion = result["protocolVersion"] as? String
+    let serverInfo = result["serverInfo"] as? [String: Any]
+    let title = (serverInfo?["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = (serverInfo?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (protocolVersion, title?.isEmpty == false ? title : name)
   }
 
   private static func isInvalidSessionID(_ error: Error) -> Bool {
@@ -1437,8 +1472,8 @@ private actor MCPSessionStore {
     return session
   }
 
-  func set(_ sessionID: String?, for serverID: UUID, baseURL: String) {
-    sessions[serverID] = MCPSession(id: sessionID, baseURL: baseURL)
+  func set(_ handshake: MCPHandshake, for serverID: UUID, baseURL: String) {
+    sessions[serverID] = MCPSession(handshake: handshake, baseURL: baseURL)
   }
 
   func reset(_ serverID: UUID) {
@@ -1451,8 +1486,15 @@ private actor MCPSessionStore {
 }
 
 private struct MCPSession: Sendable {
-  var id: String?
+  var handshake: MCPHandshake
   var baseURL: String
+}
+
+private struct MCPHandshake: Sendable {
+  var sessionID: String?
+  var transport: MCPTransport?
+  var protocolVersion: String?
+  var serverName: String?
 }
 
 private struct MCPHTTPResponse {

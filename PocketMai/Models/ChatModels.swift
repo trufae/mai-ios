@@ -1502,6 +1502,7 @@ struct ConversationDebugMCPServer: Codable, Equatable, Sendable {
   var name: String
   var isEnabled: Bool
   var hasValidScheme: Bool
+  var transport: String?
   var connectionStatus: String
 }
 
@@ -1892,20 +1893,48 @@ enum MCPToolSelection {
   }
 }
 
+enum MCPTransport: String, Codable, Equatable, Identifiable, Sendable {
+  case streamableHTTP
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .streamableHTTP:
+      return "Streamable HTTP"
+    }
+  }
+}
+
 struct MCPServer: Identifiable, Codable, Equatable, Sendable {
   var id: UUID
   var name: String
   var baseURL: String
   var isEnabled: Bool
+  var transport: MCPTransport?
 
   init(
     id: UUID = UUID(), name: String = "MCP Server", baseURL: String = "https://",
-    isEnabled: Bool = true
+    isEnabled: Bool = true, transport: MCPTransport? = nil
   ) {
     self.id = id
     self.name = name
     self.baseURL = baseURL
     self.isEnabled = isEnabled
+    self.transport = transport
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case id, name, baseURL, isEnabled, transport
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+    name = (try? c.decode(String.self, forKey: .name)) ?? "MCP Server"
+    baseURL = (try? c.decode(String.self, forKey: .baseURL)) ?? "https://"
+    isEnabled = (try? c.decode(Bool.self, forKey: .isEnabled)) ?? true
+    transport = try? c.decode(MCPTransport.self, forKey: .transport)
   }
 
   var isHTTPS: Bool {

@@ -2340,9 +2340,17 @@ private struct ToolPickerPopover: View {
           .foregroundStyle(serverStatusColor(status))
           .frame(width: 16)
 
-        Text(server.name.isEmpty ? "Untitled MCP" : server.name)
-          .foregroundStyle(.primary)
-          .lineLimit(1)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(server.name.isEmpty ? "Untitled MCP" : server.name)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+          if let transport = server.transport {
+            Text(transport.displayName)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+          }
+        }
 
         Spacer()
 

@@ -1468,27 +1468,31 @@ struct SettingsView: View {
     } label: {
       Label("Add MCP Server", systemImage: "plus")
     }
-    Text("HTTP and HTTPS endpoints are accepted. Tap a server to edit its details.")
+    Text("HTTP and HTTPS MCP endpoints are accepted; transport is detected automatically.")
       .font(.caption)
       .foregroundStyle(.secondary)
   }
 
   private func mcpRow(_ server: MCPServer) -> some View {
+    let transport = server.transport?.displayName
     let subtitle: String = {
       if let tools = store.mcpTools[server.id], !tools.isEmpty {
         let resources = store.mcpResources[server.id] ?? []
         let resourceText =
           resources.isEmpty ? "" : ", \(resources.count) resource\(resources.count == 1 ? "" : "s")"
-        return "\(tools.count) tool\(tools.count == 1 ? "" : "s")\(resourceText)"
+        let catalogText = "\(tools.count) tool\(tools.count == 1 ? "" : "s")\(resourceText)"
+        return [transport, catalogText].compactMap { $0 }.joined(separator: " • ")
       }
       if let resources = store.mcpResources[server.id], !resources.isEmpty {
-        return "\(resources.count) resource\(resources.count == 1 ? "" : "s")"
+        let resourceText = "\(resources.count) resource\(resources.count == 1 ? "" : "s")"
+        return [transport, resourceText].compactMap { $0 }.joined(separator: " • ")
       }
       let url = server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
       if url.isEmpty || url == "https://" {
-        return "No URL set"
+        return transport ?? "No URL set"
       }
-      return URL(string: url)?.host ?? url
+      let endpointText = URL(string: url)?.host ?? url
+      return [transport, endpointText].compactMap { $0 }.joined(separator: " • ")
     }()
     let icon: String = {
       if server.isHTTPS && server.hasValidEndpointURL { return "lock.fill" }
@@ -3871,13 +3875,26 @@ private enum MCPServerNameResolution {
 
   static func validationMessage(for server: MCPServer, in servers: [MCPServer]) -> String? {
     let name = savedName(for: server)
-    guard !name.isEmpty else {
-      return "Specify a name for this MCP server."
-    }
-    if hasDuplicateName(name, excluding: server.id, in: servers) {
+    if !name.isEmpty, hasDuplicateName(name, excluding: server.id, in: servers) {
       return "Another MCP server is already named \"\(name)\"."
     }
     return endpointValidationMessage(for: server)
+  }
+
+  static func resolvedName(
+    for server: MCPServer,
+    serverInfoName: String?,
+    in servers: [MCPServer]
+  ) -> String {
+    let manualName = savedName(for: server)
+    if !manualName.isEmpty {
+      return manualName
+    }
+
+    let detectedName =
+      serverInfoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let baseName = detectedName.isEmpty ? hostName(for: server) : detectedName
+    return uniqueName(baseName.isEmpty ? "MCP Server" : baseName, excluding: server.id, in: servers)
   }
 
   static func endpointValidationMessage(for server: MCPServer) -> String? {
@@ -3908,6 +3925,35 @@ private enum MCPServerNameResolution {
     }
   }
 
+  private static func hostName(for server: MCPServer) -> String {
+    let baseURL = savedBaseURL(for: server)
+    guard let host = URL(string: baseURL)?.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !host.isEmpty
+    else {
+      return "MCP Server"
+    }
+    return host
+  }
+
+  private static func uniqueName(
+    _ name: String,
+    excluding serverID: UUID,
+    in servers: [MCPServer]
+  ) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = trimmed.isEmpty ? "MCP Server" : trimmed
+    guard hasDuplicateName(base, excluding: serverID, in: servers) else {
+      return base
+    }
+    for suffix in 2...999 {
+      let candidate = "\(base) \(suffix)"
+      if !hasDuplicateName(candidate, excluding: serverID, in: servers) {
+        return candidate
+      }
+    }
+    return "\(base) \(UUID().uuidString.prefix(4))"
+  }
+
   private static func normalizedName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   }
@@ -3921,9 +3967,14 @@ private struct MCPServerDetailView: View {
   @State private var draftStatus: EndpointConnectionState = .unknown
   @State private var draftTools: [MCPToolDescriptor] = []
   @State private var draftResources: [MCPResourceDescriptor] = []
+  @State private var draftTransport: MCPTransport?
+  @State private var draftProtocolVersion: String?
+  @State private var draftServerName: String?
   @State private var draftStatusBaseURL: String
   @State private var toastMessage: String?
+  @State private var isSaving = false
   @FocusState private var isNameFocused: Bool
+  @FocusState private var isEndpointFocused: Bool
   private let isNew: Bool
   private let onSave: ((MCPServer) -> Void)?
 
@@ -3934,6 +3985,7 @@ private struct MCPServerDetailView: View {
   ) {
     self._savedServer = server
     self._server = State(initialValue: server.wrappedValue)
+    self._draftTransport = State(initialValue: server.wrappedValue.transport)
     self._draftStatusBaseURL = State(
       initialValue: MCPServerNameResolution.savedBaseURL(for: server.wrappedValue))
     self.isNew = isNew
@@ -3947,7 +3999,7 @@ private struct MCPServerDetailView: View {
         TextField("Name", text: $server.name)
           .focused($isNameFocused)
       } footer: {
-        Text("A friendly name shown in the server list.")
+        Text("Leave blank to use the name reported by the server.")
       }
 
       Section {
@@ -3955,6 +4007,7 @@ private struct MCPServerDetailView: View {
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
           .keyboardType(.URL)
+          .focused($isEndpointFocused)
         if !server.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           && MCPServerNameResolution.endpointValidationMessage(for: server) != nil
         {
@@ -3966,7 +4019,7 @@ private struct MCPServerDetailView: View {
       } header: {
         Text("Endpoint")
       } footer: {
-        Text("HTTP and HTTPS URLs are accepted. Prefer HTTPS for non-local servers.")
+        Text("HTTP and HTTPS URLs are accepted. The transport is detected when connecting.")
       }
 
       Section {
@@ -3988,7 +4041,14 @@ private struct MCPServerDetailView: View {
           }
         }
         .disabled(
-          isChecking || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
+          isChecking || isSaving
+            || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
+        if let transport = currentTransport {
+          LabeledContent("Transport", value: transport.displayName)
+        }
+        if let protocolVersion = currentProtocolVersion, !protocolVersion.isEmpty {
+          LabeledContent("Protocol", value: protocolVersion)
+        }
       } header: {
         Text("Connection")
       } footer: {
@@ -4043,15 +4103,22 @@ private struct MCPServerDetailView: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .confirmationAction) {
-        Button("Save") {
+        Button {
           saveServerAndDismiss()
+        } label: {
+          if isSaving {
+            ProgressView()
+          } else {
+            Text("Save")
+          }
         }
+        .disabled(isSaving)
       }
     }
     .settingsToast($toastMessage)
     .onAppear {
       if isNew {
-        isNameFocused = true
+        isEndpointFocused = true
       }
     }
     .onDisappear {
@@ -4070,6 +4137,7 @@ private struct MCPServerDetailView: View {
     var normalized = server
     normalized.name = MCPServerNameResolution.savedName(for: server)
     normalized.baseURL = MCPServerNameResolution.savedBaseURL(for: server)
+    normalized.transport = currentTransport
     return normalized
   }
 
@@ -4103,6 +4171,18 @@ private struct MCPServerDetailView: View {
     return store.mcpResources[server.id] ?? []
   }
 
+  private var currentTransport: MCPTransport? {
+    if hasUnsavedConnectionChanges {
+      return draftStateMatchesCurrentEndpoint ? draftTransport : server.transport
+    }
+    return server.transport ?? draftTransport
+  }
+
+  private var currentProtocolVersion: String? {
+    guard draftStateMatchesCurrentEndpoint else { return nil }
+    return draftProtocolVersion
+  }
+
   private var isChecking: Bool {
     if case .checking = currentStatus {
       return true
@@ -4117,15 +4197,16 @@ private struct MCPServerDetailView: View {
     let resources = currentResources
     switch status {
     case .unknown:
-      Text("Tap “Refresh MCP” to connect and list the tools and resources this server provides.")
+      Text("Transport will be detected when this server is refreshed or saved.")
     case .checking:
       Text("Connecting…")
     case .available:
+      let transportText = currentTransport?.displayName ?? "MCP"
       if tools.isEmpty && resources.isEmpty {
-        Text("Connected, but the server reports no tools or resources.")
+        Text("Connected over \(transportText), but the server reports no tools or resources.")
       } else {
         Text(
-          "Connected. \(tools.count) tool\(tools.count == 1 ? "" : "s"), \(resources.count) resource\(resources.count == 1 ? "" : "s") available."
+          "Connected over \(transportText). \(tools.count) tool\(tools.count == 1 ? "" : "s"), \(resources.count) resource\(resources.count == 1 ? "" : "s") available."
         )
       }
     case .failed(let message):
@@ -4143,6 +4224,9 @@ private struct MCPServerDetailView: View {
     draftStatus = .checking
     draftTools = []
     draftResources = []
+    draftTransport = snapshot.transport
+    draftProtocolVersion = nil
+    draftServerName = nil
     Task {
       do {
         let catalog = try await MCPHTTPClient.fetchCatalog(server: snapshot)
@@ -4152,6 +4236,9 @@ private struct MCPServerDetailView: View {
           }
           draftTools = catalog.tools
           draftResources = catalog.resources
+          draftTransport = catalog.transport
+          draftProtocolVersion = catalog.protocolVersion
+          draftServerName = catalog.serverName
           draftStatus = .available
         }
       } catch {
@@ -4161,6 +4248,9 @@ private struct MCPServerDetailView: View {
           }
           draftTools = []
           draftResources = []
+          draftTransport = nil
+          draftProtocolVersion = nil
+          draftServerName = nil
           draftStatus = .failed(error.localizedDescription)
         }
       }
@@ -4168,6 +4258,7 @@ private struct MCPServerDetailView: View {
   }
 
   private func saveServerAndDismiss() {
+    guard !isSaving else { return }
     if let message = MCPServerNameResolution.validationMessage(
       for: server,
       in: store.settings.mcpServers)
@@ -4176,17 +4267,107 @@ private struct MCPServerDetailView: View {
       return
     }
 
-    let normalized = normalizedServerForSaving
+    var snapshot = normalizedServerForSaving
+    if shouldProbeBeforeSave(snapshot) {
+      probeAndSave(snapshot)
+      return
+    }
+
+    snapshot.name = MCPServerNameResolution.resolvedName(
+      for: snapshot,
+      serverInfoName: draftServerName,
+      in: store.settings.mcpServers)
+    finalizeSave(snapshot)
+  }
+
+  private func shouldProbeBeforeSave(_ snapshot: MCPServer) -> Bool {
+    guard snapshot.hasValidEndpointURL, !store.settings.airplaneModeEnabled else {
+      return false
+    }
+    if snapshot.transport != nil, hasDraftConnectionState(for: snapshot) {
+      return false
+    }
+    let connectionChanged =
+      snapshot.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
+    return isNew || connectionChanged || snapshot.transport == nil
+  }
+
+  private func probeAndSave(_ snapshot: MCPServer) {
+    isSaving = true
+    draftStatusBaseURL = snapshot.baseURL
+    draftStatus = .checking
+    draftTools = []
+    draftResources = []
+    draftTransport = snapshot.transport
+    draftProtocolVersion = nil
+    draftServerName = nil
+
+    Task {
+      do {
+        let catalog = try await MCPHTTPClient.fetchCatalog(server: snapshot)
+        await MainActor.run {
+          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
+            isSaving = false
+            return
+          }
+          draftTools = catalog.tools
+          draftResources = catalog.resources
+          draftTransport = catalog.transport
+          draftProtocolVersion = catalog.protocolVersion
+          draftServerName = catalog.serverName
+          draftStatus = .available
+
+          var probed = snapshot
+          probed.transport = catalog.transport ?? snapshot.transport
+          probed.name = MCPServerNameResolution.resolvedName(
+            for: probed,
+            serverInfoName: catalog.serverName,
+            in: store.settings.mcpServers)
+          finalizeSave(probed)
+          isSaving = false
+        }
+      } catch {
+        await MainActor.run {
+          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
+            isSaving = false
+            return
+          }
+          draftTools = []
+          draftResources = []
+          draftTransport = nil
+          draftProtocolVersion = nil
+          draftServerName = nil
+          draftStatus = .failed(error.localizedDescription)
+          isSaving = false
+          showToast(error.localizedDescription)
+        }
+      }
+    }
+  }
+
+  private func finalizeSave(_ normalized: MCPServer) {
     let connectionChanged =
       normalized.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
     server = normalized
     savedServer = normalized
     onSave?(normalized)
-    if connectionChanged {
+    if connectionChanged || hasDraftConnectionState(for: normalized) {
       applyDraftConnectionStateAfterSave(for: normalized)
     }
     store.saveSettings()
     dismiss()
+  }
+
+  private func hasDraftConnectionState(for server: MCPServer) -> Bool {
+    guard draftStatusBaseURL == server.baseURL else {
+      return false
+    }
+    switch draftStatus {
+    case .available, .failed:
+      return true
+    case .unknown, .checking:
+      return false
+    }
   }
 
   private func applyDraftConnectionStateAfterSave(for server: MCPServer) {

@@ -2386,6 +2386,12 @@ final class AppStore: ObservableObject {
       let catalog = try await MCPHTTPClient.fetchCatalog(server: server)
       mcpTools[server.id] = catalog.tools
       mcpResources[server.id] = catalog.resources
+      if let transport = catalog.transport,
+        let index = settings.mcpServers.firstIndex(where: { $0.id == server.id })
+      {
+        settings.mcpServers[index].transport = transport
+        saveSettings()
+      }
       seedEnabledMCPToolsIfNeeded(serverID: server.id, tools: catalog.tools)
       mcpStatuses[server.id] = .available
     } catch {
@@ -3079,6 +3085,7 @@ final class AppStore: ObservableObject {
           name: server.name,
           isEnabled: server.isEnabled,
           hasValidScheme: server.hasValidEndpointURL,
+          transport: server.transport?.displayName,
           connectionStatus: (mcpStatuses[server.id] ?? .unknown).statusText)
       },
       nativeToolSettings: debugNativeToolSettings(settings.toolSettings),
