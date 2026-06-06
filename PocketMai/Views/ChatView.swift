@@ -378,10 +378,7 @@ struct ChatView: View {
   }
 
   private func renameCurrentConversation() {
-    let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-    store.updateCurrentConversation { conversation in
-      conversation.title = trimmed.isEmpty ? "New chat" : trimmed
-    }
+    store.renameCurrentConversation(to: renameDraft)
     showingRenameAlert = false
   }
 

@@ -9,6 +9,8 @@ struct SidebarView: View {
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
+  @State private var pendingRename: PendingConversationRename?
+  @State private var renameDraft = ""
   @State private var showingFolderManager = false
   @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
@@ -26,6 +28,18 @@ struct SidebarView: View {
         }
       sidebarEdgeFades
       floatingActions
+    }
+    .alert("Change Title", isPresented: renameAlertBinding) {
+      TextField("Chat title", text: $renameDraft)
+        .onSubmit {
+          saveRename()
+        }
+      Button("Cancel", role: .cancel) {
+        clearRename()
+      }
+      Button("Save") {
+        saveRename()
+      }
     }
     .alert(
       pendingDeletion?.title ?? "Delete conversations?",
@@ -165,6 +179,12 @@ struct SidebarView: View {
       }
     } label: {
       Label("Select...", systemImage: "checkmark.circle")
+    }
+
+    Button {
+      beginRename(conversation)
+    } label: {
+      Label("Change Title...", systemImage: "pencil")
     }
 
     Button {
@@ -380,6 +400,36 @@ struct SidebarView: View {
     pendingDeletion = .selected(selectedIDs)
   }
 
+  private func beginRename(_ conversation: ConversationSummary) {
+    renameDraft = conversation.displayTitle
+    pendingRename = PendingConversationRename(id: conversation.id)
+  }
+
+  private func saveRename() {
+    guard let pendingRename else { return }
+    let id = pendingRename.id
+    let title = renameDraft
+    clearRename()
+    Task {
+      await store.renameConversation(id: id, to: title)
+    }
+  }
+
+  private func clearRename() {
+    pendingRename = nil
+    renameDraft = ""
+  }
+
+  private var renameAlertBinding: Binding<Bool> {
+    Binding {
+      pendingRename != nil
+    } set: { isPresented in
+      if !isPresented {
+        clearRename()
+      }
+    }
+  }
+
   private func confirmDeletion(_ deletion: PendingConversationDeletion) {
     guard !deletion.ids.isEmpty else {
       pendingDeletion = nil
@@ -454,6 +504,10 @@ private struct PendingConversationDeletion: Identifiable {
     )
   }
 
+}
+
+private struct PendingConversationRename: Identifiable {
+  let id: UUID
 }
 
 private struct ConversationFolderManagementView: View {

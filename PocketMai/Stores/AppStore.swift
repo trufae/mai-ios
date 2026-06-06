@@ -662,6 +662,29 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
+  func renameCurrentConversation(to rawTitle: String) {
+    guard let id = selectedConversationID else { return }
+    renameLoadedConversation(id: id, to: rawTitle)
+  }
+
+  func renameConversation(id: UUID, to rawTitle: String) async {
+    await ensureConversationLoaded(id)
+    renameLoadedConversation(id: id, to: rawTitle)
+  }
+
+  private func renameLoadedConversation(id: UUID, to rawTitle: String) {
+    guard let index = indexedConversationIndex(for: id) else { return }
+    conversations[index].title = savedConversationTitle(rawTitle)
+    conversations[index].updatedAt = Date()
+    upsertSummary(for: conversations[index])
+    saveConversations()
+  }
+
+  private func savedConversationTitle(_ rawTitle: String) -> String {
+    let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "New chat" : trimmed
+  }
+
   func setCurrentConversationLanguageOverride(_ identifier: String?) {
     guard currentConversationIndex != nil else { return }
     let normalized = Conversation.normalizedLanguageOverride(identifier)
