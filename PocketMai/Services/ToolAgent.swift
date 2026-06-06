@@ -810,7 +810,7 @@ enum WebSearchTool {
           ToolParameterDef(
             name: "provider", type: "string",
             description:
-              "Provider override: duckDuckGo, wikipedia, searXNG, ollama, or all.",
+              "Provider override: duckDuckGo, wikipedia, exa, searXNG, ollama, or all.",
             required: false),
         ])
     ]

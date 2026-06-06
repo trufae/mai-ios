@@ -738,6 +738,7 @@ enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable 
 enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
   case duckDuckGo
   case wikipedia
+  case exa
   case searXNG
   case ollama
   case all
@@ -748,6 +749,7 @@ enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .duckDuckGo: "DuckDuckGo"
     case .wikipedia: "Wikipedia"
+    case .exa: "Exa"
     case .searXNG: "SearXNG"
     case .ollama: "Ollama Web Search"
     case .all: "All"

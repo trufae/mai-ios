@@ -1334,14 +1334,18 @@ struct SettingsView: View {
           Text(provider.displayName).tag(provider)
         }
       }
-      TextField("SearXNG URL", text: settingsBinding(\.toolSettings.webSearchSearXNGURL))
+      if showsSearXNGSettings {
+        TextField("SearXNG URL", text: settingsBinding(\.toolSettings.webSearchSearXNGURL))
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+        TextField(
+          "SearXNG username", text: settingsBinding(\.toolSettings.webSearchSearXNGUsername)
+        )
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
-      TextField("SearXNG username", text: settingsBinding(\.toolSettings.webSearchSearXNGUsername))
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-      SecureField(
-        "SearXNG password", text: settingsBinding(\.toolSettings.webSearchSearXNGPassword))
+        SecureField(
+          "SearXNG password", text: settingsBinding(\.toolSettings.webSearchSearXNGPassword))
+      }
       Toggle(
         "Fetching data",
         isOn: settingsBinding(\.toolSettings.webSearchFetchingEnabled))
@@ -1926,6 +1930,11 @@ struct SettingsView: View {
     return WebSearchProvider.allCases.filter { provider in
       provider != .ollama || hasOllama
     }
+  }
+
+  private var showsSearXNGSettings: Bool {
+    let provider = store.settings.toolSettings.webSearchProvider
+    return provider == .searXNG || provider == .all
   }
 
   private func toggleTool(_ tool: BuiltInToolID) {

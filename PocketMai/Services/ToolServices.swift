@@ -517,6 +517,10 @@ enum WebSearchService {
   private static let maxQueryLength = 240
   private static let maxWebResults = 6
   private static let maxWikipediaSummaries = 3
+  private static let exaMCPServer = MCPServer(
+    id: UUID(uuidString: "00000000-0000-0000-0000-000000000EAA")!,
+    name: "Exa",
+    baseURL: "https://mcp.exa.ai/mcp")
 
   private struct SearXNGConfiguration: Sendable {
     let baseURL: URL
@@ -542,6 +546,7 @@ enum WebSearchService {
 
     let useSearXNG = (provider == .searXNG || provider == .all) && searXNGConfiguration != nil
     let useOllama = (provider == .ollama || provider == .all) && ollamaEndpoint != nil
+    let useExa = provider == .exa || provider == .all
     let useDDG = provider == .duckDuckGo || provider == .all
     let useWiki = provider == .wikipedia || provider == .all
 
@@ -549,11 +554,13 @@ enum WebSearchService {
       useSearXNG ? searXNG(query: q, configuration: searXNGConfiguration!) : nil
     async let ollama: String? =
       useOllama ? ollamaWebSearch(query: q, endpoint: ollamaEndpoint!) : nil
+    async let exa: String? = useExa ? exa(query: q) : nil
     async let ddg: String? = useDDG ? duckDuckGo(query: q) : nil
     async let wiki: String? = useWiki ? wikipedia(query: q) : nil
     var sections: [String] = []
     if let s = await searXNG { sections.append(s) }
     if let s = await ollama { sections.append(s) }
+    if let s = await exa { sections.append(s) }
     if let s = await ddg { sections.append(s) }
     if let s = await wiki { sections.append(s) }
 
@@ -603,6 +610,21 @@ enum WebSearchService {
       authorization = "Basic \(encoded)"
     }
     return SearXNGConfiguration(baseURL: url, authorization: authorization)
+  }
+
+  // MARK: - Exa
+
+  private static func exa(query: String) async -> String? {
+    let output = try? await MCPHTTPClient.callTool(
+      server: exaMCPServer,
+      name: "web_search_exa",
+      arguments: [
+        "query": .string(query),
+        "numResults": .int(maxWebResults),
+      ])
+    let text = output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !text.isEmpty, text != "(no output)" else { return nil }
+    return "Exa:\n" + text
   }
 
   // MARK: - Ollama Web Search
