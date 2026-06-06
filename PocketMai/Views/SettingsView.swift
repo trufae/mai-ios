@@ -3024,35 +3024,7 @@ private struct EndpointDetailView: View {
   }
 
   private var reasoningLevelField: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Label("Reasoning", systemImage: endpoint.defaultReasoningLevel.systemImage)
-          .contentTransition(.symbolEffect(.replace))
-        Spacer()
-        Text(endpoint.defaultReasoningLevel.displayName)
-          .foregroundStyle(.secondary)
-          .contentTransition(.numericText())
-          .animation(.snappy, value: endpoint.defaultReasoningLevel)
-      }
-      Slider(
-        value: reasoningSliderBinding,
-        in: 0...Double(ReasoningLevel.allCases.count - 1),
-        step: 1
-      )
-    }
-  }
-
-  private var reasoningSliderBinding: Binding<Double> {
-    Binding(
-      get: {
-        Double(ReasoningLevel.allCases.firstIndex(of: endpoint.defaultReasoningLevel) ?? 0)
-      },
-      set: { value in
-        let cases = ReasoningLevel.allCases
-        let index = max(0, min(cases.count - 1, Int(value.rounded())))
-        endpoint.defaultReasoningLevel = cases[index]
-      }
-    )
+    ReasoningLevelControl(level: $endpoint.defaultReasoningLevel)
   }
 
   @ViewBuilder

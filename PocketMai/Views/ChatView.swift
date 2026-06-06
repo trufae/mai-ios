@@ -985,6 +985,53 @@ extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }
 
+struct ReasoningLevelControl: View {
+  @Binding var level: ReasoningLevel
+  @State private var sliderValue: Double?
+
+  private var displayLevel: ReasoningLevel {
+    level(for: sliderValue ?? value(for: level))
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Label("Reasoning", systemImage: displayLevel.systemImage)
+          .contentTransition(.symbolEffect(.replace))
+        Spacer()
+        Text(displayLevel.displayName)
+          .foregroundStyle(.secondary)
+          .contentTransition(.numericText())
+          .animation(.snappy, value: displayLevel)
+      }
+      Slider(
+        value: Binding(
+          get: { sliderValue ?? value(for: level) },
+          set: { sliderValue = $0 }
+        ),
+        in: 0...Double(ReasoningLevel.allCases.count - 1),
+        step: 1,
+        onEditingChanged: { editing in
+          guard !editing else { return }
+          level = displayLevel
+          sliderValue = nil
+        }
+      )
+      .accessibilityValue(displayLevel.displayName)
+    }
+  }
+
+  private func value(for level: ReasoningLevel) -> Double {
+    Double(ReasoningLevel.allCases.firstIndex(of: level) ?? 0)
+  }
+
+  private func level(for value: Double) -> ReasoningLevel {
+    let cases = ReasoningLevel.allCases
+    let index = max(0, min(cases.count - 1, Int(value.rounded())))
+    return cases[index]
+  }
+}
+
 private struct PendingMessageBatchDeletion: Identifiable {
   let id = UUID()
   let ids: Set<UUID>
@@ -2645,22 +2692,7 @@ private struct ConversationModelSettingsView: View {
           }
 
           Section {
-            VStack(alignment: .leading, spacing: 6) {
-              HStack {
-                Label("Reasoning", systemImage: reasoningBinding.wrappedValue.systemImage)
-                  .contentTransition(.symbolEffect(.replace))
-                Spacer()
-                Text(reasoningBinding.wrappedValue.displayName)
-                  .foregroundStyle(.secondary)
-                  .contentTransition(.numericText())
-                  .animation(.snappy, value: reasoningBinding.wrappedValue)
-              }
-              Slider(
-                value: reasoningSliderBinding,
-                in: 0...Double(ReasoningLevel.allCases.count - 1),
-                step: 1
-              )
-            }
+            ReasoningLevelControl(level: reasoningBinding)
           }
 
           Section {
@@ -3094,22 +3126,10 @@ private struct ConversationModelSettingsView: View {
     Binding(
       get: { store.currentConversation?.reasoningLevel ?? .automatic },
       set: { level in
+        guard store.currentConversation?.reasoningLevel != level else { return }
         store.updateCurrentConversation { conversation in
           conversation.reasoningLevel = level
         }
-      }
-    )
-  }
-
-  private var reasoningSliderBinding: Binding<Double> {
-    Binding(
-      get: {
-        Double(ReasoningLevel.allCases.firstIndex(of: reasoningBinding.wrappedValue) ?? 0)
-      },
-      set: { value in
-        let cases = ReasoningLevel.allCases
-        let index = max(0, min(cases.count - 1, Int(value.rounded())))
-        reasoningBinding.wrappedValue = cases[index]
       }
     )
   }
