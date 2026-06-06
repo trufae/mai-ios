@@ -22,7 +22,7 @@ struct FilteredModelPicker: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    Group {
       Picker("Model", selection: $selection) {
         if !selection.isEmpty && !filteredModels.contains(selection) {
           Text(selection).tag(selection)
@@ -40,8 +40,7 @@ struct FilteredModelPicker: View {
       }
       .pickerStyle(.menu)
 
-      HStack {
-        Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+      LabeledContent("Filter") {
         TextField("Model name", text: $filter)
           .multilineTextAlignment(.trailing)
           .textInputAutocapitalization(.never)
