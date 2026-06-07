@@ -139,7 +139,7 @@ enum AssistantToolLoop {
     static let definition = ToolDefinition(
       name: name,
       description:
-        "Return the user-visible response when no more host tool runs are needed. Use this instead of writing prose directly after a host tool result.",
+        "Optionally return the user-visible response in tool-call form when no more host tool runs are needed.",
       parameters: [
         ToolParameterDef(
           name: "action",
@@ -960,7 +960,7 @@ enum AssistantToolLoop {
 
   private static func nativeToolLoopPrompt() -> String {
     """
-    When tools are available, use the provided native tools. After a host tool result, call another host tool if another host tool run is needed. Call `\(ToolLoopResponseTool.name)` with `action` and `content` when no more host tool runs are needed. Do not describe a future tool call in prose.
+    When tools are available, use the provided native tools. After a host tool result, call another host tool if another host tool run is needed. If the result is enough, give the final answer directly. Do not describe a future tool call in prose.
     """
   }
 
@@ -1280,9 +1280,9 @@ enum AssistantToolLoop {
           .trimmingCharacters(in: .whitespacesAndNewlines),
         provisionalText: nil)
     }
-    guard remainingToolCalls > 0, !completedToolRuns.isEmpty else {
-      return nil
-    }
+    guard !completedToolRuns.isEmpty else { return nil }
+    if hasVisibleText(response) { return nil }
+    guard remainingToolCalls > 0 else { return nil }
     return .retry(
       missingPostToolActionFeedback(mode: mode),
       provisionalText: provisionalDisplayText(from: response))
@@ -1331,6 +1331,12 @@ enum AssistantToolLoop {
     return response.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  private static func hasVisibleText(_ response: String) -> Bool {
+    !MessageContentFilter.render(response).visibleText
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .isEmpty
+  }
+
   private static func missingPostToolActionFeedback(mode: ToolCallingMode) -> String {
     AgentTooling.makeRunBlock(
       toolName: "missing_tool_call",
@@ -1361,12 +1367,12 @@ enum AssistantToolLoop {
     switch mode {
     case .native:
       return
-        "After a host tool result, call one provided native tool. Call a host tool if another host tool run is needed. Call \(ToolLoopResponseTool.name) with action and content when no more host tool runs are needed. Do not write prose that announces a future tool call."
+        "After a host tool result, call one provided native tool if another host tool run is needed, or give the final answer directly if the result is enough. Do not write prose that announces a future tool call."
     case .text, .xml, .json:
       return """
-        After a host tool result, emit exactly one tool call in the configured \(mode.displayName) format.
+        After a host tool result, give the final answer directly if the result is enough.
 
-        Call a host tool if another host tool run is needed. Call \(ToolLoopResponseTool.name) when no more host tool runs are needed:
+        If another host tool run is needed, emit exactly one tool call in the configured \(mode.displayName) format. You may also call \(ToolLoopResponseTool.name) with final content:
         \(responseToolExample(mode: mode))
         """
     }

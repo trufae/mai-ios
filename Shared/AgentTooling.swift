@@ -321,7 +321,7 @@ enum AgentTooling {
 
       \(toolCalling)
 
-      After a `<tool_run>`, choose the next action using the same tool-call format. Call a host tool if another host tool run is needed. Call `respond` when no more host tool runs are needed. You may call the same host tool again with different arguments, but never repeat a host tool call with identical arguments.
+      After a `<tool_run>`, decide if the result is enough. If it is enough, give the final answer. If another missing fact remains, emit one more tool call in the next reply. You may call the same tool again with different arguments, but never repeat a tool call with identical arguments.
       """
   }
 
