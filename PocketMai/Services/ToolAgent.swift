@@ -806,12 +806,7 @@ enum WebSearchTool {
           ToolParameterDef(
             name: "query", type: "string",
             description: "Focused search query without unrelated chat history.",
-            required: true),
-          ToolParameterDef(
-            name: "provider", type: "string",
-            description:
-              "Provider override: duckDuckGo, wikipedia, exa, searXNG, ollama, or all.",
-            required: false),
+            required: true)
         ])
     ]
     if settings.webSearchFetchingEnabled {
@@ -836,9 +831,7 @@ enum WebSearchTool {
     let query = (arguments["query"]?.stringValue ?? arguments["q"]?.stringValue ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return "Error: query is required." }
-    let provider =
-      providerValue(arguments["provider"]?.stringValue)
-      ?? settings.toolSettings.webSearchProvider
+    let provider = settings.toolSettings.webSearchProvider
     guard
       let result = await WebSearchService.searchContext(
         query: query, provider: provider, settings: settings)
@@ -853,18 +846,6 @@ enum WebSearchTool {
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !url.isEmpty else { return "Error: url is required." }
     return await WebFetchService.fetchContext(urlString: url)
-  }
-
-  private static func providerValue(_ raw: String?) -> WebSearchProvider? {
-    let normalized = (raw ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-      .filter { $0.isLetter || $0.isNumber }
-    guard !normalized.isEmpty else { return nil }
-    return WebSearchProvider.allCases.first { provider in
-      provider.rawValue.lowercased().filter { $0.isLetter || $0.isNumber } == normalized
-        || provider.displayName.lowercased().filter { $0.isLetter || $0.isNumber } == normalized
-    }
   }
 }
 

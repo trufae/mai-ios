@@ -517,10 +517,7 @@ enum WebSearchService {
   private static let maxQueryLength = 240
   private static let maxWebResults = 6
   private static let maxWikipediaSummaries = 3
-  private static let exaMCPServer = MCPServer(
-    id: UUID(uuidString: "00000000-0000-0000-0000-000000000EAA")!,
-    name: "Exa",
-    baseURL: "https://mcp.exa.ai/mcp")
+  private static let exaMCPURL = URL(string: "https://mcp.exa.ai/mcp")!
 
   private struct SearXNGConfiguration: Sendable {
     let baseURL: URL
@@ -563,13 +560,6 @@ enum WebSearchService {
     if let s = await exa { sections.append(s) }
     if let s = await ddg { sections.append(s) }
     if let s = await wiki { sections.append(s) }
-
-    if sections.isEmpty {
-      async let ddgFallback: String? = useDDG ? nil : duckDuckGo(query: q)
-      async let wikiFallback: String? = useWiki ? nil : wikipedia(query: q)
-      if let s = await ddgFallback { sections.append(s) }
-      if let s = await wikiFallback { sections.append(s) }
-    }
 
     guard !sections.isEmpty else { return nil }
     let header = "Web Search tool (query: \"\(q)\"):"
@@ -615,16 +605,82 @@ enum WebSearchService {
   // MARK: - Exa
 
   private static func exa(query: String) async -> String? {
-    let output = try? await MCPHTTPClient.callTool(
-      server: exaMCPServer,
-      name: "web_search_exa",
-      arguments: [
-        "query": .string(query),
-        "numResults": .int(maxWebResults),
-      ])
-    let text = output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !text.isEmpty, text != "(no output)" else { return nil }
-    return "Exa:\n" + text
+    do {
+      let text = try await exaSearch(query: query)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { return nil }
+      return "Exa:\n" + text
+    } catch {
+      return "Exa error: \(error.localizedDescription)"
+    }
+  }
+
+  private static func exaSearch(query: String) async throws -> String {
+    var request = URLRequest(url: exaMCPURL)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+    request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
+    request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+    request.timeoutInterval = 20
+    request.httpBody = try JSONSerialization.data(withJSONObject: [
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": [
+        "name": "web_search_exa",
+        "arguments": [
+          "query": query,
+          "numResults": maxWebResults,
+        ],
+      ],
+    ])
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+      let body = String(data: data.prefix(400), encoding: .utf8) ?? ""
+      throw ChatProviderError.providerRequestFailed("Exa HTTP \(http.statusCode): \(body)")
+    }
+    guard let raw = exaJSONRPCObject(from: data) else {
+      throw ChatProviderError.providerRequestFailed("Exa returned non-JSON response.")
+    }
+    if let error = raw["error"] as? [String: Any] {
+      let message = (error["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      throw ChatProviderError.providerRequestFailed(
+        "Exa error: \((message?.isEmpty == false ? message : nil) ?? "unknown")")
+    }
+    let result = raw["result"] as? [String: Any] ?? [:]
+    let content = result["content"] as? [[String: Any]] ?? []
+    let parts = content.compactMap { item -> String? in
+      guard (item["type"] as? String) == "text" else { return nil }
+      let text = (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return text.isEmpty ? nil : text
+    }
+    return parts.joined(separator: "\n")
+  }
+
+  private static func exaJSONRPCObject(from data: Data) -> [String: Any]? {
+    if let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      return raw
+    }
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
+    for event in text.components(separatedBy: "\n\n") {
+      let payload = event.split(whereSeparator: \.isNewline)
+        .compactMap { line -> String? in
+          guard line.hasPrefix("data:") else { return nil }
+          return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !payload.isEmpty,
+        let payloadData = payload.data(using: .utf8),
+        let raw = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+      else {
+        continue
+      }
+      return raw
+    }
+    return nil
   }
 
   // MARK: - Ollama Web Search
