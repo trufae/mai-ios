@@ -918,6 +918,15 @@ enum AgentTooling {
     {
       result["query"] = normalized
     }
+    if result["location"] == nil,
+      let locationParameter = parameterByName["location"],
+      let alias = firstLocationAlias(
+        in: unknown,
+        hasQueryParameter: parameterByName["query"] != nil),
+      let normalized = normalizeValue(alias, for: locationParameter)
+    {
+      result["location"] = normalized
+    }
     if result.isEmpty,
       tool.parameters.filter(\.required).count == 1,
       let required = tool.parameters.first(where: \.required),
@@ -928,6 +937,17 @@ enum AgentTooling {
       result[required.name] = normalized
     }
     return result
+  }
+
+  private static func firstLocationAlias(
+    in arguments: [String: AgentToolArgumentValue],
+    hasQueryParameter: Bool
+  ) -> AgentToolArgumentValue? {
+    for name in ["city", "place", "where"] {
+      if let value = arguments[name] { return value }
+    }
+    guard !hasQueryParameter else { return nil }
+    return arguments["query"] ?? arguments["q"]
   }
 
   private static func normalizeValue(

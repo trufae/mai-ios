@@ -154,10 +154,13 @@ enum WeatherService {
 
   @MainActor
   static func report(
+    requestedLocation: String? = nil,
     settings: NativeToolSettings,
     locationService: @MainActor () -> LocationService
   ) async -> String? {
-    let manual = settings.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+    let requested = requestedLocationForWeather(requestedLocation)
+    let manual = requested
+      ?? settings.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines)
     var coordinate: CLLocationCoordinate2D? = nil
     if manual.isEmpty, settings.useGPSLocation {
       coordinate = await locationService().currentCoordinate()
@@ -185,6 +188,17 @@ enum WeatherService {
       return withMoonPhase(secondary.body)
     }
     return nil
+  }
+
+  private static func requestedLocationForWeather(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    switch trimmed.lowercased() {
+    case "current", "current location", "here", "my location", "configured location":
+      return nil
+    default:
+      return trimmed
+    }
   }
 
   private static func withMoonPhase(_ body: String) -> String {

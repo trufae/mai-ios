@@ -123,6 +123,7 @@ enum BuiltInToolCatalog {
         return "Error: weather is disabled while Airplane Mode is enabled."
       }
       return await WeatherTool.run(
+        arguments: call.argumentValues,
         settings: store.settings.toolSettings, locationService: { store.locationService })
     case FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName,
       FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
@@ -1243,17 +1244,31 @@ enum WeatherTool {
     ToolDefinition(
       name: name,
       description:
-        "Return current weather and 7-day forecast for the configured location.",
-      parameters: []
+        "Return current weather and 7-day forecast. Use location when the user asks about a specific city or place; omit it for the configured/current location.",
+      parameters: [
+        ToolParameterDef(
+          name: "location",
+          type: "string",
+          description:
+            "City, place, or latitude/longitude requested by the user, such as Madrid or 40.4168,-3.7038. Omit for the configured/current location.",
+          required: false)
+      ]
     )
   ]
 
   static func run(
+    arguments: [String: AgentToolArgumentValue],
     settings: NativeToolSettings,
     locationService: @MainActor () -> LocationService
   ) async -> String {
+    let requestedLocation =
+      arguments["location"]?.stringValue ?? arguments["city"]?.stringValue
+      ?? arguments["place"]?.stringValue ?? arguments["query"]?.stringValue
+      ?? arguments["q"]?.stringValue
     if let report = await WeatherService.report(
-      settings: settings, locationService: locationService)
+      requestedLocation: requestedLocation,
+      settings: settings,
+      locationService: locationService)
     {
       return report
     }
