@@ -54,6 +54,10 @@ enum BuiltInToolCatalog {
         FileWorkspaceTool.deleteName,
       ],
       approvalKind: .dangerous),
+    BuiltInToolCatalogEntry(
+      id: .calendar,
+      toolNames: [CalendarTool.readName, CalendarTool.createName],
+      approvalKind: .confirm),
   ]
 
   static func definitions(
@@ -132,6 +136,12 @@ enum BuiltInToolCatalog {
         arguments: call.argumentValues,
         conversation: conversation,
         settings: store.settings)
+    case CalendarTool.readName:
+      return await CalendarTool.readEvents(arguments: call.argumentValues)
+    case CalendarTool.createName:
+      return await CalendarTool.createEvent(
+        arguments: call.argumentValues,
+        settings: store.settings.toolSettings)
     default:
       return nil
     }
@@ -180,6 +190,8 @@ enum BuiltInToolCatalog {
     case .files:
       guard settings.toolSettings.filesWorkspaceAccessEnabled else { return [] }
       return FileWorkspaceTool.definitions
+    case .calendar:
+      return CalendarTool.definitions(settings: settings.toolSettings)
     case .memory:
       return []
     }
@@ -790,6 +802,98 @@ enum FileWorkspaceTool {
       ]
     ),
   ]
+}
+
+@MainActor
+enum CalendarTool {
+  static let readName = "calendar_read_events"
+  static let createName = "calendar_create_event"
+
+  static func definitions(settings: NativeToolSettings) -> [ToolDefinition] {
+    var definitions = [
+      ToolDefinition(
+        name: readName,
+        description:
+          "Read calendar events for a handy date phrase, one date, or an explicit date range. Returns limited event details only.",
+        parameters: [
+          ToolParameterDef(
+            name: "range",
+            type: "string",
+            description:
+              "Handy range phrase: today, tomorrow, yesterday, week, week ahead, this week, next week, this month, next month. The host converts this to local YYYY-MM-DD boundaries. Default: today.",
+            required: false),
+          ToolParameterDef(
+            name: "date",
+            type: "string",
+            description:
+              "One local date to read: YYYY-MM-DD, today, tomorrow, or yesterday. Omit when using range or start_date/end_date.",
+            required: false),
+          ToolParameterDef(
+            name: "start_date",
+            type: "string",
+            description:
+              "Range start as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday. Required with end_date for a custom range.",
+            required: false),
+          ToolParameterDef(
+            name: "end_date",
+            type: "string",
+            description:
+              "Range end as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday. Required with start_date for a custom range.",
+            required: false),
+        ])
+    ]
+    if settings.calendarEventCreationEnabled {
+      definitions.append(
+        ToolDefinition(
+          name: createName,
+          description:
+            "Create one calendar event. Only available when Calendar event creation is enabled in Settings.",
+          parameters: [
+            ToolParameterDef(
+              name: "title",
+              type: "string",
+              description: "Event title.",
+              required: true),
+            ToolParameterDef(
+              name: "start_date",
+              type: "string",
+              description: "Event start as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
+              required: true),
+            ToolParameterDef(
+              name: "end_date",
+              type: "string",
+              description: "Event end as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
+              required: true),
+            ToolParameterDef(
+              name: "all_day",
+              type: "boolean",
+              description: "Create an all-day event. Default: false.",
+              required: false),
+            ToolParameterDef(
+              name: "location",
+              type: "string",
+              description: "Event location. Omit unless the user specified one.",
+              required: false),
+            ToolParameterDef(
+              name: "notes",
+              type: "string",
+              description: "Short event notes. Omit unless the user specified notes.",
+              required: false),
+          ]))
+    }
+    return definitions
+  }
+
+  static func readEvents(arguments: [String: AgentToolArgumentValue]) async -> String {
+    await CalendarEventService.readEvents(arguments: arguments)
+  }
+
+  static func createEvent(
+    arguments: [String: AgentToolArgumentValue],
+    settings: NativeToolSettings
+  ) async -> String {
+    await CalendarEventService.createEvent(arguments: arguments, settings: settings)
+  }
 }
 
 @MainActor

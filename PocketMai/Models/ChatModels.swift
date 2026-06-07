@@ -388,6 +388,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case calculator
   case textToSpeech
   case files
+  case calendar
   case memory
 
   var id: String { rawValue }
@@ -396,14 +397,14 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .datetime, .language, .location, .memory:
       return true
-    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar:
       return false
     }
   }
 
   var isCallableTool: Bool {
     switch self {
-    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -421,6 +422,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .calculator: "Calculator"
     case .textToSpeech: "Text to Speech"
     case .files: "Files"
+    case .calendar: "Calendar"
     case .memory: "Memory"
     }
   }
@@ -436,6 +438,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .calculator: "function"
     case .textToSpeech: "speaker.wave.2"
     case .files: "folder"
+    case .calendar: "calendar"
     case .memory: "brain"
     }
   }
@@ -444,7 +447,8 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .weather, .webSearch:
       return true
-    case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .memory:
+    case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .calendar,
+      .memory:
       return false
     }
   }
@@ -1494,6 +1498,7 @@ struct ConversationDebugNativeToolSettings: Codable, Equatable, Sendable {
   var webSearchSearXNGUsernameConfigured: Bool
   var webSearchSearXNGPasswordConfigured: Bool
   var webSearchFetchingEnabled: Bool
+  var calendarEventCreationEnabled: Bool
   var filesWorkspaceAccessEnabled: Bool
   var configuredToolFilesCount: Int
   var todoCount: Int
@@ -2053,6 +2058,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webSearchSearXNGUsername: String = ""
   var webSearchSearXNGPassword: String = ""
   var webSearchFetchingEnabled: Bool = false
+  var calendarEventCreationEnabled: Bool = false
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
   var filesWorkspaceAccessEnabled: Bool = false
@@ -2066,7 +2072,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case includeTimeZone, includeMoonPhase, includeCurrentTime, includeYear, useGPSLocation
     case manualLocation, weatherLocation, webSearchProvider
     case webSearchSearXNGURL, webSearchSearXNGUsername, webSearchSearXNGPassword
-    case webSearchFetchingEnabled, todos, files
+    case webSearchFetchingEnabled, calendarEventCreationEnabled, todos, files
     case filesWorkspaceAccessEnabled
     case voices
   }
@@ -2105,6 +2111,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     webSearchFetchingEnabled =
       (try? c.decode(Bool.self, forKey: .webSearchFetchingEnabled))
       ?? defaults.webSearchFetchingEnabled
+    calendarEventCreationEnabled =
+      (try? c.decode(Bool.self, forKey: .calendarEventCreationEnabled))
+      ?? defaults.calendarEventCreationEnabled
     todos = (try? c.decode([TodoItem].self, forKey: .todos)) ?? defaults.todos
     files = (try? c.decode([ToolFile].self, forKey: .files)) ?? defaults.files
     filesWorkspaceAccessEnabled =
@@ -2143,6 +2152,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(webSearchSearXNGUsername, forKey: .webSearchSearXNGUsername)
     try c.encode(webSearchSearXNGPassword, forKey: .webSearchSearXNGPassword)
     try c.encode(webSearchFetchingEnabled, forKey: .webSearchFetchingEnabled)
+    try c.encode(calendarEventCreationEnabled, forKey: .calendarEventCreationEnabled)
     try c.encode(todos, forKey: .todos)
     try c.encode(files, forKey: .files)
     try c.encode(filesWorkspaceAccessEnabled, forKey: .filesWorkspaceAccessEnabled)
@@ -2364,6 +2374,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     if storedSettingsVersion < Self.currentSettingsVersion {
       toolSettings.webSearchFetchingEnabled = false
       toolSettings.filesWorkspaceAccessEnabled = false
+      toolSettings.calendarEventCreationEnabled = false
     }
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""

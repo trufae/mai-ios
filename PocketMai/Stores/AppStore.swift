@@ -3167,6 +3167,7 @@ final class AppStore: ObservableObject {
         .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       webSearchSearXNGPasswordConfigured: !toolSettings.webSearchSearXNGPassword.isEmpty,
       webSearchFetchingEnabled: toolSettings.webSearchFetchingEnabled,
+      calendarEventCreationEnabled: toolSettings.calendarEventCreationEnabled,
       filesWorkspaceAccessEnabled: toolSettings.filesWorkspaceAccessEnabled,
       configuredToolFilesCount: toolSettings.files.count,
       todoCount: toolSettings.todos.count)

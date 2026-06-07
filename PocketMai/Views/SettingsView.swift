@@ -1389,6 +1389,15 @@ struct SettingsView: View {
       Text("Configure user and assistant voices in Look and Feel.")
         .font(.footnote)
         .foregroundStyle(.secondary)
+    case .calendar:
+      Toggle(
+        "Allow creating events",
+        isOn: settingsBinding(\.toolSettings.calendarEventCreationEnabled))
+      Text(
+        "Off exposes only calendar_read_events. On also exposes calendar_create_event. Reads request full Calendar access only when called; event creation requests write-only Calendar access when possible."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     case .files:
       Toggle(
         "Enable FilesData tools",
