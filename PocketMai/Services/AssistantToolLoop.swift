@@ -41,6 +41,7 @@ enum AssistantToolLoop {
     var assistantText = ""
     var nativeContinuationMessages: [OpenAIMessage] = []
     var completedToolRuns: [String: String] = [:]
+    var provisionalText = ""
     var debugRoundIndex = 0
     var toolCallCount = 0
     var repairTurnCount = 0
@@ -48,6 +49,27 @@ enum AssistantToolLoop {
     mutating func append(_ turnText: String) -> String {
       assistantText = assistantText.isEmpty ? turnText : "\(assistantText)\n\n\(turnText)"
       return assistantText
+    }
+
+    var displayText: String {
+      [assistantText, provisionalText]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
+    }
+
+    func displayText(appending turnText: String) -> String {
+      [displayText, turnText.trimmingCharacters(in: .whitespacesAndNewlines)]
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
+    }
+
+    mutating func setProvisionalText(_ text: String?) {
+      provisionalText = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    mutating func clearProvisionalText() {
+      provisionalText = ""
     }
 
     mutating func applyNativeContinuation(
@@ -84,8 +106,55 @@ enum AssistantToolLoop {
 
   private enum Outcome {
     case final(String)
-    case retry(String)
+    case retry(String, provisionalText: String?)
     case toolRun(RunOutput)
+  }
+
+  private enum ResponseAction {
+    case final
+    case askUser
+    case noSolution
+
+    init?(_ rawValue: String) {
+      switch rawValue
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: "-", with: "_")
+      {
+      case "final":
+        self = .final
+      case "ask_user":
+        self = .askUser
+      case "no_solution":
+        self = .noSolution
+      default:
+        return nil
+      }
+    }
+  }
+
+  private enum ToolLoopResponseTool {
+    static let name = "respond"
+
+    static let definition = ToolDefinition(
+      name: name,
+      description:
+        "Return the user-visible response when no more host tool runs are needed. Use this instead of writing prose directly after a host tool result.",
+      parameters: [
+        ToolParameterDef(
+          name: "action",
+          type: "string",
+          description: "One of final, ask_user, or no_solution.",
+          required: true),
+        ToolParameterDef(
+          name: "content",
+          type: "string",
+          description: "The user-visible response text.",
+          required: true),
+      ],
+      inputSchemaJSON: """
+        {"type":"object","properties":{"action":{"type":"string","enum":["final","ask_user","no_solution"],"description":"One of final, ask_user, or no_solution."},"content":{"type":"string","description":"The user-visible response text."}},"required":["action","content"]}
+        """)
   }
 
   static func run(
@@ -131,17 +200,20 @@ enum AssistantToolLoop {
         response: response,
         requestState: requestState,
         conversationID: conversationID,
+        assistantID: assistantID,
         store: store,
         completedToolRuns: state.completedToolRuns,
+        baselineText: state.displayText,
         remainingToolCalls: maxToolCalls - state.toolCallCount)
 
       switch outcome {
       case .final(let turnText):
+        state.clearProvisionalText()
         store.setAssistantMessage(id: assistantID, text: state.append(turnText), role: .assistant)
         store.assistantResponseCompleted()
         didFinish = true
         return
-      case .retry(let feedback):
+      case .retry(let feedback, let provisionalText):
         state.debugRoundIndex += 1
         state.repairTurnCount += 1
         appendDebugIteration(
@@ -153,7 +225,17 @@ enum AssistantToolLoop {
           assistantID: assistantID,
           roundIndex: state.debugRoundIndex,
           store: store)
-        store.setAssistantMessage(id: assistantID, text: state.append(feedback), role: .assistant)
+        state.setProvisionalText(provisionalText)
+        let canonicalText = state.append(feedback)
+        store.setAssistantMessage(id: assistantID, text: canonicalText, role: .assistant)
+        if !state.provisionalText.isEmpty {
+          store.setAssistantMessage(
+            id: assistantID,
+            text: state.displayText,
+            role: .assistant,
+            touch: false,
+            streaming: true)
+        }
         store.saveConversations()
         state.nativeContinuationMessages.removeAll()
       case .toolRun(let output):
@@ -171,6 +253,14 @@ enum AssistantToolLoop {
           results: output.results)
         store.setAssistantMessage(
           id: assistantID, text: state.append(output.text), role: .assistant)
+        if !state.provisionalText.isEmpty {
+          store.setAssistantMessage(
+            id: assistantID,
+            text: state.displayText,
+            role: .assistant,
+            touch: false,
+            streaming: true)
+        }
         store.saveConversations()
         for completedRun in output.completedRuns where isSuccessfulToolResult(completedRun.result) {
           state.completedToolRuns[completedRun.fingerprint] = completedRun.result
@@ -186,9 +276,12 @@ enum AssistantToolLoop {
     if !didFinish {
       let suffix =
         "\n\nTool loop stopped after \(state.toolCallCount) of \(maxToolCalls) allowed tool call\(maxToolCalls == 1 ? "" : "s") and \(state.repairTurnCount) repair turn\(state.repairTurnCount == 1 ? "" : "s") before the model produced a final answer."
+      let text =
+        state.displayText.isEmpty
+        ? suffix.trimmingCharacters(in: .whitespacesAndNewlines) : state.displayText + suffix
       store.setAssistantMessage(
         id: assistantID,
-        text: state.assistantText + suffix,
+        text: text,
         role: .assistant)
     }
   }
@@ -240,12 +333,13 @@ enum AssistantToolLoop {
 
       switch outcome {
       case .final(let turnText):
+        state.clearProvisionalText()
         let text = state.append(turnText)
         updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
         return IsolatedResult(
           text: userVisibleResponseText(from: text),
           toolRuns: toolRuns)
-      case .retry(let feedback):
+      case .retry(let feedback, _):
         state.debugRoundIndex += 1
         state.repairTurnCount += 1
         let text = state.append(feedback)
@@ -320,7 +414,7 @@ enum AssistantToolLoop {
       }
       store?.setAssistantMessage(
         id: assistantID,
-        text: combinedAssistantText(baseline: state.assistantText, turnText: turnText),
+        text: state.displayText(appending: turnText),
         role: .assistant,
         touch: false,
         streaming: true)
@@ -366,8 +460,10 @@ enum AssistantToolLoop {
     response: String,
     requestState: RequestState,
     conversationID: UUID,
+    assistantID: UUID,
     store: AppStore,
     completedToolRuns: [String: String],
+    baselineText: String,
     remainingToolCalls: Int
   ) async throws -> Outcome {
     guard !requestState.definitions.isEmpty else { return .final(response) }
@@ -375,31 +471,33 @@ enum AssistantToolLoop {
     let currentDefinitions = currentVisibleDefinitions(
       conversationID: conversationID,
       store: store)
-    let parseDefinitions =
+    let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
+    let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let calls = ToolAgentRegistry.parseCalls(
       in: response,
       definitions: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
-      if AgentTooling.containsToolCallMarker(in: response, mode: requestState.activeMode) {
-        return .retry(
-          AgentTooling.malformedToolCallFeedback(
-            from: response,
-            mode: requestState.activeMode,
-            tools: parseDefinitions
-          ).trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      if AgentTooling.containsNonToolJSONToolLoopObject(in: response, tools: parseDefinitions) {
-        return .retry(
-          AgentTooling.nonToolJSONToolLoopFeedback(
-            from: response,
-            mode: requestState.activeMode,
-            tools: parseDefinitions
-          ).trimmingCharacters(in: .whitespacesAndNewlines))
+      if let outcome = noToolCallOutcome(
+        response: response,
+        mode: requestState.activeMode,
+        tools: parseDefinitions,
+        completedToolRuns: completedToolRuns,
+        remainingToolCalls: remainingToolCalls)
+      {
+        return outcome
       }
       return .final(response)
+    }
+
+    if let responseOutcome = responseToolOutcome(
+      calls: calls,
+      definitions: parseDefinitions,
+      mode: requestState.activeMode)
+    {
+      return responseOutcome
     }
 
     if let repeated = repeatedCompletedToolResult(
@@ -417,6 +515,8 @@ enum AssistantToolLoop {
       remainingToolCalls: remainingToolCalls,
       parseDefinitions: parseDefinitions,
       mode: requestState.activeMode,
+      assistantID: assistantID,
+      baselineText: baselineText,
       conversationID: conversationID,
       store: store)
     return .toolRun(output)
@@ -442,31 +542,33 @@ enum AssistantToolLoop {
       mcpTools: mcpTools,
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
-    let parseDefinitions =
+    let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
+    let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let calls = ToolAgentRegistry.parseCalls(
       in: response,
       definitions: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
-      if AgentTooling.containsToolCallMarker(in: response, mode: requestState.activeMode) {
-        return .retry(
-          AgentTooling.malformedToolCallFeedback(
-            from: response,
-            mode: requestState.activeMode,
-            tools: parseDefinitions
-          ).trimmingCharacters(in: .whitespacesAndNewlines))
-      }
-      if AgentTooling.containsNonToolJSONToolLoopObject(in: response, tools: parseDefinitions) {
-        return .retry(
-          AgentTooling.nonToolJSONToolLoopFeedback(
-            from: response,
-            mode: requestState.activeMode,
-            tools: parseDefinitions
-          ).trimmingCharacters(in: .whitespacesAndNewlines))
+      if let outcome = noToolCallOutcome(
+        response: response,
+        mode: requestState.activeMode,
+        tools: parseDefinitions,
+        completedToolRuns: completedToolRuns,
+        remainingToolCalls: remainingToolCalls)
+      {
+        return outcome
       }
       return .final(response)
+    }
+
+    if let responseOutcome = responseToolOutcome(
+      calls: calls,
+      definitions: parseDefinitions,
+      mode: requestState.activeMode)
+    {
+      return responseOutcome
     }
 
     if let repeated = repeatedCompletedToolResult(
@@ -499,9 +601,20 @@ enum AssistantToolLoop {
     remainingToolCalls: Int,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
+    assistantID: UUID,
+    baselineText: String,
     conversationID: UUID,
     store: AppStore
   ) async throws -> RunOutput {
+    publishPendingToolRuns(
+      response: response,
+      calls: calls,
+      remainingToolCalls: remainingToolCalls,
+      parseDefinitions: parseDefinitions,
+      assistantID: assistantID,
+      baselineText: baselineText,
+      store: store)
+
     var visibleText = response
     var runBlocks: [String] = []
     var results: [CallResult] = []
@@ -540,6 +653,52 @@ enum AssistantToolLoop {
       completedRuns: completedRuns,
       parsedCalls: calls,
       results: results)
+  }
+
+  private static func publishPendingToolRuns(
+    response: String,
+    calls: [ParsedToolCall],
+    remainingToolCalls: Int,
+    parseDefinitions: [ToolDefinition],
+    assistantID: UUID,
+    baselineText: String,
+    store: AppStore
+  ) {
+    let text = pendingToolRunText(
+      response: response,
+      calls: calls,
+      remainingToolCalls: remainingToolCalls,
+      parseDefinitions: parseDefinitions)
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    store.setAssistantMessage(
+      id: assistantID,
+      text: combinedAssistantText(baseline: baselineText, turnText: text),
+      role: .assistant,
+      touch: false)
+  }
+
+  private static func pendingToolRunText(
+    response: String,
+    calls: [ParsedToolCall],
+    remainingToolCalls: Int,
+    parseDefinitions: [ToolDefinition]
+  ) -> String {
+    var visibleText = response
+    var runBlocks: [String] = []
+    var pendingCount = 0
+    for call in calls {
+      visibleText = visibleText.replacingOccurrences(of: call.rawBlock, with: "")
+      guard pendingCount < remainingToolCalls else { continue }
+      let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
+      runBlocks.append(
+        ToolAgentRegistry.makeRunBlock(
+          call: normalizedCall,
+          result: "Waiting for host tool result."))
+      pendingCount += 1
+    }
+    return ([visibleText.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      .joined(separator: "\n\n")
   }
 
   private static func runToolCalls(
@@ -769,18 +928,19 @@ enum AssistantToolLoop {
       mcpTools: mcpTools,
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
+    let loopDefinitions = toolLoopDefinitions(for: visibleDefinitions)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
       settings: settings,
-      definitions: visibleDefinitions)
+      definitions: loopDefinitions)
     let activeMode =
       nativeTools == nil
       ? settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
       : .native
-    let promptDefinitions = nativeTools == nil ? visibleDefinitions : []
-    let toolPrompt = ToolAgentRegistry.promptDescription(
-      for: promptDefinitions,
-      mode: activeMode)
+    let toolPrompt =
+      nativeTools == nil
+      ? ToolAgentRegistry.promptDescription(for: loopDefinitions, mode: activeMode)
+      : nativeToolLoopPrompt()
     let requestContext = [baseContext, toolPrompt]
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
@@ -791,6 +951,17 @@ enum AssistantToolLoop {
       activeMode: activeMode,
       context: requestContext,
       toolPrompt: toolPrompt)
+  }
+
+  private static func toolLoopDefinitions(for definitions: [ToolDefinition]) -> [ToolDefinition] {
+    guard !definitions.isEmpty else { return [] }
+    return definitions + [ToolLoopResponseTool.definition]
+  }
+
+  private static func nativeToolLoopPrompt() -> String {
+    """
+    When tools are available, use the provided native tools. After a host tool result, call another host tool if another host tool run is needed. Call `\(ToolLoopResponseTool.name)` with `action` and `content` when no more host tool runs are needed. Do not describe a future tool call in prose.
+    """
   }
 
   private static func nativeToolsIfNeeded(
@@ -1088,6 +1259,128 @@ enum AssistantToolLoop {
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
       .joined(separator: "\n\n")
+  }
+
+  private static func noToolCallOutcome(
+    response: String,
+    mode: ToolCallingMode,
+    tools: [ToolDefinition],
+    completedToolRuns: [String: String],
+    remainingToolCalls: Int
+  ) -> Outcome? {
+    if AgentTooling.containsToolCallMarker(in: response, mode: mode) {
+      return .retry(
+        AgentTooling.malformedToolCallFeedback(from: response, mode: mode, tools: tools)
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        provisionalText: nil)
+    }
+    if AgentTooling.containsNonToolJSONToolLoopObject(in: response, tools: tools) {
+      return .retry(
+        AgentTooling.nonToolJSONToolLoopFeedback(from: response, mode: mode, tools: tools)
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        provisionalText: nil)
+    }
+    guard remainingToolCalls > 0, !completedToolRuns.isEmpty else {
+      return nil
+    }
+    return .retry(
+      missingPostToolActionFeedback(mode: mode),
+      provisionalText: provisionalDisplayText(from: response))
+  }
+
+  private static func responseToolOutcome(
+    calls: [ParsedToolCall],
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode
+  ) -> Outcome? {
+    let normalizedCalls = calls.map {
+      ToolAgentRegistry.normalized(call: $0, definitions: definitions)
+    }
+    guard normalizedCalls.contains(where: { $0.name == ToolLoopResponseTool.name }) else {
+      return nil
+    }
+    guard normalizedCalls.count == 1, let call = normalizedCalls.first else {
+      return .retry(
+        invalidResponseToolFeedback(
+          mode: mode,
+          message:
+            "Error: respond must be the only tool call in this assistant turn."),
+        provisionalText: nil)
+    }
+    let actionText = call.argumentValues["action"]?.stringValue ?? ""
+    guard ResponseAction(actionText) != nil else {
+      return .retry(
+        invalidResponseToolFeedback(
+          mode: mode,
+          message:
+            "Error: respond action must be one of final, ask_user, or no_solution."),
+        provisionalText: nil)
+    }
+    let content = (call.argumentValues["content"]?.stringValue ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !content.isEmpty else {
+      return .retry(emptyToolResponseFeedback(mode: mode), provisionalText: nil)
+    }
+    return .final(content)
+  }
+
+  private static func provisionalDisplayText(from response: String) -> String? {
+    let visible = MessageContentFilter.render(response).visibleText
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !visible.isEmpty else { return nil }
+    return response.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func missingPostToolActionFeedback(mode: ToolCallingMode) -> String {
+    AgentTooling.makeRunBlock(
+      toolName: "missing_tool_call",
+      argumentsJSON: "{}",
+      result: missingPostToolActionMessage(mode: mode)
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func emptyToolResponseFeedback(mode: ToolCallingMode) -> String {
+    AgentTooling.makeRunBlock(
+      toolName: "invalid_respond",
+      argumentsJSON: "{}",
+      result:
+        "Error: respond content is empty. Emit a host tool call if another host tool run is needed, or call respond with non-empty user-visible content."
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func invalidResponseToolFeedback(mode: ToolCallingMode, message: String) -> String
+  {
+    return AgentTooling.makeRunBlock(
+      toolName: "invalid_respond",
+      argumentsJSON: "{}",
+      result: "\(message)\n\n\(missingPostToolActionMessage(mode: mode))"
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func missingPostToolActionMessage(mode: ToolCallingMode) -> String {
+    switch mode {
+    case .native:
+      return
+        "After a host tool result, call one provided native tool. Call a host tool if another host tool run is needed. Call \(ToolLoopResponseTool.name) with action and content when no more host tool runs are needed. Do not write prose that announces a future tool call."
+    case .text, .xml, .json:
+      return """
+        After a host tool result, emit exactly one tool call in the configured \(mode.displayName) format.
+
+        Call a host tool if another host tool run is needed. Call \(ToolLoopResponseTool.name) when no more host tool runs are needed:
+        \(responseToolExample(mode: mode))
+        """
+    }
+  }
+
+  private static func responseToolExample(mode: ToolCallingMode) -> String {
+    let call = ParsedToolCall(
+      name: ToolLoopResponseTool.name,
+      arguments: [
+        "action": "final",
+        "content": "The user-visible answer goes here.",
+      ],
+      rawBlock: "")
+    return AgentTooling.editableToolCallText(for: call, mode: mode)
   }
 
   private static func debugModelName(for conversation: Conversation, store: AppStore) -> String {

@@ -499,7 +499,7 @@ enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
   func appleInstruction(hasToolResults: Bool) -> String {
     if hasToolResults {
       return
-        "Continue from the latest host tool result. Either emit one more \(callReference) if needed, or write the final answer."
+        "Continue from the latest host tool result. Either emit one more \(callReference) for a host tool if another host tool run is needed, or call respond with action and content."
     }
     return
       "Reply to the latest user message. If you need a tool, emit one \(callReference) and stop; otherwise answer directly."
