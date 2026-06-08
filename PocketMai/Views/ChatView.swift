@@ -1374,12 +1374,12 @@ private struct ChatComposer: View {
 
   private var trailingActionSystemImage: String {
     if isResponding {
-      return "stop.circle"
+      return "stop.fill"
     }
     if canSubmitDraft {
-      return "arrow.up.circle.fill"
+      return "arrow.up"
     }
-    return "mic.circle"
+    return "mic"
   }
 
   private var trailingActionColor: Color {
@@ -1428,7 +1428,7 @@ private struct ChatComposer: View {
           await stopVoiceAndKeepTranscript()
         }
       } label: {
-        Image(systemName: "xmark.circle.fill")
+        Image(systemName: "stop.fill")
           .font(.title2)
           .symbolRenderingMode(.hierarchical)
           .foregroundStyle(Color.red)
@@ -1567,8 +1567,11 @@ private struct ChatComposer: View {
       showingToolMenu.toggle()
     } label: {
       Image(systemName: "plus")
-        .font(.title3.weight(.semibold))
+        .font(.title2)
+        .symbolRenderingMode(.hierarchical)
+        .foregroundStyle(Color.accentColor)
         .frame(width: 24, height: 24)
+        .contentShape(Circle())
     }
     .buttonStyle(.glass)
     .popover(isPresented: $showingToolMenu, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
