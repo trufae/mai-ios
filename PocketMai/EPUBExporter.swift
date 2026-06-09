@@ -2,7 +2,9 @@ import Foundation
 import SwiftUI
 
 enum EPUBExporter {
-  static func makeEPUB(conversation: Conversation, includeThinking: Bool? = nil) -> Data {
+  static func makeEPUB(conversation: Conversation, includeThinking: Bool? = nil) async throws
+    -> Data
+  {
     let title = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     let bookTitle = title.isEmpty ? "Chat" : title
     let identifier = "urn:uuid:\(conversation.id.uuidString.lowercased())"
@@ -10,10 +12,15 @@ enum EPUBExporter {
     let chatTitle = xmlEscaped(bookTitle)
     let shouldIncludeThinking = includeThinking ?? conversation.showThinking
 
+    let imageCatalog = try await buildImageResourceCatalog(
+      conversation: conversation,
+      includeThinking: shouldIncludeThinking)
+
     let chapters = buildChapters(
       conversation: conversation,
       bookTitle: bookTitle,
-      includeThinking: shouldIncludeThinking)
+      includeThinking: shouldIncludeThinking,
+      imageCatalog: imageCatalog)
 
     let container = """
       <?xml version="1.0" encoding="UTF-8"?>
@@ -24,9 +31,19 @@ enum EPUBExporter {
       </container>
       """
 
-    let manifestEntries = chapters.map { chapter in
+    let chapterManifestEntries = chapters.map { chapter in
       "    <item id=\"\(chapter.id)\" href=\"\(chapter.filename)\" media-type=\"application/xhtml+xml\"/>"
     }.joined(separator: "\n")
+
+    let imageManifestEntries = imageCatalog.resources.map { resource in
+      """
+          <item id="\(resource.id)" href="\(xmlEscaped(resource.href))" media-type="\(xmlEscaped(resource.mediaType))"/>
+      """
+    }.joined(separator: "\n")
+
+    let manifestEntries = ([chapterManifestEntries, imageManifestEntries])
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n")
 
     let spineEntries = chapters.map { chapter in
       "    <itemref idref=\"\(chapter.id)\"/>"
@@ -85,6 +102,9 @@ enum EPUBExporter {
     for chapter in chapters {
       archive.addFile(path: "OEBPS/\(chapter.filename)", data: Data(chapter.xhtml.utf8))
     }
+    for resource in imageCatalog.resources {
+      archive.addFile(path: "OEBPS/\(resource.href)", data: resource.data)
+    }
     return archive.data()
   }
 
@@ -95,6 +115,289 @@ enum EPUBExporter {
     let filename: String
     let tocTitle: String
     let xhtml: String
+  }
+
+  private struct ImageResource {
+    let id: String
+    let href: String
+    let mediaType: String
+    let data: Data
+  }
+
+  private struct ImageResourceCatalog {
+    private(set) var resources: [ImageResource] = []
+    private var attachmentHrefsByID: [UUID: String] = [:]
+    private var remoteHrefsBySource: [String: String] = [:]
+    private var nextImageIndex = 1
+
+    mutating func addImageAttachment(_ attachment: ChatAttachment) throws {
+      guard attachment.kind == .image else { return }
+      guard attachmentHrefsByID[attachment.id] == nil else { return }
+      guard let dataBase64 = attachment.dataBase64,
+        !dataBase64.isEmpty,
+        let data = Data(base64Encoded: dataBase64)
+      else {
+        throw EPUBExportError.unreadableAttachedImage(attachment.displayName)
+      }
+      guard
+        let mediaType = Self.imageMediaType(
+          from: data,
+          declared: attachment.mimeType,
+          suggestedFilename: attachment.filename,
+          url: nil)
+      else {
+        throw EPUBExportError.unsupportedImage(attachment.displayName)
+      }
+
+      let resource = makeResource(
+        data: data,
+        mediaType: mediaType,
+        suggestedFilename: attachment.filename,
+        url: nil)
+      resources.append(resource)
+      attachmentHrefsByID[attachment.id] = resource.href
+    }
+
+    mutating func addRemoteImage(source: String) async throws {
+      let normalizedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard remoteHrefsBySource[normalizedSource] == nil else { return }
+      guard let url = Self.remoteImageURL(from: normalizedSource) else { return }
+
+      let downloaded = try await Self.downloadRemoteImage(
+        from: url,
+        displaySource: normalizedSource)
+      let resource = makeResource(
+        data: downloaded.data,
+        mediaType: downloaded.mediaType,
+        suggestedFilename: url.lastPathComponent,
+        url: url)
+      resources.append(resource)
+      remoteHrefsBySource[normalizedSource] = resource.href
+    }
+
+    func hasImageAttachments(for message: ChatMessage) -> Bool {
+      message.attachments.contains { attachment in
+        attachment.kind == .image && attachmentHrefsByID[attachment.id] != nil
+      }
+    }
+
+    func href(for attachment: ChatAttachment) -> String? {
+      attachmentHrefsByID[attachment.id]
+    }
+
+    func href(forMarkdownImageSource source: String) -> String? {
+      remoteHrefsBySource[source.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    func firstImageAttachmentDisplayName(in message: ChatMessage) -> String? {
+      message.attachments.first { attachment in
+        attachment.kind == .image && attachmentHrefsByID[attachment.id] != nil
+      }?.displayName
+    }
+
+    private mutating func makeResource(
+      data: Data,
+      mediaType: String,
+      suggestedFilename: String,
+      url: URL?
+    ) -> ImageResource {
+      let resourceIndex = nextImageIndex
+      nextImageIndex += 1
+      let ext = Self.imageFileExtension(
+        mediaType: mediaType,
+        suggestedFilename: suggestedFilename,
+        url: url)
+      let filename = String(format: "image%03d.%@", resourceIndex, ext)
+      return ImageResource(
+        id: String(format: "img%03d", resourceIndex),
+        href: "images/\(filename)",
+        mediaType: mediaType,
+        data: data)
+    }
+
+    private static func remoteImageURL(from source: String) -> URL? {
+      guard let url = URL(string: source),
+        let scheme = url.scheme?.lowercased(),
+        scheme == "http" || scheme == "https"
+      else {
+        return nil
+      }
+      return url
+    }
+
+    private static func downloadRemoteImage(from url: URL, displaySource: String) async throws
+      -> (data: Data, mediaType: String)
+    {
+      var request = URLRequest(url: url)
+      request.timeoutInterval = 30
+      request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+
+      let data: Data
+      let response: URLResponse
+      do {
+        (data, response) = try await URLSession.shared.data(for: request)
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        throw EPUBExportError.remoteImageDownloadFailed(displaySource, error.localizedDescription)
+      }
+
+      if let http = response as? HTTPURLResponse,
+        !(200..<300).contains(http.statusCode)
+      {
+        throw EPUBExportError.remoteImageDownloadFailed(
+          displaySource,
+          "HTTP \(http.statusCode)")
+      }
+      guard data.count <= maxImageBytes else {
+        throw EPUBExportError.remoteImageDownloadFailed(displaySource, "image is too large")
+      }
+      let responseURL = response.url ?? url
+      guard
+        let mediaType = imageMediaType(
+          from: data,
+          declared: response.mimeType,
+          suggestedFilename: responseURL.lastPathComponent,
+          url: responseURL)
+      else {
+        throw EPUBExportError.unsupportedImage(displaySource)
+      }
+      return (data, mediaType)
+    }
+
+    private static func imageMediaType(
+      from data: Data,
+      declared: String?,
+      suggestedFilename: String,
+      url: URL?
+    ) -> String? {
+      if let mediaType = normalizedImageMediaType(declared) {
+        return mediaType
+      }
+      if dataStarts(data, [0xff, 0xd8, 0xff]) {
+        return "image/jpeg"
+      }
+      if dataStarts(data, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return "image/png"
+      }
+      if dataStarts(data, [0x47, 0x49, 0x46, 0x38]) {
+        return "image/gif"
+      }
+      let header = Array(data.prefix(12))
+      if header.count == 12,
+        String(bytes: header[0..<4], encoding: .ascii) == "RIFF",
+        String(bytes: header[8..<12], encoding: .ascii) == "WEBP"
+      {
+        return "image/webp"
+      }
+      if let text = String(data: data.prefix(512), encoding: .utf8),
+        text.localizedCaseInsensitiveContains("<svg")
+      {
+        return "image/svg+xml"
+      }
+      return normalizedImageMediaType(
+        mimeTypeForImageExtension(fileExtension(suggestedFilename: suggestedFilename, url: url)))
+    }
+
+    private static func imageFileExtension(
+      mediaType: String,
+      suggestedFilename: String,
+      url: URL?
+    ) -> String {
+      if let ext = fileExtensionForImageMediaType(mediaType) {
+        return ext
+      }
+      return fileExtension(suggestedFilename: suggestedFilename, url: url) ?? "img"
+    }
+
+    private static func fileExtension(suggestedFilename: String, url: URL?) -> String? {
+      let filenameExtension = URL(fileURLWithPath: suggestedFilename).pathExtension
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+      if isSupportedImageExtension(filenameExtension) {
+        return filenameExtension == "jpeg" ? "jpg" : filenameExtension
+      }
+      let urlExtension = url?.pathExtension
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+      if isSupportedImageExtension(urlExtension) {
+        return urlExtension == "jpeg" ? "jpg" : urlExtension
+      }
+      return nil
+    }
+
+    private static func normalizedImageMediaType(_ raw: String?) -> String? {
+      guard let raw else { return nil }
+      let mediaType = raw
+        .components(separatedBy: ";")
+        .first?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+      guard mediaType.hasPrefix("image/") else { return nil }
+      if mediaType == "image/jpg" || mediaType == "image/pjpeg" {
+        return "image/jpeg"
+      }
+      return mediaType
+    }
+
+    private static func mimeTypeForImageExtension(_ ext: String?) -> String? {
+      switch ext {
+      case "jpg", "jpeg": "image/jpeg"
+      case "png": "image/png"
+      case "gif": "image/gif"
+      case "svg": "image/svg+xml"
+      case "webp": "image/webp"
+      case "heic": "image/heic"
+      case "heif": "image/heif"
+      case "tif", "tiff": "image/tiff"
+      case "bmp": "image/bmp"
+      default: nil
+      }
+    }
+
+    private static func fileExtensionForImageMediaType(_ mediaType: String) -> String? {
+      switch normalizedImageMediaType(mediaType) {
+      case "image/jpeg": "jpg"
+      case "image/png": "png"
+      case "image/gif": "gif"
+      case "image/svg+xml": "svg"
+      case "image/webp": "webp"
+      case "image/heic": "heic"
+      case "image/heif": "heif"
+      case "image/tiff": "tif"
+      case "image/bmp": "bmp"
+      default: nil
+      }
+    }
+
+    private static func isSupportedImageExtension(_ ext: String) -> Bool {
+      mimeTypeForImageExtension(ext) != nil
+    }
+
+    private static func dataStarts(_ data: Data, _ prefix: [UInt8]) -> Bool {
+      guard data.count >= prefix.count else { return false }
+      return zip(data.prefix(prefix.count), prefix).allSatisfy { $0 == $1 }
+    }
+
+    private static let maxImageBytes = 25 * 1024 * 1024
+    private static let userAgent = "PocketMai/1.0 (iOS; +https://github.com/trufae/mai)"
+  }
+
+  private enum EPUBExportError: LocalizedError {
+    case unreadableAttachedImage(String)
+    case unsupportedImage(String)
+    case remoteImageDownloadFailed(String, String)
+
+    var errorDescription: String? {
+      switch self {
+      case .unreadableAttachedImage(let name):
+        return "Could not read attached image \"\(name)\"."
+      case .unsupportedImage(let source):
+        return "Could not identify an image format for \"\(source)\"."
+      case .remoteImageDownloadFailed(let source, let reason):
+        return "Could not download image \"\(source)\": \(reason)."
+      }
+    }
   }
 
   private struct MessageContent {
@@ -112,7 +415,8 @@ enum EPUBExporter {
   private static func buildChapters(
     conversation: Conversation,
     bookTitle: String,
-    includeThinking: Bool
+    includeThinking: Bool,
+    imageCatalog: ImageResourceCatalog
   ) -> [Chapter] {
     var chapters: [Chapter] = []
     chapters.append(makeTitleChapter(conversation: conversation, bookTitle: bookTitle))
@@ -120,12 +424,18 @@ enum EPUBExporter {
     var exportedMessageCount = 0
     for message in conversation.messages {
       let content = messageContent(for: message, includeThinking: includeThinking)
-      guard content.hasExportedBody else { continue }
+      guard content.hasExportedBody || imageCatalog.hasImageAttachments(for: message) else {
+        continue
+      }
 
       exportedMessageCount += 1
       let id = String(format: "msg%03d", exportedMessageCount)
       let blocks = MarkdownParser.blocks(from: content.visibleText)
-      let snippet = chapterSnippet(blocks: blocks)
+      let textSnippet = chapterSnippet(blocks: blocks)
+      let snippet =
+        textSnippet.isEmpty
+        ? imageCatalog.firstImageAttachmentDisplayName(in: message) ?? ""
+        : textSnippet
       let displayRole = message.role.displayName
       let tocTitle: String
       if snippet.isEmpty {
@@ -134,7 +444,11 @@ enum EPUBExporter {
         tocTitle = "\(exportedMessageCount). \(displayRole) — \(snippet)"
       }
 
-      let bodyHTML = htmlForMessageContent(content, visibleBlocks: blocks)
+      let bodyHTML = htmlForMessageContent(
+        content,
+        visibleBlocks: blocks,
+        message: message,
+        imageCatalog: imageCatalog)
 
       let xhtml = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -171,6 +485,29 @@ enum EPUBExporter {
       ? rendered.hiddenSections.filter { $0.tag == "think" }.map(\.content)
       : []
     return MessageContent(visibleText: rendered.visibleText, reasoningSections: reasoningSections)
+  }
+
+  private static func buildImageResourceCatalog(
+    conversation: Conversation,
+    includeThinking: Bool
+  ) async throws -> ImageResourceCatalog {
+    var catalog = ImageResourceCatalog()
+    for message in conversation.messages {
+      for attachment in message.attachments where attachment.kind == .image {
+        try catalog.addImageAttachment(attachment)
+      }
+
+      let content = messageContent(for: message, includeThinking: includeThinking)
+      for source in markdownImageSources(in: content.visibleText) {
+        try await catalog.addRemoteImage(source: source)
+      }
+      for section in content.reasoningSections {
+        for source in markdownImageSources(in: section) {
+          try await catalog.addRemoteImage(source: source)
+        }
+      }
+    }
+    return catalog
   }
 
   private static func makeTitleChapter(conversation: Conversation, bookTitle: String) -> Chapter {
@@ -257,7 +594,10 @@ enum EPUBExporter {
   // MARK: - Block rendering
 
   private static func htmlForMessageContent(
-    _ content: MessageContent, visibleBlocks: [MarkdownBlock]
+    _ content: MessageContent,
+    visibleBlocks: [MarkdownBlock],
+    message: ChatMessage,
+    imageCatalog: ImageResourceCatalog
   ) -> String {
     var parts: [String] = []
     for section in content.reasoningSections {
@@ -265,7 +605,8 @@ enum EPUBExporter {
       let body =
         blocks.isEmpty
         ? "<p></p>"
-        : blocks.map(htmlForBlock).joined(separator: "\n        ")
+        : blocks.map { htmlForBlock($0, imageCatalog: imageCatalog) }
+          .joined(separator: "\n        ")
       parts.append(
         """
         <section class="reasoning">
@@ -277,63 +618,79 @@ enum EPUBExporter {
     }
 
     if !content.visibleText.isEmpty {
-      parts.append(visibleBlocks.map(htmlForBlock).joined(separator: "\n      "))
+      parts.append(
+        visibleBlocks.map { htmlForBlock($0, imageCatalog: imageCatalog) }
+          .joined(separator: "\n      "))
+    }
+
+    let attachmentHTML = imageAttachmentsHTML(for: message, imageCatalog: imageCatalog)
+    if !attachmentHTML.isEmpty {
+      parts.append(attachmentHTML)
     }
 
     return parts.isEmpty ? "<p></p>" : parts.joined(separator: "\n      ")
   }
 
-  private static func htmlForBlock(_ block: MarkdownBlock) -> String {
+  private static func htmlForBlock(_ block: MarkdownBlock, imageCatalog: ImageResourceCatalog)
+    -> String
+  {
     switch block.kind {
     case .heading(let level, let text):
       let tag = "h\(min(6, max(2, level + 1)))"
-      return "<\(tag)>\(inlineHTML(text))</\(tag)>"
+      return "<\(tag)>\(inlineHTML(text, imageCatalog: imageCatalog))</\(tag)>"
     case .text(let value):
-      return paragraphsHTML(value)
+      return paragraphsHTML(value, imageCatalog: imageCatalog)
     case .blockquote(let value):
-      return "<blockquote>\(paragraphsHTML(value))</blockquote>"
+      return "<blockquote>\(paragraphsHTML(value, imageCatalog: imageCatalog))</blockquote>"
     case .horizontalRule:
       return "<hr/>"
     case .code(let language, let code):
       let attr = language.isEmpty ? "" : " class=\"language-\(xmlEscaped(language))\""
       return "<pre><code\(attr)>\(highlightedCodeHTML(code, language: language))</code></pre>"
     case .table(let headers, let rows, let alignments):
-      return tableHTML(headers: headers, rows: rows, alignments: alignments)
+      return tableHTML(
+        headers: headers,
+        rows: rows,
+        alignments: alignments,
+        imageCatalog: imageCatalog)
     case .taskList(let items):
       let lis = items.map { item -> String in
         let mark = item.checked ? "&#9745;" : "&#9744;"
-        return "<li>\(mark) \(inlineHTML(item.text))</li>"
+        return "<li>\(mark) \(inlineHTML(item.text, imageCatalog: imageCatalog))</li>"
       }.joined()
       return "<ul class=\"task-list\">\(lis)</ul>"
     case .bulletList(let items):
-      let lis = items.map { "<li>\(inlineHTML($0))</li>" }.joined()
+      let lis = items.map { "<li>\(inlineHTML($0, imageCatalog: imageCatalog))</li>" }.joined()
       return "<ul>\(lis)</ul>"
     case .orderedList(let items):
-      let lis = items.map { "<li value=\"\($0.number)\">\(inlineHTML($0.text))</li>" }.joined()
+      let lis = items.map {
+        "<li value=\"\($0.number)\">\(inlineHTML($0.text, imageCatalog: imageCatalog))</li>"
+      }.joined()
       return "<ol>\(lis)</ol>"
     case .footnotes(let items):
       let lis = items.map { item -> String in
         let sup = MarkdownInlineSymbols.toSuperscript(item.key)
-        return "<li>\(sup) \(inlineHTML(item.text))</li>"
+        return "<li>\(sup) \(inlineHTML(item.text, imageCatalog: imageCatalog))</li>"
       }.joined()
       return "<hr/><ol class=\"footnotes\">\(lis)</ol>"
     }
   }
 
-  private static func paragraphsHTML(_ text: String) -> String {
+  private static func paragraphsHTML(_ text: String, imageCatalog: ImageResourceCatalog) -> String {
     text.components(separatedBy: "\n\n").compactMap { para -> String? in
       let trimmed = para.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { return nil }
       if trimmed.hasPrefix("> ") || trimmed.hasPrefix(">") {
-        return blockquoteHTML(trimmed)
+        return blockquoteHTML(trimmed, imageCatalog: imageCatalog)
       }
       let lines = trimmed.components(separatedBy: "\n")
-      let html = lines.map(inlineHTML).joined(separator: "<br/>")
+      let html = lines.map { inlineHTML($0, imageCatalog: imageCatalog) }
+        .joined(separator: "<br/>")
       return "<p>\(html)</p>"
     }.joined(separator: "\n      ")
   }
 
-  private static func blockquoteHTML(_ text: String) -> String {
+  private static func blockquoteHTML(_ text: String, imageCatalog: ImageResourceCatalog) -> String {
     let inner = text.components(separatedBy: "\n").map { line -> String in
       var trimmed = line
       if trimmed.hasPrefix("> ") {
@@ -341,13 +698,16 @@ enum EPUBExporter {
       } else if trimmed.hasPrefix(">") {
         trimmed.removeFirst()
       }
-      return inlineHTML(trimmed)
+      return inlineHTML(trimmed, imageCatalog: imageCatalog)
     }.joined(separator: "<br/>")
     return "<blockquote><p>\(inner)</p></blockquote>"
   }
 
   private static func tableHTML(
-    headers: [String], rows: [[String]], alignments: [TextAlignment]
+    headers: [String],
+    rows: [[String]],
+    alignments: [TextAlignment],
+    imageCatalog: ImageResourceCatalog
   ) -> String {
     func alignAttr(_ index: Int) -> String {
       guard index < alignments.count else { return "" }
@@ -360,7 +720,7 @@ enum EPUBExporter {
     let head =
       "<thead><tr>"
       + headers.enumerated().map { index, value in
-        "<th\(alignAttr(index))>\(inlineHTML(value))</th>"
+        "<th\(alignAttr(index))>\(inlineHTML(value, imageCatalog: imageCatalog))</th>"
       }.joined()
       + "</tr></thead>"
     let body =
@@ -368,7 +728,7 @@ enum EPUBExporter {
       + rows.map { row in
         "<tr>"
           + row.enumerated().map { index, cell in
-            "<td\(alignAttr(index))>\(inlineHTML(cell))</td>"
+            "<td\(alignAttr(index))>\(inlineHTML(cell, imageCatalog: imageCatalog))</td>"
           }.joined()
           + "</tr>"
       }.joined()
@@ -376,9 +736,176 @@ enum EPUBExporter {
     return "<table>\(head)\(body)</table>"
   }
 
+  private static func imageAttachmentsHTML(
+    for message: ChatMessage,
+    imageCatalog: ImageResourceCatalog
+  ) -> String {
+    let figures = message.attachments.compactMap { attachment -> String? in
+      guard attachment.kind == .image,
+        let href = imageCatalog.href(for: attachment)
+      else {
+        return nil
+      }
+
+      var imageAttributes =
+        "src=\"\(xmlEscaped(href))\" alt=\"\(xmlEscaped(attachment.displayName))\""
+      if let width = attachment.width, width > 0 {
+        imageAttributes += " width=\"\(width)\""
+      }
+      if let height = attachment.height, height > 0 {
+        imageAttributes += " height=\"\(height)\""
+      }
+      return """
+        <figure class="attachment-image">
+          <img \(imageAttributes)/>
+          <figcaption>\(xmlEscaped(attachment.displayName))</figcaption>
+        </figure>
+        """
+    }
+    guard !figures.isEmpty else { return "" }
+    return """
+      <section class="attachments">
+        \(figures.joined(separator: "\n        "))
+      </section>
+      """
+  }
+
   // MARK: - Inline rendering
 
-  private static func inlineHTML(_ raw: String) -> String {
+  private struct MarkdownImageToken {
+    let altText: String
+    let source: String
+    let end: Int
+  }
+
+  private static func markdownImageSources(in raw: String) -> [String] {
+    let chars = Array(MarkdownInlineSymbols.displayString(raw))
+    guard chars.contains("!") else { return [] }
+
+    var sources: [String] = []
+    var index = 0
+    while index < chars.count {
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        index = end + 1
+        continue
+      }
+
+      if let image = markdownImageToken(in: chars, at: index) {
+        sources.append(image.source)
+        index = image.end
+        continue
+      }
+      index += 1
+    }
+    return sources
+  }
+
+  private static func markdownImageToken(in chars: [Character], at index: Int)
+    -> MarkdownImageToken?
+  {
+    guard index + 1 < chars.count,
+      chars[index] == "!",
+      chars[index + 1] == "[",
+      !isEscaped(chars, at: index),
+      let altEnd = findImageAltEnd(in: chars, start: index + 2),
+      altEnd + 1 < chars.count,
+      chars[altEnd + 1] == "(",
+      let destinationEnd = findImageDestinationEnd(in: chars, start: altEnd + 2)
+    else {
+      return nil
+    }
+
+    let alt = String(chars[(index + 2)..<altEnd])
+    let destination = String(chars[(altEnd + 2)..<destinationEnd])
+    guard let source = markdownImageSource(from: destination) else { return nil }
+    return MarkdownImageToken(altText: alt, source: source, end: destinationEnd + 1)
+  }
+
+  private static func markdownImageSource(from destination: String) -> String? {
+    let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    if trimmed.first == "<", let close = trimmed.firstIndex(of: ">") {
+      let start = trimmed.index(after: trimmed.startIndex)
+      guard start <= close else { return nil }
+      return String(trimmed[start..<close])
+    }
+
+    let chars = Array(trimmed)
+    var end = 0
+    while end < chars.count, !chars[end].isWhitespace {
+      end += 1
+    }
+    guard end > 0 else { return nil }
+    return String(chars[0..<end])
+      .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+  }
+
+  private static func findImageAltEnd(in chars: [Character], start: Int) -> Int? {
+    var index = start
+    while index < chars.count {
+      if chars[index] == "\\" {
+        index += 2
+        continue
+      }
+      if chars[index] == "]" {
+        return index
+      }
+      if chars[index] == "\n" || chars[index] == "\r" {
+        return nil
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func findImageDestinationEnd(in chars: [Character], start: Int) -> Int? {
+    var depth = 0
+    var index = start
+    while index < chars.count {
+      if chars[index] == "\\" {
+        index += 2
+        continue
+      }
+      if chars[index] == "\n" || chars[index] == "\r" {
+        return nil
+      }
+      if chars[index] == "(" {
+        depth += 1
+      } else if chars[index] == ")" {
+        if depth == 0 {
+          return index
+        }
+        depth -= 1
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func findUnescapedBacktick(in chars: [Character], start: Int) -> Int? {
+    var index = start
+    while index < chars.count {
+      if chars[index] == "`", !isEscaped(chars, at: index) {
+        return index
+      }
+      index += 1
+    }
+    return nil
+  }
+
+  private static func isEscaped(_ chars: [Character], at index: Int) -> Bool {
+    guard index > 0 else { return false }
+    var slashCount = 0
+    var cursor = index - 1
+    while cursor >= 0, chars[cursor] == "\\" {
+      slashCount += 1
+      cursor -= 1
+    }
+    return slashCount % 2 == 1
+  }
+
+  private static func inlineHTML(_ raw: String, imageCatalog: ImageResourceCatalog) -> String {
     let chars = Array(MarkdownInlineSymbols.displayString(raw))
     var result = ""
     var index = 0
@@ -407,7 +934,7 @@ enum EPUBExporter {
         if let end = findClose(chars: chars, start: index + 2, marker: "~~") {
           let inner = String(chars[(index + 2)..<end])
           if !inner.isEmpty {
-            result += "<del>\(inlineHTML(inner))</del>"
+            result += "<del>\(inlineHTML(inner, imageCatalog: imageCatalog))</del>"
             index = end + 2
             continue
           }
@@ -418,7 +945,7 @@ enum EPUBExporter {
         let marker = String([c, c])
         if let end = findClose(chars: chars, start: index + 2, marker: marker) {
           let inner = String(chars[(index + 2)..<end])
-          result += "<strong>\(inlineHTML(inner))</strong>"
+          result += "<strong>\(inlineHTML(inner, imageCatalog: imageCatalog))</strong>"
           index = end + marker.count
           continue
         }
@@ -428,25 +955,18 @@ enum EPUBExporter {
         if let end = findClose(chars: chars, start: index + 1, marker: String(c)) {
           let inner = String(chars[(index + 1)..<end])
           if !inner.isEmpty {
-            result += "<em>\(inlineHTML(inner))</em>"
+            result += "<em>\(inlineHTML(inner, imageCatalog: imageCatalog))</em>"
             index = end + 1
             continue
           }
         }
       }
 
-      if c == "!", index + 1 < chars.count, chars[index + 1] == "[" {
-        if let textEnd = findClose(chars: chars, start: index + 2, marker: "]"),
-          textEnd + 1 < chars.count, chars[textEnd + 1] == "(",
-          let urlEnd = findClose(chars: chars, start: textEnd + 2, marker: ")")
-        {
-          let alt = String(chars[(index + 2)..<textEnd])
-          let url = String(chars[(textEnd + 2)..<urlEnd])
-          result +=
-            "<img src=\"\(xmlEscaped(url))\" alt=\"\(xmlEscaped(alt))\"/>"
-          index = urlEnd + 1
-          continue
-        }
+      if let image = markdownImageToken(in: chars, at: index) {
+        let src = imageCatalog.href(forMarkdownImageSource: image.source) ?? image.source
+        result += "<img src=\"\(xmlEscaped(src))\" alt=\"\(xmlEscaped(image.altText))\"/>"
+        index = image.end
+        continue
       }
 
       if c == "[" {
@@ -456,7 +976,8 @@ enum EPUBExporter {
         {
           let label = String(chars[(index + 1)..<textEnd])
           let url = String(chars[(textEnd + 2)..<urlEnd])
-          result += "<a href=\"\(xmlEscaped(url))\">\(inlineHTML(label))</a>"
+          result +=
+            "<a href=\"\(xmlEscaped(url))\">\(inlineHTML(label, imageCatalog: imageCatalog))</a>"
           index = urlEnd + 1
           continue
         }
@@ -669,6 +1190,11 @@ enum EPUBExporter {
           continue
         }
       }
+      if let image = markdownImageToken(in: chars, at: index) {
+        result += stripInlineMarkdown(image.altText)
+        index = image.end
+        continue
+      }
       if c == "`" || c == "*" || c == "_" || c == "#" {
         index += 1
         continue
@@ -803,6 +1329,13 @@ enum EPUBExporter {
     }
     th { background: #f6f8fa; font-weight: 600; }
     img { max-width: 100%; height: auto; }
+    section.attachments { margin-top: 1em; }
+    figure.attachment-image { margin: 0.9em 0; }
+    figure.attachment-image figcaption {
+      color: #57606a;
+      font-size: 0.85em;
+      margin-top: 0.35em;
+    }
     """
 }
 
