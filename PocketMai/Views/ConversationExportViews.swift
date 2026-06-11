@@ -6,9 +6,15 @@ struct ExportedFile: Identifiable {
   let url: URL
 }
 
+struct PendingEPUBExportImageSizeSelection: Identifiable {
+  let id = UUID()
+  let conversationID: UUID
+}
+
 @MainActor
 final class ConversationExportCoordinator: ObservableObject {
   @Published var exportShareFile: ExportedFile?
+  @Published var pendingEPUBImageSizeSelection: PendingEPUBExportImageSizeSelection?
   @Published var showingAudioExport = false
   @Published var audioExportError: String?
 
@@ -18,8 +24,18 @@ final class ConversationExportCoordinator: ObservableObject {
     audioExporter.isExporting
   }
 
-  func share(format: ConversationExportFormat, conversationID: UUID, store: AppStore) async {
-    guard let url = await exportFileURL(for: format, conversationID: conversationID, store: store)
+  func share(
+    format: ConversationExportFormat,
+    conversationID: UUID,
+    store: AppStore,
+    epubImageSize: AttachmentImageSize = .full
+  ) async {
+    guard
+      let url = await exportFileURL(
+        for: format,
+        conversationID: conversationID,
+        store: store,
+        epubImageSize: epubImageSize)
     else {
       return
     }
@@ -29,7 +45,8 @@ final class ConversationExportCoordinator: ObservableObject {
   private func exportFileURL(
     for format: ConversationExportFormat,
     conversationID: UUID,
-    store: AppStore
+    store: AppStore,
+    epubImageSize: AttachmentImageSize
   ) async -> URL? {
     switch format {
     case .audio:
@@ -39,8 +56,13 @@ final class ConversationExportCoordinator: ObservableObject {
       return await exportAudioFile(conversation: conversation, store: store)
     case .debug:
       return await store.exportConversationDebugJSONFile(id: conversationID)
-    case .markdown, .epub, .json:
+    case .markdown, .json:
       return await store.exportConversationFile(id: conversationID, format: format)
+    case .epub:
+      return await store.exportConversationFile(
+        id: conversationID,
+        format: format,
+        epubImageSize: epubImageSize)
     }
   }
 
@@ -79,6 +101,11 @@ struct ConversationExportMenu: View {
     Menu {
       ConversationExportMenuItems(isExporting: coordinator.isExporting) { format in
         guard let conversationID else { return }
+        if format == .epub {
+          coordinator.pendingEPUBImageSizeSelection = PendingEPUBExportImageSizeSelection(
+            conversationID: conversationID)
+          return
+        }
         Task {
           await coordinator.share(format: format, conversationID: conversationID, store: store)
         }
@@ -118,6 +145,7 @@ private struct ConversationExportMenuItems: View {
 }
 
 struct ConversationExportPresentations: ViewModifier {
+  @EnvironmentObject private var store: AppStore
   @ObservedObject var coordinator: ConversationExportCoordinator
 
   func body(content: Content) -> some View {
@@ -139,6 +167,25 @@ struct ConversationExportPresentations: ViewModifier {
       } message: { message in
         Text(message)
       }
+      .imageSizeConfirmationDialog(
+        isPresented: epubImageSizeSelectionPresentedBinding,
+        presenting: coordinator.pendingEPUBImageSizeSelection,
+        message: { _ in
+          "Choose the maximum image size for this EPUB."
+        },
+        onSelect: { pending, size in
+          coordinator.pendingEPUBImageSizeSelection = nil
+          Task {
+            await coordinator.share(
+              format: .epub,
+              conversationID: pending.conversationID,
+              store: store,
+              epubImageSize: size)
+          }
+        },
+        onCancel: {
+          coordinator.pendingEPUBImageSizeSelection = nil
+        })
   }
 
   private var exportShareFileBinding: Binding<ExportedFile?> {
@@ -165,6 +212,51 @@ struct ConversationExportPresentations: ViewModifier {
         coordinator.audioExportError = nil
       }
     }
+  }
+
+  private var epubImageSizeSelectionPresentedBinding: Binding<Bool> {
+    Binding {
+      coordinator.pendingEPUBImageSizeSelection != nil
+    } set: { isPresented in
+      if !isPresented {
+        coordinator.pendingEPUBImageSizeSelection = nil
+      }
+    }
+  }
+}
+
+extension View {
+  func imageSizeConfirmationDialog<Selection>(
+    isPresented: Binding<Bool>,
+    presenting selection: Selection?,
+    message: @escaping (Selection) -> String,
+    onSelect: @escaping (Selection, AttachmentImageSize) -> Void,
+    onCancel: @escaping () -> Void
+  ) -> some View {
+    confirmationDialog(
+      "Image Size",
+      isPresented: isPresented,
+      titleVisibility: .visible,
+      presenting: selection
+    ) { selection in
+      ForEach(AttachmentImageSize.concreteCases) { size in
+        Button(size.imageSizeDialogTitle) {
+          onSelect(selection, size)
+        }
+      }
+      Button("Cancel", role: .cancel, action: onCancel)
+    } message: { selection in
+      Text(message(selection))
+    }
+  }
+}
+
+extension AttachmentImageSize {
+  var imageSizeDialogTitle: String {
+    guard let maxDimension else {
+      return displayName
+    }
+    return "\(displayName) (\(maxDimension) px)"
   }
 }
 

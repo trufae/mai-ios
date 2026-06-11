@@ -2117,16 +2117,20 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func exportCurrentConversationEPUB() async -> URL? {
+  func exportCurrentConversationEPUB(imageSize: AttachmentImageSize = .full) async -> URL? {
     guard let conversation = currentConversation else { return nil }
-    return await exportConversationEPUB(conversation)
+    return await exportConversationEPUB(conversation, imageSize: imageSize)
   }
 
-  func exportConversationEPUB(_ conversation: Conversation) async -> URL? {
+  func exportConversationEPUB(
+    _ conversation: Conversation,
+    imageSize: AttachmentImageSize = .full
+  ) async -> URL? {
     do {
       let data = try await EPUBExporter.makeEPUB(
         conversation: conversation,
-        includeThinking: effectiveShowThinking(for: conversation))
+        includeThinking: effectiveShowThinking(for: conversation),
+        imageSize: imageSize)
       let url = try ConversationExportFiles.url(for: conversation, format: .epub)
       try data.write(to: url, options: .atomic)
       return url
@@ -2136,19 +2140,35 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func exportCurrentConversationFile(format: ConversationExportFormat) async -> URL? {
+  func exportCurrentConversationFile(
+    format: ConversationExportFormat,
+    epubImageSize: AttachmentImageSize = .full
+  ) async -> URL? {
     guard let conversation = currentConversation else { return nil }
-    return await exportConversationFile(conversation, format: format)
+    return await exportConversationFile(
+      conversation,
+      format: format,
+      epubImageSize: epubImageSize)
   }
 
-  func exportConversationFile(id: UUID, format: ConversationExportFormat) async -> URL? {
+  func exportConversationFile(
+    id: UUID,
+    format: ConversationExportFormat,
+    epubImageSize: AttachmentImageSize = .full
+  ) async -> URL? {
     await ensureConversationLoaded(id)
     guard let conversation = conversation(withID: id) else { return nil }
-    return await exportConversationFile(conversation, format: format)
+    return await exportConversationFile(
+      conversation,
+      format: format,
+      epubImageSize: epubImageSize)
   }
 
-  func exportConversationFile(_ conversation: Conversation, format: ConversationExportFormat)
-    async -> URL?
+  func exportConversationFile(
+    _ conversation: Conversation,
+    format: ConversationExportFormat,
+    epubImageSize: AttachmentImageSize = .full
+  ) async -> URL?
   {
     switch format {
     case .markdown, .json, .debug:
@@ -2157,7 +2177,7 @@ final class AppStore: ObservableObject {
         format: format,
         content: export(conversation: conversation, format: format))
     case .epub:
-      return await exportConversationEPUB(conversation)
+      return await exportConversationEPUB(conversation, imageSize: epubImageSize)
     case .audio:
       return nil
     }

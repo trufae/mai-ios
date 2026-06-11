@@ -1,9 +1,13 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 enum EPUBExporter {
-  static func makeEPUB(conversation: Conversation, includeThinking: Bool? = nil) async throws
-    -> Data
+  static func makeEPUB(
+    conversation: Conversation,
+    includeThinking: Bool? = nil,
+    imageSize: AttachmentImageSize = .full
+  ) async throws -> Data
   {
     let title = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     let bookTitle = title.isEmpty ? "Chat" : title
@@ -14,7 +18,8 @@ enum EPUBExporter {
 
     let imageCatalog = try await buildImageResourceCatalog(
       conversation: conversation,
-      includeThinking: shouldIncludeThinking)
+      includeThinking: shouldIncludeThinking,
+      imageSize: imageSize)
 
     let chapters = buildChapters(
       conversation: conversation,
@@ -122,13 +127,21 @@ enum EPUBExporter {
     let href: String
     let mediaType: String
     let data: Data
+    let width: Int?
+    let height: Int?
   }
 
   private struct ImageResourceCatalog {
     private(set) var resources: [ImageResource] = []
     private var attachmentHrefsByID: [UUID: String] = [:]
+    private var attachmentResourcesByID: [UUID: ImageResource] = [:]
     private var remoteHrefsBySource: [String: String] = [:]
     private var nextImageIndex = 1
+    private let imageSize: AttachmentImageSize
+
+    init(imageSize: AttachmentImageSize) {
+      self.imageSize = imageSize
+    }
 
     mutating func addImageAttachment(_ attachment: ChatAttachment) throws {
       guard attachment.kind == .image else { return }
@@ -149,13 +162,21 @@ enum EPUBExporter {
         throw EPUBExportError.unsupportedImage(attachment.displayName)
       }
 
-      let resource = makeResource(
+      let prepared = preparedImageData(
         data: data,
         mediaType: mediaType,
+        fallbackWidth: attachment.width,
+        fallbackHeight: attachment.height)
+      let resource = makeResource(
+        data: prepared.data,
+        mediaType: prepared.mediaType,
+        width: prepared.width,
+        height: prepared.height,
         suggestedFilename: attachment.filename,
         url: nil)
       resources.append(resource)
       attachmentHrefsByID[attachment.id] = resource.href
+      attachmentResourcesByID[attachment.id] = resource
     }
 
     mutating func addRemoteImage(source: String) async throws {
@@ -166,9 +187,16 @@ enum EPUBExporter {
       let downloaded = try await Self.downloadRemoteImage(
         from: url,
         displaySource: normalizedSource)
-      let resource = makeResource(
+      let prepared = preparedImageData(
         data: downloaded.data,
         mediaType: downloaded.mediaType,
+        fallbackWidth: nil,
+        fallbackHeight: nil)
+      let resource = makeResource(
+        data: prepared.data,
+        mediaType: prepared.mediaType,
+        width: prepared.width,
+        height: prepared.height,
         suggestedFilename: url.lastPathComponent,
         url: url)
       resources.append(resource)
@@ -185,6 +213,10 @@ enum EPUBExporter {
       attachmentHrefsByID[attachment.id]
     }
 
+    func resource(for attachment: ChatAttachment) -> ImageResource? {
+      attachmentResourcesByID[attachment.id]
+    }
+
     func href(forMarkdownImageSource source: String) -> String? {
       remoteHrefsBySource[source.trimmingCharacters(in: .whitespacesAndNewlines)]
     }
@@ -198,6 +230,8 @@ enum EPUBExporter {
     private mutating func makeResource(
       data: Data,
       mediaType: String,
+      width: Int?,
+      height: Int?,
       suggestedFilename: String,
       url: URL?
     ) -> ImageResource {
@@ -212,7 +246,51 @@ enum EPUBExporter {
         id: String(format: "img%03d", resourceIndex),
         href: "images/\(filename)",
         mediaType: mediaType,
-        data: data)
+        data: data,
+        width: width,
+        height: height)
+    }
+
+    private func preparedImageData(
+      data: Data,
+      mediaType: String,
+      fallbackWidth: Int?,
+      fallbackHeight: Int?
+    ) -> (data: Data, mediaType: String, width: Int?, height: Int?) {
+      guard let maxDimension = imageSize.maxDimension else {
+        return (data, mediaType, fallbackWidth, fallbackHeight)
+      }
+      guard let image = UIImage(data: data) else {
+        return (data, mediaType, fallbackWidth, fallbackHeight)
+      }
+      let pixelSize = CGSize(
+        width: image.size.width * image.scale,
+        height: image.size.height * image.scale)
+      let scale =
+        max(pixelSize.width, pixelSize.height) > CGFloat(maxDimension)
+        ? CGFloat(maxDimension) / max(pixelSize.width, pixelSize.height)
+        : 1
+      let target = CGSize(
+        width: max(1, floor(pixelSize.width * scale)),
+        height: max(1, floor(pixelSize.height * scale)))
+      let format = UIGraphicsImageRendererFormat.default()
+      format.scale = 1
+      let renderer = UIGraphicsImageRenderer(size: target, format: format)
+      let resized = renderer.image { _ in
+        image.draw(in: CGRect(origin: .zero, size: target))
+      }
+      guard let output = resized.jpegData(compressionQuality: 0.82) else {
+        return (
+          data,
+          mediaType,
+          Int(pixelSize.width.rounded()),
+          Int(pixelSize.height.rounded()))
+      }
+      return (
+        output,
+        "image/jpeg",
+        Int(target.width.rounded()),
+        Int(target.height.rounded()))
     }
 
     private static func remoteImageURL(from source: String) -> URL? {
@@ -489,9 +567,10 @@ enum EPUBExporter {
 
   private static func buildImageResourceCatalog(
     conversation: Conversation,
-    includeThinking: Bool
+    includeThinking: Bool,
+    imageSize: AttachmentImageSize
   ) async throws -> ImageResourceCatalog {
-    var catalog = ImageResourceCatalog()
+    var catalog = ImageResourceCatalog(imageSize: imageSize)
     for message in conversation.messages {
       for attachment in message.attachments where attachment.kind == .image {
         try catalog.addImageAttachment(attachment)
@@ -742,17 +821,17 @@ enum EPUBExporter {
   ) -> String {
     let figures = message.attachments.compactMap { attachment -> String? in
       guard attachment.kind == .image,
-        let href = imageCatalog.href(for: attachment)
+        let resource = imageCatalog.resource(for: attachment)
       else {
         return nil
       }
 
       var imageAttributes =
-        "src=\"\(xmlEscaped(href))\" alt=\"\(xmlEscaped(attachment.displayName))\""
-      if let width = attachment.width, width > 0 {
+        "src=\"\(xmlEscaped(resource.href))\" alt=\"\(xmlEscaped(attachment.displayName))\""
+      if let width = resource.width, width > 0 {
         imageAttributes += " width=\"\(width)\""
       }
-      if let height = attachment.height, height > 0 {
+      if let height = resource.height, height > 0 {
         imageAttributes += " height=\"\(height)\""
       }
       return """

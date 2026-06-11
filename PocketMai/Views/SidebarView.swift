@@ -58,6 +58,13 @@ struct SidebarView: View {
     .onAppear { refreshVisibleConversations() }
     .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
     .onChange(of: searchText) { _, _ in refreshVisibleConversations() }
+    .onChange(of: isSearchFieldFocused) { _, focused in
+      if focused {
+        activateSearch()
+      } else if searchText.isEmpty {
+        deactivateSearchIfEmpty()
+      }
+    }
     .onChange(of: store.settings.selectedConversationFolderID) { _, _ in
       refreshVisibleConversations()
     }
@@ -292,12 +299,15 @@ struct SidebarView: View {
       onActivate: activateSearch,
       onCancel: cancelSearch
     )
-    FloatingActionIcon(
-      systemImage: "gearshape",
-      accessibilityLabel: "Settings",
-      compact: compact
-    ) {
-      showingSettings = true
+    if !searchControlsExpanded {
+      FloatingActionIcon(
+        systemImage: "gearshape",
+        accessibilityLabel: "Settings",
+        compact: compact
+      ) {
+        showingSettings = true
+      }
+      .transition(.opacity.combined(with: .scale(scale: 0.86)))
     }
   }
 
@@ -337,6 +347,17 @@ struct SidebarView: View {
       isSearchActive = false
       isSearchFieldFocused = false
     }
+  }
+
+  private func deactivateSearchIfEmpty() {
+    guard searchText.isEmpty else { return }
+    withAnimation(.snappy) {
+      isSearchActive = false
+    }
+  }
+
+  private var searchControlsExpanded: Bool {
+    isSearchActive || isSearchFieldFocused || !searchText.isEmpty
   }
 
   @ViewBuilder
@@ -454,11 +475,33 @@ struct SidebarView: View {
   }
 
   private func updateKeyboardOverlap(from notification: Notification) {
-    let duration =
-      notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-    withAnimation(.easeOut(duration: duration)) {
+    withAnimation(keyboardAnimation(from: notification)) {
       keyboardOverlap = keyboardOverlap(from: notification)
     }
+  }
+
+  private func keyboardAnimation(from notification: Notification) -> Animation {
+    let duration =
+      notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+    let rawCurve =
+      (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?
+      .intValue ?? UIView.AnimationCurve.easeInOut.rawValue
+
+    if let curve = UIView.AnimationCurve(rawValue: rawCurve) {
+      switch curve {
+      case .easeInOut:
+        return .easeInOut(duration: duration)
+      case .easeIn:
+        return .easeIn(duration: duration)
+      case .easeOut:
+        return .easeOut(duration: duration)
+      case .linear:
+        return .linear(duration: duration)
+      @unknown default:
+        return .smooth(duration: duration)
+      }
+    }
+    return .smooth(duration: duration)
   }
 
   private func keyboardOverlap(from notification: Notification) -> CGFloat {

@@ -1284,25 +1284,20 @@ private struct ChatComposer: View {
     } message: { message in
       Text(message)
     }
-    .confirmationDialog(
-      "Image Size",
+    .imageSizeConfirmationDialog(
       isPresented: Binding(
         get: { pendingImageSizePrompt != nil },
         set: { if !$0 { pendingImageSizePrompt = nil } }),
-      titleVisibility: .visible,
-      presenting: pendingImageSizePrompt
-    ) { pending in
-      ForEach(AttachmentImageSize.concreteCases) { size in
-        Button(imageSizePromptTitle(for: size)) {
-          appendImageAttachment(pending, size: size)
-        }
-      }
-      Button("Cancel", role: .cancel) {
+      presenting: pendingImageSizePrompt,
+      message: { pending in
+        "Choose the image size for \(pending.filename)."
+      },
+      onSelect: { pending, size in
+        appendImageAttachment(pending, size: size)
+      },
+      onCancel: {
         pendingImageSizePrompt = nil
-      }
-    } message: { pending in
-      Text("Choose the image size for \(pending.filename).")
-    }
+      })
   }
 
   private var textControls: some View {
@@ -1784,13 +1779,6 @@ private struct ChatComposer: View {
         width: Int(resized.size.width.rounded()),
         height: Int(resized.size.height.rounded())))
     composerFocused = true
-  }
-
-  private func imageSizePromptTitle(for size: AttachmentImageSize) -> String {
-    guard let maxDimension = size.maxDimension else {
-      return size.displayName
-    }
-    return "\(size.displayName) (\(maxDimension) px)"
   }
 
   private func resizeImage(_ image: UIImage, maxDimension: Int?) -> (image: UIImage, size: CGSize) {
