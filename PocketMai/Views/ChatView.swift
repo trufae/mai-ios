@@ -1131,7 +1131,7 @@ private struct ChatComposer: View {
   @State private var showingTextFileImporter = false
   @State private var showingImagePicker = false
   @State private var showingCameraPicker = false
-  @State private var selectedPhotoItem: PhotosPickerItem?
+  @State private var selectedPhotoItems: [PhotosPickerItem] = []
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
@@ -1260,12 +1260,12 @@ private struct ChatComposer: View {
     }
     .photosPicker(
       isPresented: $showingImagePicker,
-      selection: $selectedPhotoItem,
+      selection: $selectedPhotoItems,
       matching: .images
     )
-    .onChange(of: selectedPhotoItem) { _, item in
-      guard let item else { return }
-      Task { await importImageAttachment(item) }
+    .onChange(of: selectedPhotoItems) { _, items in
+      guard !items.isEmpty else { return }
+      Task { await importImageAttachments(items) }
     }
     .sheet(isPresented: $showingCameraPicker) {
       CameraImagePicker(isPresented: $showingCameraPicker) { image in
@@ -1290,7 +1290,7 @@ private struct ChatComposer: View {
         set: { if !$0 { pendingImageSizePrompt = nil } }),
       presenting: pendingImageSizePrompt,
       message: { pending in
-        "Choose the image size for \(pending.filename)."
+        pending.imageSizePromptMessage
       },
       onSelect: { pending, size in
         appendImageAttachment(pending, size: size)
@@ -1362,9 +1362,28 @@ private struct ChatComposer: View {
             pendingAttachments.removeAll { $0.id == attachment.id }
           }
         }
+        if pendingImageAttachmentCount > 1 {
+          Button {
+            pendingAttachments.removeAll { $0.kind == .image }
+          } label: {
+            Image(systemName: "trash")
+              .font(.callout.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .frame(width: 34, height: 34)
+              .background(.regularMaterial)
+              .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Remove all image attachments")
+          .help("Remove all images")
+        }
       }
       .padding(.horizontal, 34)
     }
+  }
+
+  private var pendingImageAttachmentCount: Int {
+    pendingAttachments.filter { $0.kind == .image }.count
   }
 
   private var trailingActionSystemImage: String {
@@ -1617,7 +1636,7 @@ private struct ChatComposer: View {
         showingToolMenu = false
         showingImagePicker = true
       } label: {
-        toolMenuRowLabel("Add image", systemImage: "photo")
+        toolMenuRowLabel("Add images", systemImage: "photo")
       }
       .disabled(!canAttachImage)
       .opacity(canAttachImage ? 1 : 0.45)
@@ -1717,28 +1736,55 @@ private struct ChatComposer: View {
   }
 
   @MainActor
-  private func importImageAttachment(_ item: PhotosPickerItem) async {
-    defer { selectedPhotoItem = nil }
+  private func importImageAttachments(_ items: [PhotosPickerItem]) async {
+    defer { selectedPhotoItems = [] }
+    guard !items.isEmpty else { return }
     guard canAttachImage else {
       attachmentError = "The selected provider or model does not support image input."
       return
     }
-    do {
-      guard let data = try await item.loadTransferable(type: Data.self),
-        let image = UIImage(data: data)
-      else {
-        attachmentError = "Could not read the selected image."
-        return
+
+    var imports: [PendingImageAttachmentImport.Item] = []
+    var failedCount = 0
+    let timestamp = Int(Date().timeIntervalSince1970)
+
+    for (index, item) in items.enumerated() {
+      do {
+        guard let data = try await item.loadTransferable(type: Data.self),
+          let image = UIImage(data: data)
+        else {
+          failedCount += 1
+          continue
+        }
+        imports.append(
+          PendingImageAttachmentImport.Item(
+            filename: imageAttachmentFilename(
+              prefix: "image",
+              timestamp: timestamp,
+              index: items.count == 1 ? nil : index + 1),
+            image: image))
+      } catch {
+        failedCount += 1
       }
-      let filename = "image-\(Int(Date().timeIntervalSince1970)).jpg"
-      let imageSize = store.settings.attachmentImageSize
-      guard imageSize != .prompt else {
-        pendingImageSizePrompt = PendingImageAttachmentImport(filename: filename, image: image)
-        return
-      }
-      appendImageAttachment(image, filename: filename, size: imageSize)
-    } catch {
-      attachmentError = error.localizedDescription
+    }
+
+    guard !imports.isEmpty else {
+      attachmentError =
+        items.count == 1
+        ? "Could not read the selected image." : "Could not read the selected images."
+      return
+    }
+
+    let imageSize = store.settings.attachmentImageSize
+    guard imageSize != .prompt else {
+      pendingImageSizePrompt = PendingImageAttachmentImport(
+        items: imports,
+        failedCount: failedCount)
+      return
+    }
+    appendImageAttachments(imports, size: imageSize)
+    if failedCount > 0 {
+      attachmentError = imageImportFailureMessage(count: failedCount)
     }
   }
 
@@ -1748,10 +1794,14 @@ private struct ChatComposer: View {
       attachmentError = "The selected provider or model does not support image input."
       return
     }
-    let filename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+    let filename = imageAttachmentFilename(
+      prefix: "photo",
+      timestamp: Int(Date().timeIntervalSince1970))
     let imageSize = store.settings.attachmentImageSize
     guard imageSize != .prompt else {
-      pendingImageSizePrompt = PendingImageAttachmentImport(filename: filename, image: image)
+      pendingImageSizePrompt = PendingImageAttachmentImport(
+        items: [.init(filename: filename, image: image)],
+        failedCount: 0)
       return
     }
     appendImageAttachment(image, filename: filename, size: imageSize)
@@ -1761,8 +1811,20 @@ private struct ChatComposer: View {
     _ pending: PendingImageAttachmentImport,
     size: AttachmentImageSize
   ) {
-    appendImageAttachment(pending.image, filename: pending.filename, size: size)
+    appendImageAttachments(pending.items, size: size)
     pendingImageSizePrompt = nil
+    if pending.failedCount > 0 {
+      attachmentError = imageImportFailureMessage(count: pending.failedCount)
+    }
+  }
+
+  private func appendImageAttachments(
+    _ items: [PendingImageAttachmentImport.Item],
+    size: AttachmentImageSize
+  ) {
+    for item in items {
+      appendImageAttachment(item.image, filename: item.filename, size: size)
+    }
   }
 
   private func appendImageAttachment(_ image: UIImage, filename: String, size: AttachmentImageSize)
@@ -1798,11 +1860,33 @@ private struct ChatComposer: View {
     }
     return (resized, target)
   }
+
+  private func imageAttachmentFilename(prefix: String, timestamp: Int, index: Int? = nil) -> String
+  {
+    guard let index else { return "\(prefix)-\(timestamp).jpg" }
+    return "\(prefix)-\(timestamp)-\(index).jpg"
+  }
+
+  private func imageImportFailureMessage(count: Int) -> String {
+    count == 1 ? "1 image could not be read." : "\(count) images could not be read."
+  }
 }
 
 private struct PendingImageAttachmentImport {
-  let filename: String
-  let image: UIImage
+  struct Item {
+    let filename: String
+    let image: UIImage
+  }
+
+  let items: [Item]
+  let failedCount: Int
+
+  var imageSizePromptMessage: String {
+    guard items.count != 1 else {
+      return "Choose the image size for \(items[0].filename)."
+    }
+    return "Choose the image size for \(items.count) images."
+  }
 }
 
 private struct CameraImagePicker: UIViewControllerRepresentable {
