@@ -404,30 +404,15 @@ enum AssistantToolLoop {
       toolPrompt: tailToolPrompt,
       toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
-    var lastVisibleLength = 0
     let response = try await ChatProviderRouter.complete(request: request) {
       [weak store] streamed in
       let turnText =
         requestState.definitions.isEmpty
         ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
-      if request.conversation.usesStreaming {
-        // Reserve the "typing" stream haptic for visible response text. While the
-        // model is only emitting reasoning (think) tokens, play the distinct
-        // thinking haptic instead.
-        let visibleLength = MessageContentFilter.render(streamed).visibleText.count
-        if visibleLength > lastVisibleLength {
-          lastVisibleLength = visibleLength
-          store?.assistantStreamPacketReceived()
-        } else {
-          store?.assistantThinkingTokenReceived()
-        }
-      }
-      store?.setAssistantMessage(
-        id: assistantID,
-        text: state.displayText(appending: turnText),
-        role: .assistant,
-        touch: false,
-        streaming: true)
+      store?.receiveStreamingAssistantText(
+        state.displayText(appending: turnText),
+        for: assistantID,
+        vibrate: request.conversation.usesStreaming)
     }
     try Task.checkCancellation()
     return requestState.definitions.isEmpty
