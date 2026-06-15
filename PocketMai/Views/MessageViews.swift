@@ -3120,7 +3120,71 @@ private enum MarkdownInlineTokenColorizer {
 
 enum MarkdownInlineSymbols {
   static func displayString(_ raw: String) -> String {
-    rewriteDelimitedMath(in: rewriteCitationRefs(in: raw))
+    rewriteDelimitedMath(in: rewriteCitationRefs(in: rewriteLineBreaks(in: raw)))
+  }
+
+  /// Rewrites HTML `<br>` line-break tags into newlines so they render as line
+  /// breaks (commonly used to place multiple lines inside table cells). Inline
+  /// code spans are preserved verbatim. Fenced code blocks never reach this
+  /// path because they are parsed into dedicated code blocks.
+  static func rewriteLineBreaks(in raw: String) -> String {
+    guard raw.contains("<") else { return raw }
+    let chars = Array(raw)
+    var result = ""
+    var index = 0
+    while index < chars.count {
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        result += String(chars[index...end])
+        index = end + 1
+        continue
+      }
+      if let end = lineBreakTagEnd(in: chars, at: index) {
+        result.append("\n")
+        index = end
+        continue
+      }
+      result.append(chars[index])
+      index += 1
+    }
+    return result
+  }
+
+  /// Returns true when `raw` contains an HTML `<br>` line-break tag outside of
+  /// inline code spans.
+  static func containsLineBreakTag(_ raw: String) -> Bool {
+    guard raw.contains("<") else { return false }
+    let chars = Array(raw)
+    var index = 0
+    while index < chars.count {
+      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
+        index = end + 1
+        continue
+      }
+      if lineBreakTagEnd(in: chars, at: index) != nil {
+        return true
+      }
+      index += 1
+    }
+    return false
+  }
+
+  /// Matches `<br>`, `<br/>`, and `<br />` (case-insensitive) starting at
+  /// `index`, returning the index just past the closing `>` when matched.
+  private static func lineBreakTagEnd(in chars: [Character], at index: Int) -> Int? {
+    guard chars[index] == "<" else { return nil }
+    var cursor = index + 1
+    guard cursor < chars.count, chars[cursor] == "b" || chars[cursor] == "B" else { return nil }
+    cursor += 1
+    guard cursor < chars.count, chars[cursor] == "r" || chars[cursor] == "R" else { return nil }
+    cursor += 1
+    while cursor < chars.count, chars[cursor] == " " || chars[cursor] == "\t" {
+      cursor += 1
+    }
+    if cursor < chars.count, chars[cursor] == "/" {
+      cursor += 1
+    }
+    guard cursor < chars.count, chars[cursor] == ">" else { return nil }
+    return cursor + 1
   }
 
   static func toSuperscript(_ key: String) -> String {
@@ -4665,6 +4729,7 @@ enum MarkdownParser {
     if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
       || containsOrderedListLine(text)
       || MarkdownInlineSymbols.containsMathSyntax(text)
+      || MarkdownInlineSymbols.containsLineBreakTag(text)
     {
       return true
     }
