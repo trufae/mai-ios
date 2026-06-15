@@ -3120,7 +3120,16 @@ private enum MarkdownInlineTokenColorizer {
 
 enum MarkdownInlineSymbols {
   static func displayString(_ raw: String) -> String {
-    rewriteDelimitedMath(in: rewriteCitationRefs(in: raw))
+    rewriteDelimitedMath(in: rewriteCitationRefs(in: rewriteLineBreaks(in: raw)))
+  }
+
+  /// Rewrites HTML `<br>` line-break tags (incl. `<br/>` and `<br />`) into
+  /// newlines so they render as line breaks — commonly used for multiline
+  /// table cells. Fenced code blocks never reach this path.
+  static func rewriteLineBreaks(in raw: String) -> String {
+    guard raw.contains("<") else { return raw }
+    return raw.replacingOccurrences(
+      of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
   }
 
   static func toSuperscript(_ key: String) -> String {
@@ -4665,6 +4674,7 @@ enum MarkdownParser {
     if containsBlockquoteLine(text) || containsHorizontalRuleLine(text)
       || containsOrderedListLine(text)
       || MarkdownInlineSymbols.containsMathSyntax(text)
+      || text.range(of: "<br", options: .caseInsensitive) != nil
     {
       return true
     }

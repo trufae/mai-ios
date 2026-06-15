@@ -1062,6 +1062,12 @@ enum EPUBExporter {
         }
       }
 
+      if c == "\n" {
+        result += "<br/>"
+        index += 1
+        continue
+      }
+
       result += xmlEscaped(String(c))
       index += 1
     }
