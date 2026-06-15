@@ -184,9 +184,16 @@ enum EPUBExporter {
       guard remoteHrefsBySource[normalizedSource] == nil else { return }
       guard let url = Self.remoteImageURL(from: normalizedSource) else { return }
 
-      let downloaded = try await Self.downloadRemoteImage(
-        from: url,
-        displaySource: normalizedSource)
+      let downloaded: (data: Data, mediaType: String)
+      do {
+        downloaded = try await Self.downloadRemoteImage(
+          from: url,
+          displaySource: normalizedSource)
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        return
+      }
       let prepared = preparedImageData(
         data: downloaded.data,
         mediaType: downloaded.mediaType,
@@ -294,13 +301,7 @@ enum EPUBExporter {
     }
 
     private static func remoteImageURL(from source: String) -> URL? {
-      guard let url = URL(string: source),
-        let scheme = url.scheme?.lowercased(),
-        scheme == "http" || scheme == "https"
-      else {
-        return nil
-      }
-      return url
+      MarkdownWebURL.url(from: source)
     }
 
     private static func downloadRemoteImage(from url: URL, displaySource: String) async throws
@@ -864,8 +865,8 @@ enum EPUBExporter {
     var sources: [String] = []
     var index = 0
     while index < chars.count {
-      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
-        index = end + 1
+      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
+        index = codeSpan.end
         continue
       }
 
@@ -962,17 +963,6 @@ enum EPUBExporter {
     return nil
   }
 
-  private static func findUnescapedBacktick(in chars: [Character], start: Int) -> Int? {
-    var index = start
-    while index < chars.count {
-      if chars[index] == "`", !isEscaped(chars, at: index) {
-        return index
-      }
-      index += 1
-    }
-    return nil
-  }
-
   private static func isEscaped(_ chars: [Character], at index: Int) -> Bool {
     guard index > 0 else { return false }
     var slashCount = 0
@@ -1000,13 +990,10 @@ enum EPUBExporter {
         }
       }
 
-      if c == "`" {
-        if let end = findClose(chars: chars, start: index + 1, marker: "`") {
-          let code = String(chars[(index + 1)..<end])
-          result += "<code>\(xmlEscaped(code))</code>"
-          index = end + 1
-          continue
-        }
+      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
+        result += inlineCodeHTML(codeSpan.code)
+        index = codeSpan.end
+        continue
       }
 
       if c == "~", index + 1 < chars.count, chars[index + 1] == "~" {
@@ -1042,8 +1029,17 @@ enum EPUBExporter {
       }
 
       if let image = markdownImageToken(in: chars, at: index) {
-        let src = imageCatalog.href(forMarkdownImageSource: image.source) ?? image.source
-        result += "<img src=\"\(xmlEscaped(src))\" alt=\"\(xmlEscaped(image.altText))\"/>"
+        if let src = imageCatalog.href(forMarkdownImageSource: image.source) {
+          result += "<img src=\"\(xmlEscaped(src))\" alt=\"\(xmlEscaped(image.altText))\"/>"
+        } else if let href = MarkdownWebURL.normalizedString(from: image.source) {
+          let label = image.altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? image.source
+            : image.altText
+          result +=
+            "<a href=\"\(xmlEscaped(href))\">\(inlineHTML(label, imageCatalog: imageCatalog))</a>"
+        } else {
+          result += xmlEscaped("![\(image.altText)](\(image.source))")
+        }
         index = image.end
         continue
       }
@@ -1072,6 +1068,13 @@ enum EPUBExporter {
       index += 1
     }
     return result
+  }
+
+  private static func inlineCodeHTML(_ code: String) -> String {
+    if let href = MarkdownWebURL.normalizedString(from: code) {
+      return "<a href=\"\(xmlEscaped(href))\"><code>\(xmlEscaped(code))</code></a>"
+    }
+    return "<code>\(xmlEscaped(code))</code>"
   }
 
   private static func highlightedCodeHTML(_ code: String, language: String) -> String {

@@ -42,6 +42,20 @@ final class ConversationExportCoordinator: ObservableObject {
     exportShareFile = ExportedFile(url: url)
   }
 
+  func shareEPUB(conversationID: UUID, store: AppStore) {
+    Task { @MainActor in
+      guard let conversation = await store.conversationForExport(id: conversationID) else {
+        return
+      }
+      guard Self.containsImageAttachments(conversation) else {
+        await share(format: .epub, conversationID: conversationID, store: store, epubImageSize: .full)
+        return
+      }
+      pendingEPUBImageSizeSelection = PendingEPUBExportImageSizeSelection(
+        conversationID: conversationID)
+    }
+  }
+
   private func exportFileURL(
     for format: ConversationExportFormat,
     conversationID: UUID,
@@ -89,6 +103,12 @@ final class ConversationExportCoordinator: ObservableObject {
       return nil
     }
   }
+
+  private static func containsImageAttachments(_ conversation: Conversation) -> Bool {
+    conversation.messages.contains { message in
+      message.attachments.contains { $0.kind == .image }
+    }
+  }
 }
 
 struct ConversationExportMenu: View {
@@ -102,8 +122,7 @@ struct ConversationExportMenu: View {
       ConversationExportMenuItems(isExporting: coordinator.isExporting) { format in
         guard let conversationID else { return }
         if format == .epub {
-          coordinator.pendingEPUBImageSizeSelection = PendingEPUBExportImageSizeSelection(
-            conversationID: conversationID)
+          coordinator.shareEPUB(conversationID: conversationID, store: store)
           return
         }
         Task {

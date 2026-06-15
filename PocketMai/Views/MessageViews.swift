@@ -2223,6 +2223,7 @@ private struct MarkdownInlineText: View {
   var uiForegroundColor: UIColor? = nil
   var strikethrough: Bool = false
   var allowsJustification: Bool = true
+  var allowsPlatformTextView: Bool = true
   var italic: Bool = false
 
   var body: some View {
@@ -2239,6 +2240,7 @@ private struct MarkdownInlineText: View {
         uiForegroundColor: uiForegroundColor,
         strikethrough: strikethrough,
         allowsJustification: allowsJustification,
+        allowsPlatformTextView: allowsPlatformTextView,
         italic: italic)
     } else {
       MarkdownPlainInlineText(
@@ -2252,6 +2254,7 @@ private struct MarkdownInlineText: View {
         uiForegroundColor: uiForegroundColor,
         strikethrough: strikethrough,
         allowsJustification: allowsJustification,
+        allowsPlatformTextView: allowsPlatformTextView,
         italic: italic)
     }
   }
@@ -2268,6 +2271,7 @@ private struct MarkdownInlineSegmentedText: View {
   let uiForegroundColor: UIColor?
   let strikethrough: Bool
   let allowsJustification: Bool
+  let allowsPlatformTextView: Bool
   let italic: Bool
 
   var body: some View {
@@ -2287,6 +2291,7 @@ private struct MarkdownInlineSegmentedText: View {
               uiForegroundColor: uiForegroundColor,
               strikethrough: strikethrough,
               allowsJustification: allowsJustification,
+              allowsPlatformTextView: allowsPlatformTextView,
               italic: italic
             )
             .frame(maxWidth: .infinity, alignment: swiftUIAlignment)
@@ -2317,6 +2322,8 @@ private struct MarkdownInlineSegmentedText: View {
 }
 
 private struct MarkdownPlainInlineText: View {
+  @Environment(\.isFullChatScreenshotRendering) private var isFullChatScreenshotRendering
+
   let value: String
   let appearance: AppearanceSettings
   let font: Font
@@ -2327,6 +2334,7 @@ private struct MarkdownPlainInlineText: View {
   var uiForegroundColor: UIColor? = nil
   var strikethrough: Bool = false
   var allowsJustification: Bool = true
+  var allowsPlatformTextView: Bool = true
   var italic: Bool = false
 
   var body: some View {
@@ -2334,7 +2342,9 @@ private struct MarkdownPlainInlineText: View {
     let containsLink = MarkdownInlineLinkScanner.containsLink(value)
     // Links are rendered through the UITextView-backed view so taps and
     // link long-presses are handled before the bubble background menu.
-    if textAlignment.isLeading && (justified || containsLink) {
+    if textAlignment.isLeading && allowsPlatformTextView && !isFullChatScreenshotRendering
+      && (justified || containsLink)
+    {
       JustifiedMarkdownTextView(
         value: value,
         font: uiFont.italicizedIf(italic),
@@ -2476,37 +2486,67 @@ private struct MarkdownImageFailureView: View {
   let appearance: AppearanceSettings
 
   var body: some View {
-    HStack(spacing: appearance.markdownMetric(10)) {
-      ZStack(alignment: .bottomTrailing) {
-        Image(systemName: "photo")
-          .font(.system(size: appearance.fontSize * 1.45, weight: .regular))
-          .foregroundStyle(.secondary)
-        Image(systemName: "exclamationmark.triangle.fill")
-          .font(.system(size: max(9, appearance.fontSize * 0.58), weight: .semibold))
-          .foregroundStyle(.orange)
-          .background(Circle().fill(Color(uiColor: .systemBackground)))
-          .offset(x: 4, y: 3)
-      }
-      .frame(width: appearance.markdownMetric(34), height: appearance.markdownMetric(34))
+    if let url = image.url {
+      Link(destination: url) {
+        HStack(spacing: appearance.markdownMetric(10)) {
+          Image(systemName: "link")
+            .font(.system(size: appearance.fontSize * 1.25, weight: .medium))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: appearance.markdownMetric(34), height: appearance.markdownMetric(34))
 
-      VStack(alignment: .leading, spacing: 2) {
-        Text(image.altText.isEmpty ? "Image unavailable" : image.altText)
-          .font(.system(size: appearance.fontSize * 0.92, weight: .semibold))
-          .foregroundStyle(.primary)
-          .lineLimit(2)
-        Text(image.source)
-          .font(.system(size: max(10, appearance.fontSize * 0.76)))
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(image.altText.isEmpty ? "Open link" : image.altText)
+              .font(.system(size: appearance.fontSize * 0.92, weight: .semibold))
+              .foregroundStyle(.primary)
+              .lineLimit(2)
+            Text(image.source)
+              .font(.system(size: max(10, appearance.fontSize * 0.76)))
+              .foregroundStyle(Color.accentColor)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+        }
+        .padding(.horizontal, appearance.markdownMetric(10))
+        .padding(.vertical, appearance.markdownMetric(9))
+        .frame(maxWidth: .infinity, minHeight: appearance.markdownMetric(58), alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(border)
       }
+      .buttonStyle(.plain)
+    } else {
+      HStack(spacing: appearance.markdownMetric(10)) {
+        ZStack(alignment: .bottomTrailing) {
+          Image(systemName: "photo")
+            .font(.system(size: appearance.fontSize * 1.45, weight: .regular))
+            .foregroundStyle(.secondary)
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: max(9, appearance.fontSize * 0.58), weight: .semibold))
+            .foregroundStyle(.orange)
+            .background(Circle().fill(Color(uiColor: .systemBackground)))
+            .offset(x: 4, y: 3)
+        }
+        .frame(width: appearance.markdownMetric(34), height: appearance.markdownMetric(34))
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(image.altText.isEmpty ? "Image unavailable" : image.altText)
+            .font(.system(size: appearance.fontSize * 0.92, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(2)
+          Text(image.source)
+            .font(.system(size: max(10, appearance.fontSize * 0.76)))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
+      .padding(.horizontal, appearance.markdownMetric(10))
+      .padding(.vertical, appearance.markdownMetric(9))
+      .frame(maxWidth: .infinity, minHeight: appearance.markdownMetric(58), alignment: .leading)
+      .background(Color.secondary.opacity(0.08))
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(border)
     }
-    .padding(.horizontal, appearance.markdownMetric(10))
-    .padding(.vertical, appearance.markdownMetric(9))
-    .frame(maxWidth: .infinity, minHeight: appearance.markdownMetric(58), alignment: .leading)
-    .background(Color.secondary.opacity(0.08))
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(border)
   }
 
   private var border: some View {
@@ -2593,14 +2633,7 @@ private struct MarkdownInlineImage: Equatable {
   let source: String
 
   var url: URL? {
-    let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let url = URL(string: trimmed),
-      let scheme = url.scheme?.lowercased(),
-      scheme == "http" || scheme == "https"
-    else {
-      return nil
-    }
-    return url
+    MarkdownWebURL.url(from: source)
   }
 }
 
@@ -2614,8 +2647,8 @@ private enum MarkdownInlineImageScanner {
     var index = 0
 
     while index < chars.count {
-      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
-        index = end + 1
+      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
+        index = codeSpan.end
         continue
       }
 
@@ -2720,17 +2753,6 @@ private enum MarkdownInlineImageScanner {
           return index
         }
         depth -= 1
-      }
-      index += 1
-    }
-    return nil
-  }
-
-  private static func findUnescapedBacktick(in chars: [Character], start: Int) -> Int? {
-    var index = start
-    while index < chars.count {
-      if chars[index] == "`", !isEscaped(chars, at: index) {
-        return index
       }
       index += 1
     }
@@ -3285,8 +3307,8 @@ enum MarkdownInlineSymbols {
     var index = 0
 
     while index < chars.count {
-      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
-        index = end + 1
+      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
+        index = codeSpan.end
         continue
       }
       if mathReplacement(in: chars, at: index) != nil {
@@ -3304,9 +3326,9 @@ enum MarkdownInlineSymbols {
     var index = 0
 
     while index < chars.count {
-      if chars[index] == "`", let end = findUnescapedBacktick(in: chars, start: index + 1) {
-        result += String(chars[index...end])
-        index = end + 1
+      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
+        result += String(chars[index..<codeSpan.end])
+        index = codeSpan.end
         continue
       }
 
@@ -4382,6 +4404,7 @@ struct MarkdownTableView: View {
       foregroundStyle: foregroundStyle,
       uiForegroundColor: uiForegroundColor,
       allowsJustification: !unwrapped,
+      allowsPlatformTextView: false,
       italic: italic
     )
     .fixedSize(horizontal: unwrapped, vertical: false)
