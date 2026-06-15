@@ -3439,8 +3439,15 @@ final class AppStore: ObservableObject {
 
   // MARK: - Settings Backup (Import / Export / Clear)
 
-  func exportSettingsBackupFile(scope: SettingsBackupScope, includeAudio: Bool = false) -> URL? {
-    let envelope = makeBackupEnvelope(scope: scope, includeAudio: includeAudio)
+  func exportSettingsBackupFile(
+    scope: SettingsBackupScope,
+    includeAudio: Bool = false,
+    includePictures: Bool = false
+  ) -> URL? {
+    let envelope = makeBackupEnvelope(
+      scope: scope,
+      includeAudio: includeAudio,
+      includePictures: includePictures)
     return exportSettingsBackupFile(envelope: envelope, filename: backupFilename(scope: scope))
   }
 
@@ -3472,13 +3479,18 @@ final class AppStore: ObservableObject {
     }
   }
 
-  private func makeBackupEnvelope(scope: SettingsBackupScope, includeAudio: Bool)
+  private func makeBackupEnvelope(
+    scope: SettingsBackupScope,
+    includeAudio: Bool,
+    includePictures: Bool
+  )
     -> SettingsBackupEnvelope
   {
     let exportedConversations: [Conversation]?
     switch scope {
     case .everything, .conversations:
-      exportedConversations = conversations
+      exportedConversations =
+        includePictures ? conversations : conversationsRemovingImageAttachments(conversations)
     case .providers, .prompts, .tools:
       exportedConversations = nil
     }
@@ -3530,6 +3542,18 @@ final class AppStore: ObservableObject {
       }
     }
     return attachments
+  }
+
+  private func conversationsRemovingImageAttachments(_ source: [Conversation]) -> [Conversation] {
+    source.map { conversation in
+      var copy = conversation
+      copy.messages = copy.messages.map { message in
+        var message = message
+        message.attachments.removeAll { $0.kind == .image }
+        return message
+      }
+      return copy
+    }
   }
 
   private func providersBackup() -> SettingsProvidersBackup {

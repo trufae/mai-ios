@@ -214,6 +214,7 @@ struct SettingsExportView: View {
   @State private var shareFile: BackupSharedFile?
   @State private var errorMessage: String?
   @State private var includeAudio = false
+  @State private var includePictures = false
 
   var body: some View {
     Form {
@@ -223,6 +224,16 @@ struct SettingsExportView: View {
             Label("Include voice audio", systemImage: "waveform")
             Text(
               "Embed m4a recordings as base64. Disabled by default because audio inflates the file."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          }
+        }
+        Toggle(isOn: $includePictures) {
+          VStack(alignment: .leading, spacing: 2) {
+            Label("Include pictures", systemImage: "photo")
+            Text(
+              "Embed image attachments in conversation backups. Disabled by default because pictures inflate the file."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -289,7 +300,11 @@ struct SettingsExportView: View {
   ) -> some View {
     Button {
       errorMessage = nil
-      if let url = store.exportSettingsBackupFile(scope: scope, includeAudio: includeAudio) {
+      if let url = store.exportSettingsBackupFile(
+        scope: scope,
+        includeAudio: includeAudio,
+        includePictures: includePictures)
+      {
         shareFile = BackupSharedFile(url: url)
       } else {
         errorMessage = store.errorMessage ?? "Could not export."
