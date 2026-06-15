@@ -860,6 +860,32 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct ConversationFolderDefaults: Codable, Equatable, Sendable {
+  var systemPromptID: UUID?
+  var provider: ProviderKind?
+  var endpointID: UUID?
+  var modelID: String
+
+  init(
+    systemPromptID: UUID? = nil,
+    provider: ProviderKind? = nil,
+    endpointID: UUID? = nil,
+    modelID: String = ""
+  ) {
+    self.systemPromptID = systemPromptID
+    self.provider = provider
+    self.endpointID = endpointID
+    self.modelID = modelID
+  }
+
+  var usesAppDefaults: Bool {
+    systemPromptID == nil
+      && provider == nil
+      && endpointID == nil
+      && modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+}
+
 struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
   static let defaultID = "default"
   static let archivedID = "archived"
@@ -1651,6 +1677,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
   var tools: SettingsToolsBackup?
   var conversations: [Conversation]?
   var conversationFolders: [ConversationFolder]?
+  var conversationFolderDefaults: [String: ConversationFolderDefaults]?
   var voiceRecordings: [SettingsVoiceRecordingAttachment]?
 
   init(
@@ -1659,6 +1686,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
     tools: SettingsToolsBackup? = nil,
     conversations: [Conversation]? = nil,
     conversationFolders: [ConversationFolder]? = nil,
+    conversationFolderDefaults: [String: ConversationFolderDefaults]? = nil,
     voiceRecordings: [SettingsVoiceRecordingAttachment]? = nil,
     exportedAt: Date = Date(),
     pocketMaiVersion: String = ConversationExportEnvelope.currentPocketMaiVersion
@@ -1672,6 +1700,7 @@ struct SettingsBackupEnvelope: Codable, Sendable {
     self.tools = tools
     self.conversations = conversations
     self.conversationFolders = conversationFolders
+    self.conversationFolderDefaults = conversationFolderDefaults
     self.voiceRecordings = voiceRecordings
   }
 }
@@ -2228,6 +2257,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var openAPIServer: OpenAPIServerSettings = OpenAPIServerSettings()
   var recentChatLanguageIdentifiers: [String] = []
   var conversationFolders: [ConversationFolder] = []
+  var conversationFolderDefaults: [String: ConversationFolderDefaults] = [:]
   var selectedConversationFolderID: String = ConversationFolder.defaultID
 
   static let defaults = AppSettings()
@@ -2280,6 +2310,30 @@ struct AppSettings: Codable, Equatable, Sendable {
     }
   }
 
+  static func normalizedConversationFolderDefaults(
+    _ defaults: [String: ConversationFolderDefaults],
+    knownFolderIDs: Set<String>
+  ) -> [String: ConversationFolderDefaults] {
+    var result: [String: ConversationFolderDefaults] = [:]
+    for (rawID, rawDefaults) in defaults {
+      let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !id.isEmpty, knownFolderIDs.contains(id) else { continue }
+      var folderDefaults = rawDefaults
+      folderDefaults.modelID =
+        folderDefaults.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+      if folderDefaults.provider == nil {
+        folderDefaults.endpointID = nil
+        folderDefaults.modelID = ""
+      }
+      if folderDefaults.provider != .openAICompatible {
+        folderDefaults.endpointID = nil
+      }
+      guard !folderDefaults.usesAppDefaults else { continue }
+      result[id] = folderDefaults
+    }
+    return result
+  }
+
   var defaultOpenAIEndpoint: OpenAIEndpoint? {
     if let selectedEndpointID,
       let endpoint = openAIEndpoints.first(where: { $0.id == selectedEndpointID && $0.isEnabled })
@@ -2322,7 +2376,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case startupBehavior, lastSelectedConversationID
     case openAPIServer
     case recentChatLanguageIdentifiers
-    case conversationFolders, selectedConversationFolderID
+    case conversationFolders, conversationFolderDefaults, selectedConversationFolderID
   }
 
   init(from decoder: Decoder) throws {
@@ -2429,6 +2483,11 @@ struct AppSettings: Codable, Equatable, Sendable {
     selectedConversationFolderID =
       knownConversationFolderIDs.contains(decodedConversationFolderID)
       ? decodedConversationFolderID : ConversationFolder.defaultID
+    conversationFolderDefaults = Self.normalizedConversationFolderDefaults(
+      (try? c.decode(
+        [String: ConversationFolderDefaults].self,
+        forKey: .conversationFolderDefaults)) ?? [:],
+      knownFolderIDs: knownConversationFolderIDs)
   }
 }
 

@@ -241,6 +241,76 @@ final class AppStore: ObservableObject {
     conversationFolders.first { $0.id == folderID }?.displayName ?? "Default"
   }
 
+  func conversationFolderDefaults(for folderID: String) -> ConversationFolderDefaults {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    return settings.conversationFolderDefaults[normalized] ?? ConversationFolderDefaults()
+  }
+
+  func setConversationFolderDefaults(_ defaults: ConversationFolderDefaults, for folderID: String) {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    let folderDefaults = normalizedConversationFolderDefaults(defaults)
+    if folderDefaults.usesAppDefaults {
+      settings.conversationFolderDefaults.removeValue(forKey: normalized)
+    } else {
+      settings.conversationFolderDefaults[normalized] = folderDefaults
+    }
+    saveSettings()
+  }
+
+  func clearConversationFolderDefaults(for folderID: String) {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    guard settings.conversationFolderDefaults.removeValue(forKey: normalized) != nil else { return }
+    saveSettings()
+  }
+
+  func effectiveProviderConfiguration(forFolderID folderID: String)
+    -> (provider: ProviderKind, endpointID: UUID?, modelID: String)
+  {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    guard let defaults = settings.conversationFolderDefaults[normalized],
+      let provider = defaults.provider
+    else {
+      return effectiveDefaultProviderConfiguration
+    }
+
+    let modelID = normalizedModelID(defaults.modelID)
+    switch provider {
+    case .apple:
+      guard appleIntelligenceIsAvailable else {
+        return (.mlx, nil, availableLocalMLXModelID(preferred: settings.localMLXModelID) ?? "")
+      }
+      return (.apple, nil, modelID)
+    case .mlx:
+      return (.mlx, nil, availableLocalMLXModelID(preferred: modelID) ?? "")
+    case .openAICompatible:
+      guard !settings.airplaneModeEnabled,
+        let endpointID = defaults.endpointID,
+        let endpoint = settings.openAIEndpoints.first(where: { $0.id == endpointID && $0.isEnabled })
+      else {
+        return effectiveDefaultProviderConfiguration
+      }
+      return (
+        .openAICompatible,
+        endpoint.id,
+        modelID.isEmpty ? endpoint.defaultModel : modelID
+      )
+    }
+  }
+
+  func effectiveSystemPromptID(forFolderID folderID: String) -> UUID {
+    let normalized = normalizedExistingConversationFolderID(folderID)
+    let fallback =
+      settings.systemPrompts.contains(where: { $0.id == settings.defaultSystemPromptID })
+      ? settings.defaultSystemPromptID
+      : (settings.systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)
+    guard let id = settings.conversationFolderDefaults[normalized]?.systemPromptID,
+      settings.systemPrompts.contains(where: { $0.id == id })
+    else {
+      return fallback
+    }
+    return id
+  }
+
   func selectConversationFolder(_ folderID: String) {
     let normalized = normalizedExistingConversationFolderID(folderID)
     guard settings.selectedConversationFolderID != normalized else { return }
@@ -273,6 +343,7 @@ final class AppStore: ObservableObject {
     }
     await loadStoredConversationsForSearch()
     settings.conversationFolders.removeAll { $0.id == id }
+    settings.conversationFolderDefaults.removeValue(forKey: id)
     if settings.selectedConversationFolderID == id {
       settings.selectedConversationFolderID = ConversationFolder.defaultID
     }
@@ -343,6 +414,14 @@ final class AppStore: ObservableObject {
       changed = true
     }
 
+    let normalizedDefaults = AppSettings.normalizedConversationFolderDefaults(
+      settings.conversationFolderDefaults,
+      knownFolderIDs: knownIDs)
+    if normalizedDefaults != settings.conversationFolderDefaults {
+      settings.conversationFolderDefaults = normalizedDefaults
+      changed = true
+    }
+
     if changed {
       saveSettings()
     }
@@ -357,6 +436,39 @@ final class AppStore: ObservableObject {
       }
       index += 1
     }
+  }
+
+  private func normalizedConversationFolderDefaults(
+    _ defaults: ConversationFolderDefaults
+  ) -> ConversationFolderDefaults {
+    var normalized = defaults
+    normalized.modelID = normalizedModelID(normalized.modelID)
+    if let id = normalized.systemPromptID,
+      !settings.systemPrompts.contains(where: { $0.id == id })
+    {
+      normalized.systemPromptID = nil
+    }
+    switch normalized.provider {
+    case nil:
+      normalized.endpointID = nil
+      normalized.modelID = ""
+    case .apple:
+      normalized.endpointID = nil
+    case .mlx:
+      normalized.endpointID = nil
+      normalized.modelID = availableLocalMLXModelID(preferred: normalized.modelID)
+        ?? normalized.modelID
+    case .openAICompatible:
+      guard let endpointID = normalized.endpointID,
+        settings.openAIEndpoints.contains(where: { $0.id == endpointID && $0.isEnabled })
+      else {
+        normalized.provider = nil
+        normalized.endpointID = nil
+        normalized.modelID = ""
+        break
+      }
+    }
+    return normalized
   }
 
   var appleIntelligenceIsAvailable: Bool {
@@ -481,9 +593,10 @@ final class AppStore: ObservableObject {
   }
 
   private func makeNewConversation() -> Conversation {
-    let defaultProvider = effectiveDefaultProviderConfiguration
+    let folderID = selectedConversationFolderID
+    let defaultProvider = effectiveProviderConfiguration(forFolderID: folderID)
     var conversation = Conversation()
-    conversation.folderID = selectedConversationFolderID
+    conversation.folderID = folderID
     conversation.provider = defaultProvider.provider
     if defaultProvider.provider == .mlx {
       conversation.modelID = availableLocalMLXModelID(preferred: defaultProvider.modelID) ?? ""
@@ -496,7 +609,7 @@ final class AppStore: ObservableObject {
     {
       conversation.reasoningLevel = endpoint.defaultReasoningLevel
     }
-    conversation.systemPromptID = settings.defaultSystemPromptID
+    conversation.systemPromptID = effectiveSystemPromptID(forFolderID: folderID)
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.enabledMCPServers = settings.defaultEnabledMCPServers
     conversation.enabledMCPTools = settings.defaultEnabledMCPTools
@@ -3369,6 +3482,7 @@ final class AppStore: ObservableObject {
         tools: toolsBackup(),
         conversations: exportedConversations,
         conversationFolders: settings.conversationFolders,
+        conversationFolderDefaults: settings.conversationFolderDefaults,
         voiceRecordings: attachments)
     case .providers:
       return SettingsBackupEnvelope(providers: providersBackup())
@@ -3521,6 +3635,9 @@ final class AppStore: ObservableObject {
         return finishApplyBackup(applied: applied)
       }
       applyConversationFoldersBackup(envelope.conversationFolders, for: payload)
+      if scope == .everything {
+        applyConversationFolderDefaultsBackup(envelope.conversationFolderDefaults)
+      }
       applyConversationsBackup(payload)
       applied.append("\(payload.count) conversation\(payload.count == 1 ? "" : "s")")
 
@@ -3687,6 +3804,17 @@ final class AppStore: ObservableObject {
     if !Set(conversationFolders.map(\.id)).contains(settings.selectedConversationFolderID) {
       settings.selectedConversationFolderID = ConversationFolder.defaultID
     }
+  }
+
+  private func applyConversationFolderDefaultsBackup(
+    _ importedDefaults: [String: ConversationFolderDefaults]?
+  ) {
+    guard let importedDefaults else { return }
+    let knownIDs = Set(conversationFolders.map(\.id))
+    let normalized = AppSettings.normalizedConversationFolderDefaults(
+      importedDefaults,
+      knownFolderIDs: knownIDs)
+    settings.conversationFolderDefaults.merge(normalized) { _, imported in imported }
   }
 
   // MARK: - Clear actions
