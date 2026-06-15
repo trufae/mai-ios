@@ -132,13 +132,36 @@ enum MessageContentFilter {
         nestedOpenings.append(token)
       }
     }
+    return lineDelimitedClose(for: opening, in: text)
+  }
+
+  private static func lineDelimitedClose(for opening: TagToken, in text: String) -> TagToken? {
+    var searchStart = opening.range.upperBound
+    var nestedDepth = 0
+    let tags = Set([opening.tag])
+    while let token = nextTagToken(
+      in: text,
+      from: searchStart,
+      matching: tags,
+      respectsMarkdown: false)
+    {
+      searchStart = token.range.upperBound
+      guard isLineDelimited(token, in: text) else { continue }
+      if token.isClosing {
+        if nestedDepth == 0 { return token }
+        nestedDepth -= 1
+      } else if !token.isSelfClosing {
+        nestedDepth += 1
+      }
+    }
     return nil
   }
 
   private static func nextTagToken(
     in text: String,
     from start: String.Index,
-    matching tags: Set<String>
+    matching tags: Set<String>,
+    respectsMarkdown: Bool = true
   ) -> TagToken? {
     var index = start
     var fenceMarker: Character?
@@ -146,7 +169,9 @@ enum MessageContentFilter {
     var inlineBackticks = 0
 
     while index < text.endIndex {
-      if inlineBackticks == 0, let fence = markdownFenceDelimiter(in: text, at: index) {
+      if respectsMarkdown, inlineBackticks == 0,
+        let fence = markdownFenceDelimiter(in: text, at: index)
+      {
         if let marker = fenceMarker {
           if marker == fence.marker && fence.length >= fenceLength {
             fenceMarker = nil
@@ -160,12 +185,12 @@ enum MessageContentFilter {
         continue
       }
 
-      if fenceMarker != nil {
+      if respectsMarkdown, fenceMarker != nil {
         text.formIndex(after: &index)
         continue
       }
 
-      if text[index] == "`" {
+      if respectsMarkdown, text[index] == "`" {
         let run = repeatedCharacterRun(in: text, from: index, matching: "`")
         if inlineBackticks == 0 {
           inlineBackticks = run.length
@@ -176,7 +201,7 @@ enum MessageContentFilter {
         continue
       }
 
-      if inlineBackticks != 0 {
+      if respectsMarkdown, inlineBackticks != 0 {
         text.formIndex(after: &index)
         continue
       }
@@ -251,6 +276,11 @@ enum MessageContentFilter {
       || isSameLine(in: text, from: opening.range.lowerBound, to: token.range.lowerBound)
       || (isImmediatelyAfterNonWhitespace(in: text, at: token.range.lowerBound)
         && isLineSuffixWhitespace(in: text, after: token.range.upperBound))
+  }
+
+  private static func isLineDelimited(_ token: TagToken, in text: String) -> Bool {
+    isLinePrefixWhitespace(in: text, before: token.range.lowerBound)
+      && isLineSuffixWhitespace(in: text, after: token.range.upperBound)
   }
 
   private static func skipTagWhitespace(in text: String, from index: inout String.Index) {
