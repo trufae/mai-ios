@@ -387,7 +387,8 @@ private struct MessageBubbleContent: View, Equatable {
     return MessageRenderCache.markdownBlocks(
       messageID: message.id,
       partID: partID,
-      text: visibleText)
+      text: visibleText,
+      isStreaming: isStreaming)
   }
 
   @ViewBuilder
@@ -1618,6 +1619,8 @@ private enum MessageRenderCache {
   private struct PreparedEntry {
     let text: String
     let content: PreparedMessageContent
+    let incrementalBaseText: String
+    let incrementalBaseContent: PreparedMessageContent?
   }
 
   private struct MarkdownEntry {
@@ -1625,9 +1628,16 @@ private enum MessageRenderCache {
     let blocks: [MarkdownBlock]
   }
 
+  private struct StreamingMarkdownEntry {
+    let text: String
+    let stableEndOffset: Int
+    let stableBlocks: [MarkdownBlock]
+  }
+
   private static let maxEntries = 160
   @MainActor private static var preparedEntries: [UUID: PreparedEntry] = [:]
   @MainActor private static var markdownEntries: [MarkdownCacheKey: MarkdownEntry] = [:]
+  @MainActor private static var streamingMarkdownEntries: [MarkdownCacheKey: StreamingMarkdownEntry] = [:]
   @MainActor private static var preparedAccessOrder: [UUID] = []
   @MainActor private static var markdownAccessOrder: [MarkdownCacheKey] = []
 
@@ -1638,22 +1648,62 @@ private enum MessageRenderCache {
       return entry.content
     }
 
+    if let entry = preparedEntries[messageID],
+      let baseContent = entry.incrementalBaseContent,
+      !entry.incrementalBaseText.isEmpty,
+      text.hasPrefix(entry.incrementalBaseText)
+    {
+      let suffix = substring(
+        text,
+        fromUTF16Offset: entry.incrementalBaseText.utf16.count,
+        toUTF16Offset: text.utf16.count)
+      let suffixContent = buildPreparedContent(
+        text: suffix,
+        partIDOffset: baseContent.parts.count)
+      let content = mergedPreparedContent(baseContent, suffixContent)
+      let isBoundary = isPreparedIncrementalBoundary(text)
+      preparedEntries[messageID] = PreparedEntry(
+        text: text,
+        content: content,
+        incrementalBaseText: isBoundary ? text : entry.incrementalBaseText,
+        incrementalBaseContent: isBoundary ? content : baseContent)
+      markAccessed(messageID)
+      pruneIfNeeded()
+      return content
+    }
+
+    let content = buildPreparedContent(text: text)
+    let isBoundary = isPreparedIncrementalBoundary(text)
+    preparedEntries[messageID] = PreparedEntry(
+      text: text,
+      content: content,
+      incrementalBaseText: isBoundary ? text : "",
+      incrementalBaseContent: isBoundary ? content : nil)
+    markAccessed(messageID)
+    pruneIfNeeded()
+    return content
+  }
+
+  private static func buildPreparedContent(
+    text: String,
+    partIDOffset: Int = 0
+  ) -> PreparedMessageContent {
     let rendered = MessageContentFilter.render(text)
     var parts: [MessageRenderPart] = []
     for part in rendered.parts {
       switch part.kind {
       case .visible(let visibleText):
-        parts.append(.visible(id: parts.count, text: visibleText))
+        parts.append(.visible(id: partIDOffset + parts.count, text: visibleText))
       case .hidden(let section):
         switch section.tag {
         case "context", "tool_context", "tool_run":
           for entry in ToolCallParser.parse(section.content) {
-            parts.append(.tool(id: parts.count, entry: entry))
+            parts.append(.tool(id: partIDOffset + parts.count, entry: entry))
           }
         case "think":
-          parts.append(.reasoning(id: parts.count, section: section))
+          parts.append(.reasoning(id: partIDOffset + parts.count, section: section))
         case "conversation":
-          parts.append(.transcript(id: parts.count, section: section))
+          parts.append(.transcript(id: partIDOffset + parts.count, section: section))
         default:
           break
         }
@@ -1673,16 +1723,21 @@ private enum MessageRenderCache {
       parts: parts,
       hideBubble: visibleEmpty && hasMeta
     )
-
-    preparedEntries[messageID] = PreparedEntry(text: text, content: content)
-    markAccessed(messageID)
-    pruneIfNeeded()
     return content
   }
 
   @MainActor
-  static func markdownBlocks(messageID: UUID, partID: Int = 0, text: String) -> [MarkdownBlock] {
+  static func markdownBlocks(
+    messageID: UUID,
+    partID: Int = 0,
+    text: String,
+    isStreaming: Bool = false
+  ) -> [MarkdownBlock] {
     let key = MarkdownCacheKey(messageID: messageID, partID: partID)
+    if isStreaming {
+      return streamingMarkdownBlocks(for: key, text: text)
+    }
+
     if let entry = markdownEntries[key], entry.text == text {
       markAccessed(key)
       return entry.blocks
@@ -1690,6 +1745,60 @@ private enum MessageRenderCache {
 
     let blocks = MarkdownParser.blocks(from: text)
     markdownEntries[key] = MarkdownEntry(text: text, blocks: blocks)
+    markAccessed(key)
+    pruneIfNeeded()
+    return blocks
+  }
+
+  @MainActor
+  private static func streamingMarkdownBlocks(
+    for key: MarkdownCacheKey,
+    text: String
+  ) -> [MarkdownBlock] {
+    if let entry = streamingMarkdownEntries[key], text.hasPrefix(entry.text) {
+      let newStableEndOffset = streamingStableEndOffset(in: text)
+      if newStableEndOffset >= entry.stableEndOffset {
+        var stableBlocks = entry.stableBlocks
+        if newStableEndOffset > entry.stableEndOffset {
+          let delta = substring(
+            text,
+            fromUTF16Offset: entry.stableEndOffset,
+            toUTF16Offset: newStableEndOffset)
+          stableBlocks.append(
+            contentsOf: visibleMarkdownBlocks(from: delta, idOffset: stableBlocks.count))
+        }
+        let tail = substring(
+          text,
+          fromUTF16Offset: newStableEndOffset,
+          toUTF16Offset: text.utf16.count)
+        let blocks =
+          stableBlocks + visibleMarkdownBlocks(from: tail, idOffset: stableBlocks.count)
+        streamingMarkdownEntries[key] = StreamingMarkdownEntry(
+          text: text,
+          stableEndOffset: newStableEndOffset,
+          stableBlocks: stableBlocks)
+        markAccessed(key)
+        pruneIfNeeded()
+        return blocks
+      }
+    }
+
+    let stableEndOffset = streamingStableEndOffset(in: text)
+    let stableText = substring(
+      text,
+      fromUTF16Offset: 0,
+      toUTF16Offset: stableEndOffset)
+    let tailText = substring(
+      text,
+      fromUTF16Offset: stableEndOffset,
+      toUTF16Offset: text.utf16.count)
+    let stableBlocks = visibleMarkdownBlocks(from: stableText, idOffset: 0)
+    let blocks =
+      stableBlocks + visibleMarkdownBlocks(from: tailText, idOffset: stableBlocks.count)
+    streamingMarkdownEntries[key] = StreamingMarkdownEntry(
+      text: text,
+      stableEndOffset: stableEndOffset,
+      stableBlocks: stableBlocks)
     markAccessed(key)
     pruneIfNeeded()
     return blocks
@@ -1716,8 +1825,128 @@ private enum MessageRenderCache {
     while markdownAccessOrder.count > maxEntries, let oldest = markdownAccessOrder.first {
       markdownAccessOrder.removeFirst()
       markdownEntries.removeValue(forKey: oldest)
+      streamingMarkdownEntries.removeValue(forKey: oldest)
     }
   }
+
+  private static func mergedPreparedContent(
+    _ base: PreparedMessageContent,
+    _ suffix: PreparedMessageContent
+  ) -> PreparedMessageContent {
+    let parts = base.parts + suffix.parts
+    let visibleText = joinedVisibleText(base.visibleText, suffix.visibleText)
+    let visibleEmpty = visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let hasMeta = parts.contains {
+      switch $0 {
+      case .visible:
+        return false
+      case .tool, .reasoning, .transcript:
+        return true
+      }
+    }
+    return PreparedMessageContent(
+      visibleText: visibleText,
+      parts: parts,
+      hideBubble: visibleEmpty && hasMeta)
+  }
+
+  private static func joinedVisibleText(_ first: String, _ second: String) -> String {
+    let firstTrimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+    let secondTrimmed = second.trimmingCharacters(in: .whitespacesAndNewlines)
+    if firstTrimmed.isEmpty { return secondTrimmed }
+    if secondTrimmed.isEmpty { return firstTrimmed }
+    return "\(firstTrimmed)\n\n\(secondTrimmed)"
+  }
+
+  private static func visibleMarkdownBlocks(from text: String, idOffset: Int) -> [MarkdownBlock] {
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+    return MarkdownParser.blocks(from: text, idOffset: idOffset).filter { !$0.isVisiblyEmpty }
+  }
+
+  private static func streamingStableEndOffset(in text: String) -> Int {
+    guard !text.isEmpty else { return 0 }
+
+    var lineStart = text.startIndex
+    var cursor = text.startIndex
+    var inCode = false
+    var stableEnd = text.startIndex
+
+    while cursor < text.endIndex {
+      var lineEnd = cursor
+      while lineEnd < text.endIndex, text[lineEnd] != "\n", text[lineEnd] != "\r" {
+        text.formIndex(after: &lineEnd)
+      }
+
+      let line = text[lineStart..<lineEnd]
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") {
+        inCode.toggle()
+      }
+
+      var nextLineStart = lineEnd
+      if nextLineStart < text.endIndex {
+        if text[nextLineStart] == "\r" {
+          text.formIndex(after: &nextLineStart)
+          if nextLineStart < text.endIndex, text[nextLineStart] == "\n" {
+            text.formIndex(after: &nextLineStart)
+          }
+        } else if text[nextLineStart] == "\n" {
+          text.formIndex(after: &nextLineStart)
+        }
+      }
+
+      if !inCode, trimmed.isEmpty {
+        stableEnd = nextLineStart
+      }
+
+      guard nextLineStart > lineStart else { break }
+      lineStart = nextLineStart
+      cursor = nextLineStart
+    }
+
+    return stableEnd.utf16Offset(in: text)
+  }
+
+  private static func isPreparedIncrementalBoundary(_ text: String) -> Bool {
+    guard !text.isEmpty else { return false }
+    let tail = String(text.suffix(96)).lowercased()
+    guard tail.contains("\n\n") || tail.contains("</") else { return false }
+    guard !hasUnclosedHiddenTag(in: text) else { return false }
+    if text.hasSuffix("\n\n") || text.hasSuffix("\r\n\r\n") {
+      return true
+    }
+    let trimmedTail = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+    return hiddenClosingTags.contains { trimmedTail.hasSuffix($0) }
+  }
+
+  private static func hasUnclosedHiddenTag(in text: String) -> Bool {
+    let lowercased = text.lowercased()
+    for tag in hiddenTagNames {
+      guard let opening = lowercased.range(of: "<\(tag)", options: .backwards) else {
+        continue
+      }
+      let closing = lowercased.range(of: "</\(tag)>", options: .backwards)
+      if closing == nil || opening.lowerBound > closing!.lowerBound {
+        return true
+      }
+    }
+    return false
+  }
+
+  private static func substring(
+    _ text: String,
+    fromUTF16Offset lowerOffset: Int,
+    toUTF16Offset upperOffset: Int
+  ) -> String {
+    let lowerBound = String.Index(utf16Offset: lowerOffset, in: text)
+    let upperBound = String.Index(utf16Offset: upperOffset, in: text)
+    return String(text[lowerBound..<upperBound])
+  }
+
+  private static let hiddenTagNames = [
+    "context", "tool_context", "tool_run", "tool_call", "think", "conversation", "speech",
+  ]
+  private static let hiddenClosingTags = hiddenTagNames.map { "</\($0)>" }
 }
 
 private struct FoldableMetaSection: View {
@@ -1863,6 +2092,7 @@ private struct VoiceRecordingPlaybackButton: View {
 private struct ToolCallRow: View {
   let entry: ToolEntry
   @State private var expanded = false
+  @State private var previewDocument: ToolPreviewDocument?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -1877,7 +2107,7 @@ private struct ToolCallRow: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.primary)
           if !entry.params.isEmpty {
-            Text(entry.params)
+            Text(Self.collapsedParams(for: entry.params))
               .font(.caption)
               .foregroundStyle(.secondary)
               .lineLimit(1)
@@ -1904,6 +2134,14 @@ private struct ToolCallRow: View {
         .padding(.vertical, 10)
       }
     }
+    .sheet(item: $previewDocument) { document in
+      MessageTextSelectionSheet(
+        title: document.title,
+        text: document.text,
+        initialFontSize: 13,
+        initialLineSpacing: 2,
+        fontFamily: .monospaced)
+    }
     .background(.thinMaterial.opacity(0.55))
     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     .overlay(
@@ -1914,23 +2152,119 @@ private struct ToolCallRow: View {
 
   @ViewBuilder
   private func toolSection(label: String, value: String, emptyText: String) -> some View {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hasValue = Self.hasVisibleContent(value)
+    let byteCount = value.utf8.count
+    let isLarge = byteCount > Self.largeValueThreshold
     VStack(alignment: .leading, spacing: 4) {
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
-      Text(trimmed.isEmpty ? emptyText : value)
-        .font(.system(.footnote, design: .monospaced))
-        .foregroundStyle(trimmed.isEmpty ? Color.secondary : Color.primary)
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Text(label)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        if hasValue, isLarge {
+          Text(Self.sizeLabel(byteCount: byteCount))
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.tertiary)
+        }
+        Spacer(minLength: 8)
+        if hasValue, isLarge {
+          Button {
+            previewDocument = ToolPreviewDocument(title: label, text: value)
+          } label: {
+            Image(systemName: "doc.text.magnifyingglass")
+          }
+          .buttonStyle(.borderless)
+          .help("View full \(label.lowercased())")
+
+          Button {
+            UIPasteboard.general.string = value
+          } label: {
+            Image(systemName: "doc.on.doc")
+          }
+          .buttonStyle(.borderless)
+          .help("Copy \(label.lowercased())")
+        }
+      }
+
+      if !hasValue {
+        Text(emptyText)
+          .font(.system(.footnote, design: .monospaced))
+          .foregroundStyle(Color.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      } else if isLarge {
+        Text(Self.previewText(for: value))
+          .font(.system(.footnote, design: .monospaced))
+          .foregroundStyle(Color.secondary)
+          .lineLimit(Self.previewLineLimit)
+          .truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
+      } else {
+        Text(value)
+          .font(.system(.footnote, design: .monospaced))
+          .foregroundStyle(Color.primary)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
+  }
+
+  private static let largeValueThreshold = 12_000
+  private static let collapsedParamsLimit = 180
+  private static let previewCharacterLimit = 4_000
+  private static let previewLineLimit = 80
+
+  private static func hasVisibleContent(_ value: String) -> Bool {
+    value.contains { !$0.isWhitespace }
+  }
+
+  private static func collapsedParams(for value: String) -> String {
+    let prefix = value.prefix(collapsedParamsLimit)
+    guard prefix.endIndex < value.endIndex else { return value }
+    return String(prefix) + "..."
+  }
+
+  private static func sizeLabel(byteCount: Int) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+  }
+
+  private static func previewText(for value: String) -> String {
+    var output = ""
+    var characterCount = 0
+    var lineCount = 0
+    var index = value.startIndex
+
+    while index < value.endIndex,
+      characterCount < previewCharacterLimit,
+      lineCount < previewLineLimit
+    {
+      let character = value[index]
+      output.append(character)
+      characterCount += 1
+      value.formIndex(after: &index)
+      if character == "\n" {
+        lineCount += 1
+      }
+    }
+
+    if index < value.endIndex {
+      if !output.hasSuffix("\n") {
+        output.append("\n")
+      }
+      output.append("...")
+    }
+    return output
   }
 }
 
-struct ToolEntry: Identifiable {
+private struct ToolPreviewDocument: Identifiable {
   let id = UUID()
+  let title: String
+  let text: String
+}
+
+struct ToolEntry: Identifiable {
+  let id: String
   let name: String
   let params: String
   let body: String
@@ -1950,7 +2284,7 @@ enum ToolCallParser {
       guard let header = currentHeader else { return }
       let body = currentBody.joined(separator: "\n")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      if let entry = makeEntry(header: header, body: body) {
+      if let entry = makeEntry(index: entries.count, header: header, body: body) {
         entries.append(entry)
       }
       currentHeader = nil
@@ -1981,7 +2315,7 @@ enum ToolCallParser {
     return !name.isEmpty && (suffix.isEmpty || (suffix.hasPrefix("(") && suffix.hasSuffix(")")))
   }
 
-  private static func makeEntry(header: String, body: String) -> ToolEntry? {
+  private static func makeEntry(index: Int, header: String, body: String) -> ToolEntry? {
     guard let toolRange = header.range(of: " tool", options: [.caseInsensitive]) else {
       return nil
     }
@@ -1996,6 +2330,7 @@ enum ToolCallParser {
       params = after
     }
     return ToolEntry(
+      id: "\(index):\(header)",
       name: name.isEmpty ? "Tool" : name,
       params: params,
       body: body,
@@ -4950,8 +5285,38 @@ struct MarkdownBlock: Identifiable {
     case footnotes(items: [(key: String, text: String)])
   }
 
-  let id = UUID()
+  let id: Int
   var kind: Kind
+
+  init(id: Int = 0, kind: Kind) {
+    self.id = id
+    self.kind = kind
+  }
+}
+
+extension MarkdownBlock {
+  fileprivate var isVisiblyEmpty: Bool {
+    switch kind {
+    case .text(let value), .blockquote(let value):
+      return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case .heading(_, let text):
+      return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case .code(_, let code):
+      return code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case .table(let headers, let rows, _):
+      return headers.isEmpty && rows.isEmpty
+    case .taskList(let items):
+      return items.isEmpty
+    case .bulletList(let items):
+      return items.isEmpty
+    case .orderedList(let items):
+      return items.isEmpty
+    case .footnotes(let items):
+      return items.isEmpty
+    case .horizontalRule:
+      return false
+    }
+  }
 }
 
 enum MarkdownParser {
@@ -4971,7 +5336,7 @@ enum MarkdownParser {
     return markers.contains { text.contains($0) }
   }
 
-  static func blocks(from text: String) -> [MarkdownBlock] {
+  static func blocks(from text: String, idOffset: Int = 0) -> [MarkdownBlock] {
     let lines = text.components(separatedBy: .newlines)
     var blocks: [MarkdownBlock] = []
     var textBuffer: [String] = []
@@ -4980,10 +5345,14 @@ enum MarkdownParser {
     var inCode = false
     var index = 0
 
+    func appendBlock(_ kind: MarkdownBlock.Kind) {
+      blocks.append(MarkdownBlock(id: idOffset + blocks.count, kind: kind))
+    }
+
     func flushText() {
       let value = textBuffer.joined(separator: "\n").trimmingCharacters(in: .newlines)
       if !value.isEmpty {
-        blocks.append(MarkdownBlock(kind: .text(value)))
+        appendBlock(.text(value))
       }
       textBuffer.removeAll()
     }
@@ -4991,7 +5360,7 @@ enum MarkdownParser {
     func flushCode() {
       let code = codeBuffer.joined(separator: "\n")
       if !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        blocks.append(MarkdownBlock(kind: .code(language: language, code: code)))
+        appendBlock(.code(language: language, code: code))
       }
       codeBuffer.removeAll()
       language = ""
@@ -5042,23 +5411,21 @@ enum MarkdownParser {
       if let firstLine = blockquoteLine(line) {
         flushText()
         let block = collectItems(first: firstLine, after: index, parse: blockquoteLine)
-        blocks.append(
-          MarkdownBlock(kind: .blockquote(block.items.joined(separator: "\n")))
-        )
+        appendBlock(.blockquote(block.items.joined(separator: "\n")))
         index = block.nextIndex
         continue
       }
 
       if let heading = heading(trimmed) {
         flushText()
-        blocks.append(MarkdownBlock(kind: .heading(level: heading.level, text: heading.text)))
+        appendBlock(.heading(level: heading.level, text: heading.text))
         index += 1
         continue
       }
 
       if isHorizontalRule(trimmed) {
         flushText()
-        blocks.append(MarkdownBlock(kind: .horizontalRule))
+        appendBlock(.horizontalRule)
         index += 1
         continue
       }
@@ -5068,7 +5435,7 @@ enum MarkdownParser {
         let block = collectItems(first: firstItem, after: index) {
           parseTrimmed($0, with: taskListItem)
         }
-        blocks.append(MarkdownBlock(kind: .taskList(items: block.items)))
+        appendBlock(.taskList(items: block.items))
         index = block.nextIndex
         continue
       }
@@ -5078,7 +5445,7 @@ enum MarkdownParser {
         let block = collectItems(first: firstItem, after: index) {
           parseTrimmed($0, with: orderedListItem)
         }
-        blocks.append(MarkdownBlock(kind: .orderedList(items: block.items)))
+        appendBlock(.orderedList(items: block.items))
         index = block.nextIndex
         continue
       }
@@ -5088,7 +5455,7 @@ enum MarkdownParser {
         let block = collectItems(first: firstItem, after: index) {
           parseTrimmed($0, with: bulletListItem)
         }
-        blocks.append(MarkdownBlock(kind: .bulletList(items: block.items)))
+        appendBlock(.bulletList(items: block.items))
         index = block.nextIndex
         continue
       }
@@ -5098,7 +5465,7 @@ enum MarkdownParser {
         let block = collectItems(first: firstItem, after: index) {
           parseTrimmed($0, with: footnoteDefinition)
         }
-        blocks.append(MarkdownBlock(kind: .footnotes(items: block.items)))
+        appendBlock(.footnotes(items: block.items))
         index = block.nextIndex
         continue
       }
@@ -5125,11 +5492,7 @@ enum MarkdownParser {
             rows.append(cells)
             cursor += 1
           }
-          blocks.append(
-            MarkdownBlock(
-              kind: .table(headers: headers, rows: rows, alignments: alignments)
-            )
-          )
+          appendBlock(.table(headers: headers, rows: rows, alignments: alignments))
           index = cursor
           continue
         }
@@ -5142,7 +5505,7 @@ enum MarkdownParser {
       flushCode()
     }
     flushText()
-    return blocks.isEmpty ? [MarkdownBlock(kind: .text(text))] : blocks
+    return blocks.isEmpty ? [MarkdownBlock(id: idOffset, kind: .text(text))] : blocks
   }
 
   private static func footnoteDefinition(_ trimmed: String) -> (key: String, text: String)? {
