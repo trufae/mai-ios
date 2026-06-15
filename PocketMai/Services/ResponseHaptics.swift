@@ -12,6 +12,11 @@ final class ResponseHaptics {
     private var lastFiredAt = Date.distantPast
     private var nextInterval: TimeInterval = 0
 
+    init(intervalRange: ClosedRange<TimeInterval>, intensityRange: ClosedRange<Double>) {
+      self.intervalRange = intervalRange
+      self.intensityRange = intensityRange
+    }
+
     /// Returns the intensity to play, or `nil` when still inside the throttle window.
     mutating func nextIntensity() -> CGFloat? {
       let now = Date()
