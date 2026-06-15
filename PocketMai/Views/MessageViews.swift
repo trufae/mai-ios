@@ -2843,12 +2843,20 @@ private enum MarkdownInlineLinkScanner {
 private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString
 {
   let normalized = MarkdownInlineSymbols.displayString(value)
-  let attributed =
+  var attributed =
     (try? AttributedString(
       markdown: normalized,
       options: AttributedString.MarkdownParsingOptions(
         interpretedSyntax: .inlineOnlyPreservingWhitespace)))
     ?? AttributedString(normalized)
+  for run in attributed.runs.reversed() {
+    let text = String(attributed.characters[run.range])
+    if run.inlinePresentationIntent?.contains(.inlineHTML) == true,
+      text.range(of: "^<br\\s*/?>$", options: [.regularExpression, .caseInsensitive]) != nil
+    {
+      attributed.replaceSubrange(run.range, with: AttributedString("\n"))
+    }
+  }
   return MarkdownInlineStyleApplier.styled(
     MarkdownInlineTokenColorizer.colorized(attributed),
     strongFont: strongFont
@@ -3120,16 +3128,7 @@ private enum MarkdownInlineTokenColorizer {
 
 enum MarkdownInlineSymbols {
   static func displayString(_ raw: String) -> String {
-    rewriteDelimitedMath(in: rewriteCitationRefs(in: rewriteLineBreaks(in: raw)))
-  }
-
-  /// Rewrites HTML `<br>` line-break tags (incl. `<br/>` and `<br />`) into
-  /// newlines so they render as line breaks — commonly used for multiline
-  /// table cells. Fenced code blocks never reach this path.
-  static func rewriteLineBreaks(in raw: String) -> String {
-    guard raw.contains("<") else { return raw }
-    return raw.replacingOccurrences(
-      of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
+    rewriteDelimitedMath(in: rewriteCitationRefs(in: raw))
   }
 
   static func toSuperscript(_ key: String) -> String {
