@@ -7,6 +7,7 @@ enum AssistantTurnRunner {
     context: String,
     store: AppStore
   ) async {
+    guard !Task.isCancelled else { return }
     guard let assistantID = store.appendAssistantMessage(to: conversationID) else {
       return
     }

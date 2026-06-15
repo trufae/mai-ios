@@ -153,6 +153,7 @@ final class AppStore: ObservableObject {
   @Published var respondingConversationIDs: Set<UUID> = []
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
+  private var responseTaskTokens: [UUID: UUID] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
   private var cancelledToolCallApprovalIDs: Set<UUID> = []
   private var toolCallingDebugIterations: [UUID: [ConversationDebugToolIteration]] = [:]
@@ -166,6 +167,15 @@ final class AppStore: ObservableObject {
   func cancelResponse(in conversationID: UUID) {
     responseTasks[conversationID]?.cancel()
   }
+
+  private func abandonResponse(in conversationID: UUID) {
+    responseTasks[conversationID]?.cancel()
+    responseTasks[conversationID] = nil
+    responseTaskTokens[conversationID] = nil
+    respondingConversationIDs.remove(conversationID)
+    endResponseBackgroundTask(for: conversationID)
+  }
+
   @Published var errorMessage: String?
   @Published var isUpdatingMemory = false
   @Published var isCompacting = false
@@ -814,6 +824,7 @@ final class AppStore: ObservableObject {
     guard let index = currentConversationIndex else { return }
     let removedMessages = conversations[index].messages.filter { $0.id == message.id }
     guard !removedMessages.isEmpty else { return }
+    clearStreamingText(for: removedMessages)
     conversations[index].messages.removeAll { $0.id == message.id }
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
@@ -825,6 +836,7 @@ final class AppStore: ObservableObject {
     guard let index = currentConversationIndex, !ids.isEmpty else { return }
     let removedMessages = conversations[index].messages.filter { ids.contains($0.id) }
     guard !removedMessages.isEmpty else { return }
+    clearStreamingText(for: removedMessages)
     conversations[index].messages.removeAll { ids.contains($0.id) }
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
@@ -841,6 +853,7 @@ final class AppStore: ObservableObject {
     for id in removedIDs {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
+      responseTaskTokens[id] = nil
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
     }
@@ -862,6 +875,7 @@ final class AppStore: ObservableObject {
       task.cancel()
     }
     responseTasks.removeAll()
+    responseTaskTokens.removeAll()
     endAllResponseBackgroundTasks()
     respondingConversationIDs.removeAll()
     conversationDrafts.removeAll()
@@ -909,16 +923,21 @@ final class AppStore: ObservableObject {
   }
 
   func restartFromScratch(with message: ChatMessage) async {
-    guard !isResponding, let index = currentConversationIndex else { return }
+    guard let index = currentConversationIndex else { return }
+    let conversationID = conversations[index].id
     guard let source = restartSourceMessage(for: message),
       let prompt = restartPrompt(from: source)
     else { return }
 
-    let removedMessages = conversations[index].messages
-    conversations[index].messages.removeAll()
-    conversations[index].title = "New chat"
-    conversations[index].updatedAt = Date()
-    upsertSummary(for: conversations[index])
+    abandonResponse(in: conversationID)
+
+    guard let currentIndex = indexedConversationIndex(for: conversationID) else { return }
+    let removedMessages = conversations[currentIndex].messages
+    clearStreamingText(for: removedMessages)
+    conversations[currentIndex].messages.removeAll()
+    conversations[currentIndex].title = "New chat"
+    conversations[currentIndex].updatedAt = Date()
+    upsertSummary(for: conversations[currentIndex])
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
 
@@ -986,9 +1005,13 @@ final class AppStore: ObservableObject {
     for id in ids {
       responseTasks[id]?.cancel()
       responseTasks[id] = nil
+      responseTaskTokens[id] = nil
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
       conversationDrafts.removeValue(forKey: id)
+    }
+    conversations.filter { ids.contains($0.id) }.forEach {
+      clearStreamingText(for: $0.messages)
     }
     conversations.removeAll { ids.contains($0.id) }
     rebuildConversationIndexes()
@@ -1753,13 +1776,16 @@ final class AppStore: ObservableObject {
   func trimAndResubmit(from message: ChatMessage) async {
     guard let convIndex = currentConversationIndex else { return }
     let conversationID = conversations[convIndex].id
-    guard !respondingConversationIDs.contains(conversationID) else { return }
     guard
       let msgIndex = conversations[convIndex].messages.firstIndex(where: { $0.id == message.id })
     else { return }
     let cutoff: Int = message.role == .user ? msgIndex : msgIndex - 1
     guard cutoff >= 0 else { return }
+
+    abandonResponse(in: conversationID)
+
     let removedMessages = Array(conversations[convIndex].messages.dropFirst(cutoff + 1))
+    clearStreamingText(for: removedMessages)
     conversations[convIndex].messages = Array(conversations[convIndex].messages.prefix(cutoff + 1))
     conversations[convIndex].updatedAt = Date()
     upsertSummary(for: conversations[convIndex])
@@ -1895,14 +1921,20 @@ final class AppStore: ObservableObject {
   }
 
   private func dispatchAssistantTurn(conversationID: UUID, context: String) {
+    let responseTaskToken = UUID()
     respondingConversationIDs.insert(conversationID)
+    responseTaskTokens[conversationID] = responseTaskToken
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
+      guard responseTaskTokens[conversationID] == responseTaskToken else { return }
       defer {
-        respondingConversationIDs.remove(conversationID)
-        responseTasks[conversationID] = nil
-        endResponseBackgroundTask(for: conversationID)
-        saveConversations()
+        if responseTaskTokens[conversationID] == responseTaskToken {
+          respondingConversationIDs.remove(conversationID)
+          responseTasks[conversationID] = nil
+          responseTaskTokens[conversationID] = nil
+          endResponseBackgroundTask(for: conversationID)
+          saveConversations()
+        }
       }
       await AssistantTurnRunner.run(
         conversationID: conversationID,
@@ -2907,6 +2939,7 @@ final class AppStore: ObservableObject {
     removeSummaries(for: [removedID])
     responseTasks[removedID]?.cancel()
     responseTasks[removedID] = nil
+    responseTaskTokens[removedID] = nil
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
     conversationDrafts.removeValue(forKey: removedID)
@@ -3018,7 +3051,17 @@ final class AppStore: ObservableObject {
   }
 
   private func enqueueStreamingText(_ text: String, for id: UUID) {
+    guard messageLocation(for: id) != nil else {
+      streamingTextStore.clear(id: id)
+      return
+    }
     streamingTextStore.enqueue(text, for: id)
+  }
+
+  private func clearStreamingText(for messages: [ChatMessage]) {
+    for message in messages {
+      streamingTextStore.clear(id: message.id)
+    }
   }
 
   private static func decodeConversationImportEnvelope(
