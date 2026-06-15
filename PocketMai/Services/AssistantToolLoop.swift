@@ -208,6 +208,34 @@ enum AssistantToolLoop {
 
       switch outcome {
       case .final(let turnText):
+        if shouldRetryHiddenOnlyFinal(turnText, state: state, maxRepairTurns: maxRepairTurns) {
+          state.debugRoundIndex += 1
+          state.repairTurnCount += 1
+          appendDebugIteration(
+            outcome: "retry",
+            response: response,
+            promptMessages: promptMessages,
+            requestState: requestState,
+            conversation: conversation,
+            assistantID: assistantID,
+            roundIndex: state.debugRoundIndex,
+            store: store)
+          state.setProvisionalText(provisionalDisplayText(from: turnText))
+          let canonicalText = state.append(
+            missingPostToolActionFeedback(mode: requestState.activeMode))
+          store.setAssistantMessage(id: assistantID, text: canonicalText, role: .assistant)
+          if !state.provisionalText.isEmpty {
+            store.setAssistantMessage(
+              id: assistantID,
+              text: state.displayText,
+              role: .assistant,
+              touch: false,
+              streaming: true)
+          }
+          store.saveConversations()
+          state.nativeContinuationMessages.removeAll()
+          continue
+        }
         state.clearProvisionalText()
         store.setAssistantMessage(id: assistantID, text: state.append(turnText), role: .assistant)
         store.assistantResponseCompleted()
@@ -333,6 +361,14 @@ enum AssistantToolLoop {
 
       switch outcome {
       case .final(let turnText):
+        if shouldRetryHiddenOnlyFinal(turnText, state: state, maxRepairTurns: maxRepairTurns) {
+          state.debugRoundIndex += 1
+          state.repairTurnCount += 1
+          let text = state.append(missingPostToolActionFeedback(mode: requestState.activeMode))
+          updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
+          state.nativeContinuationMessages.removeAll()
+          continue
+        }
         state.clearProvisionalText()
         let text = state.append(turnText)
         updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
@@ -610,35 +646,43 @@ enum AssistantToolLoop {
       baselineText: baselineText,
       store: store)
 
-    var visibleText = response
-    var runBlocks: [String] = []
+    var transcriptText = response
+    var assistantContent = response
+    var appendedRunBlocks: [String] = []
     var results: [CallResult] = []
     var completedRuns: [(fingerprint: String, result: String)] = []
     var executedCount = 0
 
     for call in calls {
       try Task.checkCancellation()
-      visibleText = visibleText.replacingOccurrences(of: call.rawBlock, with: "")
-      guard executedCount < remainingToolCalls else { continue }
+      replaceFirstOccurrence(of: call.rawBlock, in: &assistantContent, with: "")
+      guard executedCount < remainingToolCalls else {
+        replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
+        continue
+      }
       let result = try await runToolCall(
         call,
         parseDefinitions: parseDefinitions,
         mode: mode,
         conversationID: conversationID,
         store: store)
-      runBlocks.append(ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result))
+      let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
+      if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
+        appendedRunBlocks.append(runBlock)
+      }
       results.append(result)
       completedRuns.append((toolCallFingerprint(result.call), result.result))
       executedCount += 1
     }
 
-    let text = ([visibleText.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+    let text = ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+      + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
     return RunOutput(
       text: text,
       nativeMessages: nativeMessages(
-        assistantContent: visibleText,
+        assistantContent: assistantContent,
         results: results,
         definitions: parseDefinitions,
         mode: mode,
@@ -678,20 +722,25 @@ enum AssistantToolLoop {
     remainingToolCalls: Int,
     parseDefinitions: [ToolDefinition]
   ) -> String {
-    var visibleText = response
-    var runBlocks: [String] = []
+    var transcriptText = response
+    var appendedRunBlocks: [String] = []
     var pendingCount = 0
     for call in calls {
-      visibleText = visibleText.replacingOccurrences(of: call.rawBlock, with: "")
-      guard pendingCount < remainingToolCalls else { continue }
+      guard pendingCount < remainingToolCalls else {
+        replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
+        continue
+      }
       let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
-      runBlocks.append(
-        ToolAgentRegistry.makeRunBlock(
-          call: normalizedCall,
-          result: "Waiting for host tool result."))
+      let runBlock = ToolAgentRegistry.makeRunBlock(
+        call: normalizedCall,
+        result: "Waiting for host tool result.")
+      if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
+        appendedRunBlocks.append(runBlock)
+      }
       pendingCount += 1
     }
-    return ([visibleText.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+    return ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+      + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
   }
@@ -709,16 +758,20 @@ enum AssistantToolLoop {
     mcpStatuses: [UUID: EndpointConnectionState],
     store: AppStore
   ) async throws -> RunOutput {
-    var visibleText = response
-    var runBlocks: [String] = []
+    var transcriptText = response
+    var assistantContent = response
+    var appendedRunBlocks: [String] = []
     var results: [CallResult] = []
     var completedRuns: [(fingerprint: String, result: String)] = []
     var executedCount = 0
 
     for call in calls {
       try Task.checkCancellation()
-      visibleText = visibleText.replacingOccurrences(of: call.rawBlock, with: "")
-      guard executedCount < remainingToolCalls else { continue }
+      replaceFirstOccurrence(of: call.rawBlock, in: &assistantContent, with: "")
+      guard executedCount < remainingToolCalls else {
+        replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
+        continue
+      }
       let result = try await runToolCall(
         call,
         parseDefinitions: parseDefinitions,
@@ -729,19 +782,23 @@ enum AssistantToolLoop {
         mcpResources: mcpResources,
         mcpStatuses: mcpStatuses,
         store: store)
-      runBlocks.append(ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result))
+      let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
+      if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
+        appendedRunBlocks.append(runBlock)
+      }
       results.append(result)
       completedRuns.append((toolCallFingerprint(result.call), result.result))
       executedCount += 1
     }
 
-    let text = ([visibleText.trimmingCharacters(in: .whitespacesAndNewlines)] + runBlocks)
+    let text = ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+      + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
     return RunOutput(
       text: text,
       nativeMessages: nativeMessages(
-        assistantContent: visibleText,
+        assistantContent: assistantContent,
         results: results,
         definitions: parseDefinitions,
         mode: mode,
@@ -1283,6 +1340,16 @@ enum AssistantToolLoop {
       provisionalText: provisionalDisplayText(from: response))
   }
 
+  private static func shouldRetryHiddenOnlyFinal(
+    _ response: String,
+    state: State,
+    maxRepairTurns: Int
+  ) -> Bool {
+    state.toolCallCount > 0
+      && state.repairTurnCount < maxRepairTurns
+      && !hasVisibleText(response)
+  }
+
   private static func responseToolOutcome(
     calls: [ParsedToolCall],
     definitions: [ToolDefinition],
@@ -1320,8 +1387,8 @@ enum AssistantToolLoop {
   }
 
   private static func provisionalDisplayText(from response: String) -> String? {
-    let visible = MessageContentFilter.render(response).visibleText
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let rendered = MessageContentFilter.render(response)
+    let visible = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !visible.isEmpty else { return nil }
     return response.trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -1449,9 +1516,9 @@ enum AssistantToolLoop {
   }
 
   private static func isToolResultError(_ result: String) -> Bool {
-    result.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = result.trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
-      .hasPrefix("error:")
+    return normalized.hasPrefix("error:") || normalized.hasPrefix("error calling ")
   }
 
   private static func shouldEchoReasoningContent(
@@ -1493,5 +1560,18 @@ enum AssistantToolLoop {
 
   private static func combinedAssistantText(baseline: String, turnText: String) -> String {
     baseline.isEmpty ? turnText : "\(baseline)\n\n\(turnText)"
+  }
+
+  @discardableResult
+  private static func replaceFirstOccurrence(
+    of target: String,
+    in text: inout String,
+    with replacement: String
+  ) -> Bool {
+    guard !target.isEmpty, let range = text.range(of: target) else {
+      return false
+    }
+    text.replaceSubrange(range, with: replacement)
+    return true
   }
 }

@@ -3,12 +3,23 @@ import Foundation
 struct RenderedMessageContent {
   var visibleText: String
   var hiddenSections: [HiddenMessageSection]
+  var parts: [RenderedMessagePart]
 }
 
 struct HiddenMessageSection: Identifiable {
   var id: Int
   var tag: String
   var content: String
+}
+
+struct RenderedMessagePart: Identifiable {
+  enum Kind {
+    case visible(String)
+    case hidden(HiddenMessageSection)
+  }
+
+  var id: Int
+  var kind: Kind
 }
 
 enum MessageContentFilter {
@@ -24,7 +35,8 @@ enum MessageContentFilter {
     guard text.contains("<") else {
       return RenderedMessageContent(
         visibleText: normalizedVisibleText(text),
-        hiddenSections: []
+        hiddenSections: [],
+        parts: visibleParts(from: text)
       )
     }
 
@@ -59,34 +71,43 @@ enum MessageContentFilter {
     var cursor = text.startIndex
     var visible = ""
     var hiddenSections: [HiddenMessageSection] = []
+    var parts: [RenderedMessagePart] = []
 
     while let opening = nextOpening(in: text, from: cursor, hiding: tags) {
-      visible += text[cursor..<opening.range.lowerBound]
+      appendVisibleSegment(
+        text[cursor..<opening.range.lowerBound],
+        visible: &visible,
+        parts: &parts)
       if opening.isSelfClosing {
         cursor = opening.range.upperBound
         continue
       }
       if let closing = matchingClose(for: opening, in: text) {
-        appendHiddenSection(
+        if let section = appendHiddenSection(
           tag: opening.tag,
           content: String(text[opening.range.upperBound..<closing.range.lowerBound]),
           hiddenSections: &hiddenSections
-        )
+        ) {
+          appendHiddenPart(section, parts: &parts)
+        }
         cursor = closing.range.upperBound
       } else {
-        appendHiddenSection(
+        if let section = appendHiddenSection(
           tag: opening.tag,
           content: String(text[opening.range.upperBound..<text.endIndex]),
           hiddenSections: &hiddenSections
-        )
+        ) {
+          appendHiddenPart(section, parts: &parts)
+        }
         cursor = text.endIndex
       }
     }
 
-    visible += text[cursor..<text.endIndex]
+    appendVisibleSegment(text[cursor..<text.endIndex], visible: &visible, parts: &parts)
     return RenderedMessageContent(
       visibleText: normalizedVisibleText(visible),
-      hiddenSections: hiddenSections
+      hiddenSections: hiddenSections,
+      parts: parts
     )
   }
 
@@ -386,12 +407,37 @@ enum MessageContentFilter {
     tag: String,
     content: String,
     hiddenSections: inout [HiddenMessageSection]
-  ) {
+  ) -> HiddenMessageSection? {
     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    hiddenSections.append(
-      HiddenMessageSection(id: hiddenSections.count, tag: tag, content: trimmed)
-    )
+    guard !trimmed.isEmpty else { return nil }
+    let section = HiddenMessageSection(id: hiddenSections.count, tag: tag, content: trimmed)
+    hiddenSections.append(section)
+    return section
+  }
+
+  private static func appendVisibleSegment(
+    _ segment: Substring,
+    visible: inout String,
+    parts: inout [RenderedMessagePart]
+  ) {
+    guard !segment.isEmpty else { return }
+    visible += segment
+    let normalized = normalizedVisibleText(String(segment))
+    guard !normalized.isEmpty else { return }
+    parts.append(RenderedMessagePart(id: parts.count, kind: .visible(normalized)))
+  }
+
+  private static func appendHiddenPart(
+    _ section: HiddenMessageSection,
+    parts: inout [RenderedMessagePart]
+  ) {
+    parts.append(RenderedMessagePart(id: parts.count, kind: .hidden(section)))
+  }
+
+  private static func visibleParts(from text: String) -> [RenderedMessagePart] {
+    let visible = normalizedVisibleText(text)
+    guard !visible.isEmpty else { return [] }
+    return [RenderedMessagePart(id: 0, kind: .visible(visible))]
   }
 
   private static func normalizedVisibleText(_ text: String) -> String {

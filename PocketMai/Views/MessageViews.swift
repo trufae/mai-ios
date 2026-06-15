@@ -176,49 +176,63 @@ private struct MessageBubbleContent: View, Equatable {
       text: displayText
     )
     let canRenderMarkdown = renderMarkdown && (!isStreaming || appearance.liveMarkdown)
-    let usesMarkdown =
-      canRenderMarkdown
-      && (appearance.justifyText || MarkdownParser.mayContainMarkdown(prepared.visibleText))
-    let markdownBlocks =
-      !usesMarkdown || prepared.visibleText.isEmpty
-      ? []
-      : MessageRenderCache.markdownBlocks(
-        messageID: message.id,
-        text: prepared.visibleText
-      )
 
     VStack(alignment: .leading, spacing: 6) {
-      ForEach(prepared.toolEntries) { entry in
-        ToolCallRow(entry: entry)
+      ForEach(Array(prepared.parts.enumerated()), id: \.element.id) { index, part in
+        switch part {
+        case .visible(_, let visibleText):
+          let usesMarkdown = usesMarkdown(for: visibleText, canRenderMarkdown: canRenderMarkdown)
+          let markdownBlocks = markdownBlocks(
+            for: visibleText,
+            usesMarkdown: usesMarkdown,
+            partID: part.id)
+          bubble(
+            visibleText: visibleText,
+            rawText: displayText,
+            markdownBlocks: markdownBlocks,
+            usesMarkdown: usesMarkdown,
+            actionText: prepared.visibleText,
+            includeMessageExtras: index == prepared.firstVisiblePartIndex
+          )
+        case .tool(_, let entry):
+          ToolCallRow(entry: entry)
+        case .reasoning(_, let section):
+          FoldableMetaSection(
+            title: "Reasoning",
+            systemImage: "brain",
+            content: isStreaming ? Self.tailWindow(section.content) : section.content,
+            monospaced: false,
+            dimmedContent: true,
+            initiallyExpanded: showThinking,
+            italicContent: true,
+            markdownAppearance: canRenderMarkdown ? appearance : nil,
+            renderImages: renderImages
+          )
+        case .transcript(_, let section):
+          FoldableMetaSection(
+            title: "Prompt Transcript",
+            systemImage: "text.bubble",
+            content: section.content,
+            monospaced: true,
+            initiallyExpanded: false
+          )
+        }
       }
-      ForEach(prepared.reasoningSections) { section in
-        FoldableMetaSection(
-          title: "Reasoning",
-          systemImage: "brain",
-          content: isStreaming ? Self.tailWindow(section.content) : section.content,
-          monospaced: false,
-          dimmedContent: true,
-          initiallyExpanded: showThinking,
-          italicContent: true,
-          markdownAppearance: canRenderMarkdown ? appearance : nil,
-          renderImages: renderImages
-        )
-      }
-      ForEach(prepared.transcriptSections) { section in
-        FoldableMetaSection(
-          title: "Prompt Transcript",
-          systemImage: "text.bubble",
-          content: section.content,
-          monospaced: true,
-          initiallyExpanded: false
-        )
-      }
-      if !prepared.hideBubble {
+      if prepared.parts.isEmpty && !prepared.hideBubble {
+        let usesMarkdown = usesMarkdown(
+          for: prepared.visibleText,
+          canRenderMarkdown: canRenderMarkdown)
+        let markdownBlocks = markdownBlocks(
+          for: prepared.visibleText,
+          usesMarkdown: usesMarkdown,
+          partID: 0)
         bubble(
           visibleText: prepared.visibleText,
           rawText: displayText,
           markdownBlocks: markdownBlocks,
-          usesMarkdown: usesMarkdown
+          usesMarkdown: usesMarkdown,
+          actionText: prepared.visibleText,
+          includeMessageExtras: true
         )
       }
     }
@@ -233,14 +247,17 @@ private struct MessageBubbleContent: View, Equatable {
     visibleText: String,
     rawText: String,
     markdownBlocks: [MarkdownBlock],
-    usesMarkdown: Bool
+    usesMarkdown: Bool,
+    actionText: String? = nil,
+    includeMessageExtras: Bool = true
   )
     -> some View
   {
     let messageFont = appearance.swiftUIFont(for: message.role)
     let messageFontFamily = appearance.fontFamily(for: message.role)
+    let hasIncludedExtras = includeMessageExtras && hasDisplayedAttachmentContent
     let bubbleView = VStack(alignment: .leading, spacing: 8) {
-      if showsSenderHeader {
+      if includeMessageExtras && showsSenderHeader {
         HStack(spacing: 6) {
           Image(systemName: iconName)
             .foregroundStyle(iconColor)
@@ -249,17 +266,19 @@ private struct MessageBubbleContent: View, Equatable {
             .foregroundStyle(.secondary)
         }
       }
-      ForEach(textAttachments) { attachment in
-        MessageAttachmentRow(attachment: attachment) {
-          if attachment.kind == .textFile {
-            selectedTextAttachment = attachment
+      if includeMessageExtras {
+        ForEach(textAttachments) { attachment in
+          MessageAttachmentRow(attachment: attachment) {
+            if attachment.kind == .textFile {
+              selectedTextAttachment = attachment
+            }
           }
         }
       }
       if visibleText.isEmpty {
         if isLiveAssistantResponse {
           AssistantTypingIndicator(fontSize: appearance.fontSize)
-        } else if !hasDisplayedAttachmentContent {
+        } else if !hasIncludedExtras {
           Text("...")
             .font(messageFont)
             .foregroundStyle(.secondary)
@@ -280,15 +299,17 @@ private struct MessageBubbleContent: View, Equatable {
           .foregroundStyleIfPresent(plainBodyForegroundStyle)
           .fixedSize(horizontal: false, vertical: true)
       }
-      if hasVoiceRecording {
+      if includeMessageExtras && hasVoiceRecording {
         VoiceRecordingPlaybackButton(message: message)
       }
-      ForEach(imageAttachments) { attachment in
-        MessageImageAttachmentView(
-          attachment: attachment,
-          onOpen: { selectedImageAttachment = attachment },
-          onSave: { saveImageAttachment(attachment) }
-        )
+      if includeMessageExtras {
+        ForEach(imageAttachments) { attachment in
+          MessageImageAttachmentView(
+            attachment: attachment,
+            onOpen: { selectedImageAttachment = attachment },
+            onSave: { saveImageAttachment(attachment) }
+          )
+        }
       }
     }
     .padding(14)
@@ -340,7 +361,7 @@ private struct MessageBubbleContent: View, Equatable {
     if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
-          messageContextMenu(visibleText: visibleText)
+          messageContextMenu(visibleText: actionText ?? visibleText)
         } preview: {
           Color.clear
             .frame(width: 1, height: 1)
@@ -349,6 +370,24 @@ private struct MessageBubbleContent: View, Equatable {
     } else {
       bubbleWithSheet
     }
+  }
+
+  private func usesMarkdown(for visibleText: String, canRenderMarkdown: Bool) -> Bool {
+    canRenderMarkdown
+      && (appearance.justifyText || MarkdownParser.mayContainMarkdown(visibleText))
+  }
+
+  @MainActor
+  private func markdownBlocks(
+    for visibleText: String,
+    usesMarkdown: Bool,
+    partID: Int
+  ) -> [MarkdownBlock] {
+    guard usesMarkdown, !visibleText.isEmpty else { return [] }
+    return MessageRenderCache.markdownBlocks(
+      messageID: message.id,
+      partID: partID,
+      text: visibleText)
   }
 
   @ViewBuilder
@@ -1545,13 +1584,37 @@ extension View {
 
 private struct PreparedMessageContent {
   let visibleText: String
-  let toolEntries: [ToolEntry]
-  let reasoningSections: [HiddenMessageSection]
-  let transcriptSections: [HiddenMessageSection]
+  let parts: [MessageRenderPart]
   let hideBubble: Bool
+
+  var firstVisiblePartIndex: Int? {
+    parts.firstIndex {
+      if case .visible = $0 { return true }
+      return false
+    }
+  }
+}
+
+private enum MessageRenderPart: Identifiable {
+  case visible(id: Int, text: String)
+  case tool(id: Int, entry: ToolEntry)
+  case reasoning(id: Int, section: HiddenMessageSection)
+  case transcript(id: Int, section: HiddenMessageSection)
+
+  var id: Int {
+    switch self {
+    case .visible(let id, _), .tool(let id, _), .reasoning(let id, _), .transcript(let id, _):
+      return id
+    }
+  }
 }
 
 private enum MessageRenderCache {
+  private struct MarkdownCacheKey: Hashable {
+    let messageID: UUID
+    let partID: Int
+  }
+
   private struct PreparedEntry {
     let text: String
     let content: PreparedMessageContent
@@ -1564,8 +1627,9 @@ private enum MessageRenderCache {
 
   private static let maxEntries = 160
   @MainActor private static var preparedEntries: [UUID: PreparedEntry] = [:]
-  @MainActor private static var markdownEntries: [UUID: MarkdownEntry] = [:]
-  @MainActor private static var accessOrder: [UUID] = []
+  @MainActor private static var markdownEntries: [MarkdownCacheKey: MarkdownEntry] = [:]
+  @MainActor private static var preparedAccessOrder: [UUID] = []
+  @MainActor private static var markdownAccessOrder: [MarkdownCacheKey] = []
 
   @MainActor
   static func preparedContent(messageID: UUID, text: String) -> PreparedMessageContent {
@@ -1575,18 +1639,38 @@ private enum MessageRenderCache {
     }
 
     let rendered = MessageContentFilter.render(text)
-    let toolEntries = rendered.hiddenSections
-      .filter { $0.tag == "context" || $0.tag == "tool_context" || $0.tag == "tool_run" }
-      .flatMap { ToolCallParser.parse($0.content) }
-    let reasoningSections = rendered.hiddenSections.filter { $0.tag == "think" }
-    let transcriptSections = rendered.hiddenSections.filter { $0.tag == "conversation" }
+    var parts: [MessageRenderPart] = []
+    for part in rendered.parts {
+      switch part.kind {
+      case .visible(let visibleText):
+        parts.append(.visible(id: parts.count, text: visibleText))
+      case .hidden(let section):
+        switch section.tag {
+        case "context", "tool_context", "tool_run":
+          for entry in ToolCallParser.parse(section.content) {
+            parts.append(.tool(id: parts.count, entry: entry))
+          }
+        case "think":
+          parts.append(.reasoning(id: parts.count, section: section))
+        case "conversation":
+          parts.append(.transcript(id: parts.count, section: section))
+        default:
+          break
+        }
+      }
+    }
     let visibleEmpty = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    let hasMeta = !toolEntries.isEmpty || !reasoningSections.isEmpty || !transcriptSections.isEmpty
+    let hasMeta = parts.contains {
+      switch $0 {
+      case .visible:
+        return false
+      case .tool, .reasoning, .transcript:
+        return true
+      }
+    }
     let content = PreparedMessageContent(
       visibleText: rendered.visibleText,
-      toolEntries: toolEntries,
-      reasoningSections: reasoningSections,
-      transcriptSections: transcriptSections,
+      parts: parts,
       hideBubble: visibleEmpty && hasMeta
     )
 
@@ -1597,30 +1681,40 @@ private enum MessageRenderCache {
   }
 
   @MainActor
-  static func markdownBlocks(messageID: UUID, text: String) -> [MarkdownBlock] {
-    if let entry = markdownEntries[messageID], entry.text == text {
-      markAccessed(messageID)
+  static func markdownBlocks(messageID: UUID, partID: Int = 0, text: String) -> [MarkdownBlock] {
+    let key = MarkdownCacheKey(messageID: messageID, partID: partID)
+    if let entry = markdownEntries[key], entry.text == text {
+      markAccessed(key)
       return entry.blocks
     }
 
     let blocks = MarkdownParser.blocks(from: text)
-    markdownEntries[messageID] = MarkdownEntry(text: text, blocks: blocks)
-    markAccessed(messageID)
+    markdownEntries[key] = MarkdownEntry(text: text, blocks: blocks)
+    markAccessed(key)
     pruneIfNeeded()
     return blocks
   }
 
   @MainActor
   private static func markAccessed(_ id: UUID) {
-    accessOrder.removeAll { $0 == id }
-    accessOrder.append(id)
+    preparedAccessOrder.removeAll { $0 == id }
+    preparedAccessOrder.append(id)
+  }
+
+  @MainActor
+  private static func markAccessed(_ key: MarkdownCacheKey) {
+    markdownAccessOrder.removeAll { $0 == key }
+    markdownAccessOrder.append(key)
   }
 
   @MainActor
   private static func pruneIfNeeded() {
-    while accessOrder.count > maxEntries, let oldest = accessOrder.first {
-      accessOrder.removeFirst()
+    while preparedAccessOrder.count > maxEntries, let oldest = preparedAccessOrder.first {
+      preparedAccessOrder.removeFirst()
       preparedEntries.removeValue(forKey: oldest)
+    }
+    while markdownAccessOrder.count > maxEntries, let oldest = markdownAccessOrder.first {
+      markdownAccessOrder.removeFirst()
       markdownEntries.removeValue(forKey: oldest)
     }
   }
