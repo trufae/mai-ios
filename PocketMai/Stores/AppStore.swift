@@ -1856,6 +1856,15 @@ final class AppStore: ObservableObject {
     responseHaptics.streamPacketReceived()
   }
 
+  func assistantThinkingTokenReceived() {
+    guard settings.appearance.hapticsEnabled,
+      settings.appearance.vibrateOnEveryStreamPacket
+    else {
+      return
+    }
+    responseHaptics.thinkingTokenReceived()
+  }
+
   func assistantResponseCompleted() {
     guard settings.appearance.hapticsEnabled else {
       return
