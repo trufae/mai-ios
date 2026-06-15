@@ -12,6 +12,7 @@ struct SidebarView: View {
   @State private var pendingRename: PendingConversationRename?
   @State private var renameDraft = ""
   @State private var showingFolderManager = false
+  @State private var showingMoveDestinationDialog = false
   @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
@@ -54,6 +55,23 @@ struct SidebarView: View {
       }
     } message: { deletion in
       Text(deletion.message)
+    }
+    .confirmationDialog(
+      moveDestinationDialogTitle,
+      isPresented: $showingMoveDestinationDialog,
+      titleVisibility: .visible
+    ) {
+      ForEach(store.conversationFolders) { folder in
+        Button {
+          moveSelected(to: folder.id)
+        } label: {
+          Label(folder.displayName, systemImage: folder.systemImage)
+        }
+        .disabled(!selectedConversationsCanMove(to: folder.id))
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(moveDestinationDialogMessage)
     }
     .onAppear { refreshVisibleConversations() }
     .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
@@ -371,11 +389,11 @@ struct SidebarView: View {
     }
     Spacer(minLength: compact ? 0 : 4)
     FloatingActionIcon(
-      systemImage: selectedFolderIsArchived ? "tray.and.arrow.up" : "archivebox",
-      accessibilityLabel: selectedFolderIsArchived ? "Move selected to Default" : "Archive selected",
+      systemImage: "folder",
+      accessibilityLabel: "Move selected",
       compact: compact
     ) {
-      moveSelectedToArchiveOrDefault()
+      showingMoveDestinationDialog = true
     }
     .disabled(!hasSelection)
     .opacity(hasSelection ? 1 : 0.5)
@@ -399,16 +417,25 @@ struct SidebarView: View {
     }
   }
 
-  private var selectedFolderIsArchived: Bool {
-    store.selectedConversationFolderID == ConversationFolder.archivedID
+  private var moveDestinationDialogTitle: String {
+    selectedIDs.count == 1 ? "Move Conversation" : "Move Conversations"
   }
 
-  private func moveSelectedToArchiveOrDefault() {
+  private var moveDestinationDialogMessage: String {
+    "Select a destination folder for \(selectedIDs.count) selected conversation\(selectedIDs.count == 1 ? "" : "s")."
+  }
+
+  private func selectedConversationsCanMove(to folderID: String) -> Bool {
+    store.conversationSummaries.contains { summary in
+      selectedIDs.contains(summary.id) && summary.folderID != folderID
+    }
+  }
+
+  private func moveSelected(to folderID: String) {
     let ids = selectedIDs
-    let destination =
-      selectedFolderIsArchived ? ConversationFolder.defaultID : ConversationFolder.archivedID
+    guard !ids.isEmpty else { return }
     Task {
-      await store.moveConversations(ids, to: destination)
+      await store.moveConversations(ids, to: folderID)
     }
     withAnimation {
       isSelectionMode = false
