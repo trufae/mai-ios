@@ -205,6 +205,7 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 enum AppStartupBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
+  case continueChats
   case newChat
   case lastConversation
 
@@ -212,6 +213,7 @@ enum AppStartupBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
 
   var displayName: String {
     switch self {
+    case .continueChats: "Continue Chats"
     case .newChat: "New Chat"
     case .lastConversation: "Last Conversation"
     }
@@ -2252,7 +2254,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var attachmentImageSize: AttachmentImageSize = .prompt
   var mlxMaxKVSize: MLXKVCacheSize = .auto
   var mlxAutoCompact: Bool = false
-  var startupBehavior: AppStartupBehavior = .newChat
+  var startupBehavior: AppStartupBehavior = .continueChats
   var lastSelectedConversationID: UUID? = nil
   var openAPIServer: OpenAPIServerSettings = OpenAPIServerSettings()
   var recentChatLanguageIdentifiers: [String] = []
@@ -2464,7 +2466,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)) ?? .auto
     mlxAutoCompact = (try? c.decode(Bool.self, forKey: .mlxAutoCompact)) ?? false
     startupBehavior =
-      (try? c.decode(AppStartupBehavior.self, forKey: .startupBehavior)) ?? .newChat
+      (try? c.decode(AppStartupBehavior.self, forKey: .startupBehavior)) ?? .continueChats
     lastSelectedConversationID = try? c.decode(UUID.self, forKey: .lastSelectedConversationID)
     openAPIServer =
       (try? c.decode(OpenAPIServerSettings.self, forKey: .openAPIServer))

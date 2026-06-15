@@ -891,17 +891,44 @@ struct ChatView: View {
 
   private var emptyState: some View {
     GeometryReader { proxy in
-      VStack(spacing: 12) {
-        EmptyChatLogo()
-        Text("Your pocket assistant")
-          .font(.title3)
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(.center)
+      let suggestions = previousConversationSuggestions
+      VStack(spacing: 20) {
+        VStack(spacing: 12) {
+          EmptyChatLogo()
+          Text("Your pocket assistant")
+            .font(.title3)
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.center)
+        }
+
+        if !suggestions.isEmpty {
+          PreviousConversationSuggestions(suggestions: suggestions) { id in
+            Task { await store.selectConversation(id: id) }
+          }
+        }
       }
-      .padding(.horizontal, 32)
+      .frame(maxWidth: 430)
+      .padding(.horizontal, 24)
+      .frame(width: proxy.size.width)
       .position(x: proxy.size.width / 2, y: proxy.size.height * (2.0 / 3.0))
     }
     .frame(maxWidth: .infinity)
+  }
+
+  private var previousConversationSuggestions: [ConversationSummary] {
+    guard store.settings.startupBehavior == .continueChats else { return [] }
+    return store.conversationSummaries
+      .filter { summary in
+        summary.id != store.selectedConversationID && summary.hasMessages
+      }
+      .sorted { lhs, rhs in
+        if lhs.updatedAt != rhs.updatedAt {
+          return lhs.updatedAt > rhs.updatedAt
+        }
+        return lhs.createdAt > rhs.createdAt
+      }
+      .prefix(3)
+      .map { $0 }
   }
 
   private var messageSelectionActions: some View {
@@ -974,6 +1001,135 @@ private struct EmptyChatLogo: View {
         .resizable()
         .scaledToFit()
     }
+  }
+}
+
+private struct PreviousConversationSuggestions: View {
+  let suggestions: [ConversationSummary]
+  let onSelect: (UUID) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Continue previous conversations...")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+
+      VStack(spacing: 8) {
+        ForEach(suggestions) { suggestion in
+          PreviousConversationSuggestionButton(
+            conversation: suggestion,
+            onSelect: { onSelect(suggestion.id) }
+          )
+        }
+      }
+    }
+  }
+}
+
+private struct PreviousConversationSuggestionButton: View {
+  let conversation: ConversationSummary
+  let onSelect: () -> Void
+
+  var body: some View {
+    Button(action: onSelect) {
+      HStack(spacing: 10) {
+        Image(systemName: "clock.arrow.circlepath")
+          .font(.body)
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 22, height: 22)
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text(conversation.displayTitle)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+
+          Text(ConversationRecencyLabel.text(for: conversation.updatedAt))
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+
+        Spacer(minLength: 8)
+
+        Image(systemName: "chevron.right")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+      }
+      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(conversation.displayTitle)
+    .accessibilityHint(ConversationRecencyLabel.text(for: conversation.updatedAt))
+  }
+}
+
+private enum ConversationRecencyLabel {
+  static func text(
+    for date: Date,
+    relativeTo now: Date = Date(),
+    calendar: Calendar = .current
+  ) -> String {
+    if date >= now {
+      return "Recently"
+    }
+
+    if now.timeIntervalSince(date) < 30 * 60 {
+      return "Recently"
+    }
+
+    if calendar.isDateInToday(date) {
+      return "Today"
+    }
+
+    if calendar.isDateInYesterday(date) {
+      return "Yesterday"
+    }
+
+    let startOfToday = calendar.startOfDay(for: now)
+    let startOfDate = calendar.startOfDay(for: date)
+    let dayCount = max(
+      0,
+      calendar.dateComponents([.day], from: startOfDate, to: startOfToday).day ?? 0)
+
+    if dayCount < 7 {
+      return "\(dayCount) days ago"
+    }
+
+    if dayCount < 14 {
+      return "Last week"
+    }
+
+    if dayCount < 31 {
+      let weeks = max(2, dayCount / 7)
+      return "\(weeks) weeks ago"
+    }
+
+    let monthCount = max(
+      1,
+      calendar.dateComponents([.month], from: startOfDate, to: startOfToday).month ?? 1)
+    if monthCount == 1 {
+      return "Last month"
+    }
+    if monthCount < 12 {
+      return "\(monthCount) months ago"
+    }
+
+    let yearCount = max(
+      1,
+      calendar.dateComponents([.year], from: startOfDate, to: startOfToday).year ?? 1)
+    return yearCount == 1 ? "Last year" : "\(yearCount) years ago"
   }
 }
 
