@@ -1637,7 +1637,8 @@ private enum MessageRenderCache {
   private static let maxEntries = 160
   @MainActor private static var preparedEntries: [UUID: PreparedEntry] = [:]
   @MainActor private static var markdownEntries: [MarkdownCacheKey: MarkdownEntry] = [:]
-  @MainActor private static var streamingMarkdownEntries: [MarkdownCacheKey: StreamingMarkdownEntry] = [:]
+  @MainActor private static var streamingMarkdownEntries:
+    [MarkdownCacheKey: StreamingMarkdownEntry] = [:]
   @MainActor private static var preparedAccessOrder: [UUID] = []
   @MainActor private static var markdownAccessOrder: [MarkdownCacheKey] = []
 
@@ -2445,6 +2446,11 @@ struct MarkdownContentView: View {
             code: code,
             appearance: appearance,
             allowsTextSelection: allowsTextSelection)
+        case .mermaid(let source):
+          MermaidBlockView(
+            source: source,
+            appearance: appearance,
+            allowsTextSelection: allowsTextSelection)
         case .table(let headers, let rows, let alignments):
           MarkdownTableView(
             headers: headers,
@@ -2539,9 +2545,9 @@ private struct MarkdownHorizontalRuleView: View {
     Rectangle()
       .fill(Color.secondary.opacity(0.5))
       .frame(height: max(CGFloat(0.5), appearance.markdownMetric(0.75)))
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, appearance.markdownMetric(7))
-    .accessibilityHidden(true)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, appearance.markdownMetric(7))
+      .accessibilityHidden(true)
   }
 }
 
@@ -4828,7 +4834,8 @@ struct MarkdownTableView: View {
       return widths
     }
 
-    let remainingWidth = max(availableWidth - fixedWidth, minimumWidth * CGFloat(flexibleColumns.count))
+    let remainingWidth = max(
+      availableWidth - fixedWidth, minimumWidth * CGFloat(flexibleColumns.count))
     let flexibleIdealWidth = flexibleColumns.reduce(CGFloat(0)) { total, index in
       total + max(idealWidths[index], minimumWidth)
     }
@@ -4841,7 +4848,8 @@ struct MarkdownTableView: View {
       widths[index] = max(share, minimumWidth)
     }
 
-    return widthsFittingAvailableWidth(widths, availableWidth: availableWidth, floorWidths: floorWidths)
+    return widthsFittingAvailableWidth(
+      widths, availableWidth: availableWidth, floorWidths: floorWidths)
   }
 
   private func widthsFittingAvailableWidth(
@@ -5004,6 +5012,156 @@ struct CodeBlockView: View {
   private var codePreviewTitle: String {
     let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "Code" : trimmed
+  }
+}
+
+private struct MermaidBlockView: View {
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.displayScale) private var displayScale
+  @Environment(\.isFullChatScreenshotRendering) private var isFullChatScreenshotRendering
+
+  let source: String
+  let appearance: AppearanceSettings
+  let allowsTextSelection: Bool
+
+  @State private var rendered: MarkdownMermaidRenderedPNG?
+  @State private var renderError: String?
+  @State private var isRendering = false
+  @State private var showingFullscreenImage = false
+
+  private var renderStyle: MarkdownMermaidRenderStyle {
+    colorScheme == .dark ? .dark : .light
+  }
+
+  private var renderScale: Double {
+    Double(displayScale)
+  }
+
+  private var renderID: RenderID {
+    RenderID(source: source, style: renderStyle, scaleKey: Int((renderScale * 100).rounded()))
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack {
+        Text("mermaid")
+          .font(.caption.monospaced().weight(.semibold))
+          .foregroundStyle(.secondary)
+        Spacer()
+        if !isFullChatScreenshotRendering {
+          Button {
+            showingFullscreenImage = true
+          } label: {
+            Image(systemName: "eye")
+          }
+          .buttonStyle(.glass)
+          .help("View diagram")
+          .disabled(renderedImage == nil)
+          Button {
+            UIPasteboard.general.string = source
+          } label: {
+            Image(systemName: "doc.on.doc")
+          }
+          .buttonStyle(.glass)
+          .help("Copy Mermaid source")
+        }
+      }
+      .padding(.horizontal, appearance.markdownMetric(10))
+      .padding(.vertical, appearance.markdownMetric(7))
+      Divider()
+      content
+    }
+    .task(id: renderID) {
+      await renderDiagram(style: renderStyle, scale: renderScale)
+    }
+    .fullScreenCover(isPresented: $showingFullscreenImage) {
+      if let renderedImage, let rendered {
+        MessageImageFullscreenView(image: renderedImage, imageData: rendered.data)
+      }
+    }
+    .background(.thinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(.secondary.opacity(0.18), lineWidth: 1)
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    if let rendered, let image = renderedImage {
+      Button {
+        showingFullscreenImage = true
+      } label: {
+        Image(uiImage: image)
+          .resizable()
+          .interpolation(.high)
+          .aspectRatio(rendered.aspectRatio, contentMode: .fit)
+          .frame(maxWidth: rendered.displayWidth, alignment: .leading)
+          .padding(appearance.markdownMetric(12))
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Mermaid diagram")
+      .accessibilityHint("Opens full screen")
+    } else if isRendering {
+      HStack(spacing: appearance.markdownMetric(8)) {
+        ProgressView()
+        Text("Rendering diagram")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, minHeight: appearance.markdownMetric(74), alignment: .center)
+      .padding(appearance.markdownMetric(12))
+    } else if let renderError {
+      VStack(alignment: .leading, spacing: appearance.markdownMetric(8)) {
+        Text("Could not render Mermaid diagram.")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Text(renderError)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+        ScrollView(.horizontal, showsIndicators: true) {
+          Text(SyntaxHighlighter.highlight(source, language: "mermaid"))
+            .font(appearance.codeFont)
+            .lineSpacing(CGFloat(appearance.lineSpacing))
+            .textSelectionIfEnabled(allowsTextSelection)
+            .fixedSize(horizontal: true, vertical: true)
+        }
+      }
+      .padding(appearance.markdownMetric(12))
+    }
+  }
+
+  private var renderedImage: UIImage? {
+    guard let rendered else { return nil }
+    return UIImage(data: rendered.data)
+  }
+
+  @MainActor
+  private func renderDiagram(style: MarkdownMermaidRenderStyle, scale: Double) async {
+    rendered = nil
+    renderError = nil
+    isRendering = true
+    do {
+      let output = try await MarkdownMermaidRenderCache.shared.renderedPNG(
+        source: source,
+        style: style,
+        scale: scale)
+      guard !Task.isCancelled else { return }
+      rendered = output
+      renderError = output == nil ? "The diagram source produced no image." : nil
+    } catch {
+      guard !Task.isCancelled else { return }
+      renderError = error.localizedDescription
+    }
+    isRendering = false
+  }
+
+  private struct RenderID: Hashable {
+    let source: String
+    let style: MarkdownMermaidRenderStyle
+    let scaleKey: Int
   }
 }
 
@@ -5278,6 +5436,7 @@ struct MarkdownBlock: Identifiable {
     case blockquote(String)
     case horizontalRule
     case code(language: String, code: String)
+    case mermaid(String)
     case table(headers: [String], rows: [[String]], alignments: [TextAlignment])
     case taskList(items: [TaskListItem])
     case bulletList(items: [String])
@@ -5303,6 +5462,8 @@ extension MarkdownBlock {
       return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     case .code(_, let code):
       return code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    case .mermaid(let source):
+      return source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     case .table(let headers, let rows, _):
       return headers.isEmpty && rows.isEmpty
     case .taskList(let items):
@@ -5357,10 +5518,14 @@ enum MarkdownParser {
       textBuffer.removeAll()
     }
 
-    func flushCode() {
+    func flushCode(fenceClosed: Bool) {
       let code = codeBuffer.joined(separator: "\n")
       if !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        appendBlock(.code(language: language, code: code))
+        if fenceClosed, MarkdownMermaidRenderer.isMermaidLanguage(language) {
+          appendBlock(.mermaid(code))
+        } else {
+          appendBlock(.code(language: language, code: code))
+        }
       }
       codeBuffer.removeAll()
       language = ""
@@ -5391,7 +5556,7 @@ enum MarkdownParser {
 
       if trimmed.hasPrefix("```") {
         if inCode {
-          flushCode()
+          flushCode(fenceClosed: true)
           inCode = false
         } else {
           flushText()
@@ -5502,7 +5667,7 @@ enum MarkdownParser {
       index += 1
     }
     if inCode {
-      flushCode()
+      flushCode(fenceClosed: false)
     }
     flushText()
     return blocks.isEmpty ? [MarkdownBlock(id: idOffset, kind: .text(text))] : blocks

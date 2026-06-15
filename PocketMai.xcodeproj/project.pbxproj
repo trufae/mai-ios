@@ -12,6 +12,7 @@
 		A10000000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* MLXLMCommon */; };
 		A10000000000000000000004 /* MLXLMHFAPI in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* MLXLMHFAPI */; };
 		A10000000000000000000005 /* MLXLMTokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000015 /* MLXLMTokenizers */; };
+		A10000000000000000000006 /* BeautifulMermaid in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000016 /* BeautifulMermaid */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +55,7 @@
 				A10000000000000000000003 /* MLXLMCommon in Frameworks */,
 				A10000000000000000000004 /* MLXLMHFAPI in Frameworks */,
 				A10000000000000000000005 /* MLXLMTokenizers in Frameworks */,
+				A10000000000000000000006 /* BeautifulMermaid in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -103,6 +105,7 @@
 				A10000000000000000000013 /* MLXLMCommon */,
 				A10000000000000000000014 /* MLXLMHFAPI */,
 				A10000000000000000000015 /* MLXLMTokenizers */,
+				A10000000000000000000016 /* BeautifulMermaid */,
 			);
 			productName = PocketMai;
 			productReference = A00000000000000000000007 /* PocketMai.app */;
@@ -137,6 +140,7 @@
 				A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				A10000000000000000000023 /* XCRemoteSwiftPackageReference "swift-hf-api-mlx" */,
 				A10000000000000000000024 /* XCRemoteSwiftPackageReference "swift-tokenizers-mlx" */,
+				A10000000000000000000025 /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A00000000000000000000011 /* Products */;
@@ -338,6 +342,14 @@
 				minimumVersion = 0.2.0;
 			};
 		};
+		A10000000000000000000025 /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/lukilabs/beautiful-mermaid-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.4;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -365,6 +377,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000024 /* XCRemoteSwiftPackageReference "swift-tokenizers-mlx" */;
 			productName = MLXLMTokenizers;
+		};
+		A10000000000000000000016 /* BeautifulMermaid */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000025 /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */;
+			productName = BeautifulMermaid;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

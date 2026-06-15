@@ -7,8 +7,7 @@ enum EPUBExporter {
     conversation: Conversation,
     includeThinking: Bool? = nil,
     imageSize: AttachmentImageSize = .full
-  ) async throws -> Data
-  {
+  ) async throws -> Data {
     let title = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     let bookTitle = title.isEmpty ? "Chat" : title
     let identifier = "urn:uuid:\(conversation.id.uuidString.lowercased())"
@@ -136,6 +135,7 @@ enum EPUBExporter {
     private var attachmentHrefsByID: [UUID: String] = [:]
     private var attachmentResourcesByID: [UUID: ImageResource] = [:]
     private var remoteHrefsBySource: [String: String] = [:]
+    private var mermaidResourcesBySource: [String: ImageResource] = [:]
     private var nextImageIndex = 1
     private let imageSize: AttachmentImageSize
 
@@ -210,6 +210,43 @@ enum EPUBExporter {
       remoteHrefsBySource[normalizedSource] = resource.href
     }
 
+    mutating func addMermaidDiagram(source: String) async {
+      let normalizedSource = MarkdownMermaidRenderer.normalizedSource(source)
+      guard !normalizedSource.isEmpty,
+        mermaidResourcesBySource[normalizedSource] == nil
+      else {
+        return
+      }
+
+      do {
+        guard
+          let rendered = try await MarkdownMermaidRenderCache.shared.renderedPNG(
+            source: normalizedSource,
+            style: .light,
+            scale: 2.0)
+        else {
+          return
+        }
+
+        let prepared = preparedImageData(
+          data: rendered.data,
+          mediaType: "image/png",
+          fallbackWidth: rendered.width,
+          fallbackHeight: rendered.height)
+        let resource = makeResource(
+          data: prepared.data,
+          mediaType: prepared.mediaType,
+          width: prepared.width,
+          height: prepared.height,
+          suggestedFilename: "mermaid-diagram.png",
+          url: nil)
+        resources.append(resource)
+        mermaidResourcesBySource[normalizedSource] = resource
+      } catch {
+        return
+      }
+    }
+
     func hasImageAttachments(for message: ChatMessage) -> Bool {
       message.attachments.contains { attachment in
         attachment.kind == .image && attachmentHrefsByID[attachment.id] != nil
@@ -226,6 +263,10 @@ enum EPUBExporter {
 
     func href(forMarkdownImageSource source: String) -> String? {
       remoteHrefsBySource[source.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    func resource(forMermaidDiagram source: String) -> ImageResource? {
+      mermaidResourcesBySource[MarkdownMermaidRenderer.normalizedSource(source)]
     }
 
     func firstImageAttachmentDisplayName(in message: ChatMessage) -> String? {
@@ -291,13 +332,15 @@ enum EPUBExporter {
           data,
           mediaType,
           Int(pixelSize.width.rounded()),
-          Int(pixelSize.height.rounded()))
+          Int(pixelSize.height.rounded())
+        )
       }
       return (
         output,
         "image/jpeg",
         Int(target.width.rounded()),
-        Int(target.height.rounded()))
+        Int(target.height.rounded())
+      )
     }
 
     private static func remoteImageURL(from source: String) -> URL? {
@@ -396,7 +439,8 @@ enum EPUBExporter {
       if isSupportedImageExtension(filenameExtension) {
         return filenameExtension == "jpeg" ? "jpg" : filenameExtension
       }
-      let urlExtension = url?.pathExtension
+      let urlExtension =
+        url?.pathExtension
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased() ?? ""
       if isSupportedImageExtension(urlExtension) {
@@ -407,7 +451,8 @@ enum EPUBExporter {
 
     private static func normalizedImageMediaType(_ raw: String?) -> String? {
       guard let raw else { return nil }
-      let mediaType = raw
+      let mediaType =
+        raw
         .components(separatedBy: ";")
         .first?
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -581,13 +626,26 @@ enum EPUBExporter {
       for source in markdownImageSources(in: content.visibleText) {
         try await catalog.addRemoteImage(source: source)
       }
+      await addMermaidDiagrams(in: content.visibleText, to: &catalog)
       for section in content.reasoningSections {
         for source in markdownImageSources(in: section) {
           try await catalog.addRemoteImage(source: source)
         }
+        await addMermaidDiagrams(in: section, to: &catalog)
       }
     }
     return catalog
+  }
+
+  private static func addMermaidDiagrams(
+    in text: String,
+    to catalog: inout ImageResourceCatalog
+  ) async {
+    for block in MarkdownParser.blocks(from: text) {
+      if case .mermaid(let source) = block.kind {
+        await catalog.addMermaidDiagram(source: source)
+      }
+    }
   }
 
   private static func makeTitleChapter(conversation: Conversation, bookTitle: String) -> Chapter {
@@ -656,6 +714,8 @@ enum EPUBExporter {
         if let first = items.first {
           return truncateSnippet(stripInlineMarkdown(first.text))
         }
+      case .mermaid:
+        return "Mermaid diagram"
       case .horizontalRule, .table, .code, .footnotes:
         continue
       }
@@ -727,6 +787,25 @@ enum EPUBExporter {
     case .code(let language, let code):
       let attr = language.isEmpty ? "" : " class=\"language-\(xmlEscaped(language))\""
       return "<pre><code\(attr)>\(highlightedCodeHTML(code, language: language))</code></pre>"
+    case .mermaid(let source):
+      if let resource = imageCatalog.resource(forMermaidDiagram: source) {
+        var imageAttributes =
+          "src=\"\(xmlEscaped(resource.href))\" alt=\"Mermaid diagram\""
+        if let width = resource.width, width > 0 {
+          imageAttributes += " width=\"\(width)\""
+        }
+        if let height = resource.height, height > 0 {
+          imageAttributes += " height=\"\(height)\""
+        }
+        return """
+          <figure class="mermaid-diagram">
+            <img \(imageAttributes)/>
+          </figure>
+          """
+      }
+      return """
+        <pre><code class="language-mermaid">\(highlightedCodeHTML(source, language: "mermaid"))</code></pre>
+        """
     case .table(let headers, let rows, let alignments):
       return tableHTML(
         headers: headers,
@@ -1032,7 +1111,8 @@ enum EPUBExporter {
         if let src = imageCatalog.href(forMarkdownImageSource: image.source) {
           result += "<img src=\"\(xmlEscaped(src))\" alt=\"\(xmlEscaped(image.altText))\"/>"
         } else if let href = MarkdownWebURL.normalizedString(from: image.source) {
-          let label = image.altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          let label =
+            image.altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? image.source
             : image.altText
           result +=
@@ -1418,6 +1498,11 @@ enum EPUBExporter {
     th { background: #f6f8fa; font-weight: 600; }
     img { max-width: 100%; height: auto; }
     section.attachments { margin-top: 1em; }
+    figure.mermaid-diagram {
+      margin: 0.9em 0;
+      page-break-inside: avoid;
+      text-align: left;
+    }
     figure.attachment-image { margin: 0.9em 0; }
     figure.attachment-image figcaption {
       color: #57606a;
