@@ -409,15 +409,10 @@ enum AssistantToolLoop {
       let turnText =
         requestState.definitions.isEmpty
         ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
-      if request.conversation.usesStreaming {
-        store?.assistantStreamPacketReceived()
-      }
-      store?.setAssistantMessage(
-        id: assistantID,
-        text: state.displayText(appending: turnText),
-        role: .assistant,
-        touch: false,
-        streaming: true)
+      store?.receiveStreamingAssistantText(
+        state.displayText(appending: turnText),
+        for: assistantID,
+        vibrate: request.conversation.usesStreaming)
     }
     try Task.checkCancellation()
     return requestState.definitions.isEmpty

@@ -1847,13 +1847,18 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func assistantStreamPacketReceived() {
-    guard settings.appearance.hapticsEnabled,
+  /// Single entry point for streamed assistant tokens. Refreshes the live
+  /// message buffer (UI + markdown observe it via `StreamingTextStore`) and,
+  /// for token-by-token providers, drives the streaming haptics. Add future
+  /// per-token handlers here so they share one throttled fan-out.
+  func receiveStreamingAssistantText(_ text: String, for id: UUID, vibrate: Bool) {
+    setAssistantMessage(id: id, text: text, role: .assistant, touch: false, streaming: true)
+    guard vibrate, settings.appearance.hapticsEnabled,
       settings.appearance.vibrateOnEveryStreamPacket
     else {
       return
     }
-    responseHaptics.streamPacketReceived()
+    responseHaptics.streamSnapshotReceived(text)
   }
 
   func assistantResponseCompleted() {
