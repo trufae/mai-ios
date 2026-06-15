@@ -2053,7 +2053,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var useGPSLocation: Bool = false
   var manualLocation: String = ""
   var weatherLocation: String = ""
-  var webSearchProvider: WebSearchProvider = .duckDuckGo
+  var webSearchProvider: WebSearchProvider = .exa
   var webSearchSearXNGURL: String = ""
   var webSearchSearXNGUsername: String = ""
   var webSearchSearXNGPassword: String = ""
