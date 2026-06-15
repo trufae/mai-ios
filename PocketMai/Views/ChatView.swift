@@ -917,7 +917,7 @@ struct ChatView: View {
 
   private var previousConversationSuggestions: [ConversationSummary] {
     guard store.settings.startupBehavior == .continueChats else { return [] }
-    return store.conversationSummaries
+    let mostRecent = store.conversationSummaries
       .filter { summary in
         summary.id != store.selectedConversationID && summary.hasMessages
       }
@@ -929,6 +929,7 @@ struct ChatView: View {
       }
       .prefix(3)
       .map { $0 }
+    return Array(mostRecent.reversed())
   }
 
   private var messageSelectionActions: some View {
@@ -1021,6 +1022,7 @@ private struct PreviousConversationSuggestions: View {
         ForEach(suggestions) { suggestion in
           PreviousConversationSuggestionButton(
             conversation: suggestion,
+            isMostRecent: suggestions.last?.id == suggestion.id,
             onSelect: { onSelect(suggestion.id) }
           )
         }
@@ -1031,6 +1033,7 @@ private struct PreviousConversationSuggestions: View {
 
 private struct PreviousConversationSuggestionButton: View {
   let conversation: ConversationSummary
+  let isMostRecent: Bool
   let onSelect: () -> Void
 
   var body: some View {
@@ -1062,10 +1065,16 @@ private struct PreviousConversationSuggestionButton: View {
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
       .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+      .background {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(isMostRecent ? Color.accentColor.opacity(0.10) : Color.clear)
+      }
       .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
       .overlay {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+          .stroke(
+            isMostRecent ? Color.accentColor.opacity(0.20) : Color.primary.opacity(0.08),
+            lineWidth: 1)
       }
       .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
