@@ -2576,7 +2576,9 @@ final class AppStore: ObservableObject {
     mcpTools[server.id] = nil
     mcpResources[server.id] = nil
     do {
-      let catalog = try await MCPHTTPClient.fetchCatalog(server: server)
+      let catalog = try await MCPHTTPClient.fetchCatalog(
+        server: server,
+        timeout: settings.mcpRequestTimeoutInterval)
       mcpTools[server.id] = catalog.tools
       mcpResources[server.id] = catalog.resources
       if let transport = catalog.transport,
@@ -3268,6 +3270,8 @@ final class AppStore: ObservableObject {
       nativeToolNames: nativeToolNames,
       maxToolCallsPerTurn: maxToolCalls,
       maxRepairTurnsPerTurn: maxRepairTurns,
+      mcpRequestTimeoutSeconds: AppSettings.clampedMCPRequestTimeoutSeconds(
+        settings.mcpRequestTimeoutSeconds),
       yoloModeEnabled: settings.yoloModeEnabled,
       useToolProxy: settings.useToolProxy,
       airplaneModeEnabled: settings.airplaneModeEnabled,
@@ -3618,6 +3622,7 @@ final class AppStore: ObservableObject {
     SettingsToolsBackup(
       toolSettings: settings.toolSettings,
       mcpServers: settings.mcpServers,
+      mcpRequestTimeoutSeconds: settings.mcpRequestTimeoutSeconds,
       defaultEnabledTools: settings.defaultEnabledTools,
       defaultEnabledMCPServers: settings.defaultEnabledMCPServers,
       defaultEnabledMCPTools: settings.defaultEnabledMCPTools,
@@ -3822,6 +3827,9 @@ final class AppStore: ObservableObject {
   private func applyToolsBackup(_ payload: SettingsToolsBackup) {
     settings.toolSettings = payload.toolSettings
     settings.mcpServers = payload.mcpServers
+    if let timeout = payload.mcpRequestTimeoutSeconds {
+      settings.mcpRequestTimeoutSeconds = AppSettings.clampedMCPRequestTimeoutSeconds(timeout)
+    }
     if let tools = payload.defaultEnabledTools {
       settings.defaultEnabledTools = tools
     }

@@ -1466,6 +1466,9 @@ struct SettingsView: View {
     Text(toolProxySummary)
       .font(.caption)
       .foregroundStyle(.secondary)
+    Stepper(value: mcpRequestTimeoutBinding, in: AppSettings.mcpRequestTimeoutRange, step: 5) {
+      Text("MCP request timeout: \(store.settings.mcpRequestTimeoutSeconds)s")
+    }
     ForEach(store.settings.mcpServers) { server in
       NavigationLink(value: SettingsRoute.mcpServer(server.id)) {
         mcpRow(server)
@@ -1888,6 +1891,16 @@ struct SettingsView: View {
       get: { store.settings[keyPath: keyPath] },
       set: { value in
         store.settings[keyPath: keyPath] = value
+        store.saveSettings()
+      }
+    )
+  }
+
+  private var mcpRequestTimeoutBinding: Binding<Int> {
+    Binding(
+      get: { AppSettings.clampedMCPRequestTimeoutSeconds(store.settings.mcpRequestTimeoutSeconds) },
+      set: { value in
+        store.settings.mcpRequestTimeoutSeconds = AppSettings.clampedMCPRequestTimeoutSeconds(value)
         store.saveSettings()
       }
     )
@@ -4268,9 +4281,12 @@ private struct MCPServerDetailView: View {
     draftTransport = snapshot.transport
     draftProtocolVersion = nil
     draftServerName = nil
+    let timeout = store.settings.mcpRequestTimeoutInterval
     Task {
       do {
-        let catalog = try await MCPHTTPClient.fetchCatalog(server: snapshot)
+        let catalog = try await MCPHTTPClient.fetchCatalog(
+          server: snapshot,
+          timeout: timeout)
         await MainActor.run {
           guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
             return
@@ -4342,10 +4358,13 @@ private struct MCPServerDetailView: View {
     draftTransport = snapshot.transport
     draftProtocolVersion = nil
     draftServerName = nil
+    let timeout = store.settings.mcpRequestTimeoutInterval
 
     Task {
       do {
-        let catalog = try await MCPHTTPClient.fetchCatalog(server: snapshot)
+        let catalog = try await MCPHTTPClient.fetchCatalog(
+          server: snapshot,
+          timeout: timeout)
         await MainActor.run {
           guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
             isSaving = false

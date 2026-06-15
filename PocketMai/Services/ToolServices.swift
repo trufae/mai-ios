@@ -1109,13 +1109,13 @@ enum MCPHTTPClient {
     var protocolVersion: String?
   }
 
-  static func fetchCatalog(server: MCPServer) async throws -> Catalog {
-    let handshake = try await ensureSession(for: server)
+  static func fetchCatalog(server: MCPServer, timeout: TimeInterval) async throws -> Catalog {
+    let handshake = try await ensureSession(for: server, timeout: timeout)
     var firstError: Error?
 
     let tools: [MCPToolDescriptor]
     do {
-      tools = try await fetchTools(server: server)
+      tools = try await fetchTools(server: server, timeout: timeout)
     } catch {
       if isMethodNotFound(error) {
         tools = []
@@ -1127,7 +1127,7 @@ enum MCPHTTPClient {
 
     let resources: [MCPResourceDescriptor]
     do {
-      resources = try await fetchResources(server: server)
+      resources = try await fetchResources(server: server, timeout: timeout)
     } catch {
       if isMethodNotFound(error) {
         resources = []
@@ -1148,8 +1148,10 @@ enum MCPHTTPClient {
       protocolVersion: handshake.protocolVersion)
   }
 
-  static func fetchTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
-    let data = try await send(server: server, method: "tools/list")
+  static func fetchTools(server: MCPServer, timeout: TimeInterval) async throws
+    -> [MCPToolDescriptor]
+  {
+    let data = try await send(server: server, method: "tools/list", timeout: timeout)
     guard let raw = jsonObject(from: data) else {
       throw ChatProviderError.providerRequestFailed("MCP returned non-JSON response.")
     }
@@ -1173,8 +1175,10 @@ enum MCPHTTPClient {
     }
   }
 
-  static func fetchResources(server: MCPServer) async throws -> [MCPResourceDescriptor] {
-    let data = try await send(server: server, method: "resources/list")
+  static func fetchResources(server: MCPServer, timeout: TimeInterval) async throws
+    -> [MCPResourceDescriptor]
+  {
+    let data = try await send(server: server, method: "resources/list", timeout: timeout)
     guard let raw = jsonObject(from: data) else {
       throw ChatProviderError.providerRequestFailed("MCP returned non-JSON response.")
     }
@@ -1193,9 +1197,12 @@ enum MCPHTTPClient {
     }
   }
 
-  static func readResource(server: MCPServer, uri: String) async throws -> String {
+  static func readResource(server: MCPServer, uri: String, timeout: TimeInterval) async throws
+    -> String
+  {
     let params: [String: AnyCodable] = ["uri": AnyCodable(uri)]
-    let data = try await send(server: server, method: "resources/read", params: params)
+    let data = try await send(
+      server: server, method: "resources/read", params: params, timeout: timeout)
     let responseData: Data
     if let raw = jsonObject(from: data),
       let error = responseError(from: raw)
@@ -1221,14 +1228,18 @@ enum MCPHTTPClient {
   }
 
   static func callTool(
-    server: MCPServer, name: String, arguments: [String: AgentToolArgumentValue]
+    server: MCPServer,
+    name: String,
+    arguments: [String: AgentToolArgumentValue],
+    timeout: TimeInterval
   ) async throws -> String {
     let argsCodable = arguments.compactMapValues(anyCodable)
     let params: [String: AnyCodable] = [
       "name": AnyCodable(name),
       "arguments": AnyCodable(argsCodable),
     ]
-    let data = try await send(server: server, method: "tools/call", params: params)
+    let data = try await send(
+      server: server, method: "tools/call", params: params, timeout: timeout)
     let responseData: Data
     if let raw = jsonObject(from: data),
       let error = responseError(from: raw)
@@ -1295,15 +1306,17 @@ enum MCPHTTPClient {
     server: MCPServer,
     method: String,
     params: [String: AnyCodable]? = nil,
+    timeout: TimeInterval,
     retryingInvalidSession: Bool = true
   ) async throws -> Data {
-    let handshake = try await ensureSession(for: server)
+    let handshake = try await ensureSession(for: server, timeout: timeout)
     do {
       let response = try await sendRaw(
         server: server,
         method: method,
         params: params,
-        sessionID: handshake.sessionID)
+        sessionID: handshake.sessionID,
+        timeout: timeout)
       if let raw = jsonObject(from: response.data),
         let error = responseError(from: raw)
       {
@@ -1313,6 +1326,7 @@ enum MCPHTTPClient {
             server: server,
             method: method,
             params: params,
+            timeout: timeout,
             retryingInvalidSession: false)
         }
         throw error
@@ -1325,13 +1339,16 @@ enum MCPHTTPClient {
           server: server,
           method: method,
           params: params,
+          timeout: timeout,
           retryingInvalidSession: false)
       }
       throw error
     }
   }
 
-  private static func ensureSession(for server: MCPServer) async throws -> MCPHandshake {
+  private static func ensureSession(for server: MCPServer, timeout: TimeInterval) async throws
+    -> MCPHandshake
+  {
     let baseURL = try normalizedBaseURL(for: server).absoluteString
     if let cached = await sessions.session(for: server.id, baseURL: baseURL) {
       return cached.handshake
@@ -1341,7 +1358,8 @@ enum MCPHTTPClient {
       server: server,
       method: "initialize",
       params: initializeParams,
-      sessionID: nil)
+      sessionID: nil,
+      timeout: timeout)
     if let raw = jsonObject(from: response.data),
       let error = responseError(from: raw)
     {
@@ -1364,11 +1382,16 @@ enum MCPHTTPClient {
       protocolVersion: metadata.protocolVersion,
       serverName: metadata.serverName)
     await sessions.set(handshake, for: server.id, baseURL: baseURL)
-    try await sendInitializedNotification(server: server, sessionID: response.sessionID)
+    try await sendInitializedNotification(
+      server: server, sessionID: response.sessionID, timeout: timeout)
     return handshake
   }
 
-  private static func sendInitializedNotification(server: MCPServer, sessionID: String?)
+  private static func sendInitializedNotification(
+    server: MCPServer,
+    sessionID: String?,
+    timeout: TimeInterval
+  )
     async throws
   {
     let response = try await sendRaw(
@@ -1376,7 +1399,8 @@ enum MCPHTTPClient {
       method: "notifications/initialized",
       params: nil,
       sessionID: sessionID,
-      isNotification: true)
+      isNotification: true,
+      timeout: timeout)
     if let raw = jsonObject(from: response.data),
       let error = responseError(from: raw)
     {
@@ -1389,7 +1413,8 @@ enum MCPHTTPClient {
     method: String,
     params: [String: AnyCodable]? = nil,
     sessionID: String?,
-    isNotification: Bool = false
+    isNotification: Bool = false,
+    timeout: TimeInterval
   ) async throws -> MCPHTTPResponse {
     let url = try normalizedBaseURL(for: server)
     var request = URLRequest(url: url)
@@ -1400,7 +1425,7 @@ enum MCPHTTPClient {
     if let sessionID, !sessionID.isEmpty {
       request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
     }
-    request.timeoutInterval = 8
+    request.timeoutInterval = timeout
     let body = JSONRPCRequest(
       id: isNotification ? nil : Int.random(in: 1...Int.max),
       method: method,

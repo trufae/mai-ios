@@ -439,7 +439,10 @@ enum ToolAgentRegistry {
       }
       do {
         return try await MCPHTTPClient.callTool(
-          server: server, name: call.name, arguments: call.argumentValues)
+          server: server,
+          name: call.name,
+          arguments: call.argumentValues,
+          timeout: store.settings.mcpRequestTimeoutInterval)
       } catch {
         if MCPHTTPClient.isAvailabilityFailure(error) {
           store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)
@@ -516,7 +519,10 @@ enum MCPResourceTool {
       return "Error: no enabled MCP server can read resource '\(trimmedURI)'.\(suffix)"
     }
     do {
-      return try await MCPHTTPClient.readResource(server: server, uri: trimmedURI)
+      return try await MCPHTTPClient.readResource(
+        server: server,
+        uri: trimmedURI,
+        timeout: store.settings.mcpRequestTimeoutInterval)
     } catch {
       if MCPHTTPClient.isAvailabilityFailure(error) {
         store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)

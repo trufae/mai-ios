@@ -1483,6 +1483,7 @@ struct ConversationToolCallingDebug: Codable, Equatable, Sendable {
   var nativeToolNames: [String]
   var maxToolCallsPerTurn: Int
   var maxRepairTurnsPerTurn: Int
+  var mcpRequestTimeoutSeconds: Int?
   var yoloModeEnabled: Bool
   var useToolProxy: Bool
   var airplaneModeEnabled: Bool
@@ -1652,6 +1653,7 @@ struct SettingsPromptsBackup: Codable, Sendable {
 struct SettingsToolsBackup: Codable, Sendable {
   var toolSettings: NativeToolSettings
   var mcpServers: [MCPServer]
+  var mcpRequestTimeoutSeconds: Int?
   var defaultEnabledTools: Set<BuiltInToolID>?
   var defaultEnabledMCPServers: Set<UUID>?
   var defaultEnabledMCPTools: Set<String>?
@@ -2199,6 +2201,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   static let defaultTools: Set<BuiltInToolID> = []
   static let defaultMCPServers: Set<UUID> = []
   static let defaultMCPTools: Set<String> = []
+  static let defaultMCPRequestTimeoutSeconds = 60
+  static let mcpRequestTimeoutRange = 5...300
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful",
     text:
@@ -2238,6 +2242,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var defaultEnabledMCPTools: Set<String> = AppSettings.defaultMCPTools
   var toolSettings: NativeToolSettings = .defaults
   var mcpServers: [MCPServer] = []
+  var mcpRequestTimeoutSeconds: Int = AppSettings.defaultMCPRequestTimeoutSeconds
   var memory: String = ""
   var toolCallingMode: ToolCallingMode = .text
   var maxToolCallsPerTurn: Int = 8
@@ -2265,6 +2270,14 @@ struct AppSettings: Codable, Equatable, Sendable {
   static let defaults = AppSettings()
 
   init() {}
+
+  static func clampedMCPRequestTimeoutSeconds(_ seconds: Int) -> Int {
+    min(mcpRequestTimeoutRange.upperBound, max(mcpRequestTimeoutRange.lowerBound, seconds))
+  }
+
+  var mcpRequestTimeoutInterval: TimeInterval {
+    TimeInterval(Self.clampedMCPRequestTimeoutSeconds(mcpRequestTimeoutSeconds))
+  }
 
   func defaultPrompt() -> SystemPrompt {
     systemPrompts.first(where: { $0.id == defaultSystemPromptID }) ?? systemPrompts.first
@@ -2369,7 +2382,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     case openAIEndpoints, systemPrompts, userPrompts, defaultSystemPromptID, compactPrompt
     case defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
-    case toolSettings, mcpServers, memory, toolCallingMode, maxToolCallsPerTurn
+    case toolSettings, mcpServers, mcpRequestTimeoutSeconds, memory, toolCallingMode,
+      maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
     case appearance, conversation, renderMarkdownInChat, renderMarkdownImagesInChat
@@ -2433,6 +2447,9 @@ struct AppSettings: Codable, Equatable, Sendable {
       toolSettings.calendarEventCreationEnabled = false
     }
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
+    mcpRequestTimeoutSeconds = Self.clampedMCPRequestTimeoutSeconds(
+      (try? c.decode(Int.self, forKey: .mcpRequestTimeoutSeconds))
+        ?? Self.defaultMCPRequestTimeoutSeconds)
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""
     let storedMode = (try? c.decode(String.self, forKey: .toolCallingMode)) ?? "text"
     let migratedFromLegacyProxy = (storedMode == "proxy")
