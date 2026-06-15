@@ -3441,6 +3441,20 @@ final class AppStore: ObservableObject {
 
   func exportSettingsBackupFile(scope: SettingsBackupScope, includeAudio: Bool = false) -> URL? {
     let envelope = makeBackupEnvelope(scope: scope, includeAudio: includeAudio)
+    return exportSettingsBackupFile(envelope: envelope, filename: backupFilename(scope: scope))
+  }
+
+  func exportEndpointBackupFile(_ endpoint: OpenAIEndpoint) -> URL? {
+    let providers = SettingsProvidersBackup(
+      endpoints: [endpoint],
+      selectedEndpointID: endpoint.id,
+      defaultProvider: .openAICompatible)
+    let envelope = SettingsBackupEnvelope(providers: providers)
+    return exportSettingsBackupFile(envelope: envelope, filename: backupFilename(for: endpoint))
+  }
+
+  private func exportSettingsBackupFile(envelope: SettingsBackupEnvelope, filename: String) -> URL?
+  {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
@@ -3449,7 +3463,6 @@ final class AppStore: ObservableObject {
       return nil
     }
     do {
-      let filename = backupFilename(scope: scope)
       let url = try ConversationExportFiles.url(filename: filename, fileExtension: "json")
       try data.write(to: url, options: .atomic)
       return url
@@ -3548,9 +3561,7 @@ final class AppStore: ObservableObject {
   }
 
   private func backupFilename(scope: SettingsBackupScope) -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmmss"
-    let stamp = formatter.string(from: Date())
+    let stamp = backupTimestamp()
     let suffix: String
     switch scope {
     case .everything: suffix = "everything"
@@ -3560,6 +3571,24 @@ final class AppStore: ObservableObject {
     case .conversations: suffix = "conversations"
     }
     return "PocketMai-\(suffix)-\(stamp)"
+  }
+
+  private func backupFilename(for endpoint: OpenAIEndpoint) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+      .union(.newlines)
+      .union(.controlCharacters)
+    let name = endpoint.displayName
+      .components(separatedBy: invalid)
+      .joined(separator: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let providerName = name.isEmpty ? "provider" : String(name.prefix(48))
+    return "PocketMai-provider-\(providerName)-\(backupTimestamp())"
+  }
+
+  private func backupTimestamp() -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    return formatter.string(from: Date())
   }
 
   @discardableResult

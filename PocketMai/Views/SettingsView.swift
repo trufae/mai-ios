@@ -2558,6 +2558,21 @@ extension View {
   }
 }
 
+private struct EndpointBackupSharedFile: Identifiable {
+  let id = UUID()
+  let url: URL
+}
+
+private struct EndpointBackupShareSheet: UIViewControllerRepresentable {
+  let activityItems: [Any]
+
+  func makeUIViewController(context: Context) -> UIActivityViewController {
+    UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+  }
+
+  func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
 private struct EndpointDetailView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
@@ -2565,6 +2580,7 @@ private struct EndpointDetailView: View {
   @State private var endpoint: OpenAIEndpoint
   @State private var modelFilter = ""
   @State private var toastMessage: String?
+  @State private var shareFile: EndpointBackupSharedFile?
   @State private var isSigningIn = false
   @State private var showAdvancedOAuthConfiguration = false
   @State private var showOllamaScanner = false
@@ -2650,6 +2666,18 @@ private struct EndpointDetailView: View {
       } footer: {
         statusFooter
       }
+
+      Section {
+        Button {
+          exportProvider()
+        } label: {
+          Label("Export Provider JSON", systemImage: "square.and.arrow.up")
+        }
+      } footer: {
+        Text(
+          "Exports only this provider, including its API key and connection settings. Import it from Settings > Import > Provider Settings on another device."
+        )
+      }
     }
     .navigationTitle(endpoint.displayName)
     .navigationBarTitleDisplayMode(.inline)
@@ -2668,6 +2696,9 @@ private struct EndpointDetailView: View {
         applyScannedOllamaURL(url)
         showOllamaScanner = false
       }
+    }
+    .sheet(item: $shareFile) { file in
+      EndpointBackupShareSheet(activityItems: [file.url])
     }
     .settingsToast($toastMessage)
   }
@@ -3098,6 +3129,26 @@ private struct EndpointDetailView: View {
     }
     store.saveSettings()
     dismiss()
+  }
+
+  private func exportProvider() {
+    normalizeAuthForSelectedProvider()
+    var exportedEndpoint = endpoint
+    if let message = EndpointNameResolution.validationMessage(
+      for: exportedEndpoint,
+      in: store.settings.openAIEndpoints)
+    {
+      showToast(message)
+      return
+    }
+    if let savedName = EndpointNameResolution.savedName(for: exportedEndpoint) {
+      exportedEndpoint.name = savedName
+    }
+    guard let url = store.exportEndpointBackupFile(exportedEndpoint) else {
+      showToast(store.errorMessage ?? "Could not export provider.")
+      return
+    }
+    shareFile = EndpointBackupSharedFile(url: url)
   }
 
   private func showToast(_ message: String) {
