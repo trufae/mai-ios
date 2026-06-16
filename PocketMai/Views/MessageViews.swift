@@ -534,21 +534,26 @@ private struct MessageBubbleContent: View, Equatable {
       return AnyShapeStyle(.red.opacity(0.14))
     }
     if isUser {
+      guard appearance.solidBubbles.includes(.user) else {
+        return AnyShapeStyle(Color.clear)
+      }
       return MessageBubblePalette.accentBackground(
         tint: appearance.tint,
         colorScheme: colorScheme,
         lightOpacity: 0.14,
         systemDarkOpacity: 0.28)
     }
-    if message.role == .assistant && !appearance.solidResponseBubbles {
-      return AnyShapeStyle(Color.clear)
-    }
-    if message.role == .assistant && colorScheme == .dark {
-      return MessageBubblePalette.accentBackground(
-        tint: appearance.tint,
-        colorScheme: colorScheme,
-        lightOpacity: 0.14,
-        systemDarkOpacity: 0.20)
+    if message.role == .assistant {
+      guard appearance.solidBubbles.includes(.assistant) else {
+        return AnyShapeStyle(Color.clear)
+      }
+      if colorScheme == .dark {
+        return MessageBubblePalette.accentBackground(
+          tint: appearance.tint,
+          colorScheme: colorScheme,
+          lightOpacity: 0.14,
+          systemDarkOpacity: 0.20)
+      }
     }
     return AnyShapeStyle(.regularMaterial)
   }

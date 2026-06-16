@@ -665,9 +665,12 @@ struct SettingsView: View {
     }
     .pickerStyle(.menu)
 
-    Toggle(
-      "Solid response bubbles",
-      isOn: settingsBinding(\.appearance.solidResponseBubbles))
+    Picker("Solid bubbles", selection: settingsBinding(\.appearance.solidBubbles)) {
+      ForEach(SolidBubbleMode.allCases) { mode in
+        Text(mode.displayName).tag(mode)
+      }
+    }
+    .pickerStyle(.menu)
     Toggle("Render Markdown", isOn: settingsBinding(\.renderMarkdownInChat))
     Toggle("Live Markdown", isOn: settingsBinding(\.appearance.liveMarkdown))
     Toggle("Render images", isOn: settingsBinding(\.renderMarkdownImagesInChat))
