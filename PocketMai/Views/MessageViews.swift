@@ -537,11 +537,7 @@ private struct MessageBubbleContent: View, Equatable {
       guard appearance.solidBubbles.includes(.user) else {
         return AnyShapeStyle(Color.clear)
       }
-      return MessageBubblePalette.accentBackground(
-        tint: appearance.tint,
-        colorScheme: colorScheme,
-        lightOpacity: 0.14,
-        systemDarkOpacity: 0.28)
+      return MessageBubblePalette.selectedRowBackground()
     }
     if message.role == .assistant {
       guard appearance.solidBubbles.includes(.assistant) else {
@@ -578,6 +574,10 @@ private struct MessageBubbleContent: View, Equatable {
 }
 
 private enum MessageBubblePalette {
+  static func selectedRowBackground() -> AnyShapeStyle {
+    AnyShapeStyle(Color.accentColor.opacity(0.22))
+  }
+
   static func accentBackground(
     tint: AppearanceTint,
     colorScheme: ColorScheme,
