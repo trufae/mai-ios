@@ -22,6 +22,86 @@ extension EnvironmentValues {
   }
 }
 
+private struct ImageSaveNotice: Identifiable, Equatable {
+  enum Kind: Equatable {
+    case success
+    case failure
+  }
+
+  let id = UUID()
+  let kind: Kind
+  let message: String
+
+  static func success() -> ImageSaveNotice {
+    ImageSaveNotice(kind: .success, message: "Saved to Photos")
+  }
+
+  static func failure(_ message: String) -> ImageSaveNotice {
+    ImageSaveNotice(kind: .failure, message: message)
+  }
+
+  var systemImage: String {
+    switch kind {
+    case .success: "checkmark.circle.fill"
+    case .failure: "exclamationmark.triangle.fill"
+    }
+  }
+
+  var backgroundColor: Color {
+    switch kind {
+    case .success: .green
+    case .failure: .red
+    }
+  }
+}
+
+private struct ImageSaveNoticeModifier: ViewModifier {
+  @Binding var notice: ImageSaveNotice?
+
+  func body(content: Content) -> some View {
+    content
+      .overlay(alignment: .top) {
+        if let notice {
+          Label(notice.message, systemImage: notice.systemImage)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 340)
+            .background(notice.backgroundColor, in: Capsule())
+            .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+            .padding(.top, 12)
+            .padding(.horizontal, 16)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .zIndex(1)
+        }
+      }
+      .animation(.snappy, value: notice)
+      .onChange(of: notice) { _, newValue in
+        guard let newValue else { return }
+        Task { @MainActor in
+          try? await Task.sleep(for: .milliseconds(2500))
+          guard notice?.id == newValue.id else { return }
+          notice = nil
+        }
+      }
+  }
+}
+
+private extension View {
+  func imageSaveNotice(_ notice: Binding<ImageSaveNotice?>) -> some View {
+    modifier(ImageSaveNoticeModifier(notice: notice))
+  }
+}
+
+private extension Error {
+  var imageSaveMessage: String {
+    (self as? LocalizedError)?.errorDescription ?? localizedDescription
+  }
+}
+
 struct MessageBubble: View {
   @EnvironmentObject private var streamingTextStore: StreamingTextStore
 
@@ -145,7 +225,7 @@ private struct MessageBubbleContent: View, Equatable {
   @State private var showingTextSelection = false
   @State private var selectedTextAttachment: ChatAttachment?
   @State private var selectedImageAttachment: ChatAttachment?
-  @State private var imageSaveError: String?
+  @State private var imageSaveNotice: ImageSaveNotice?
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.presentationText }
@@ -347,17 +427,7 @@ private struct MessageBubbleContent: View, Equatable {
           MessageImageFullscreenView(image: image, imageData: imageData)
         }
       }
-      .alert(
-        "Could not save image",
-        isPresented: Binding(
-          get: { imageSaveError != nil },
-          set: { if !$0 { imageSaveError = nil } }),
-        presenting: imageSaveError
-      ) { _ in
-        Button("OK", role: .cancel) { imageSaveError = nil }
-      } message: { message in
-        Text(message)
-      }
+      .imageSaveNotice($imageSaveNotice)
     if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
@@ -484,10 +554,12 @@ private struct MessageBubbleContent: View, Equatable {
     Task {
       do {
         try await MessageAttachmentImage.saveToPhotoLibrary(attachment)
+        await MainActor.run {
+          imageSaveNotice = .success()
+        }
       } catch {
         await MainActor.run {
-          imageSaveError =
-            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+          imageSaveNotice = .failure(error.imageSaveMessage)
         }
       }
     }
@@ -795,7 +867,7 @@ private struct MessageImageFullscreenView: View {
   @Environment(\.dismiss) private var dismiss
   let image: UIImage
   let imageData: Data
-  @State private var imageSaveError: String?
+  @State private var imageSaveNotice: ImageSaveNotice?
 
   var body: some View {
     ZStack(alignment: .top) {
@@ -834,27 +906,19 @@ private struct MessageImageFullscreenView: View {
       .padding(.top, 12)
     }
     .statusBarHidden()
-    .alert(
-      "Could not save image",
-      isPresented: Binding(
-        get: { imageSaveError != nil },
-        set: { if !$0 { imageSaveError = nil } }),
-      presenting: imageSaveError
-    ) { _ in
-      Button("OK", role: .cancel) { imageSaveError = nil }
-    } message: { message in
-      Text(message)
-    }
+    .imageSaveNotice($imageSaveNotice)
   }
 
   private func saveImage() {
     Task {
       do {
         try await MessageAttachmentImage.saveImageDataToPhotoLibrary(imageData)
+        await MainActor.run {
+          imageSaveNotice = .success()
+        }
       } catch {
         await MainActor.run {
-          imageSaveError =
-            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+          imageSaveNotice = .failure(error.imageSaveMessage)
         }
       }
     }
@@ -2742,7 +2806,7 @@ private struct MarkdownRemoteImageView: View {
   let appearance: AppearanceSettings
 
   @StateObject private var loader = MarkdownRemoteImageLoader()
-  @State private var imageSaveError: String?
+  @State private var imageSaveNotice: ImageSaveNotice?
   @State private var showingFullscreenImage = false
 
   var body: some View {
@@ -2779,17 +2843,7 @@ private struct MarkdownRemoteImageView: View {
       await loader.load(url)
     }
     .accessibilityLabel(accessibilityLabel)
-    .alert(
-      "Could not save image",
-      isPresented: Binding(
-        get: { imageSaveError != nil },
-        set: { if !$0 { imageSaveError = nil } }),
-      presenting: imageSaveError
-    ) { _ in
-      Button("OK", role: .cancel) { imageSaveError = nil }
-    } message: { message in
-      Text(message)
-    }
+    .imageSaveNotice($imageSaveNotice)
   }
 
   private var accessibilityLabel: String {
@@ -2801,10 +2855,12 @@ private struct MarkdownRemoteImageView: View {
       do {
         let data = try await loader.imageData(for: url)
         try await MessageAttachmentImage.saveImageDataToPhotoLibrary(data)
+        await MainActor.run {
+          imageSaveNotice = .success()
+        }
       } catch {
         await MainActor.run {
-          imageSaveError =
-            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+          imageSaveNotice = .failure(error.imageSaveMessage)
         }
       }
     }
