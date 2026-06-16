@@ -344,10 +344,10 @@
 		};
 		A10000000000000000000025 /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/lukilabs/beautiful-mermaid-swift";
+			repositoryURL = "https://github.com/trufae/beautiful-mermaid-swift";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.4;
+				branch = piebars;
+				kind = branch;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

@@ -1,13 +1,13 @@
 {
-  "originHash" : "587170d4af6d1ab6e36082287b37adec038cf8e50fa90e6d7845ccfb6b427ed5",
+  "originHash" : "6d65bc844786c2b15119f87d99baa7c2527026c6b8c5804ddebd2e3efb88e7a6",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lukilabs/beautiful-mermaid-swift",
+      "location" : "https://github.com/trufae/beautiful-mermaid-swift",
       "state" : {
-        "revision" : "6a23a29e91af8f5b3e9fc09945332ca193bd69ec",
-        "version" : "1.0.4"
+        "branch" : "piebars",
+        "revision" : "e74e090072cf6e79c6ab4fe0cc1442cf047418ed"
       }
     },
     {
