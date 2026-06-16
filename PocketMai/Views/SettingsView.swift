@@ -439,21 +439,12 @@ struct SettingsView: View {
     .font(.caption)
     .foregroundStyle(.secondary)
     Toggle("Auto-Compact MLX Context", isOn: settingsBinding(\.mlxAutoCompact))
-    if store.settings.mlxAutoCompact {
-      Text(
-        "Before each MLX response, older messages are summarized automatically when the conversation grows long, keeping the most recent exchange intact. Uses the same Compact Prompt template."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-    }
     Picker("Image Attachments", selection: settingsBinding(\.attachmentImageSize)) {
       ForEach(AttachmentImageSize.allCases) { size in
         Text(size.displayName).tag(size)
       }
     }
     .pickerStyle(.menu)
-    toolCallingContent
-    yoloModeContent
   }
 
   @ViewBuilder
@@ -470,21 +461,11 @@ struct SettingsView: View {
     Stepper(value: settingsBinding(\.maxToolCallsPerTurn), in: 1...20) {
       Text("Max Tool Calls: \(store.settings.maxToolCallsPerTurn)")
     }
-    Text(
-      "Stops one assistant turn after this many executed tool calls, including repeated calls and multiple calls emitted in one response."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
   private var yoloModeContent: some View {
     Toggle("YOLO mode", isOn: settingsBinding(\.yoloModeEnabled))
-    Text(
-      "On: tool calls run immediately. Off: review, edit, confirm, or cancel each tool call before it runs."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
   }
 
   private var providerSection: some View {
@@ -1250,6 +1231,13 @@ struct SettingsView: View {
           .foregroundStyle(.secondary)
       } label: {
         Label("Skills", systemImage: "sparkles")
+      }
+
+      DisclosureGroup {
+        toolCallingContent
+        yoloModeContent
+      } label: {
+        Label("Options", systemImage: "slider.horizontal.3")
       }
     } header: {
       Text("Tools")
