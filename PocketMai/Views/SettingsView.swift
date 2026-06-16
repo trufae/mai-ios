@@ -458,6 +458,12 @@ struct SettingsView: View {
     Text(store.settings.toolCallingMode.summary)
       .font(.caption)
       .foregroundStyle(.secondary)
+    Stepper(value: mcpRequestTimeoutBinding, in: AppSettings.mcpRequestTimeoutRange, step: 5) {
+      Text("Tool Call Timeout: \(store.settings.mcpRequestTimeoutSeconds)s")
+    }
+    Text("Applies to MCP tool calls, resource reads, and refreshes.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
     Stepper(value: settingsBinding(\.maxToolCallsPerTurn), in: 1...20) {
       Text("Max Tool Calls: \(store.settings.maxToolCallsPerTurn)")
     }
@@ -1454,9 +1460,6 @@ struct SettingsView: View {
     Text(toolProxySummary)
       .font(.caption)
       .foregroundStyle(.secondary)
-    Stepper(value: mcpRequestTimeoutBinding, in: AppSettings.mcpRequestTimeoutRange, step: 5) {
-      Text("MCP request timeout: \(store.settings.mcpRequestTimeoutSeconds)s")
-    }
     ForEach(store.settings.mcpServers) { server in
       NavigationLink(value: SettingsRoute.mcpServer(server.id)) {
         mcpRow(server)
