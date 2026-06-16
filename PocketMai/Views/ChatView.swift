@@ -21,6 +21,7 @@ struct ChatView: View {
   @State private var fontSizePinchBase: Double?
   @State private var fontSizePinchAnchor: MessageListPinchAnchor?
   @State private var fontSizePinchViewportY: CGFloat?
+  @State private var keyboardOverlap: CGFloat = 0
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -37,6 +38,12 @@ struct ChatView: View {
       }
       .onChange(of: currentMessageIDs) { _, _ in
         pruneSelectedMessages()
+      }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
+        updateKeyboardOverlap(from: $0)
+      }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) {
+        updateKeyboardOverlap(from: $0)
       }
       .alert(
         "Delete this message?",
@@ -892,6 +899,7 @@ struct ChatView: View {
   private var emptyState: some View {
     GeometryReader { proxy in
       let suggestions = previousConversationSuggestions
+      let hasSuggestions = !suggestions.isEmpty
       VStack(spacing: 20) {
         VStack(spacing: 12) {
           EmptyChatLogo()
@@ -910,9 +918,64 @@ struct ChatView: View {
       .frame(maxWidth: 430)
       .padding(.horizontal, 24)
       .frame(width: proxy.size.width)
-      .position(x: proxy.size.width / 2, y: proxy.size.height * (2.0 / 3.0))
+      .position(
+        x: proxy.size.width / 2,
+        y: emptyStateCenterY(in: proxy.size.height, hasSuggestions: hasSuggestions))
     }
     .frame(maxWidth: .infinity)
+  }
+
+  private func emptyStateCenterY(in height: CGFloat, hasSuggestions: Bool) -> CGFloat {
+    let baseY = height * (2.0 / 3.0)
+    guard hasSuggestions, keyboardOverlap > 0 else { return baseY }
+    let lift = min(keyboardOverlap * 0.18, 64)
+    return max(height * 0.48, baseY - lift)
+  }
+
+  private func updateKeyboardOverlap(from notification: Notification) {
+    withAnimation(keyboardAnimation(from: notification)) {
+      keyboardOverlap = keyboardOverlap(from: notification)
+    }
+  }
+
+  private func keyboardAnimation(from notification: Notification) -> Animation {
+    let duration =
+      notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+    let rawCurve =
+      (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?
+      .intValue ?? UIView.AnimationCurve.easeInOut.rawValue
+
+    if let curve = UIView.AnimationCurve(rawValue: rawCurve) {
+      switch curve {
+      case .easeInOut:
+        return .easeInOut(duration: duration)
+      case .easeIn:
+        return .easeIn(duration: duration)
+      case .easeOut:
+        return .easeOut(duration: duration)
+      case .linear:
+        return .linear(duration: duration)
+      @unknown default:
+        return .smooth(duration: duration)
+      }
+    }
+    return .smooth(duration: duration)
+  }
+
+  private func keyboardOverlap(from notification: Notification) -> CGFloat {
+    if notification.name == UIResponder.keyboardWillHideNotification {
+      return 0
+    }
+    guard
+      let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+    else {
+      return 0
+    }
+    let screenMaxY = UIApplication.shared.openSessions
+      .compactMap { ($0.scene as? UIWindowScene)?.screen }
+      .first { $0.bounds.intersects(frame) }?.bounds.maxY
+      ?? frame.maxY
+    return max(0, screenMaxY - frame.minY)
   }
 
   private var previousConversationSuggestions: [ConversationSummary] {
