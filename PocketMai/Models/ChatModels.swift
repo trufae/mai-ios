@@ -962,11 +962,18 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
 
   var id: String
   var name: String
+  var icon: String?
   var createdAt: Date
 
-  init(id: String = UUID().uuidString, name: String, createdAt: Date = Date()) {
+  init(
+    id: String = UUID().uuidString,
+    name: String,
+    icon: String? = nil,
+    createdAt: Date = Date()
+  ) {
     self.id = Self.normalizedID(id)
     self.name = name
+    self.icon = Self.normalizedIcon(icon)
     self.createdAt = createdAt
   }
 
@@ -993,6 +1000,9 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
     case Self.archivedID:
       return "archivebox"
     default:
+      if let icon, !icon.isEmpty {
+        return icon
+      }
       return "folder"
     }
   }
@@ -1017,6 +1027,15 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
   static func normalizedID(_ id: String) -> String {
     let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? UUID().uuidString : trimmed
+  }
+
+  static func normalizedIcon(_ icon: String?) -> String? {
+    guard let trimmed = icon?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !trimmed.isEmpty
+    else {
+      return nil
+    }
+    return trimmed
   }
 
   static func normalizedCustomName(_ name: String) -> String {

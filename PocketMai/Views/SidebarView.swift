@@ -606,6 +606,7 @@ private struct ConversationFolderManagementView: View {
   @State private var nameDraft = ""
   @State private var pendingDeletion: ConversationFolder?
   @State private var defaultsFolder: ConversationFolder?
+  @State private var iconFolder: ConversationFolder?
 
   var body: some View {
     NavigationStack {
@@ -679,6 +680,10 @@ private struct ConversationFolderManagementView: View {
       ConversationFolderDefaultsView(folder: folder)
         .environmentObject(store)
     }
+    .sheet(item: $iconFolder) { folder in
+      ConversationFolderIconPickerView(folder: folder)
+        .environmentObject(store)
+    }
   }
 
   private func folderInfoRow(_ folder: ConversationFolder) -> some View {
@@ -713,6 +718,11 @@ private struct ConversationFolderManagementView: View {
           beginRename(folder)
         } label: {
           Label("Rename", systemImage: "pencil")
+        }
+        Button {
+          iconFolder = folder
+        } label: {
+          Label("Change Icon...", systemImage: "square.grid.2x2")
         }
         Button(role: .destructive) {
           pendingDeletion = folder
@@ -785,6 +795,147 @@ private struct ConversationFolderNameEdit: Identifiable {
   var message: String {
     folder == nil ? "Create a folder for conversations." : "Rename this folder."
   }
+}
+
+private struct ConversationFolderIconPickerView: View {
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+  let folder: ConversationFolder
+  @State private var searchText = ""
+
+  private let columns = [GridItem(.adaptive(minimum: 56), spacing: 12)]
+
+  private var selectedIcon: String {
+    store.customConversationFolders.first { $0.id == folder.id }?.icon ?? "folder"
+  }
+
+  private var filteredGroups: [ConversationFolderIconCatalog.Group] {
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !query.isEmpty else { return ConversationFolderIconCatalog.groups }
+    return ConversationFolderIconCatalog.groups.compactMap { group in
+      let matches = group.symbols.filter { $0.contains(query) }
+      return matches.isEmpty ? nil : .init(title: group.title, symbols: matches)
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 24) {
+          ForEach(filteredGroups) { group in
+            VStack(alignment: .leading, spacing: 12) {
+              Text(group.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+              LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(group.symbols, id: \.self) { symbol in
+                  iconCell(symbol)
+                }
+              }
+            }
+          }
+          if filteredGroups.isEmpty {
+            Text("No icons match \"\(searchText)\".")
+              .foregroundStyle(.secondary)
+              .frame(maxWidth: .infinity, alignment: .center)
+              .padding(.top, 40)
+          }
+        }
+        .padding()
+      }
+      .navigationTitle("Folder Icon")
+      .navigationBarTitleDisplayMode(.inline)
+      .searchable(text: $searchText, prompt: "Search icons")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
+  }
+
+  private func iconCell(_ symbol: String) -> some View {
+    let isSelected = symbol == selectedIcon
+    return Button {
+      store.setConversationFolderIcon(id: folder.id, to: symbol)
+      dismiss()
+    } label: {
+      Image(systemName: symbol)
+        .font(.title2)
+        .frame(maxWidth: .infinity)
+        .frame(height: 52)
+        .background(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+        )
+        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(symbol)
+    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+  }
+}
+
+private enum ConversationFolderIconCatalog {
+  struct Group: Identifiable {
+    var id: String { title }
+    let title: String
+    let symbols: [String]
+  }
+
+  static let groups: [Group] = [
+    Group(
+      title: "Folders",
+      symbols: [
+        "folder", "folder.fill", "tray", "tray.full", "archivebox", "shippingbox",
+        "internaldrive", "externaldrive", "doc", "doc.text", "doc.on.doc", "books.vertical",
+      ]),
+    Group(
+      title: "Symbols",
+      symbols: [
+        "star", "star.fill", "heart", "heart.fill", "bookmark", "bookmark.fill",
+        "flag", "flag.fill", "tag", "tag.fill", "pin", "pin.fill", "bell", "bolt.fill",
+        "sparkles", "crown", "trophy", "gift", "lightbulb", "flame.fill",
+      ]),
+    Group(
+      title: "Work",
+      symbols: [
+        "briefcase", "briefcase.fill", "case", "building.2", "building.columns",
+        "graduationcap", "books.vertical.fill", "pencil", "paperclip", "calendar",
+        "clock", "checkmark.seal", "list.bullet.clipboard", "chart.bar", "chart.pie",
+      ]),
+    Group(
+      title: "Tech",
+      symbols: [
+        "desktopcomputer", "laptopcomputer", "iphone", "ipad", "keyboard", "terminal",
+        "cpu", "memorychip", "server.rack", "cloud", "wifi", "antenna.radiowaves.left.and.right",
+        "gearshape", "gearshape.2", "hammer", "wrench.and.screwdriver",
+      ]),
+    Group(
+      title: "Communication",
+      symbols: [
+        "message", "bubble.left", "bubble.left.and.bubble.right", "envelope", "envelope.fill",
+        "phone", "video", "mic", "waveform", "person", "person.2", "person.crop.circle",
+        "quote.bubble", "text.bubble",
+      ]),
+    Group(
+      title: "Life",
+      symbols: [
+        "house", "house.fill", "cart", "creditcard", "bag", "fork.knife", "cup.and.saucer",
+        "airplane", "car", "bicycle", "map", "location", "globe", "leaf", "pawprint",
+        "gamecontroller", "music.note", "paintpalette", "camera", "photo",
+      ]),
+    Group(
+      title: "Nature",
+      symbols: [
+        "sun.max", "moon", "moon.stars", "cloud.rain", "snowflake", "drop", "flame",
+        "tree", "mountain.2", "tortoise", "hare", "ant", "fish", "bird",
+      ]),
+  ]
 }
 
 private struct ConversationFolderDefaultsView: View {
