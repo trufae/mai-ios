@@ -297,6 +297,11 @@ struct SidebarView: View {
         folderPickerLabel(for: ConversationFolder.defaultFolder)
       }
       Button {
+        store.selectConversationFolder(ConversationFolder.iCloudID)
+      } label: {
+        folderPickerLabel(for: ConversationFolder.iCloudFolder)
+      }
+      Button {
         store.selectConversationFolder(ConversationFolder.archivedID)
       } label: {
         folderPickerLabel(for: ConversationFolder.archivedFolder)
@@ -351,6 +356,9 @@ struct SidebarView: View {
 
   private var selectedFolderMenuIcon: String {
     let folder = store.selectedConversationFolder
+    if folder.id == ConversationFolder.iCloudID {
+      return "icloud.fill"
+    }
     if folder.id == ConversationFolder.archivedID {
       return "archivebox.fill"
     }
@@ -602,9 +610,14 @@ private struct ConversationFolderManagementView: View {
   var body: some View {
     NavigationStack {
       Form {
-        Section("Built-in") {
+        Section {
           folderInfoRow(ConversationFolder.defaultFolder)
+          folderInfoRow(ConversationFolder.iCloudFolder)
           folderInfoRow(ConversationFolder.archivedFolder)
+        } header: {
+          Text("Built-in")
+        } footer: {
+          Text("Only conversations in iCloud sync across devices. Default, Archived, and custom folders stay on this device.")
         }
 
         Section {

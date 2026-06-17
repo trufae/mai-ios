@@ -956,8 +956,9 @@ struct ConversationFolderDefaults: Codable, Equatable, Sendable {
 
 struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
   static let defaultID = "default"
+  static let iCloudID = "icloud"
   static let archivedID = "archived"
-  static let reservedIDs: Set<String> = [defaultID, archivedID]
+  static let reservedIDs: Set<String> = [defaultID, iCloudID, archivedID]
 
   var id: String
   var name: String
@@ -973,6 +974,8 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
     switch id {
     case Self.defaultID:
       return "Default"
+    case Self.iCloudID:
+      return "iCloud"
     case Self.archivedID:
       return "Archived"
     default:
@@ -985,6 +988,8 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
     switch id {
     case Self.defaultID:
       return "tray"
+    case Self.iCloudID:
+      return "icloud"
     case Self.archivedID:
       return "archivebox"
     default:
@@ -999,6 +1004,10 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
   static let defaultFolder = ConversationFolder(
     id: Self.defaultID,
     name: "Default",
+    createdAt: .distantPast)
+  static let iCloudFolder = ConversationFolder(
+    id: Self.iCloudID,
+    name: "iCloud",
     createdAt: .distantPast)
   static let archivedFolder = ConversationFolder(
     id: Self.archivedID,
@@ -2563,7 +2572,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         try? c.decode(String.self, forKey: .selectedConversationFolderID))
     let knownConversationFolderIDs =
       Set(
-        [ConversationFolder.defaultID, ConversationFolder.archivedID]
+        [ConversationFolder.defaultID, ConversationFolder.iCloudID, ConversationFolder.archivedID]
           + conversationFolders.map(\.id))
     selectedConversationFolderID =
       knownConversationFolderIDs.contains(decodedConversationFolderID)

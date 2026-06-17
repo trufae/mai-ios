@@ -231,7 +231,11 @@ final class AppStore: ObservableObject {
   }
 
   var conversationFolders: [ConversationFolder] {
-    [ConversationFolder.defaultFolder, ConversationFolder.archivedFolder] + settings.conversationFolders
+    [
+      ConversationFolder.defaultFolder,
+      ConversationFolder.iCloudFolder,
+      ConversationFolder.archivedFolder,
+    ] + settings.conversationFolders
   }
 
   var customConversationFolders: [ConversationFolder] {
@@ -327,6 +331,9 @@ final class AppStore: ObservableObject {
     settings.selectedConversationFolderID = normalized
     selectedConversationIDs.removeAll()
     saveSettings()
+    if normalized == ConversationFolder.iCloudID {
+      Task { await refreshPersistedConversationSummaries() }
+    }
   }
 
   func createConversationFolder(named rawName: String) {
@@ -401,7 +408,7 @@ final class AppStore: ObservableObject {
 
   private func normalizeConversationFoldersForCurrentData() {
     var knownIDs = Set(
-      [ConversationFolder.defaultID, ConversationFolder.archivedID]
+      [ConversationFolder.defaultID, ConversationFolder.iCloudID, ConversationFolder.archivedID]
         + settings.conversationFolders.map(\.id))
     var existingNames = Set(
       conversationFolders.map { normalizedConversationFolderName($0.displayName) })
@@ -695,6 +702,16 @@ final class AppStore: ObservableObject {
     }.value
     guard generation == dataGeneration, !hasLoadedPersistedConversations else { return }
     mergeLoadedConversations(loadedConversations)
+  }
+
+  private func refreshPersistedConversationSummaries() async {
+    let generation = dataGeneration
+    let persistence = self.persistence
+    let summaries = await Task.detached(priority: .userInitiated) {
+      persistence.loadConversationSummaries()
+    }.value
+    guard generation == dataGeneration else { return }
+    mergeLoadedSummaries(summaries)
   }
 
   func toggleArchive(id: UUID) async {
@@ -2827,7 +2844,12 @@ final class AppStore: ObservableObject {
     guard !summaries.isEmpty else { return }
     var byID = Dictionary(uniqueKeysWithValues: conversationSummaries.map { ($0.id, $0) })
     for summary in summaries
-    where byID[summary.id] == nil && !deletedConversationIDsBeforeLoad.contains(summary.id) {
+    where !deletedConversationIDsBeforeLoad.contains(summary.id) {
+      if let existing = byID[summary.id],
+        existing.updatedAt >= summary.updatedAt
+      {
+        continue
+      }
       byID[summary.id] = summary
     }
     conversationSummaries = Self.sortedSummaries(Array(byID.values))
@@ -3880,7 +3902,8 @@ final class AppStore: ObservableObject {
   ) {
     var folders = settings.conversationFolders
     var knownIDs = Set(
-      [ConversationFolder.defaultID, ConversationFolder.archivedID] + folders.map(\.id))
+      [ConversationFolder.defaultID, ConversationFolder.iCloudID, ConversationFolder.archivedID]
+        + folders.map(\.id))
 
     for folder in AppSettings.normalizedConversationFolders(importedFolders ?? []) {
       guard !knownIDs.contains(folder.id) else { continue }
