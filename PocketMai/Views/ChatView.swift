@@ -1069,6 +1069,7 @@ private struct EmptyChatLogo: View {
 }
 
 private struct PreviousConversationSuggestions: View {
+  @EnvironmentObject private var store: AppStore
   let suggestions: [ConversationSummary]
   let onSelect: (UUID) -> Void
 
@@ -1085,6 +1086,7 @@ private struct PreviousConversationSuggestions: View {
         ForEach(suggestions) { suggestion in
           PreviousConversationSuggestionButton(
             conversation: suggestion,
+            folder: folder(for: suggestion),
             isMostRecent: suggestions.last?.id == suggestion.id,
             onSelect: { onSelect(suggestion.id) }
           )
@@ -1092,17 +1094,23 @@ private struct PreviousConversationSuggestions: View {
       }
     }
   }
+
+  private func folder(for conversation: ConversationSummary) -> ConversationFolder {
+    store.conversationFolders.first { $0.id == conversation.folderID }
+      ?? ConversationFolder.defaultFolder
+  }
 }
 
 private struct PreviousConversationSuggestionButton: View {
   let conversation: ConversationSummary
+  let folder: ConversationFolder
   let isMostRecent: Bool
   let onSelect: () -> Void
 
   var body: some View {
     Button(action: onSelect) {
       HStack(spacing: 10) {
-        Image(systemName: "clock.arrow.circlepath")
+        Image(systemName: folder.systemImage)
           .font(.body)
           .foregroundStyle(Color.accentColor)
           .frame(width: 22, height: 22)
@@ -1113,7 +1121,7 @@ private struct PreviousConversationSuggestionButton: View {
             .foregroundStyle(.primary)
             .lineLimit(1)
 
-          Text(ConversationRecencyLabel.text(for: conversation.updatedAt))
+          Text(recencyLabel)
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -1143,7 +1151,12 @@ private struct PreviousConversationSuggestionButton: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(conversation.displayTitle)
-    .accessibilityHint(ConversationRecencyLabel.text(for: conversation.updatedAt))
+    .accessibilityHint(recencyLabel)
+  }
+
+  private var recencyLabel: String {
+    let recency = ConversationRecencyLabel.text(for: conversation.updatedAt)
+    return "\(recency) in \(folder.displayName)"
   }
 }
 
