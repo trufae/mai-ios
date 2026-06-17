@@ -352,6 +352,15 @@ final class AppStore: ObservableObject {
     saveSettings()
   }
 
+  func setConversationFolderIcon(id: String, to icon: String?) {
+    guard let index = settings.conversationFolders.firstIndex(where: { $0.id == id }) else {
+      errorMessage = "This folder no longer exists."
+      return
+    }
+    settings.conversationFolders[index].icon = ConversationFolder.normalizedIcon(icon)
+    saveSettings()
+  }
+
   func deleteConversationFolder(id: String) async {
     guard !ConversationFolder.reservedIDs.contains(id) else { return }
     guard settings.conversationFolders.contains(where: { $0.id == id }) else {
