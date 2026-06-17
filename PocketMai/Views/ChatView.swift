@@ -1575,7 +1575,7 @@ private struct ChatComposer: View {
             .frame(width: 24, height: 24)
             .contentShape(Circle())
         }
-        .buttonStyle(.glass)
+        .adaptiveGlassButtonStyle()
         .disabled(!isResponding && liveVoiceSession.isActive)
         .help(trailingActionHelp)
       }
@@ -1650,7 +1650,7 @@ private struct ChatComposer: View {
           .frame(width: 28, height: 28)
           .contentShape(Circle())
       }
-      .buttonStyle(.glass)
+      .adaptiveGlassButtonStyle()
       .disabled(liveVoiceSession.state == .requestingPermission)
       .help(liveVoiceSession.primaryControlHelp)
 
@@ -1677,7 +1677,7 @@ private struct ChatComposer: View {
           .frame(width: 28, height: 28)
           .contentShape(Circle())
       }
-      .buttonStyle(.glass)
+      .adaptiveGlassButtonStyle()
       .help("Stop conversation")
     }
   }
@@ -1815,7 +1815,7 @@ private struct ChatComposer: View {
         .frame(width: 24, height: 24)
         .contentShape(Circle())
     }
-    .buttonStyle(.glass)
+    .adaptiveGlassButtonStyle()
     .popover(isPresented: $showingToolMenu, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
       toolMenuPopover
         .presentationCompactAdaptation(.popover)

@@ -17,7 +17,10 @@ This app is inspired in the [MAI](https://github.com/trufae/mai) which is a Go a
 
 ## Build
 
-Requires Xcode 16+ and an iOS 18+ deployment target (Foundation Models).
+Requires Xcode 26+ and an iOS 18+ deployment target. iOS 26-only features
+such as Apple Foundation Models, Native iOS Live speech transcription, and
+Liquid Glass controls fall back or report unavailable at runtime on older OS
+versions.
 
 ```sh
 make build               # builds for the iOS Simulator without code signing

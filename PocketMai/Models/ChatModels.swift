@@ -351,6 +351,35 @@ enum LiveSpeechRecognitionBackend: String, Codable, CaseIterable, Identifiable, 
     }
   }
 
+  var isRuntimeAvailable: Bool {
+    switch self {
+    case .nativeIOSSpeechTranscriber:
+      if #available(iOS 26.0, *) {
+        return true
+      }
+      return false
+    case .nativeIOS:
+      return true
+    }
+  }
+
+  var unavailableReason: String? {
+    guard !isRuntimeAvailable else { return nil }
+    switch self {
+    case .nativeIOSSpeechTranscriber:
+      return "Requires iOS 26 or later."
+    case .nativeIOS:
+      return nil
+    }
+  }
+
+  static var defaultBackend: LiveSpeechRecognitionBackend {
+    if #available(iOS 26.0, *) {
+      return .nativeIOSSpeechTranscriber
+    }
+    return .nativeIOS
+  }
+
 }
 
 struct ConversationSettings: Codable, Equatable, Sendable {
@@ -358,7 +387,8 @@ struct ConversationSettings: Codable, Equatable, Sendable {
   static let silenceTimeoutStep: Double = 0.25
 
   var silenceTimeoutSeconds: Double = 1.25
-  var speechRecognitionBackend: LiveSpeechRecognitionBackend = .nativeIOSSpeechTranscriber
+  var speechRecognitionBackend: LiveSpeechRecognitionBackend = LiveSpeechRecognitionBackend
+    .defaultBackend
   var speechRecognitionLanguageIdentifier: String = Locale.current.identifier
   var streamTTS: Bool = true
   var skipTechnicalContentInTTS: Bool = true
@@ -388,9 +418,12 @@ struct ConversationSettings: Codable, Equatable, Sendable {
       (try? c.decode(Double.self, forKey: .silenceTimeoutSeconds))
       ?? defaults.silenceTimeoutSeconds
     silenceTimeoutSeconds = Self.clampedSilenceTimeout(timeout)
-    speechRecognitionBackend =
+    let decodedBackend =
       (try? c.decode(LiveSpeechRecognitionBackend.self, forKey: .speechRecognitionBackend))
       ?? defaults.speechRecognitionBackend
+    speechRecognitionBackend =
+      decodedBackend.isRuntimeAvailable
+      ? decodedBackend : LiveSpeechRecognitionBackend.defaultBackend
     let languageIdentifier =
       (try? c.decode(String.self, forKey: .speechRecognitionLanguageIdentifier))
       ?? defaults.speechRecognitionLanguageIdentifier

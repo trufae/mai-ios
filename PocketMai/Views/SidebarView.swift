@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+extension View {
+  @ViewBuilder
+  func adaptiveGlassButtonStyle() -> some View {
+    if #available(iOS 26.0, *) {
+      self.buttonStyle(.glass)
+    } else {
+      self.buttonStyle(.borderless)
+    }
+  }
+}
+
 struct SidebarView: View {
   @EnvironmentObject private var store: AppStore
   @Binding var showingSettings: Bool
@@ -1236,15 +1247,30 @@ private struct FloatingGlassSurface<Background: InsettableShape>: ViewModifier {
   let shape: Background
   var tint: Color? = nil
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    content
-      .glassEffect(.clear.tint(tint).interactive(), in: shape)
-      .overlay(shape.strokeBorder(borderColor, lineWidth: 0.5))
-      .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
+    if #available(iOS 26.0, *) {
+      content
+        .glassEffect(.clear.tint(tint).interactive(), in: shape)
+        .overlay(shape.strokeBorder(borderColor, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
+    } else {
+      content
+        .background(fallbackFill, in: shape)
+        .overlay(shape.strokeBorder(borderColor, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 3)
+    }
   }
 
   private var borderColor: Color {
     colorScheme == .dark ? .white.opacity(0.08) : .black.opacity(0.08)
+  }
+
+  private var fallbackFill: AnyShapeStyle {
+    if let tint {
+      return AnyShapeStyle(tint.opacity(colorScheme == .dark ? 0.24 : 0.16))
+    }
+    return AnyShapeStyle(.regularMaterial)
   }
 }
 

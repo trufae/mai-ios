@@ -5022,14 +5022,14 @@ struct CodeBlockView: View {
           } label: {
             Image(systemName: "eye")
           }
-          .buttonStyle(.glass)
+          .adaptiveGlassButtonStyle()
           .help("View code")
           Button {
             UIPasteboard.general.string = code
           } label: {
             Image(systemName: "doc.on.doc")
           }
-          .buttonStyle(.glass)
+          .adaptiveGlassButtonStyle()
           .help("Copy code")
         }
       }
@@ -5115,7 +5115,7 @@ private struct MermaidBlockView: View {
           } label: {
             Image(systemName: "eye")
           }
-          .buttonStyle(.glass)
+          .adaptiveGlassButtonStyle()
           .help("View diagram")
           .disabled(renderedImage == nil)
           Button {
@@ -5123,7 +5123,7 @@ private struct MermaidBlockView: View {
           } label: {
             Image(systemName: "doc.on.doc")
           }
-          .buttonStyle(.glass)
+          .adaptiveGlassButtonStyle()
           .help("Copy Mermaid source")
         }
       }

@@ -120,8 +120,8 @@ enum ChatProviderRouter {
   }
 
   private static func isContextOverflowError(_ error: Error) -> Bool {
-    if let generation = error as? LanguageModelSession.GenerationError {
-      if case .exceededContextWindowSize = generation { return true }
+    if #available(iOS 26.0, *), AppleFoundationProvider.isContextOverflowError(error) {
+      return true
     }
     let candidates: [String] = {
       if let chatError = error as? ChatProviderError,
@@ -728,11 +728,26 @@ struct AppleFoundationAvailabilityReport: Equatable, Sendable {
 }
 
 enum AppleFoundationProvider {
+  private static let unsupportedOSMessage =
+    "Apple Foundation Models require iOS 26 or later. Use MLX Local or another configured provider."
+
   static var availabilityReport: AppleFoundationAvailabilityReport {
     availabilityReport(deviceOnly: false)
   }
 
   static func availabilityReport(deviceOnly: Bool) -> AppleFoundationAvailabilityReport {
+    guard #available(iOS 26.0, *) else {
+      return AppleFoundationAvailabilityReport(
+        kind: .unavailable,
+        detail: unsupportedOSMessage)
+    }
+    return availabilityReportOnSupportedOS(deviceOnly: deviceOnly)
+  }
+
+  @available(iOS 26.0, *)
+  private static func availabilityReportOnSupportedOS(deviceOnly: Bool)
+    -> AppleFoundationAvailabilityReport
+  {
     switch systemModel(deviceOnly: deviceOnly).availability {
     case .available:
       return AppleFoundationAvailabilityReport(
@@ -759,6 +774,17 @@ enum AppleFoundationProvider {
   }
 
   static func complete(
+    request: ChatCompletionRequest,
+    onUpdate: @escaping @MainActor (String) -> Void
+  ) async throws -> String {
+    guard #available(iOS 26.0, *) else {
+      throw ChatProviderError.appleModelUnavailable(unsupportedOSMessage)
+    }
+    return try await completeOnSupportedOS(request: request, onUpdate: onUpdate)
+  }
+
+  @available(iOS 26.0, *)
+  private static func completeOnSupportedOS(
     request: ChatCompletionRequest,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
@@ -806,11 +832,13 @@ enum AppleFoundationProvider {
     return content
   }
 
+  @available(iOS 26.0, *)
   private static func systemModel(deviceOnly: Bool) -> SystemLanguageModel {
     guard deviceOnly else { return .default }
     return SystemLanguageModel(useCase: .general, guardrails: .default)
   }
 
+  @available(iOS 26.0, *)
   private static func message(
     for reason: SystemLanguageModel.Availability.UnavailableReason
   ) -> String {
@@ -829,6 +857,7 @@ enum AppleFoundationProvider {
     }
   }
 
+  @available(iOS 26.0, *)
   private static func report(
     for reason: SystemLanguageModel.Availability.UnavailableReason
   ) -> AppleFoundationAvailabilityReport {
@@ -854,6 +883,17 @@ enum AppleFoundationProvider {
         detail: message(for: reason)
       )
     }
+  }
+
+  @available(iOS 26.0, *)
+  static func isContextOverflowError(_ error: Error) -> Bool {
+    guard let generation = error as? LanguageModelSession.GenerationError else {
+      return false
+    }
+    if case .exceededContextWindowSize = generation {
+      return true
+    }
+    return false
   }
 }
 

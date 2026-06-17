@@ -794,6 +794,7 @@ struct SettingsView: View {
           systemImage: backend.systemImage
         )
         .tag(backend)
+        .disabled(!backend.isRuntimeAvailable)
       }
     }
     .pickerStyle(.menu)
@@ -805,6 +806,11 @@ struct SettingsView: View {
       }
       store.settings.conversation.backgroundVoiceListeningEnabled = false
       store.saveSettings()
+    }
+    if let reason = store.settings.conversation.speechRecognitionBackend.unavailableReason {
+      Text(reason)
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     Picker("Language", selection: speechRecognitionPrimaryLanguageBinding) {

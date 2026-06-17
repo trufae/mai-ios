@@ -54,6 +54,7 @@ private enum LiveSpeechRecognitionError: LocalizedError {
   case speechRecognitionDenied
   case recognizerUnavailable(String)
   case audioInputUnavailable
+  case speechTranscriberUnsupportedOS
   case speechTranscriberUnavailable(String)
   case speechTranscriberAssetsUnavailable(String)
 
@@ -67,6 +68,8 @@ private enum LiveSpeechRecognitionError: LocalizedError {
       return "Speech recognition is not available for \(language)."
     case .audioInputUnavailable:
       return "No microphone input is available."
+    case .speechTranscriberUnsupportedOS:
+      return "Native iOS Live transcription requires iOS 26 or later. Select Native iOS File."
     case .speechTranscriberUnavailable(let language):
       return
         "Native live transcription is not available for \(language). Select Native iOS File or choose another language."
@@ -325,6 +328,9 @@ final class LiveVoiceSession: ObservableObject {
   {
     switch settings.speechRecognitionBackend {
     case .nativeIOSSpeechTranscriber:
+      guard #available(iOS 26.0, *) else {
+        throw LiveSpeechRecognitionError.speechTranscriberUnsupportedOS
+      }
       return NativeIOSSpeechTranscriberRecognitionEngine(
         localeIdentifier: settings.speechRecognitionLanguageIdentifier)
     case .nativeIOS:
@@ -693,6 +699,7 @@ final class LiveVoiceSession: ObservableObject {
   }
 }
 
+@available(iOS 26.0, *)
 @MainActor
 private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecognitionEngine {
   var onTranscript: ((LiveSpeechRecognitionEvent) -> Void)?
@@ -913,6 +920,7 @@ private final class NativeIOSSpeechTranscriberRecognitionEngine: LiveSpeechRecog
   }
 }
 
+@available(iOS 26.0, *)
 private struct NativeSpeechTranscriberSegment {
   let range: CMTimeRange
   let text: String
@@ -926,6 +934,7 @@ private struct NativeSpeechTranscriberSegment {
   }
 }
 
+@available(iOS 26.0, *)
 private enum NativeSpeechTranscriberAudioTap {
   static func install(
     on inputNode: AVAudioNode,
@@ -938,6 +947,7 @@ private enum NativeSpeechTranscriberAudioTap {
   }
 }
 
+@available(iOS 26.0, *)
 private final class NativeSpeechTranscriberAudioSink: @unchecked Sendable {
   private let lock = NSLock()
   private let analysisFormat: AVAudioFormat
