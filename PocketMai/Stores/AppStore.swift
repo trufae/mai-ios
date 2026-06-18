@@ -2253,7 +2253,35 @@ final class AppStore: ObservableObject {
     saveSettings()
   }
 
-  func previewConversationImport(from url: URL) async throws -> ConversationImportPreview {
+  func previewSettingsImportFile(from url: URL) async throws -> SettingsImportFilePreview {
+    let access = url.startAccessingSecurityScopedResource()
+    defer {
+      if access {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let data = try? Data(contentsOf: url) else {
+      throw SettingsBackupError.unreadableFile
+    }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    if let envelope = try? decoder.decode(SettingsBackupEnvelope.self, from: data),
+      envelope.format == SettingsBackupEnvelope.format
+    {
+      return SettingsImportFilePreview(filename: url.lastPathComponent, kind: .backup(envelope))
+    }
+    if let envelope = try? Self.decodeConversationImportEnvelope(from: data) {
+      return SettingsImportFilePreview(
+        filename: url.lastPathComponent,
+        kind: .conversation(envelope))
+    }
+    throw SettingsBackupError.invalidJSON
+  }
+
+  func previewConversationImport(
+    from url: URL,
+    includePictures: Bool = true
+  ) async throws -> ConversationImportPreview {
     let access = url.startAccessingSecurityScopedResource()
     defer {
       if access {
@@ -2264,6 +2292,17 @@ final class AppStore: ObservableObject {
       throw ConversationImportError.unreadableFile
     }
     let envelope = try Self.decodeConversationImportEnvelope(from: data)
+    return await previewConversationImport(from: envelope, includePictures: includePictures)
+  }
+
+  func previewConversationImport(
+    from envelope: ConversationExportEnvelope,
+    includePictures: Bool = true
+  ) async -> ConversationImportPreview {
+    var envelope = envelope
+    if !includePictures {
+      envelope.conversation = Self.conversationRemovingImageAttachments(envelope.conversation)
+    }
 
     await loadStoredConversationsForSearch()
     return ConversationImportPreview(
@@ -3583,10 +3622,27 @@ final class AppStore: ObservableObject {
     includePictures: Bool = false
   ) -> URL? {
     let envelope = makeBackupEnvelope(
-      scope: scope,
+      selection: SettingsBackupSelection(scope: scope),
       includeAudio: includeAudio,
       includePictures: includePictures)
     return exportSettingsBackupFile(envelope: envelope, filename: backupFilename(scope: scope))
+  }
+
+  func exportSettingsBackupFile(
+    selection: SettingsBackupSelection,
+    includeAudio: Bool = false,
+    includePictures: Bool = false
+  ) -> URL? {
+    guard !selection.isEmpty else {
+      errorMessage = SettingsBackupError.emptySelection.localizedDescription
+      return nil
+    }
+    let envelope = makeBackupEnvelope(
+      selection: selection,
+      includeAudio: includeAudio,
+      includePictures: includePictures)
+    return exportSettingsBackupFile(
+      envelope: envelope, filename: backupFilename(selection: selection))
   }
 
   func exportEndpointBackupFile(_ endpoint: OpenAIEndpoint) -> URL? {
@@ -3618,47 +3674,30 @@ final class AppStore: ObservableObject {
   }
 
   private func makeBackupEnvelope(
-    scope: SettingsBackupScope,
+    selection: SettingsBackupSelection,
     includeAudio: Bool,
     includePictures: Bool
   )
     -> SettingsBackupEnvelope
   {
-    let exportedConversations: [Conversation]?
-    switch scope {
-    case .everything, .conversations:
-      exportedConversations =
-        includePictures ? conversations : conversationsRemovingImageAttachments(conversations)
-    case .providers, .prompts, .tools:
-      exportedConversations = nil
-    }
+    let exportedConversations =
+      selection.conversations
+      ? (includePictures ? conversations : conversationsRemovingImageAttachments(conversations))
+      : nil
     let attachments =
-      includeAudio
+      includeAudio && selection.conversations
       ? collectVoiceRecordingAttachments(from: exportedConversations ?? [])
       : nil
 
-    switch scope {
-    case .everything:
-      return SettingsBackupEnvelope(
-        providers: providersBackup(),
-        prompts: promptsBackup(),
-        tools: toolsBackup(),
-        conversations: exportedConversations,
-        conversationFolders: settings.conversationFolders,
-        conversationFolderDefaults: settings.conversationFolderDefaults,
-        voiceRecordings: attachments)
-    case .providers:
-      return SettingsBackupEnvelope(providers: providersBackup())
-    case .prompts:
-      return SettingsBackupEnvelope(prompts: promptsBackup())
-    case .tools:
-      return SettingsBackupEnvelope(tools: toolsBackup())
-    case .conversations:
-      return SettingsBackupEnvelope(
-        conversations: exportedConversations,
-        conversationFolders: settings.conversationFolders,
-        voiceRecordings: attachments)
-    }
+    return SettingsBackupEnvelope(
+      providers: selection.providers ? providersBackup() : nil,
+      prompts: selection.prompts ? promptsBackup() : nil,
+      tools: selection.tools ? toolsBackup() : nil,
+      conversations: exportedConversations,
+      conversationFolders: selection.conversations ? settings.conversationFolders : nil,
+      conversationFolderDefaults: selection.conversations
+        ? settings.conversationFolderDefaults : nil,
+      voiceRecordings: attachments)
   }
 
   private func collectVoiceRecordingAttachments(from conversations: [Conversation])
@@ -3682,16 +3721,18 @@ final class AppStore: ObservableObject {
     return attachments
   }
 
-  private func conversationsRemovingImageAttachments(_ source: [Conversation]) -> [Conversation] {
-    source.map { conversation in
-      var copy = conversation
-      copy.messages = copy.messages.map { message in
-        var message = message
-        message.attachments.removeAll { $0.kind == .image }
-        return message
-      }
-      return copy
+  private static func conversationRemovingImageAttachments(_ source: Conversation) -> Conversation {
+    var copy = source
+    copy.messages = copy.messages.map { message in
+      var message = message
+      message.attachments.removeAll { $0.kind == .image }
+      return message
     }
+    return copy
+  }
+
+  private func conversationsRemovingImageAttachments(_ source: [Conversation]) -> [Conversation] {
+    source.map(Self.conversationRemovingImageAttachments)
   }
 
   private func providersBackup() -> SettingsProvidersBackup {
@@ -3736,6 +3777,18 @@ final class AppStore: ObservableObject {
     return "PocketMai-\(suffix)-\(stamp)"
   }
 
+  private func backupFilename(selection: SettingsBackupSelection) -> String {
+    let stamp = backupTimestamp()
+    let suffix: String
+    if selection == SettingsBackupSelection(scope: .everything) {
+      suffix = "everything"
+    } else {
+      let names = selection.selectedSections.map(\.rawValue)
+      suffix = names.isEmpty ? "backup" : names.joined(separator: "-")
+    }
+    return "PocketMai-\(suffix)-\(stamp)"
+  }
+
   private func backupFilename(for endpoint: OpenAIEndpoint) -> String {
     let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:")
       .union(.newlines)
@@ -3758,7 +3811,8 @@ final class AppStore: ObservableObject {
   func importSettingsBackup(
     from url: URL,
     scope: SettingsBackupScope,
-    restoreAudio: Bool = false
+    restoreAudio: Bool = false,
+    includePictures: Bool = true
   ) throws -> String {
     let access = url.startAccessingSecurityScopedResource()
     defer {
@@ -3776,62 +3830,72 @@ final class AppStore: ObservableObject {
     else {
       throw SettingsBackupError.invalidJSON
     }
-    return try applyBackup(envelope, scope: scope, restoreAudio: restoreAudio)
+    return try applyBackup(
+      envelope,
+      selection: SettingsBackupSelection(scope: scope),
+      restoreAudio: restoreAudio,
+      includePictures: includePictures)
+  }
+
+  @discardableResult
+  func importSettingsBackup(
+    _ envelope: SettingsBackupEnvelope,
+    selection: SettingsBackupSelection,
+    restoreAudio: Bool = false,
+    includePictures: Bool = true
+  ) throws -> String {
+    try applyBackup(
+      envelope,
+      selection: selection,
+      restoreAudio: restoreAudio,
+      includePictures: includePictures)
   }
 
   @discardableResult
   private func applyBackup(
     _ envelope: SettingsBackupEnvelope,
-    scope: SettingsBackupScope,
-    restoreAudio: Bool
+    selection: SettingsBackupSelection,
+    restoreAudio: Bool,
+    includePictures: Bool
   ) throws -> String {
+    guard !selection.isEmpty else { throw SettingsBackupError.emptySelection }
+
     var applied: [String] = []
 
-    let wantProviders = scope == .everything || scope == .providers
-    let wantPrompts = scope == .everything || scope == .prompts
-    let wantTools = scope == .everything || scope == .tools
-    let wantConversations = scope == .everything || scope == .conversations
+    let available = SettingsBackupSelection(
+      providers: envelope.providers != nil,
+      prompts: envelope.prompts != nil,
+      tools: envelope.tools != nil,
+      conversations: envelope.conversations != nil)
+    let missingSections = selection.selectedSections.filter { !available.contains($0) }
+    if let missingSection = missingSections.first {
+      throw SettingsBackupError.missingSelectedSection(missingSection)
+    }
 
-    if wantProviders {
-      guard let payload = envelope.providers else {
-        if scope == .providers { throw SettingsBackupError.missingSection(.providers) }
-        if scope == .everything { /* allow */  } else { /* unreachable */  }
-        return ""
-      }
+    if selection.providers, let payload = envelope.providers {
       applyProvidersBackup(payload)
       applied.append(
         "\(payload.endpoints.count) provider\(payload.endpoints.count == 1 ? "" : "s")")
     }
 
-    if wantPrompts {
-      guard let payload = envelope.prompts else {
-        if scope == .prompts { throw SettingsBackupError.missingSection(.prompts) }
-        return finishApplyBackup(applied: applied)
-      }
+    if selection.prompts, let payload = envelope.prompts {
       applyPromptsBackup(payload)
       applied.append("\(payload.prompts.count) prompt\(payload.prompts.count == 1 ? "" : "s")")
     }
 
-    if wantTools {
-      guard let payload = envelope.tools else {
-        if scope == .tools { throw SettingsBackupError.missingSection(.tools) }
-        return finishApplyBackup(applied: applied)
-      }
+    if selection.tools, let payload = envelope.tools {
       applyToolsBackup(payload)
       applied.append("tool settings")
     }
 
-    if wantConversations {
-      guard let payload = envelope.conversations else {
-        if scope == .conversations { throw SettingsBackupError.missingSection(.conversations) }
-        return finishApplyBackup(applied: applied)
-      }
-      applyConversationFoldersBackup(envelope.conversationFolders, for: payload)
-      if scope == .everything {
-        applyConversationFolderDefaultsBackup(envelope.conversationFolderDefaults)
-      }
-      applyConversationsBackup(payload)
-      applied.append("\(payload.count) conversation\(payload.count == 1 ? "" : "s")")
+    if selection.conversations, let payload = envelope.conversations {
+      let conversationsPayload =
+        includePictures ? payload : payload.map(Self.conversationRemovingImageAttachments)
+      applyConversationFoldersBackup(envelope.conversationFolders, for: conversationsPayload)
+      applyConversationFolderDefaultsBackup(envelope.conversationFolderDefaults)
+      applyConversationsBackup(conversationsPayload)
+      applied.append(
+        "\(conversationsPayload.count) conversation\(conversationsPayload.count == 1 ? "" : "s")")
 
       if restoreAudio, let attachments = envelope.voiceRecordings, !attachments.isEmpty {
         let restored = restoreVoiceRecordings(attachments)
@@ -3841,13 +3905,6 @@ final class AppStore: ObservableObject {
       }
     }
 
-    if scope == .everything && envelope.providers == nil && envelope.prompts == nil
-      && envelope.tools == nil && envelope.conversations == nil
-    {
-      throw SettingsBackupError.missingSection(.everything)
-    }
-
-    saveSettings()
     return finishApplyBackup(applied: applied)
   }
 

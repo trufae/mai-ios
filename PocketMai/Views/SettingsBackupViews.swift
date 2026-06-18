@@ -19,15 +19,65 @@ private struct BackupActivityShareSheet: UIViewControllerRepresentable {
 
 // MARK: - Import Panel
 
+private struct BackupSectionCheckbox: View {
+  let section: SettingsBackupSection
+  let detail: String
+  @Binding var isSelected: Bool
+
+  var body: some View {
+    Button {
+      isSelected.toggle()
+    } label: {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+          .imageScale(.large)
+          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+          .frame(width: 24)
+        VStack(alignment: .leading, spacing: 4) {
+          Label(section.title, systemImage: section.systemImage)
+            .foregroundStyle(.primary)
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+extension SettingsBackupSection {
+  fileprivate var title: String {
+    switch self {
+    case .providers: "Provider Settings"
+    case .prompts: "Prompts"
+    case .tools: "Tool Settings"
+    case .conversations: "Conversations"
+    }
+  }
+
+  fileprivate var systemImage: String {
+    switch self {
+    case .providers: "network"
+    case .prompts: "text.bubble"
+    case .tools: "wrench.and.screwdriver"
+    case .conversations: "bubble.left.and.bubble.right"
+    }
+  }
+}
+
 struct SettingsImportView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
 
-  @State private var pendingScope: SettingsBackupScope?
   @State private var showingFileImporter = false
+  @State private var importPreview: SettingsImportFilePreview?
+  @State private var selectedSections = SettingsBackupSelection()
   @State private var restoreAudio = false
+  @State private var includePictures = false
 
-  @State private var showingConversationImporter = false
   @State private var pendingConversationImport: ConversationImportPreview?
 
   @State private var toast: String?
@@ -36,62 +86,35 @@ struct SettingsImportView: View {
   var body: some View {
     Form {
       Section {
-        Toggle(isOn: $restoreAudio) {
-          VStack(alignment: .leading, spacing: 2) {
-            Label("Restore voice audio", systemImage: "waveform")
-            Text("Write base64-encoded m4a files back to the voice-recordings folder.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-        }
-      } header: {
-        Text("Options")
-      }
-
-      Section {
-        importRow(
-          title: "Everything",
-          systemImage: "tray.full",
-          description: "Restore providers, prompts, tool settings, and conversations.",
-          scope: .everything)
-        importRow(
-          title: "Provider Settings",
-          systemImage: "network",
-          description: "Endpoints, API keys, and the default provider.",
-          scope: .providers)
-        importRow(
-          title: "Prompts",
-          systemImage: "text.bubble",
-          description: "Replace system prompts, user prompts, and compact prompt with the backup.",
-          scope: .prompts)
-        importRow(
-          title: "Tool Settings",
-          systemImage: "wrench.and.screwdriver",
-          description: "Built-in tools, MCP servers, voices, and tool-calling preferences.",
-          scope: .tools)
-        importRow(
-          title: "All Conversations",
-          systemImage: "bubble.left.and.bubble.right",
-          description: "Add every conversation from a full backup.",
-          scope: .conversations)
-      } header: {
-        Text("From PocketMai Backup")
-      } footer: {
-        Text(
-          "Importing a section replaces it with the contents of the backup file. Conversations are added alongside existing chats."
-        )
-      }
-
-      Section {
         Button {
-          showingConversationImporter = true
+          errorMessage = nil
+          showingFileImporter = true
         } label: {
-          Label("Single Conversation", systemImage: "square.and.arrow.down.on.square")
+          HStack {
+            Label(
+              importPreview == nil ? "Choose JSON File" : "Choose Different JSON File",
+              systemImage: "doc.badge.plus"
+            )
+            Spacer(minLength: 0)
+          }
+          .contentShape(Rectangle())
         }
       } header: {
-        Text("Single Conversation")
-      } footer: {
-        Text("Pick a PocketMai conversation JSON to add or update a single chat.")
+        Text("File")
+      }
+
+      if let importPreview {
+        importInfoSection(importPreview)
+        importContentsSection(importPreview)
+        importOptionsSection(importPreview)
+        Section {
+          Button {
+            importSelected(from: importPreview)
+          } label: {
+            Label("Import Selected", systemImage: "square.and.arrow.down")
+          }
+          .disabled(selectedSections.intersection(importPreview.availableSelection).isEmpty)
+        }
       }
 
       if let errorMessage {
@@ -107,18 +130,7 @@ struct SettingsImportView: View {
       isPresented: $showingFileImporter,
       allowedContentTypes: [.json]
     ) { result in
-      handleBackupPick(result)
-    }
-    .fileImporter(
-      isPresented: $showingConversationImporter,
-      allowedContentTypes: [.json]
-    ) { result in
-      switch result {
-      case .success(let url):
-        Task { await prepareConversationImport(from: url) }
-      case .failure(let error):
-        errorMessage = error.localizedDescription
-      }
+      handleFilePick(result)
     }
     .sheet(item: $pendingConversationImport) { preview in
       ConversationImportConfirmationView(
@@ -138,50 +150,132 @@ struct SettingsImportView: View {
   }
 
   @ViewBuilder
-  private func importRow(
-    title: String,
-    systemImage: String,
-    description: String,
-    scope: SettingsBackupScope
-  ) -> some View {
-    Button {
-      errorMessage = nil
-      pendingScope = scope
-      showingFileImporter = true
-    } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        Label(title, systemImage: systemImage)
-          .foregroundStyle(.primary)
-        Text(description)
-          .font(.caption)
-          .foregroundStyle(.secondary)
+  private func importInfoSection(_ preview: SettingsImportFilePreview) -> some View {
+    Section {
+      infoRow("File", preview.filename)
+      infoRow("Type", previewType(preview))
+      infoRow("PocketMai", preview.pocketMaiVersion)
+      infoRow("Exported", formattedDate(preview.exportedAt))
+      switch preview.kind {
+      case .backup(let envelope):
+        infoRow("Backup format", "\(envelope.version)")
+      case .conversation(let envelope):
+        infoRow("Title", envelope.title)
+        infoRow("Provider", envelope.providerDisplayName)
+        infoRow("Model", envelope.model)
+        infoRow("Messages", "\(envelope.conversation.messages.count)")
+      }
+    } header: {
+      Text("File Info")
+    }
+  }
+
+  @ViewBuilder
+  private func importContentsSection(_ preview: SettingsImportFilePreview) -> some View {
+    let available = preview.availableSelection
+    Section {
+      ForEach(SettingsBackupSection.allCases) { section in
+        if available.contains(section) {
+          BackupSectionCheckbox(
+            section: section,
+            detail: importDetail(for: section, preview: preview),
+            isSelected: selectionBinding(section, available: available))
+        }
+      }
+    } header: {
+      Text("Contents")
+    }
+  }
+
+  @ViewBuilder
+  private func importOptionsSection(_ preview: SettingsImportFilePreview) -> some View {
+    if selectedSections.intersection(preview.availableSelection).conversations {
+      Section {
+        if backupHasVoiceAudio(preview) {
+          Toggle(isOn: $restoreAudio) {
+            VStack(alignment: .leading, spacing: 2) {
+              Label("Restore voice audio", systemImage: "waveform")
+              Text("Write embedded m4a files back to the voice-recordings folder.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+        Toggle(isOn: $includePictures) {
+          VStack(alignment: .leading, spacing: 2) {
+            Label("Import pictures", systemImage: "photo")
+            Text("Keep embedded image attachments in imported conversations.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+      } header: {
+        Text("Conversation Options")
       }
     }
   }
 
-  private func handleBackupPick(_ result: Result<URL, Error>) {
-    guard let scope = pendingScope else { return }
-    pendingScope = nil
+  private func handleFilePick(_ result: Result<URL, Error>) {
     switch result {
     case .success(let url):
-      do {
-        let summary = try store.importSettingsBackup(
-          from: url, scope: scope, restoreAudio: restoreAudio)
-        showToast(summary)
-      } catch {
-        errorMessage = error.localizedDescription
-      }
+      Task { await prepareImportPreview(from: url) }
     case .failure(let error):
       errorMessage = error.localizedDescription
     }
   }
 
   @MainActor
-  private func prepareConversationImport(from url: URL) async {
+  private func prepareImportPreview(from url: URL) async {
     do {
-      pendingConversationImport = try await store.previewConversationImport(from: url)
+      let preview = try await store.previewSettingsImportFile(from: url)
+      importPreview = preview
+      selectedSections = preview.availableSelection
+      restoreAudio = false
+      includePictures = false
+      errorMessage = nil
     } catch {
+      importPreview = nil
+      selectedSections = SettingsBackupSelection()
       errorMessage = error.localizedDescription
+    }
+  }
+
+  private func importSelected(from preview: SettingsImportFilePreview) {
+    let selection = selectedSections.intersection(preview.availableSelection)
+    guard !selection.isEmpty else {
+      errorMessage = SettingsBackupError.emptySelection.localizedDescription
+      return
+    }
+    switch preview.kind {
+    case .backup(let envelope):
+      do {
+        let summary = try store.importSettingsBackup(
+          envelope,
+          selection: selection,
+          restoreAudio: restoreAudio,
+          includePictures: includePictures)
+        errorMessage = nil
+        showToast(summary)
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    case .conversation(let envelope):
+      guard selection.conversations else {
+        errorMessage = SettingsBackupError.emptySelection.localizedDescription
+        return
+      }
+      Task { await prepareConversationImport(from: envelope) }
+    }
+  }
+
+  @MainActor
+  private func prepareConversationImport(from envelope: ConversationExportEnvelope) async {
+    let preview = await store.previewConversationImport(
+      from: envelope, includePictures: includePictures)
+    if preview.conflict == nil {
+      _ = finishConversationImport(preview, resolution: .create(title: preview.envelope.title))
+    } else {
+      pendingConversationImport = preview
     }
   }
 
@@ -192,6 +286,7 @@ struct SettingsImportView: View {
     do {
       try store.importConversation(preview, resolution: resolution)
       pendingConversationImport = nil
+      errorMessage = nil
       showToast("Imported conversation.")
       return nil
     } catch {
@@ -204,6 +299,59 @@ struct SettingsImportView: View {
       toast = message
     }
   }
+
+  private func selectionBinding(
+    _ section: SettingsBackupSection,
+    available: SettingsBackupSelection
+  ) -> Binding<Bool> {
+    Binding(
+      get: { selectedSections.contains(section) && available.contains(section) },
+      set: { isSelected in
+        selectedSections.set(section, isSelected: isSelected && available.contains(section))
+      })
+  }
+
+  private func importDetail(
+    for section: SettingsBackupSection,
+    preview: SettingsImportFilePreview
+  ) -> String {
+    switch preview.kind {
+    case .backup(let envelope):
+      switch section {
+      case .providers:
+        let count = envelope.providers?.endpoints.count ?? 0
+        return "\(count) provider \(itemLabel(count, singular: "endpoint"))."
+      case .prompts:
+        let systemCount = envelope.prompts?.prompts.count ?? 0
+        let userCount = envelope.prompts?.userPrompts?.count ?? 0
+        return
+          "\(systemCount) system \(itemLabel(systemCount, singular: "prompt")), \(userCount) user \(itemLabel(userCount, singular: "prompt"))."
+      case .tools:
+        let serverCount = envelope.tools?.mcpServers.count ?? 0
+        return "Tool settings and \(serverCount) MCP \(itemLabel(serverCount, singular: "server"))."
+      case .conversations:
+        let count = envelope.conversations?.count ?? 0
+        return "\(count) \(itemLabel(count, singular: "conversation"))."
+      }
+    case .conversation(let envelope):
+      return
+        "\(displayValue(envelope.title)) · \(envelope.conversation.messages.count) \(itemLabel(envelope.conversation.messages.count, singular: "message"))."
+    }
+  }
+
+  private func previewType(_ preview: SettingsImportFilePreview) -> String {
+    switch preview.kind {
+    case .backup: return "PocketMai backup"
+    case .conversation: return "Single conversation"
+    }
+  }
+
+  private func backupHasVoiceAudio(_ preview: SettingsImportFilePreview) -> Bool {
+    if case .backup(let envelope) = preview.kind {
+      return !(envelope.voiceRecordings ?? []).isEmpty
+    }
+    return false
+  }
 }
 
 // MARK: - Export Panel
@@ -213,62 +361,53 @@ struct SettingsExportView: View {
 
   @State private var shareFile: BackupSharedFile?
   @State private var errorMessage: String?
+  @State private var selectedSections = SettingsBackupSelection(scope: .everything)
   @State private var includeAudio = false
   @State private var includePictures = false
 
   var body: some View {
     Form {
       Section {
-        Toggle(isOn: $includeAudio) {
-          VStack(alignment: .leading, spacing: 2) {
-            Label("Include voice audio", systemImage: "waveform")
-            Text(
-              "Embed m4a recordings as base64. Disabled by default because audio inflates the file."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          }
-        }
-        Toggle(isOn: $includePictures) {
-          VStack(alignment: .leading, spacing: 2) {
-            Label("Include pictures", systemImage: "photo")
-            Text(
-              "Embed image attachments in conversation backups. Disabled by default because pictures inflate the file."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          }
+        ForEach(SettingsBackupSection.allCases) { section in
+          BackupSectionCheckbox(
+            section: section,
+            detail: exportDetail(for: section),
+            isSelected: exportSelectionBinding(section))
         }
       } header: {
-        Text("Options")
+        Text("Contents")
+      }
+
+      if selectedSections.conversations {
+        Section {
+          Toggle(isOn: $includeAudio) {
+            VStack(alignment: .leading, spacing: 2) {
+              Label("Include voice audio", systemImage: "waveform")
+              Text("Embed m4a recordings as base64.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+          Toggle(isOn: $includePictures) {
+            VStack(alignment: .leading, spacing: 2) {
+              Label("Include pictures", systemImage: "photo")
+              Text("Embed image attachments in conversation backups.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+        } header: {
+          Text("Options")
+        }
       }
 
       Section {
-        exportRow(
-          title: "Everything",
-          systemImage: "tray.full",
-          description: "Providers, prompts, tool settings, and conversations.",
-          scope: .everything)
-        exportRow(
-          title: "Provider Settings",
-          systemImage: "network",
-          description: "Endpoints, API keys, and the default provider.",
-          scope: .providers)
-        exportRow(
-          title: "Prompts",
-          systemImage: "text.bubble",
-          description: "System prompts, user prompts, default prompt, and compact prompt.",
-          scope: .prompts)
-        exportRow(
-          title: "Tool Settings",
-          systemImage: "wrench.and.screwdriver",
-          description: "Built-in tools, MCP servers, voices, and tool-calling preferences.",
-          scope: .tools)
-        exportRow(
-          title: "All Conversations",
-          systemImage: "bubble.left.and.bubble.right",
-          description: "Every chat on this device.",
-          scope: .conversations)
+        Button {
+          exportSelected()
+        } label: {
+          Label("Export Selected", systemImage: "square.and.arrow.up")
+        }
+        .disabled(selectedSections.isEmpty)
       } header: {
         Text("Save to File")
       } footer: {
@@ -291,34 +430,72 @@ struct SettingsExportView: View {
     }
   }
 
-  @ViewBuilder
-  private func exportRow(
-    title: String,
-    systemImage: String,
-    description: String,
-    scope: SettingsBackupScope
-  ) -> some View {
-    Button {
-      errorMessage = nil
-      if let url = store.exportSettingsBackupFile(
-        scope: scope,
-        includeAudio: includeAudio,
-        includePictures: includePictures)
-      {
-        shareFile = BackupSharedFile(url: url)
-      } else {
-        errorMessage = store.errorMessage ?? "Could not export."
-      }
-    } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        Label(title, systemImage: systemImage)
-          .foregroundStyle(.primary)
-        Text(description)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+  private func exportSelected() {
+    errorMessage = nil
+    if let url = store.exportSettingsBackupFile(
+      selection: selectedSections,
+      includeAudio: includeAudio,
+      includePictures: includePictures)
+    {
+      shareFile = BackupSharedFile(url: url)
+    } else {
+      errorMessage = store.errorMessage ?? "Could not export."
     }
   }
+
+  private func exportSelectionBinding(_ section: SettingsBackupSection) -> Binding<Bool> {
+    Binding(
+      get: { selectedSections.contains(section) },
+      set: { isSelected in
+        selectedSections.set(section, isSelected: isSelected)
+        if !selectedSections.conversations {
+          includeAudio = false
+          includePictures = false
+        }
+      })
+  }
+
+  private func exportDetail(for section: SettingsBackupSection) -> String {
+    switch section {
+    case .providers:
+      let count = store.settings.openAIEndpoints.count
+      return "\(count) provider \(itemLabel(count, singular: "endpoint"))."
+    case .prompts:
+      let systemCount = store.settings.systemPrompts.count
+      let userCount = store.settings.userPrompts.count
+      return
+        "\(systemCount) system \(itemLabel(systemCount, singular: "prompt")), \(userCount) user \(itemLabel(userCount, singular: "prompt"))."
+    case .tools:
+      let serverCount = store.settings.mcpServers.count
+      return "Tool settings and \(serverCount) MCP \(itemLabel(serverCount, singular: "server"))."
+    case .conversations:
+      let count = store.conversationSummaries.count
+      return "\(count) \(itemLabel(count, singular: "conversation"))."
+    }
+  }
+}
+
+private func itemLabel(_ count: Int, singular: String) -> String {
+  count == 1 ? singular : "\(singular)s"
+}
+
+private func formattedDate(_ date: Date) -> String {
+  date.formatted(date: .abbreviated, time: .shortened)
+}
+
+private func infoRow(_ title: String, _ value: String) -> some View {
+  HStack(alignment: .firstTextBaseline) {
+    Text(title)
+    Spacer(minLength: 12)
+    Text(displayValue(value))
+      .foregroundStyle(.secondary)
+      .multilineTextAlignment(.trailing)
+  }
+}
+
+private func displayValue(_ value: String) -> String {
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? "Not specified" : trimmed
 }
 
 // MARK: - Destroy Panel

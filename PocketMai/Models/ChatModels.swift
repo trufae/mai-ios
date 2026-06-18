@@ -1731,6 +1731,83 @@ enum SettingsBackupScope: String, CaseIterable, Sendable {
   case conversations
 }
 
+enum SettingsBackupSection: String, CaseIterable, Identifiable, Sendable {
+  case providers
+  case prompts
+  case tools
+  case conversations
+
+  var id: String { rawValue }
+}
+
+struct SettingsBackupSelection: Equatable, Sendable {
+  var providers: Bool
+  var prompts: Bool
+  var tools: Bool
+  var conversations: Bool
+
+  init(
+    providers: Bool = false,
+    prompts: Bool = false,
+    tools: Bool = false,
+    conversations: Bool = false
+  ) {
+    self.providers = providers
+    self.prompts = prompts
+    self.tools = tools
+    self.conversations = conversations
+  }
+
+  init(scope: SettingsBackupScope) {
+    switch scope {
+    case .everything:
+      self.init(providers: true, prompts: true, tools: true, conversations: true)
+    case .providers:
+      self.init(providers: true)
+    case .prompts:
+      self.init(prompts: true)
+    case .tools:
+      self.init(tools: true)
+    case .conversations:
+      self.init(conversations: true)
+    }
+  }
+
+  var isEmpty: Bool {
+    !providers && !prompts && !tools && !conversations
+  }
+
+  var selectedSections: [SettingsBackupSection] {
+    SettingsBackupSection.allCases.filter { contains($0) }
+  }
+
+  func contains(_ section: SettingsBackupSection) -> Bool {
+    switch section {
+    case .providers: providers
+    case .prompts: prompts
+    case .tools: tools
+    case .conversations: conversations
+    }
+  }
+
+  mutating func set(_ section: SettingsBackupSection, isSelected: Bool) {
+    switch section {
+    case .providers: providers = isSelected
+    case .prompts: prompts = isSelected
+    case .tools: tools = isSelected
+    case .conversations: conversations = isSelected
+    }
+  }
+
+  func intersection(_ other: SettingsBackupSelection) -> SettingsBackupSelection {
+    SettingsBackupSelection(
+      providers: providers && other.providers,
+      prompts: prompts && other.prompts,
+      tools: tools && other.tools,
+      conversations: conversations && other.conversations)
+  }
+}
+
 struct SettingsProvidersBackup: Codable, Sendable {
   var endpoints: [OpenAIEndpoint]
   var selectedEndpointID: UUID?
@@ -1803,17 +1880,65 @@ struct SettingsBackupEnvelope: Codable, Sendable {
   }
 }
 
+enum SettingsImportFileKind: Sendable {
+  case backup(SettingsBackupEnvelope)
+  case conversation(ConversationExportEnvelope)
+}
+
+struct SettingsImportFilePreview: Identifiable, Sendable {
+  let id = UUID()
+  var filename: String
+  var kind: SettingsImportFileKind
+
+  var availableSelection: SettingsBackupSelection {
+    switch kind {
+    case .backup(let envelope):
+      SettingsBackupSelection(
+        providers: envelope.providers != nil,
+        prompts: envelope.prompts != nil,
+        tools: envelope.tools != nil,
+        conversations: envelope.conversations != nil)
+    case .conversation:
+      SettingsBackupSelection(conversations: true)
+    }
+  }
+
+  var pocketMaiVersion: String {
+    switch kind {
+    case .backup(let envelope):
+      envelope.pocketMaiVersion
+    case .conversation(let envelope):
+      envelope.pocketMaiVersion
+    }
+  }
+
+  var exportedAt: Date {
+    switch kind {
+    case .backup(let envelope):
+      envelope.exportedAt
+    case .conversation(let envelope):
+      envelope.exportedAt
+    }
+  }
+}
+
 enum SettingsBackupError: LocalizedError {
   case unreadableFile
   case invalidJSON
   case missingSection(SettingsBackupScope)
+  case missingSelectedSection(SettingsBackupSection)
+  case emptySelection
 
   var errorDescription: String? {
     switch self {
     case .unreadableFile: return "The selected file could not be read."
-    case .invalidJSON: return "The selected file is not a valid PocketMai backup."
+    case .invalidJSON: return "The selected file is not a valid PocketMai JSON file."
     case .missingSection(let scope):
       return "The backup does not contain \(scope.sectionName)."
+    case .missingSelectedSection(let section):
+      return "The selected file does not contain \(section.sectionName)."
+    case .emptySelection:
+      return "Choose at least one section."
     }
   }
 }
@@ -1824,6 +1949,17 @@ extension SettingsBackupScope {
     case .everything: return "any data"
     case .providers: return "provider settings"
     case .prompts: return "system prompts"
+    case .tools: return "tool settings"
+    case .conversations: return "conversations"
+    }
+  }
+}
+
+extension SettingsBackupSection {
+  var sectionName: String {
+    switch self {
+    case .providers: return "provider settings"
+    case .prompts: return "prompts"
     case .tools: return "tool settings"
     case .conversations: return "conversations"
     }
