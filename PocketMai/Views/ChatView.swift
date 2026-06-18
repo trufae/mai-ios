@@ -910,7 +910,10 @@ struct ChatView: View {
         }
 
         if !suggestions.isEmpty {
-          PreviousConversationSuggestions(suggestions: suggestions) { id in
+          PreviousConversationSuggestions(
+            suggestions: suggestions,
+            exportCoordinator: exportCoordinator
+          ) { id in
             Task { await store.selectConversation(id: id) }
           }
         }
@@ -1071,6 +1074,7 @@ private struct EmptyChatLogo: View {
 private struct PreviousConversationSuggestions: View {
   @EnvironmentObject private var store: AppStore
   let suggestions: [ConversationSummary]
+  @ObservedObject var exportCoordinator: ConversationExportCoordinator
   let onSelect: (UUID) -> Void
 
   var body: some View {
@@ -1089,6 +1093,13 @@ private struct PreviousConversationSuggestions: View {
             folder: folder(for: suggestion),
             isMostRecent: suggestions.last?.id == suggestion.id,
             onSelect: { onSelect(suggestion.id) }
+          )
+          .modifier(
+            ConversationSummaryActionsModifier(
+              conversation: suggestion,
+              isCurrent: store.selectedConversationID == suggestion.id,
+              isEnabled: true,
+              exportCoordinator: exportCoordinator)
           )
         }
       }

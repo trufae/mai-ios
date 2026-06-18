@@ -20,8 +20,6 @@ struct SidebarView: View {
   @State private var isSelectionMode = false
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
-  @State private var pendingRename: PendingConversationRename?
-  @State private var renameDraft = ""
   @State private var showingFolderManager = false
   @State private var showingMoveDestinationDialog = false
   @State private var keyboardOverlap: CGFloat = 0
@@ -40,18 +38,6 @@ struct SidebarView: View {
         }
       sidebarEdgeFades
       floatingActions
-    }
-    .alert("Change Title", isPresented: renameAlertBinding) {
-      TextField("Chat title", text: $renameDraft)
-        .onSubmit {
-          saveRename()
-        }
-      Button("Cancel", role: .cancel) {
-        clearRename()
-      }
-      Button("Save") {
-        saveRename()
-      }
     }
     .alert(
       pendingDeletion?.title ?? "Delete conversations?",
@@ -153,11 +139,20 @@ struct SidebarView: View {
             onSelectConversation()
           }
         }
-        .contextMenu {
-          if !isSelectionMode {
-            conversationContextMenu(for: conversation, isCurrent: isSelected)
-          }
-        }
+        .modifier(
+          ConversationSummaryActionsModifier(
+            conversation: conversation,
+            isCurrent: isSelected,
+            isEnabled: !isSelectionMode,
+            exportCoordinator: exportCoordinator,
+            onSelectForBatch: {
+              withAnimation {
+                isSelectionMode = true
+                selectedIDs = [conversation.id]
+              }
+            },
+            onAfterClone: onSelectConversation)
+        )
         .listRowBackground(SidebarRowBackground(isSelected: isSelected && !isSelectionMode))
       }
     }
@@ -202,71 +197,6 @@ struct SidebarView: View {
 
   private func text(_ text: String, contains query: String) -> Bool {
     text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-  }
-
-  @ViewBuilder
-  private func conversationContextMenu(for conversation: ConversationSummary, isCurrent: Bool)
-    -> some View
-  {
-    Button {
-      withAnimation {
-        isSelectionMode = true
-        selectedIDs = [conversation.id]
-      }
-    } label: {
-      Label("Select...", systemImage: "checkmark.circle")
-    }
-
-    Button {
-      beginRename(conversation)
-    } label: {
-      Label("Change Title...", systemImage: "pencil")
-    }
-
-    Button {
-      Task { await store.togglePin(id: conversation.id) }
-    } label: {
-      Label(
-        conversation.isPinned ? "Unpin Conversation" : "Pin to Top",
-        systemImage: conversation.isPinned ? "pin.slash" : "pin"
-      )
-    }
-
-    Menu {
-      ForEach(store.conversationFolders) { folder in
-        Button {
-          Task { await store.moveConversation(id: conversation.id, to: folder.id) }
-        } label: {
-          if folder.id == conversation.folderID {
-            Label(folder.displayName, systemImage: "checkmark")
-          } else {
-            Label(folder.displayName, systemImage: folder.systemImage)
-          }
-        }
-        .disabled(!store.canUseConversationFolder(folder.id) || folder.id == conversation.folderID)
-      }
-    } label: {
-      Label("Move to Folder", systemImage: "folder")
-    }
-
-    Button {
-      Task { await store.cloneConversation(id: conversation.id) }
-      onSelectConversation()
-    } label: {
-      Label("Clone Conversation", systemImage: "doc.on.doc")
-    }
-
-    Divider()
-
-    ConversationExportMenu(conversationID: conversation.id, coordinator: exportCoordinator)
-
-    Divider()
-
-    Button(role: .destructive) {
-      pendingDeletion = .single(conversation)
-    } label: {
-      Label("Delete...", systemImage: "trash")
-    }
   }
 
   private var floatingActions: some View {
@@ -473,36 +403,6 @@ struct SidebarView: View {
     pendingDeletion = .selected(selectedIDs)
   }
 
-  private func beginRename(_ conversation: ConversationSummary) {
-    renameDraft = conversation.displayTitle
-    pendingRename = PendingConversationRename(id: conversation.id)
-  }
-
-  private func saveRename() {
-    guard let pendingRename else { return }
-    let id = pendingRename.id
-    let title = renameDraft
-    clearRename()
-    Task {
-      await store.renameConversation(id: id, to: title)
-    }
-  }
-
-  private func clearRename() {
-    pendingRename = nil
-    renameDraft = ""
-  }
-
-  private var renameAlertBinding: Binding<Bool> {
-    Binding {
-      pendingRename != nil
-    } set: { isPresented in
-      if !isPresented {
-        clearRename()
-      }
-    }
-  }
-
   private func confirmDeletion(_ deletion: PendingConversationDeletion) {
     guard !deletion.ids.isEmpty else {
       pendingDeletion = nil
@@ -573,7 +473,7 @@ struct SidebarView: View {
   }
 }
 
-private struct PendingConversationDeletion: Identifiable {
+struct PendingConversationDeletion: Identifiable {
   let id = UUID()
   let ids: Set<UUID>
   let title: String
@@ -601,8 +501,170 @@ private struct PendingConversationDeletion: Identifiable {
 
 }
 
-private struct PendingConversationRename: Identifiable {
+struct PendingConversationRename: Identifiable {
   let id: UUID
+}
+
+struct ConversationSummaryActionsModifier: ViewModifier {
+  @EnvironmentObject private var store: AppStore
+  let conversation: ConversationSummary
+  let isCurrent: Bool
+  let isEnabled: Bool
+  @ObservedObject var exportCoordinator: ConversationExportCoordinator
+  var onSelectForBatch: (() -> Void)?
+  var onAfterClone: () -> Void = {}
+
+  @State private var pendingDeletion: PendingConversationDeletion?
+  @State private var pendingRename: PendingConversationRename?
+  @State private var renameDraft = ""
+
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content
+        .contextMenu {
+          contextMenuItems
+        }
+        .alert("Change Title", isPresented: renameAlertBinding) {
+          TextField("Chat title", text: $renameDraft)
+            .onSubmit {
+              saveRename()
+            }
+          Button("Cancel", role: .cancel) {
+            clearRename()
+          }
+          Button("Save") {
+            saveRename()
+          }
+        }
+        .alert(
+          pendingDeletion?.title ?? "Delete conversation?",
+          isPresented: deletionConfirmationBinding,
+          presenting: pendingDeletion
+        ) { deletion in
+          Button("Cancel", role: .cancel) {
+            pendingDeletion = nil
+          }
+          Button(deletion.buttonTitle, role: .destructive) {
+            confirmDeletion(deletion)
+          }
+        } message: { deletion in
+          Text(deletion.message)
+        }
+    } else {
+      content
+    }
+  }
+
+  @ViewBuilder
+  private var contextMenuItems: some View {
+    if let onSelectForBatch {
+      Button {
+        onSelectForBatch()
+      } label: {
+        Label("Select...", systemImage: "checkmark.circle")
+      }
+    }
+
+    Button {
+      beginRename(conversation)
+    } label: {
+      Label("Change Title...", systemImage: "pencil")
+    }
+
+    Button {
+      Task { await store.togglePin(id: conversation.id) }
+    } label: {
+      Label(
+        conversation.isPinned ? "Unpin Conversation" : "Pin to Top",
+        systemImage: conversation.isPinned ? "pin.slash" : "pin"
+      )
+    }
+
+    Menu {
+      ForEach(store.conversationFolders) { folder in
+        Button {
+          Task { await store.moveConversation(id: conversation.id, to: folder.id) }
+        } label: {
+          if folder.id == conversation.folderID {
+            Label(folder.displayName, systemImage: "checkmark")
+          } else {
+            Label(folder.displayName, systemImage: folder.systemImage)
+          }
+        }
+        .disabled(!store.canUseConversationFolder(folder.id) || folder.id == conversation.folderID)
+      }
+    } label: {
+      Label("Move to Folder", systemImage: "folder")
+    }
+
+    Button {
+      Task { await store.cloneConversation(id: conversation.id) }
+      onAfterClone()
+    } label: {
+      Label("Clone Conversation", systemImage: "doc.on.doc")
+    }
+
+    Divider()
+
+    ConversationExportMenu(conversationID: conversation.id, coordinator: exportCoordinator)
+
+    Divider()
+
+    Button(role: .destructive) {
+      pendingDeletion = .single(conversation)
+    } label: {
+      Label("Delete...", systemImage: "trash")
+    }
+  }
+
+  private func beginRename(_ conversation: ConversationSummary) {
+    renameDraft = conversation.displayTitle
+    pendingRename = PendingConversationRename(id: conversation.id)
+  }
+
+  private func saveRename() {
+    guard let pendingRename else { return }
+    let id = pendingRename.id
+    let title = renameDraft
+    clearRename()
+    Task {
+      await store.renameConversation(id: id, to: title)
+    }
+  }
+
+  private func clearRename() {
+    pendingRename = nil
+    renameDraft = ""
+  }
+
+  private var renameAlertBinding: Binding<Bool> {
+    Binding {
+      pendingRename != nil
+    } set: { isPresented in
+      if !isPresented {
+        clearRename()
+      }
+    }
+  }
+
+  private func confirmDeletion(_ deletion: PendingConversationDeletion) {
+    guard !deletion.ids.isEmpty else {
+      pendingDeletion = nil
+      return
+    }
+    store.deleteConversations(deletion.ids)
+    pendingDeletion = nil
+  }
+
+  private var deletionConfirmationBinding: Binding<Bool> {
+    Binding {
+      pendingDeletion != nil
+    } set: { isPresented in
+      if !isPresented {
+        pendingDeletion = nil
+      }
+    }
+  }
 }
 
 private struct ConversationFolderManagementView: View {
