@@ -2415,6 +2415,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       return ConversationFolder(
         id: id,
         name: folder.name,
+        icon: folder.icon,
         createdAt: folder.createdAt)
     }
   }
