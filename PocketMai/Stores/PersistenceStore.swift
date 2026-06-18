@@ -40,12 +40,11 @@ final class PersistenceStore: @unchecked Sendable {
 
   init(fileManager: FileManager = .default) {
     self.fileManager = fileManager
-    PocketMaiDirectories.prepareStorage(fileManager: fileManager)
+    PocketMaiDirectories.prepareLaunchStorage(fileManager: fileManager)
     localBaseURL = PocketMaiDirectories.appDataURL
     iCloudFallbackBaseURL = PocketMaiDirectories.appDataURL
       .appendingPathComponent("iCloud-conversations", isDirectory: true)
     try? fileManager.createDirectory(at: localBaseURL, withIntermediateDirectories: true)
-    try? fileManager.createDirectory(at: iCloudStorageURLs().baseURL, withIntermediateDirectories: true)
   }
 
   private var localStorageURLs: ConversationStorageURLs {

@@ -206,6 +206,7 @@ final class AppStore: ObservableObject {
   private var deletedConversationIDsBeforeLoad: Set<UUID> = []
   private var launchPlaceholderConversationID: UUID?
   private var dataGeneration = 0
+  private var hasLoadedLocalMLXModels = false
 
   init(
     persistence: PersistenceStore = PersistenceStore(),
@@ -217,9 +218,9 @@ final class AppStore: ObservableObject {
     conversations = []
     appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
-    refreshLocalMLXModels()
     startFreshConversationForLaunch()
     Task { await loadStartupData() }
+    refreshLocalMLXModelsInBackground()
     refreshConfiguredEndpointsInBackground()
   }
 
@@ -653,7 +654,7 @@ final class AppStore: ObservableObject {
     conversation.folderID = folderID
     conversation.provider = defaultProvider.provider
     if defaultProvider.provider == .mlx {
-      conversation.modelID = availableLocalMLXModelID(preferred: defaultProvider.modelID) ?? ""
+      conversation.modelID = fallbackLocalMLXModelID(preferred: defaultProvider.modelID)
     } else {
       conversation.modelID = defaultProvider.modelID
     }
@@ -2752,12 +2753,36 @@ final class AppStore: ObservableObject {
     let endpoints = settings.openAIEndpoints.filter(\.isEnabled)
     guard !endpoints.isEmpty else { return }
     for endpoint in endpoints {
-      Task { await refreshEndpoint(endpoint) }
+      Task {
+        await Task.yield()
+        await refreshEndpoint(endpoint)
+      }
+    }
+  }
+
+  func refreshLocalMLXModelsInBackground() {
+    let generation = dataGeneration
+    Task {
+      await Task.yield()
+      let modelIDs = await Self.loadLocalMLXModelIDs(priority: .utility)
+      guard generation == dataGeneration else { return }
+      applyLocalMLXModelIDs(modelIDs)
     }
   }
 
   func refreshLocalMLXModels() {
-    localMLXModelIDs = LocalMLXModelCache.listRepositoryIDs()
+    applyLocalMLXModelIDs(LocalMLXModelCache.listRepositoryIDs())
+  }
+
+  private nonisolated static func loadLocalMLXModelIDs(priority: TaskPriority) async -> [String] {
+    await Task.detached(priority: priority) {
+      LocalMLXModelCache.listRepositoryIDs()
+    }.value
+  }
+
+  private func applyLocalMLXModelIDs(_ modelIDs: [String]) {
+    hasLoadedLocalMLXModels = true
+    localMLXModelIDs = modelIDs
     normalizeDefaultLocalMLXModelIfNeeded()
     normalizeUnavailableAppleProviderIfNeeded()
   }
@@ -2768,6 +2793,12 @@ final class AppStore: ObservableObject {
       .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     return candidates.first { localMLXModelIDs.contains($0) } ?? localMLXModelIDs.first
+  }
+
+  private func fallbackLocalMLXModelID(preferred rawPreferred: String? = nil) -> String {
+    let preferred = normalizedModelID(rawPreferred ?? settings.localMLXModelID)
+    guard hasLoadedLocalMLXModels else { return preferred }
+    return availableLocalMLXModelID(preferred: preferred) ?? ""
   }
 
   private func normalizeDefaultLocalMLXModelIfNeeded() {
@@ -2781,7 +2812,7 @@ final class AppStore: ObservableObject {
 
   private func normalizeUnavailableAppleProviderIfNeeded() {
     guard appleAvailabilityReport.kind != .checking, !appleIntelligenceIsAvailable else { return }
-    let fallbackModelID = availableLocalMLXModelID(preferred: settings.localMLXModelID) ?? ""
+    let fallbackModelID = fallbackLocalMLXModelID(preferred: settings.localMLXModelID)
     var settingsChanged = false
     if settings.defaultProvider == .apple {
       settings.defaultProvider = .mlx
@@ -2812,7 +2843,7 @@ final class AppStore: ObservableObject {
     else {
       return
     }
-    let fallbackModelID = availableLocalMLXModelID(preferred: settings.localMLXModelID) ?? ""
+    let fallbackModelID = fallbackLocalMLXModelID(preferred: settings.localMLXModelID)
     conversations[index].provider = .mlx
     conversations[index].endpointID = nil
     conversations[index].modelID = fallbackModelID

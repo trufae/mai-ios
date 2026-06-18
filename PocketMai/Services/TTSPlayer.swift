@@ -14,7 +14,11 @@ final class TTSPlayer: NSObject, ObservableObject {
   @Published private(set) var currentTag: String?
   @Published private(set) var currentMessageID: UUID?
 
-  private let synthesizer = AVSpeechSynthesizer()
+  private lazy var synthesizer: AVSpeechSynthesizer = {
+    let synthesizer = AVSpeechSynthesizer()
+    synthesizer.delegate = self
+    return synthesizer
+  }()
   private var remoteCommandsConfigured = false
   private var queuedSpeech: [QueuedSpeech] = []
   private var pendingSpeechAfterCancel: QueuedSpeech?
@@ -29,8 +33,6 @@ final class TTSPlayer: NSObject, ObservableObject {
 
   override init() {
     super.init()
-    synthesizer.delegate = self
-    setupRemoteCommands()
   }
 
   func speak(
@@ -181,6 +183,7 @@ final class TTSPlayer: NSObject, ObservableObject {
   }
 
   private func beginSpeaking(_ speech: QueuedSpeech) {
+    setupRemoteCommands()
     activateAudioSession()
     speechGeneration += 1
 

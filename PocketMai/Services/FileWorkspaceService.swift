@@ -56,10 +56,14 @@ enum PocketMaiDirectories {
   }
 
   static func prepareStorage(fileManager: FileManager = .default) {
-    try? fileManager.createDirectory(at: appDataURL, withIntermediateDirectories: true)
-    try? fileManager.createDirectory(at: voiceRecordingsURL, withIntermediateDirectories: true)
+    prepareLaunchStorage(fileManager: fileManager)
     _ = try? ensureLocalMLXModelCache(fileManager: fileManager)
     try? fileManager.createDirectory(at: filesWorkspaceURL, withIntermediateDirectories: true)
+  }
+
+  static func prepareLaunchStorage(fileManager: FileManager = .default) {
+    try? fileManager.createDirectory(at: appDataURL, withIntermediateDirectories: true)
+    try? fileManager.createDirectory(at: voiceRecordingsURL, withIntermediateDirectories: true)
     migrateLegacyDocumentsAppData(fileManager: fileManager)
   }
 
@@ -148,6 +152,7 @@ enum PocketMaiDirectories {
       return
     }
 
+    try? fileManager.createDirectory(at: filesWorkspaceURL, withIntermediateDirectories: true)
     for item in items where !appPrivateFilenames.contains(item.lastPathComponent) {
       let destination = uniqueDestination(
         for: item.lastPathComponent,
