@@ -105,6 +105,7 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
   EndpointProviderPreset(name: "Ollama Cloud", url: "https://ollama.com/v1"),
   EndpointProviderPreset(name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
   EndpointProviderPreset(name: "OpenCode Zen", url: "https://opencode.ai/zen/v1"),
+  EndpointProviderPreset(name: "OpenCode Go", url: "https://opencode.ai/zen/go/v1"),
   EndpointProviderPreset(name: "Hugging Face", url: "https://router.huggingface.co/v1"),
   EndpointProviderPreset(
     name: "Anthropic",
