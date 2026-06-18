@@ -243,12 +243,21 @@ final class AppStore: ObservableObject {
   }
 
   var selectedConversationFolderID: String {
-    normalizedExistingConversationFolderID(settings.selectedConversationFolderID)
+    availableConversationFolderID(
+      normalizedExistingConversationFolderID(settings.selectedConversationFolderID))
   }
 
   var selectedConversationFolder: ConversationFolder {
     conversationFolders.first { $0.id == selectedConversationFolderID }
       ?? ConversationFolder.defaultFolder
+  }
+
+  var iCloudConversationFolderIsAvailable: Bool {
+    !settings.airplaneModeEnabled
+  }
+
+  func canUseConversationFolder(_ folderID: String) -> Bool {
+    conversationFolderIsAvailable(normalizedExistingConversationFolderID(folderID))
   }
 
   func folderDisplayName(for folderID: String) -> String {
@@ -327,6 +336,7 @@ final class AppStore: ObservableObject {
 
   func selectConversationFolder(_ folderID: String) {
     let normalized = normalizedExistingConversationFolderID(folderID)
+    guard conversationFolderIsAvailable(normalized) else { return }
     guard settings.selectedConversationFolderID != normalized else { return }
     settings.selectedConversationFolderID = normalized
     selectedConversationIDs.removeAll()
@@ -334,6 +344,16 @@ final class AppStore: ObservableObject {
     if normalized == ConversationFolder.iCloudID {
       Task { await refreshPersistedConversationSummaries() }
     }
+  }
+
+  func ensureSelectedConversationFolderIsAvailable() {
+    let normalized = normalizedExistingConversationFolderID(settings.selectedConversationFolderID)
+    guard conversationFolderIsAvailable(normalized) else {
+      settings.selectedConversationFolderID = ConversationFolder.defaultID
+      selectedConversationIDs.removeAll()
+      return
+    }
+    settings.selectedConversationFolderID = normalized
   }
 
   func createConversationFolder(named rawName: String) {
@@ -415,6 +435,14 @@ final class AppStore: ObservableObject {
       ? normalized : ConversationFolder.defaultID
   }
 
+  private func availableConversationFolderID(_ folderID: String) -> String {
+    conversationFolderIsAvailable(folderID) ? folderID : ConversationFolder.defaultID
+  }
+
+  private func conversationFolderIsAvailable(_ folderID: String) -> Bool {
+    folderID != ConversationFolder.iCloudID || iCloudConversationFolderIsAvailable
+  }
+
   private func normalizeConversationFoldersForCurrentData() {
     var knownIDs = Set(
       [ConversationFolder.defaultID, ConversationFolder.iCloudID, ConversationFolder.archivedID]
@@ -435,7 +463,7 @@ final class AppStore: ObservableObject {
     }
 
     let selectedFolderID = Conversation.normalizedFolderID(settings.selectedConversationFolderID)
-    if !knownIDs.contains(selectedFolderID) {
+    if !knownIDs.contains(selectedFolderID) || !conversationFolderIsAvailable(selectedFolderID) {
       settings.selectedConversationFolderID = ConversationFolder.defaultID
       changed = true
     }
@@ -747,6 +775,7 @@ final class AppStore: ObservableObject {
 
   private func moveLoadedConversations(_ ids: Set<UUID>, to folderID: String) {
     let destination = normalizedExistingConversationFolderID(folderID)
+    guard conversationFolderIsAvailable(destination) else { return }
     var changed = false
     for index in conversations.indices where ids.contains(conversations[index].id) {
       guard conversations[index].folderID != destination else { continue }

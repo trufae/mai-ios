@@ -1877,6 +1877,7 @@ struct SettingsView: View {
       store.endpointStatuses.removeAll()
       store.endpointModels.removeAll()
       store.endpointVoices.removeAll()
+      store.ensureSelectedConversationFolderIsAvailable()
     } else {
       store.refreshConfiguredEndpointsInBackground()
     }

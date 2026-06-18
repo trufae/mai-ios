@@ -243,6 +243,7 @@ struct SidebarView: View {
             Label(folder.displayName, systemImage: folder.systemImage)
           }
         }
+        .disabled(!store.canUseConversationFolder(folder.id) || folder.id == conversation.folderID)
       }
     } label: {
       Label("Move to Folder", systemImage: "folder")
@@ -301,6 +302,7 @@ struct SidebarView: View {
       } label: {
         folderPickerLabel(for: ConversationFolder.iCloudFolder)
       }
+      .disabled(!store.canUseConversationFolder(ConversationFolder.iCloudID))
       Button {
         store.selectConversationFolder(ConversationFolder.archivedID)
       } label: {
@@ -347,10 +349,13 @@ struct SidebarView: View {
 
   @ViewBuilder
   private func folderPickerLabel(for folder: ConversationFolder) -> some View {
+    let isUnavailable = !store.canUseConversationFolder(folder.id)
     if store.selectedConversationFolderID == folder.id {
       Label(folder.displayName, systemImage: "checkmark")
+        .foregroundStyle(isUnavailable ? Color.secondary : Color.primary)
     } else {
       Label(folder.displayName, systemImage: folder.systemImage)
+        .foregroundStyle(isUnavailable ? Color.secondary : Color.primary)
     }
   }
 
@@ -445,14 +450,15 @@ struct SidebarView: View {
   }
 
   private func selectedConversationsCanMove(to folderID: String) -> Bool {
-    store.conversationSummaries.contains { summary in
+    guard store.canUseConversationFolder(folderID) else { return false }
+    return store.conversationSummaries.contains { summary in
       selectedIDs.contains(summary.id) && summary.folderID != folderID
     }
   }
 
   private func moveSelected(to folderID: String) {
     let ids = selectedIDs
-    guard !ids.isEmpty else { return }
+    guard !ids.isEmpty, store.canUseConversationFolder(folderID) else { return }
     Task {
       await store.moveConversations(ids, to: folderID)
     }
