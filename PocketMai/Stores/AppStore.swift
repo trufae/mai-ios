@@ -215,6 +215,7 @@ final class AppStore: ObservableObject {
     self.persistence = persistence
     self.streamingTextStore = streamingTextStore
     settings = persistence.loadSettings()
+    conversationDrafts = persistence.loadDrafts()
     conversations = []
     appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
@@ -826,11 +827,24 @@ final class AppStore: ObservableObject {
 
   func setDraftText(_ text: String, for conversationID: UUID?) {
     guard let conversationID else { return }
+    let previous = conversationDrafts[conversationID] ?? ""
+    guard previous != text else { return }
     if text.isEmpty {
       conversationDrafts.removeValue(forKey: conversationID)
     } else {
       conversationDrafts[conversationID] = text
     }
+    persistDrafts()
+    if previous.isEmpty {
+      // A draft keeps its conversation from being disposable, so make sure the
+      // conversation reaches disk too; otherwise a restored draft could point
+      // at a conversation that never existed there.
+      saveConversations()
+    }
+  }
+
+  private func persistDrafts() {
+    persistence.saveDrafts(conversationDrafts)
   }
 
   func updateCurrentConversation(_ update: (inout Conversation) -> Void) {
@@ -914,6 +928,7 @@ final class AppStore: ObservableObject {
       respondingConversationIDs.remove(id)
     }
     conversationDrafts.removeAll()
+    persistDrafts()
     streamingTextStore.removeAll()
     conversations.removeAll()
     rebuildConversationIndexes()
@@ -1066,6 +1081,7 @@ final class AppStore: ObservableObject {
       respondingConversationIDs.remove(id)
       conversationDrafts.removeValue(forKey: id)
     }
+    persistDrafts()
     conversations.filter { ids.contains($0.id) }.forEach {
       clearStreamingText(for: $0.messages)
     }
@@ -3074,7 +3090,9 @@ final class AppStore: ObservableObject {
     responseTaskTokens[removedID] = nil
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
-    conversationDrafts.removeValue(forKey: removedID)
+    if conversationDrafts.removeValue(forKey: removedID) != nil {
+      persistDrafts()
+    }
     if !hasLoadedPersistedConversations {
       deletedConversationIDsBeforeLoad.insert(removedID)
     }
