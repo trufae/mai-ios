@@ -10,6 +10,11 @@ private struct PersistedConversationIndex: Codable {
   var summaries: [ConversationSummary]?
 }
 
+private struct PersistedDrafts: Codable {
+  var version = 1
+  var drafts: [String: String]
+}
+
 private struct ConversationStorageURLs {
   var baseURL: URL
 
@@ -36,6 +41,7 @@ final class PersistenceStore: @unchecked Sendable {
   // Touched only from writeQueue; serial access guarantees thread-safety.
   private var pendingSettings: DispatchWorkItem?
   private var pendingConversations: DispatchWorkItem?
+  private var pendingDrafts: DispatchWorkItem?
   private var persistedConversationsByID: [UUID: Conversation] = [:]
 
   init(fileManager: FileManager = .default) {
@@ -68,6 +74,10 @@ final class PersistenceStore: @unchecked Sendable {
 
   private var settingsURL: URL {
     localBaseURL.appendingPathComponent("settings.json")
+  }
+
+  private var draftsURL: URL {
+    localBaseURL.appendingPathComponent("drafts.json")
   }
 
   func loadConversations() -> [Conversation] {
@@ -223,6 +233,35 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  func loadDrafts() -> [UUID: String] {
+    guard let data = try? Data(contentsOf: draftsURL),
+      let persisted = try? makeDecoder().decode(PersistedDrafts.self, from: data)
+    else {
+      return [:]
+    }
+    var drafts: [UUID: String] = [:]
+    for (key, text) in persisted.drafts {
+      guard let id = UUID(uuidString: key), !text.isEmpty else { continue }
+      drafts[id] = text
+    }
+    return drafts
+  }
+
+  func saveDrafts(_ drafts: [UUID: String]) {
+    let snapshot = PersistedDrafts(
+      drafts: Dictionary(uniqueKeysWithValues: drafts.map { ($0.key.uuidString, $0.value) }))
+    let url = draftsURL
+    let dir = localBaseURL
+    let delay = debounce
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.pendingDrafts?.cancel()
+      let item = DispatchWorkItem { Self.persist(snapshot, to: url, dir: dir) }
+      self.pendingDrafts = item
+      self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+  }
+
   func factoryReset() {
     let localBaseURL = localBaseURL
     let iCloudBaseURL = iCloudStorageURLs().baseURL
@@ -233,6 +272,8 @@ final class PersistenceStore: @unchecked Sendable {
       self.pendingSettings = nil
       self.pendingConversations?.cancel()
       self.pendingConversations = nil
+      self.pendingDrafts?.cancel()
+      self.pendingDrafts = nil
       self.persistedConversationsByID.removeAll()
       try? self.fileManager.removeItem(at: localBaseURL)
       if iCloudBaseURL != localBaseURL {
