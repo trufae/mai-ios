@@ -694,7 +694,7 @@ struct ChatView: View {
       let progress = clampedProgress
       content
         .compositingGroup()
-        .blur(radius: 5 * progress, opaque: false)
+        .blur(radius: 2 * progress, opaque: false)
         .saturation(1 - 0.16 * progress)
         .overlay {
           Color(uiColor: .systemBackground)
