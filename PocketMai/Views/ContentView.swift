@@ -42,6 +42,12 @@ struct ContentView: View {
 
           NavigationStack {
             ChatView(
+              renderInvalidationKey: ChatView.RenderInvalidationKey(
+                selectedConversationID: store.selectedConversationID,
+                selectedConversationIsLoading: store.selectedConversationIsLoading,
+                appearance: store.settings.appearance,
+                renderMarkdownInChat: store.settings.renderMarkdownInChat,
+                renderMarkdownImagesInChat: store.settings.renderMarkdownImagesInChat),
               conversationSwitchProgress: conversationSwitchBlurProgress,
               onShowHistory: {
                 toggleHistoryPanel()

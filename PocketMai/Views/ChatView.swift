@@ -4,6 +4,14 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct ChatView: View {
+  struct RenderInvalidationKey: Equatable {
+    var selectedConversationID: UUID?
+    var selectedConversationIsLoading: Bool
+    var appearance: AppearanceSettings
+    var renderMarkdownInChat: Bool
+    var renderMarkdownImagesInChat: Bool
+  }
+
   @EnvironmentObject private var store: AppStore
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
@@ -25,6 +33,7 @@ struct ChatView: View {
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
+  let renderInvalidationKey: RenderInvalidationKey
   let conversationSwitchProgress: CGFloat
   let onShowHistory: () -> Void
 
@@ -1340,10 +1349,12 @@ private enum ConversationRecencyLabel {
   }
 }
 
-// Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @StateObject still re-trigger body.
+// Suppresses unrelated parent-driven re-invalidation while allowing chat render settings
+// to refresh cached message views immediately.
 extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    abs(lhs.conversationSwitchProgress - rhs.conversationSwitchProgress) < 0.001
+    lhs.renderInvalidationKey == rhs.renderInvalidationKey
+      && abs(lhs.conversationSwitchProgress - rhs.conversationSwitchProgress) < 0.001
   }
 }
 
@@ -2629,6 +2640,7 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
     private weak var scrollView: UIScrollView?
     private weak var hostView: UIView?
     private var pinchGesture: UIPinchGestureRecognizer?
+    private var originalPanMaximumNumberOfTouches: Int?
     private var originalShowsVerticalScrollIndicator: Bool?
     private var originalShowsHorizontalScrollIndicator: Bool?
 
@@ -2653,17 +2665,25 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       gesture.delaysTouchesEnded = false
       gesture.delegate = self
       target.addGestureRecognizer(gesture)
+      target.panGestureRecognizer.require(toFail: gesture)
+      originalPanMaximumNumberOfTouches = target.panGestureRecognizer.maximumNumberOfTouches
+      target.panGestureRecognizer.maximumNumberOfTouches = 1
       scrollView = target
       pinchGesture = gesture
     }
 
     func uninstall() {
       restoreScrollIndicators()
+      if let scrollView, let originalPanMaximumNumberOfTouches {
+        scrollView.panGestureRecognizer.maximumNumberOfTouches =
+          originalPanMaximumNumberOfTouches
+      }
       if let pinchGesture, let scrollView {
         scrollView.removeGestureRecognizer(pinchGesture)
       }
       pinchGesture = nil
       scrollView = nil
+      originalPanMaximumNumberOfTouches = nil
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
