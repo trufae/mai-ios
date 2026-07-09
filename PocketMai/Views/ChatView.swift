@@ -1513,7 +1513,11 @@ private struct ChatComposer: View {
       guard liveVoiceSession.isActive else { return }
       guard !store.settings.conversation.allowsBackgroundVoiceListening else { return }
       Task { @MainActor in
-        await stopVoiceAndKeepTranscript(cancelResponse: false, focusComposer: false)
+        if liveVoiceSession.mode == .voiceNoteAttachment {
+          await stopVoiceAndAttachTranscript(focusComposer: false)
+        } else {
+          await stopVoiceAndKeepTranscript(cancelResponse: false, focusComposer: false)
+        }
       }
     }
     .fileImporter(
@@ -1676,22 +1680,10 @@ private struct ChatComposer: View {
 
   private var voiceControls: some View {
     HStack(spacing: 12) {
-      Button {
-        liveVoiceSession.togglePauseOrRecord(store: store, ttsPlayer: ttsPlayer)
-      } label: {
-        Image(systemName: liveVoiceSession.primaryControlSystemImage)
-          .font(.title2)
-          .symbolRenderingMode(.hierarchical)
-          .foregroundStyle(Color.accentColor)
-          .frame(width: 28, height: 28)
-          .contentShape(Circle())
-      }
-      .adaptiveGlassButtonStyle()
-      .disabled(liveVoiceSession.state == .requestingPermission)
-      .help(liveVoiceSession.primaryControlHelp)
+      voiceLeadingControl
 
       VStack(alignment: .leading, spacing: 2) {
-        Text(liveVoiceSession.state.statusText)
+        Text(voiceStatusTitle)
           .font(.caption.weight(.semibold))
           .foregroundStyle(.primary)
         Text(liveVoiceSession.errorMessage ?? voiceStatusDetail)
@@ -1701,20 +1693,91 @@ private struct ChatComposer: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
+      voiceTrailingControl
+    }
+  }
+
+  @ViewBuilder
+  private var voiceLeadingControl: some View {
+    if liveVoiceSession.mode == .voiceNoteAttachment {
+      Button {
+        cancelVoiceNoteAttachment()
+      } label: {
+        voiceControlImage("xmark.circle.fill", color: .red)
+      }
+      .adaptiveGlassButtonStyle()
+      .help("Cancel voice note")
+    } else {
+      Button {
+        liveVoiceSession.togglePauseOrRecord(store: store, ttsPlayer: ttsPlayer)
+      } label: {
+        voiceControlImage(liveVoiceSession.primaryControlSystemImage, color: .accentColor)
+      }
+      .adaptiveGlassButtonStyle()
+      .disabled(liveVoiceSession.state == .requestingPermission)
+      .help(liveVoiceSession.primaryControlHelp)
+    }
+  }
+
+  @ViewBuilder
+  private var voiceTrailingControl: some View {
+    if liveVoiceSession.mode == .voiceNoteAttachment {
+      Button {
+        Task { @MainActor in
+          await stopVoiceAndAttachTranscript()
+        }
+      } label: {
+        voiceControlImage("checkmark.circle.fill", color: .accentColor)
+      }
+      .adaptiveGlassButtonStyle()
+      .disabled(liveVoiceSession.state == .requestingPermission)
+      .help("Attach voice note")
+    } else {
       Button {
         Task { @MainActor in
           await stopVoiceAndKeepTranscript()
         }
       } label: {
-        Image(systemName: "stop.fill")
-          .font(.title2)
-          .symbolRenderingMode(.hierarchical)
-          .foregroundStyle(Color.red)
-          .frame(width: 28, height: 28)
-          .contentShape(Circle())
+        voiceControlImage("stop.fill", color: .red)
       }
       .adaptiveGlassButtonStyle()
       .help("Stop conversation")
+    }
+  }
+
+  private func voiceControlImage(_ systemImage: String, color: Color) -> some View {
+    Image(systemName: systemImage)
+      .font(.title2)
+      .symbolRenderingMode(.hierarchical)
+      .foregroundStyle(color)
+      .frame(width: 28, height: 28)
+      .contentShape(Circle())
+  }
+
+  private func cancelVoiceNoteAttachment() {
+    liveVoiceSession.stop(cancelResponse: false)
+    composerFocused = true
+  }
+
+  private var voiceStatusTitle: String {
+    guard liveVoiceSession.mode == .voiceNoteAttachment else {
+      return liveVoiceSession.state.statusText
+    }
+    switch liveVoiceSession.state {
+    case .idle:
+      return "Voice note off"
+    case .requestingPermission:
+      return "Requesting access"
+    case .listening:
+      return "Recording voice note"
+    case .paused:
+      return "Voice note ready"
+    case .thinking:
+      return "Processing voice note"
+    case .speaking:
+      return "Voice note ready"
+    case .error:
+      return "Voice note error"
     }
   }
 
@@ -1723,11 +1786,35 @@ private struct ChatComposer: View {
     cancelResponse: Bool = true,
     focusComposer: Bool = true
   ) async {
+    if liveVoiceSession.mode == .voiceNoteAttachment {
+      await stopVoiceAndAttachTranscript(focusComposer: focusComposer)
+      return
+    }
     let text = await liveVoiceSession.stopForDraft(cancelResponse: cancelResponse)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     draftText = mergedDraftText(appending: text)
     persistDraftTextNow()
+    if focusComposer {
+      composerFocused = true
+    }
+  }
+
+  @MainActor
+  private func stopVoiceAndAttachTranscript(focusComposer: Bool = true) async {
+    let text = await liveVoiceSession.stopForDraft(cancelResponse: false)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else {
+      if focusComposer {
+        composerFocused = true
+      }
+      return
+    }
+    pendingAttachments.append(
+      .textFile(
+        filename: voiceNoteAttachmentFilename(),
+        text: text,
+        mimeType: "text/plain"))
     if focusComposer {
       composerFocused = true
     }
@@ -1910,7 +1997,17 @@ private struct ChatComposer: View {
         showingToolMenu = false
         showingTextFileImporter = true
       } label: {
-        toolMenuRowLabel("Add text", systemImage: "doc.text")
+        toolMenuRowLabel("Attach Text File", systemImage: "doc.text")
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      Button {
+        showingToolMenu = false
+        liveVoiceSession.startVoiceNoteAttachment(store: store, ttsPlayer: ttsPlayer)
+      } label: {
+        toolMenuRowLabel("Attach Voice Note", systemImage: "mic.badge.plus")
       }
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
@@ -2149,6 +2246,17 @@ private struct ChatComposer: View {
   {
     guard let index else { return "\(prefix)-\(timestamp).jpg" }
     return "\(prefix)-\(timestamp)-\(index).jpg"
+  }
+
+  private func voiceNoteAttachmentFilename() -> String {
+    let base = "voice-note-\(Int(Date().timeIntervalSince1970))"
+    var filename = "\(base).txt"
+    var suffix = 2
+    while pendingAttachments.contains(where: { $0.filename == filename }) {
+      filename = "\(base)-\(suffix).txt"
+      suffix += 1
+    }
+    return filename
   }
 
   private func imageImportFailureMessage(count: Int) -> String {

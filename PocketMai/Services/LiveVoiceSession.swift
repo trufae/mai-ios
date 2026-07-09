@@ -32,6 +32,11 @@ enum LiveVoiceState: Equatable {
   }
 }
 
+enum LiveVoiceSessionMode: Equatable {
+  case conversation
+  case voiceNoteAttachment
+}
+
 struct LiveSpeechRecognitionEvent: Sendable {
   var text: String
   var isFinal: Bool
@@ -107,6 +112,7 @@ private enum LiveSpeechPermissionRequester {
 @MainActor
 final class LiveVoiceSession: ObservableObject {
   @Published private(set) var state: LiveVoiceState = .idle
+  @Published private(set) var mode: LiveVoiceSessionMode = .conversation
   @Published private(set) var transcript: String = ""
   @Published private(set) var languageIdentifier: String = Locale.current.identifier
   @Published private(set) var errorMessage: String?
@@ -167,12 +173,21 @@ final class LiveVoiceSession: ObservableObject {
   }
 
   func start(store: AppStore, ttsPlayer: TTSPlayer) {
+    mode = .conversation
+    configure(store: store, ttsPlayer: ttsPlayer)
+    ttsPlayer.stop()
+    beginListening(resetTranscript: true)
+  }
+
+  func startVoiceNoteAttachment(store: AppStore, ttsPlayer: TTSPlayer) {
+    mode = .voiceNoteAttachment
     configure(store: store, ttsPlayer: ttsPlayer)
     ttsPlayer.stop()
     beginListening(resetTranscript: true)
   }
 
   func togglePauseOrRecord(store: AppStore, ttsPlayer: TTSPlayer) {
+    guard mode == .conversation else { return }
     configure(store: store, ttsPlayer: ttsPlayer)
     switch state {
     case .listening:
@@ -224,6 +239,7 @@ final class LiveVoiceSession: ObservableObject {
     }
     ttsPlayer?.stop()
     state = .idle
+    mode = .conversation
     transcript = ""
     errorMessage = nil
     isCommittingTurn = false
@@ -244,6 +260,7 @@ final class LiveVoiceSession: ObservableObject {
     }
     ttsPlayer?.stop()
     state = .idle
+    mode = .conversation
     transcript = ""
     errorMessage = nil
     isCommittingTurn = false
@@ -364,10 +381,15 @@ final class LiveVoiceSession: ObservableObject {
     }
 
     if event.isFinal {
+      guard mode == .conversation else {
+        state = .paused
+        return
+      }
       commitCurrentTurn()
       return
     }
 
+    guard mode == .conversation else { return }
     scheduleSilenceCommit(for: normalized)
   }
 
