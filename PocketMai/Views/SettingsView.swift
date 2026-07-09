@@ -273,6 +273,30 @@ private enum VoiceProviderSelection: Hashable {
   case openAI(UUID)
 }
 
+private struct SettingsLazyDisclosureGroup<Label: View, Content: View>: View {
+  @State private var isExpanded = false
+  private let content: () -> Content
+  private let label: () -> Label
+
+  init(
+    @ViewBuilder content: @escaping () -> Content,
+    @ViewBuilder label: @escaping () -> Label
+  ) {
+    self.content = content
+    self.label = label
+  }
+
+  var body: some View {
+    DisclosureGroup(isExpanded: $isExpanded) {
+      if isExpanded {
+        content()
+      }
+    } label: {
+      label()
+    }
+  }
+}
+
 struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
@@ -400,7 +424,7 @@ struct SettingsView: View {
         }
       }
       .onAppear {
-        store.refreshLocalMLXModels()
+        store.refreshLocalMLXModelsInBackground()
       }
       .onChange(of: navigationPath) { _, path in
         discardDraftEndpointIfNeeded(path: path)
@@ -508,31 +532,31 @@ struct SettingsView: View {
         }
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         endpointContent
       } label: {
         Label("Providers", systemImage: "network")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         promptContent
       } label: {
         Label("System Prompts", systemImage: "text.bubble")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         userPromptContent
       } label: {
         Label("User Prompts", systemImage: "text.quote")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         advancedOptionsContent
       } label: {
         Label("Advanced Options", systemImage: "slider.horizontal.3")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         openAPIServerContent
       } label: {
         Label("OpenAPI Server", systemImage: "server.rack")
@@ -603,31 +627,31 @@ struct SettingsView: View {
 
   private var appearanceSection: some View {
     Section {
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         appearanceOptionsContent
       } label: {
         Label("Appearance", systemImage: "paintpalette")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         fontOptionsContent
       } label: {
         Label("Fonts", systemImage: "textformat")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         voicesContent
       } label: {
         Label("Voices", systemImage: "speaker.wave.2")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         hapticsContent
       } label: {
         Label("Haptics", systemImage: "waveform.path")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         conversationOptionsContent
       } label: {
         Label("Conversation", systemImage: "mic.badge.plus")
@@ -1224,32 +1248,32 @@ struct SettingsView: View {
 
   private var toolsSection: some View {
     Section {
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         contextToolsContent
       } label: {
         Label("Contextual", systemImage: "text.append")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         builtInToolsContent
       } label: {
         Label("Native", systemImage: "wrench.and.screwdriver")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         externalToolsContent
       } label: {
         Label("MCPs", systemImage: "server.rack")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         Text("Coming soon")
           .foregroundStyle(.secondary)
       } label: {
         Label("Skills", systemImage: "sparkles")
       }
 
-      DisclosureGroup {
+      SettingsLazyDisclosureGroup {
         toolCallingContent
         yoloModeContent
       } label: {
