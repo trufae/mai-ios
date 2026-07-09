@@ -4,6 +4,7 @@ struct FilteredModelPicker: View {
   @Binding var selection: String
   @Binding var filter: String
   let models: [String]
+  var title: String = "Model"
   var emptySelectionTitle: String? = nil
   @State private var sortedModels: [String] = []
   @State private var sortingTask: Task<Void, Never>?
@@ -16,7 +17,7 @@ struct FilteredModelPicker: View {
 
   var body: some View {
     Group {
-      Picker("Model", selection: $selection) {
+      Picker(title, selection: $selection) {
         if !selection.isEmpty && !filteredModels.contains(selection) {
           Text(selection).tag(selection)
         }
