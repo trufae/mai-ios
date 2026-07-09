@@ -923,7 +923,7 @@ struct ChatView: View {
 
   private var emptyState: some View {
     GeometryReader { proxy in
-      let suggestions = previousConversationSuggestions
+      let suggestions = store.previousConversationSuggestions
       let hasSuggestions = !suggestions.isEmpty
       VStack(spacing: 20) {
         VStack(spacing: 12) {
@@ -1004,23 +1004,6 @@ struct ChatView: View {
       .first { $0.bounds.intersects(frame) }?.bounds.maxY
       ?? frame.maxY
     return max(0, screenMaxY - frame.minY)
-  }
-
-  private var previousConversationSuggestions: [ConversationSummary] {
-    guard store.settings.startupBehavior == .continueChats else { return [] }
-    let mostRecent = store.conversationSummaries
-      .filter { summary in
-        summary.id != store.selectedConversationID && summary.hasMessages
-      }
-      .sorted { lhs, rhs in
-        if lhs.updatedAt != rhs.updatedAt {
-          return lhs.updatedAt > rhs.updatedAt
-        }
-        return lhs.createdAt > rhs.createdAt
-      }
-      .prefix(3)
-      .map { $0 }
-    return Array(mostRecent.reversed())
   }
 
   private var messageSelectionActions: some View {

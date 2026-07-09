@@ -26,6 +26,8 @@ struct SidebarView: View {
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: () -> Void
   @State private var visibleConversations: [ConversationSummary] = []
+  @State private var visibleConversationsRefreshTask: Task<Void, Never>?
+  @State private var visibleConversationsRefreshGeneration = 0
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   private let floatingActionHorizontalInset: CGFloat = 18
   private let floatingActionBottomInset: CGFloat = 22
@@ -84,6 +86,10 @@ struct SidebarView: View {
       refreshVisibleConversations()
     }
     .onChange(of: store.settings.conversationFolders) { _, _ in refreshVisibleConversations() }
+    .onDisappear {
+      visibleConversationsRefreshTask?.cancel()
+      visibleConversationsRefreshTask = nil
+    }
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
       updateKeyboardOverlap(from: $0)
     }
@@ -98,16 +104,74 @@ struct SidebarView: View {
   }
 
   private func refreshVisibleConversations() {
-    let next: [ConversationSummary]
-    if searchQuery.isEmpty {
-      let folderID = store.selectedConversationFolderID
-      next = store.conversationSummaries.filter { $0.folderID == folderID }
+    visibleConversationsRefreshTask?.cancel()
+    visibleConversationsRefreshGeneration += 1
+
+    let generation = visibleConversationsRefreshGeneration
+    let query = searchQuery
+    let folderID = store.selectedConversationFolderID
+    let summaries = store.conversationSummaries
+    let loadedMessageTextsByID: [UUID: [String]]
+    if query.isEmpty {
+      loadedMessageTextsByID = [:]
     } else {
-      next = store.conversationSummaries.filter { conversationMatchesSearch($0) }
+      loadedMessageTextsByID = Dictionary(
+        uniqueKeysWithValues: store.conversations.map { conversation in
+          (conversation.id, conversation.messages.map(\.text))
+        })
     }
-    if visibleConversations != next {
-      visibleConversations = next
+
+    visibleConversationsRefreshTask = Task { @MainActor in
+      let next = await Self.filteredVisibleConversations(
+        summaries: summaries,
+        query: query,
+        folderID: folderID,
+        loadedMessageTextsByID: loadedMessageTextsByID)
+      guard !Task.isCancelled,
+        visibleConversationsRefreshGeneration == generation
+      else {
+        return
+      }
+      if visibleConversations != next {
+        visibleConversations = next
+      }
     }
+  }
+
+  private static func filteredVisibleConversations(
+    summaries: [ConversationSummary],
+    query: String,
+    folderID: String,
+    loadedMessageTextsByID: [UUID: [String]]
+  ) async -> [ConversationSummary] {
+    await Task.detached(priority: .userInitiated) {
+      if query.isEmpty {
+        return summaries.filter { $0.folderID == folderID }
+      }
+      return summaries.filter {
+        conversation(
+          $0,
+          matches: query,
+          loadedMessageTexts: loadedMessageTextsByID[$0.id] ?? [])
+      }
+    }.value
+  }
+
+  private static func conversation(
+    _ summary: ConversationSummary,
+    matches query: String,
+    loadedMessageTexts: [String]
+  ) -> Bool {
+    guard !query.isEmpty else { return true }
+    if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query)
+    {
+      return true
+    }
+    return loadedMessageTexts.contains { text($0, contains: query) }
+  }
+
+  private static func text(_ text: String, contains query: String) -> Bool {
+    text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
   }
 
   private var searchQuery: String {
@@ -182,21 +246,6 @@ struct SidebarView: View {
       return "No archived conversations."
     }
     return "No conversations in \(store.selectedConversationFolder.displayName)."
-  }
-
-  private func conversationMatchesSearch(_ summary: ConversationSummary) -> Bool {
-    let query = searchQuery
-    guard !query.isEmpty else { return true }
-    if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query)
-    {
-      return true
-    }
-    guard let conversation = store.conversation(withID: summary.id) else { return false }
-    return conversation.messages.contains { text($0.text, contains: query) }
-  }
-
-  private func text(_ text: String, contains query: String) -> Bool {
-    text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
   }
 
   private var floatingActions: some View {

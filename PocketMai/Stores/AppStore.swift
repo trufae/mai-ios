@@ -147,6 +147,7 @@ final class AppStore: ObservableObject {
 
   @Published var conversations: [Conversation]
   @Published var conversationSummaries: [ConversationSummary] = []
+  @Published private(set) var recentConversationSummaries: [ConversationSummary] = []
   @Published var selectedConversationID: UUID?
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
@@ -235,6 +236,15 @@ final class AppStore: ObservableObject {
       let index = indexedConversationIndex(for: selectedConversationID)
     else { return nil }
     return conversations[index]
+  }
+
+  var previousConversationSuggestions: [ConversationSummary] {
+    guard settings.startupBehavior == .continueChats else { return [] }
+    let suggestions =
+      recentConversationSummaries
+      .filter { $0.id != selectedConversationID && $0.hasMessages }
+      .prefix(ConversationSummary.recentCacheLimit)
+    return Array(suggestions.reversed())
   }
 
   var conversationFolders: [ConversationFolder] {
@@ -591,7 +601,13 @@ final class AppStore: ObservableObject {
     refreshLocalMLXModelsInBackground()
     refreshConfiguredEndpointsInBackground()
 
-    let summaries = await Task.detached(priority: .userInitiated) {
+    let recentSummaries = await Task.detached(priority: .userInitiated) {
+      persistence.loadRecentConversationSummaries()
+    }.value
+    guard generation == dataGeneration else { return }
+    mergeLoadedSummaries(recentSummaries)
+
+    let summaries = await Task.detached(priority: .utility) {
       persistence.loadConversationSummaries()
     }.value
     guard generation == dataGeneration else { return }
@@ -608,12 +624,7 @@ final class AppStore: ObservableObject {
     let availabilityTask = Task.detached(priority: .utility) {
       AppleFoundationProvider.availabilityReport(deviceOnly: deviceOnlyApple)
     }
-    let loadedConversations = await Task.detached(priority: .utility) {
-      persistence.loadConversations()
-    }.value
-
     guard generation == dataGeneration else { return }
-    mergeLoadedConversations(loadedConversations)
     let availabilityReport = await availabilityTask.value
     applyAppleAvailabilityReport(availabilityReport)
   }
@@ -1054,6 +1065,7 @@ final class AppStore: ObservableObject {
     conversations.removeAll()
     rebuildConversationIndexes()
     conversationSummaries.removeAll()
+    refreshRecentConversationSummaries()
     setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
     saveConversations()
@@ -1075,6 +1087,7 @@ final class AppStore: ObservableObject {
     settings = .defaults
     conversations.removeAll()
     conversationSummaries.removeAll()
+    refreshRecentConversationSummaries()
     setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
     endpointStatuses.removeAll()
@@ -3091,6 +3104,7 @@ final class AppStore: ObservableObject {
     guard hasLoadedPersistedConversations else {
       pendingConversationSave = true
       dirtyConversationIDsBeforeLoad.formUnion(conversations.map(\.id))
+      persistence.saveLoadedConversations(conversations, summaries: conversationSummaries)
       return
     }
     persistence.saveConversations(conversations)
@@ -3115,6 +3129,7 @@ final class AppStore: ObservableObject {
       byID[summary.id] = summary
     }
     conversationSummaries = Self.sortedSummaries(Array(byID.values))
+    refreshRecentConversationSummaries()
     normalizeConversationFoldersForCurrentData()
   }
 
@@ -3144,6 +3159,7 @@ final class AppStore: ObservableObject {
       byID[summary.id] = summary
     }
     conversationSummaries = Self.sortedSummaries(Array(byID.values))
+    refreshRecentConversationSummaries()
     normalizeConversationFoldersForCurrentData()
   }
 
@@ -3155,10 +3171,18 @@ final class AppStore: ObservableObject {
       conversationSummaries.append(summary)
     }
     conversationSummaries = Self.sortedSummaries(conversationSummaries)
+    refreshRecentConversationSummaries()
   }
 
   private func removeSummaries(for ids: Set<UUID>) {
     conversationSummaries.removeAll { ids.contains($0.id) }
+    refreshRecentConversationSummaries()
+  }
+
+  private func refreshRecentConversationSummaries() {
+    let recent = ConversationSummary.mostRecent(conversationSummaries)
+    guard recentConversationSummaries != recent else { return }
+    recentConversationSummaries = recent
   }
 
   nonisolated static func strippedSpuriousToolCallText(_ text: String) -> String {
@@ -4180,6 +4204,7 @@ final class AppStore: ObservableObject {
     sortConversations()
     rebuildConversationIndexes()
     conversationSummaries = Self.sortedSummaries(conversations.map(ConversationSummary.init))
+    refreshRecentConversationSummaries()
     saveConversations()
   }
 

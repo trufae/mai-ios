@@ -1044,6 +1044,8 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
+  static let recentCacheLimit = 3
+
   var id: UUID
   var title: String
   var createdAt: Date
@@ -1085,6 +1087,23 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     let text = MessageContentFilter.previewText(from: message.presentationText)
     guard !text.isEmpty else { return nil }
     return text
+  }
+
+  static func mostRecent(
+    _ summaries: [ConversationSummary],
+    limit: Int = recentCacheLimit
+  ) -> [ConversationSummary] {
+    guard limit > 0 else { return [] }
+    return Array(
+      summaries
+        .filter(\.hasMessages)
+        .sorted { lhs, rhs in
+          if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt > rhs.updatedAt
+          }
+          return lhs.createdAt > rhs.createdAt
+        }
+        .prefix(limit))
   }
 
   enum CodingKeys: String, CodingKey {
