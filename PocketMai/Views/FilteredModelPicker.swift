@@ -5,15 +5,8 @@ struct FilteredModelPicker: View {
   @Binding var filter: String
   let models: [String]
   var emptySelectionTitle: String? = nil
-
-  private var sortedModels: [String] {
-    models.sorted { lhs, rhs in
-      let lhsIsFree = lhs.localizedCaseInsensitiveContains("free")
-      let rhsIsFree = rhs.localizedCaseInsensitiveContains("free")
-      if lhsIsFree != rhsIsFree { return lhsIsFree }
-      return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
-    }
-  }
+  @State private var sortedModels: [String] = []
+  @State private var sortingTask: Task<Void, Never>?
 
   private var filteredModels: [String] {
     let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,6 +40,38 @@ struct FilteredModelPicker: View {
           .autocorrectionDisabled()
           .textFieldStyle(.plain)
       }
+    }
+    .onAppear {
+      updateSortedModels(models)
+    }
+    .onChange(of: models) { _, models in
+      updateSortedModels(models)
+    }
+    .onDisappear {
+      sortingTask?.cancel()
+      sortingTask = nil
+    }
+  }
+
+  private func updateSortedModels(_ models: [String]) {
+    sortingTask?.cancel()
+    sortedModels = models
+    sortingTask = Task.detached(priority: .utility) {
+      let sorted = Self.sorted(models)
+      guard !Task.isCancelled else { return }
+      await MainActor.run {
+        guard !Task.isCancelled else { return }
+        sortedModels = sorted
+      }
+    }
+  }
+
+  nonisolated private static func sorted(_ models: [String]) -> [String] {
+    models.sorted { lhs, rhs in
+      let lhsIsFree = lhs.localizedCaseInsensitiveContains("free")
+      let rhsIsFree = rhs.localizedCaseInsensitiveContains("free")
+      if lhsIsFree != rhsIsFree { return lhsIsFree }
+      return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
     }
   }
 }

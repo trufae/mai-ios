@@ -35,9 +35,11 @@ final class PersistenceStore: @unchecked Sendable {
   private let fileManager: FileManager
   private let localBaseURL: URL
   private let iCloudFallbackBaseURL: URL
+  private let preparationLock = NSLock()
   private let writeQueue = DispatchQueue(
     label: "dev.mai.chat.persistence", qos: .userInitiated)
   private let debounce: TimeInterval = 0.4
+  private var didPrepareStorage = false
   // Touched only from writeQueue; serial access guarantees thread-safety.
   private var pendingSettings: DispatchWorkItem?
   private var pendingConversations: DispatchWorkItem?
@@ -46,11 +48,18 @@ final class PersistenceStore: @unchecked Sendable {
 
   init(fileManager: FileManager = .default) {
     self.fileManager = fileManager
-    PocketMaiDirectories.prepareLaunchStorage(fileManager: fileManager)
     localBaseURL = PocketMaiDirectories.appDataURL
     iCloudFallbackBaseURL = PocketMaiDirectories.appDataURL
       .appendingPathComponent("iCloud-conversations", isDirectory: true)
+  }
+
+  private func prepareForAccess() {
+    preparationLock.lock()
+    defer { preparationLock.unlock() }
+    guard !didPrepareStorage else { return }
+    PocketMaiDirectories.prepareLaunchStorage(fileManager: fileManager)
     try? fileManager.createDirectory(at: localBaseURL, withIntermediateDirectories: true)
+    didPrepareStorage = true
   }
 
   private var localStorageURLs: ConversationStorageURLs {
@@ -81,6 +90,7 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func loadConversations() -> [Conversation] {
+    prepareForAccess()
     var conversations = loadConversations(from: localStorageURLs)
     conversations.append(contentsOf: loadConversations(from: iCloudStorageURLs()))
     conversations = Self.mergedConversations(conversations)
@@ -89,12 +99,14 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func loadConversationSummaries() -> [ConversationSummary] {
-    Self.mergedSummaries(
+    prepareForAccess()
+    return Self.mergedSummaries(
       loadConversationSummaries(from: localStorageURLs)
         + loadConversationSummaries(from: iCloudStorageURLs()))
   }
 
   func loadConversation(id: UUID) -> Conversation? {
+    prepareForAccess()
     let candidates = [
       loadConversation(id: id, from: localStorageURLs),
       loadConversation(id: id, from: iCloudStorageURLs()),
@@ -170,14 +182,16 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func saveConversations(_ conversations: [Conversation]) {
-    let byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
-    let localStorage = localStorageURLs
-    let iCloudStorage = iCloudStorageURLs()
-    let localConversations = conversations.filter { $0.folderID != ConversationFolder.iCloudID }
-    let iCloudConversations = conversations.filter { $0.folderID == ConversationFolder.iCloudID }
+    let snapshot = conversations
     let delay = debounce
     writeQueue.async { [weak self] in
       guard let self else { return }
+      self.prepareForAccess()
+      let localStorage = self.localStorageURLs
+      let iCloudStorage = self.iCloudStorageURLs()
+      let byID = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
+      let localConversations = snapshot.filter { $0.folderID != ConversationFolder.iCloudID }
+      let iCloudConversations = snapshot.filter { $0.folderID == ConversationFolder.iCloudID }
       self.pendingConversations?.cancel()
       let item = DispatchWorkItem { [weak self] in
         guard let self else { return }
@@ -211,6 +225,7 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func loadSettings() -> AppSettings {
+    prepareForAccess()
     guard let data = try? Data(contentsOf: settingsURL),
       let settings = try? makeDecoder().decode(AppSettings.self, from: data)
     else {
@@ -226,6 +241,7 @@ final class PersistenceStore: @unchecked Sendable {
     let delay = debounce
     writeQueue.async { [weak self] in
       guard let self else { return }
+      self.prepareForAccess()
       self.pendingSettings?.cancel()
       let item = DispatchWorkItem { Self.persist(snapshot, to: url, dir: dir) }
       self.pendingSettings = item
@@ -234,6 +250,7 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func loadDrafts() -> [UUID: String] {
+    prepareForAccess()
     guard let data = try? Data(contentsOf: draftsURL),
       let persisted = try? makeDecoder().decode(PersistedDrafts.self, from: data)
     else {
@@ -248,15 +265,19 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   func saveDrafts(_ drafts: [UUID: String]) {
-    let snapshot = PersistedDrafts(
-      drafts: Dictionary(uniqueKeysWithValues: drafts.map { ($0.key.uuidString, $0.value) }))
+    let drafts = drafts
     let url = draftsURL
     let dir = localBaseURL
     let delay = debounce
     writeQueue.async { [weak self] in
       guard let self else { return }
+      self.prepareForAccess()
       self.pendingDrafts?.cancel()
-      let item = DispatchWorkItem { Self.persist(snapshot, to: url, dir: dir) }
+      let item = DispatchWorkItem {
+        let snapshot = PersistedDrafts(
+          drafts: Dictionary(uniqueKeysWithValues: drafts.map { ($0.key.uuidString, $0.value) }))
+        Self.persist(snapshot, to: url, dir: dir)
+      }
       self.pendingDrafts = item
       self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
     }

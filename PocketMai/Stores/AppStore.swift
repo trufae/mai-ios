@@ -187,6 +187,7 @@ final class AppStore: ObservableObject {
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   @Published var mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
   @Published private(set) var toolCallApprovalRequests: [ToolCallApprovalRequest] = []
+  @Published private(set) var draftStorageRevision = 0
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
   @Published var appleAvailabilityReport: AppleFoundationAvailabilityReport
@@ -200,6 +201,13 @@ final class AppStore: ObservableObject {
   private let persistence: PersistenceStore
   private var conversationDrafts: [UUID: String] = [:]
   private var conversationIndexByID: [UUID: Int] = [:]
+  private var hasLoadedPersistedSettings = false
+  private var pendingSettingsSave = false
+  private var pendingRememberedConversationIDBeforeSettingsLoad: UUID?
+  private var hasLoadedPersistedDrafts = false
+  private var pendingDraftSave = false
+  private var dirtyDraftIDsBeforeLoad: Set<UUID> = []
+  private var deletedDraftIDsBeforeLoad: Set<UUID> = []
   private var hasLoadedPersistedConversations = false
   private var pendingConversationSave = false
   private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
@@ -214,15 +222,12 @@ final class AppStore: ObservableObject {
   ) {
     self.persistence = persistence
     self.streamingTextStore = streamingTextStore
-    settings = persistence.loadSettings()
-    conversationDrafts = persistence.loadDrafts()
+    settings = .defaults
     conversations = []
     appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
     startFreshConversationForLaunch()
     Task { await loadStartupData() }
-    refreshLocalMLXModelsInBackground()
-    refreshConfiguredEndpointsInBackground()
   }
 
   var currentConversation: Conversation? {
@@ -573,28 +578,107 @@ final class AppStore: ObservableObject {
     await Task.yield()
 
     let persistence = self.persistence
+    let settingsTask = Task.detached(priority: .userInitiated) {
+      persistence.loadSettings()
+    }
+    let draftsTask = Task.detached(priority: .utility) {
+      persistence.loadDrafts()
+    }
+
+    let loadedSettings = await settingsTask.value
+    guard generation == dataGeneration else { return }
+    applyLoadedSettings(loadedSettings)
+    refreshLocalMLXModelsInBackground()
+    refreshConfiguredEndpointsInBackground()
+
     let summaries = await Task.detached(priority: .userInitiated) {
       persistence.loadConversationSummaries()
     }.value
     guard generation == dataGeneration else { return }
     mergeLoadedSummaries(summaries)
 
+    await loadStartupConversationIfNeeded()
+    guard generation == dataGeneration else { return }
+
+    let loadedDrafts = await draftsTask.value
+    guard generation == dataGeneration else { return }
+    applyLoadedDrafts(loadedDrafts)
+
     let deviceOnlyApple = settings.airplaneModeEnabled
     let availabilityTask = Task.detached(priority: .utility) {
       AppleFoundationProvider.availabilityReport(deviceOnly: deviceOnlyApple)
     }
-    let loadedConversations = await Task.detached(priority: .userInitiated) {
+    let loadedConversations = await Task.detached(priority: .utility) {
       persistence.loadConversations()
     }.value
 
     guard generation == dataGeneration else { return }
     mergeLoadedConversations(loadedConversations)
-    applyStartupConversationSelectionIfNeeded()
     let availabilityReport = await availabilityTask.value
     applyAppleAvailabilityReport(availabilityReport)
   }
 
-  private func applyStartupConversationSelectionIfNeeded() {
+  private func applyLoadedSettings(_ loadedSettings: AppSettings) {
+    guard !hasLoadedPersistedSettings else { return }
+    settings = loadedSettings
+    if let pendingRememberedConversationIDBeforeSettingsLoad {
+      settings.lastSelectedConversationID = pendingRememberedConversationIDBeforeSettingsLoad
+      self.pendingRememberedConversationIDBeforeSettingsLoad = nil
+    }
+    hasLoadedPersistedSettings = true
+    refreshLaunchPlaceholderDefaultsIfNeeded()
+    if pendingSettingsSave {
+      pendingSettingsSave = false
+      saveSettings()
+    }
+  }
+
+  private func applyLoadedDrafts(_ loadedDrafts: [UUID: String]) {
+    guard !hasLoadedPersistedDrafts else { return }
+    var mergedDrafts = loadedDrafts
+    for id in deletedDraftIDsBeforeLoad {
+      mergedDrafts.removeValue(forKey: id)
+    }
+    for id in dirtyDraftIDsBeforeLoad {
+      if let text = conversationDrafts[id], !text.isEmpty {
+        mergedDrafts[id] = text
+      } else {
+        mergedDrafts.removeValue(forKey: id)
+      }
+    }
+    conversationDrafts = mergedDrafts
+    hasLoadedPersistedDrafts = true
+    dirtyDraftIDsBeforeLoad.removeAll()
+    deletedDraftIDsBeforeLoad.removeAll()
+    draftStorageRevision += 1
+    if pendingDraftSave {
+      pendingDraftSave = false
+      persistDrafts()
+    }
+  }
+
+  private func refreshLaunchPlaceholderDefaultsIfNeeded() {
+    guard let placeholderID = launchPlaceholderConversationID,
+      let index = indexedConversationIndex(for: placeholderID),
+      isDisposableNewConversation(conversations[index])
+    else {
+      return
+    }
+
+    let previous = conversations[index]
+    var refreshed = makeNewConversation()
+    refreshed.id = previous.id
+    refreshed.title = previous.title
+    refreshed.createdAt = previous.createdAt
+    refreshed.updatedAt = previous.updatedAt
+    conversations[index] = refreshed
+    sortConversations()
+    if selectedConversationID == placeholderID {
+      setSelectedConversationID(placeholderID, remember: false)
+    }
+  }
+
+  private func loadStartupConversationIfNeeded() async {
     let placeholderID = launchPlaceholderConversationID
     launchPlaceholderConversationID = nil
     guard settings.startupBehavior == .lastConversation,
@@ -604,6 +688,8 @@ final class AppStore: ObservableObject {
     else {
       return
     }
+    await ensureConversationLoaded(id)
+    guard conversation(withID: id) != nil else { return }
     setSelectedConversationID(id)
     selectedConversationIDs.removeAll()
     _ = discardDisposableConversation(id: placeholderID)
@@ -620,14 +706,14 @@ final class AppStore: ObservableObject {
 
   private func startupConversationID(excluding excludedID: UUID?) -> UUID? {
     if let rememberedID = settings.lastSelectedConversationID,
-      let remembered = conversation(withID: rememberedID),
+      let remembered = conversationSummary(withID: rememberedID),
       isStartupConversationCandidate(remembered, excluding: excludedID, allowArchived: true)
     {
       return rememberedID
     }
 
     return
-      conversations
+      conversationSummaries
       .filter { isStartupConversationCandidate($0, excluding: excludedID, allowArchived: false) }
       .max { lhs, rhs in
         if lhs.updatedAt != rhs.updatedAt {
@@ -638,14 +724,21 @@ final class AppStore: ObservableObject {
       .id
   }
 
+  private func conversationSummary(withID id: UUID) -> ConversationSummary? {
+    if let conversation = conversation(withID: id) {
+      return ConversationSummary(conversation: conversation)
+    }
+    return conversationSummaries.first { $0.id == id }
+  }
+
   private func isStartupConversationCandidate(
-    _ conversation: Conversation,
+    _ summary: ConversationSummary,
     excluding excludedID: UUID?,
     allowArchived: Bool
   ) -> Bool {
-    conversation.id != excludedID
-      && !conversation.messages.isEmpty
-      && (allowArchived || !conversation.isArchived)
+    summary.id != excludedID
+      && summary.hasMessages
+      && (allowArchived || !summary.isArchived)
   }
 
   private func makeNewConversation() -> Conversation {
@@ -695,6 +788,9 @@ final class AppStore: ObservableObject {
   private func rememberSelectedConversationID(_ id: UUID?) {
     guard settings.lastSelectedConversationID != id else { return }
     settings.lastSelectedConversationID = id
+    if !hasLoadedPersistedSettings {
+      pendingRememberedConversationIDBeforeSettingsLoad = id
+    }
     saveSettings()
   }
 
@@ -831,8 +927,16 @@ final class AppStore: ObservableObject {
     guard previous != text else { return }
     if text.isEmpty {
       conversationDrafts.removeValue(forKey: conversationID)
+      if !hasLoadedPersistedDrafts {
+        deletedDraftIDsBeforeLoad.insert(conversationID)
+        dirtyDraftIDsBeforeLoad.remove(conversationID)
+      }
     } else {
       conversationDrafts[conversationID] = text
+      if !hasLoadedPersistedDrafts {
+        dirtyDraftIDsBeforeLoad.insert(conversationID)
+        deletedDraftIDsBeforeLoad.remove(conversationID)
+      }
     }
     persistDrafts()
     if previous.isEmpty {
@@ -844,6 +948,10 @@ final class AppStore: ObservableObject {
   }
 
   private func persistDrafts() {
+    guard hasLoadedPersistedDrafts else {
+      pendingDraftSave = true
+      return
+    }
     persistence.saveDrafts(conversationDrafts)
   }
 
@@ -852,6 +960,14 @@ final class AppStore: ObservableObject {
     update(&conversations[index])
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
+    saveConversations()
+  }
+
+  func updateCurrentConversationSettings(_ update: (inout Conversation) -> Void) {
+    guard let index = currentConversationIndex else { return }
+    var conversation = conversations[index]
+    update(&conversation)
+    conversations[index] = conversation
     saveConversations()
   }
 
@@ -928,6 +1044,11 @@ final class AppStore: ObservableObject {
       respondingConversationIDs.remove(id)
     }
     conversationDrafts.removeAll()
+    if !hasLoadedPersistedDrafts {
+      deletedDraftIDsBeforeLoad.formUnion(removedIDs)
+      dirtyDraftIDsBeforeLoad.subtract(removedIDs)
+    }
+    draftStorageRevision += 1
     persistDrafts()
     streamingTextStore.removeAll()
     conversations.removeAll()
@@ -966,6 +1087,14 @@ final class AppStore: ObservableObject {
     errorMessage = nil
     isUpdatingMemory = false
     isCompacting = false
+    hasLoadedPersistedSettings = true
+    pendingSettingsSave = false
+    pendingRememberedConversationIDBeforeSettingsLoad = nil
+    hasLoadedPersistedDrafts = true
+    pendingDraftSave = false
+    dirtyDraftIDsBeforeLoad.removeAll()
+    deletedDraftIDsBeforeLoad.removeAll()
+    draftStorageRevision += 1
     hasLoadedPersistedConversations = true
     pendingConversationSave = false
     dirtyConversationIDsBeforeLoad.removeAll()
@@ -1080,7 +1209,12 @@ final class AppStore: ObservableObject {
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
       conversationDrafts.removeValue(forKey: id)
+      if !hasLoadedPersistedDrafts {
+        deletedDraftIDsBeforeLoad.insert(id)
+        dirtyDraftIDsBeforeLoad.remove(id)
+      }
     }
+    draftStorageRevision += 1
     persistDrafts()
     conversations.filter { ids.contains($0.id) }.forEach {
       clearStreamingText(for: $0.messages)
@@ -2507,6 +2641,10 @@ final class AppStore: ObservableObject {
   }
 
   func saveSettings() {
+    guard hasLoadedPersistedSettings else {
+      pendingSettingsSave = true
+      return
+    }
     persistence.saveSettings(settings)
   }
 
@@ -3091,6 +3229,11 @@ final class AppStore: ObservableObject {
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
     if conversationDrafts.removeValue(forKey: removedID) != nil {
+      if !hasLoadedPersistedDrafts {
+        deletedDraftIDsBeforeLoad.insert(removedID)
+        dirtyDraftIDsBeforeLoad.remove(removedID)
+      }
+      draftStorageRevision += 1
       persistDrafts()
     }
     if !hasLoadedPersistedConversations {

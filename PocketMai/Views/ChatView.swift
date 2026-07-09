@@ -1370,6 +1370,8 @@ private struct PromptShortcutMenuOption: Identifiable, Equatable {
 }
 
 private struct ChatComposer: View {
+  private static let draftAutosaveDelayNanoseconds: UInt64 = 3_000_000_000
+
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @Environment(\.scenePhase) private var scenePhase
   let store: AppStore
@@ -1389,6 +1391,7 @@ private struct ChatComposer: View {
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
   @State private var attachmentError: String?
   @State private var promptAutocompleteSuppressedCommand: String?
+  @State private var draftPersistenceTask: Task<Void, Never>?
 
   private var canSubmitDraft: Bool {
     !isResponding
@@ -1489,12 +1492,21 @@ private struct ChatComposer: View {
     .onAppear {
       draftText = store.draftText(for: conversationID)
     }
+    .onChange(of: store.draftStorageRevision) { _, _ in
+      let storedDraft = store.draftText(for: conversationID)
+      if draftText.isEmpty, !storedDraft.isEmpty {
+        draftText = storedDraft
+      }
+    }
     .onChange(of: conversationID) { oldID, newID in
       if oldID != newID, liveVoiceSession.isActive {
         liveVoiceSession.stop(cancelResponse: false)
       }
-      store.setDraftText(draftText, for: oldID)
+      persistDraftTextNow(draftText, for: oldID)
       draftText = store.draftText(for: newID)
+    }
+    .onDisappear {
+      persistDraftTextNow()
     }
     .onChange(of: scenePhase) { _, phase in
       guard phase == .background else { return }
@@ -1715,7 +1727,7 @@ private struct ChatComposer: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     draftText = mergedDraftText(appending: text)
-    store.setDraftText(draftText, for: conversationID)
+    persistDraftTextNow()
     if focusComposer {
       composerFocused = true
     }
@@ -1741,9 +1753,29 @@ private struct ChatComposer: View {
       get: { draftText },
       set: { newText in
         draftText = newText
-        store.setDraftText(newText, for: conversationID)
+        scheduleDraftPersistence(newText, for: conversationID)
       }
     )
+  }
+
+  private func scheduleDraftPersistence(_ text: String, for conversationID: UUID?) {
+    draftPersistenceTask?.cancel()
+    let store = store
+    draftPersistenceTask = Task.detached(priority: .utility) {
+      do {
+        try await Task.sleep(nanoseconds: Self.draftAutosaveDelayNanoseconds)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      await store.setDraftText(text, for: conversationID)
+    }
+  }
+
+  private func persistDraftTextNow(_ text: String? = nil, for conversationID: UUID? = nil) {
+    draftPersistenceTask?.cancel()
+    draftPersistenceTask = nil
+    store.setDraftText(text ?? draftText, for: conversationID ?? self.conversationID)
   }
 
   private func submitDraft() {
@@ -1753,7 +1785,7 @@ private struct ChatComposer: View {
     let submittedConversationID = conversationID
     draftText = ""
     pendingAttachments = []
-    store.setDraftText("", for: submittedConversationID)
+    persistDraftTextNow("", for: submittedConversationID)
     Task {
       let sent = await store.send(
         prompt: submitted,
@@ -1761,7 +1793,7 @@ private struct ChatComposer: View {
       if !sent {
         draftText = submitted
         pendingAttachments = submittedAttachments
-        store.setDraftText(submitted, for: submittedConversationID)
+        persistDraftTextNow(submitted, for: submittedConversationID)
       }
     }
   }
@@ -1812,7 +1844,7 @@ private struct ChatComposer: View {
       : PromptSlashCommand.visualText(commandName: option.commandName, remainder: remainder)
     draftText = completed
     promptAutocompleteSuppressedCommand = option.commandName
-    store.setDraftText(completed, for: conversationID)
+    persistDraftTextNow(completed)
     composerFocused = true
   }
 
@@ -3147,7 +3179,7 @@ private struct ConversationModelSettingsView: View {
       }
 
       Button {
-        store.refreshLocalMLXModels()
+        store.refreshLocalMLXModelsInBackground()
         ensureCurrentMLXModelSelectionIsAvailable()
       } label: {
         Label("Refresh Models", systemImage: "arrow.clockwise")
@@ -3161,7 +3193,7 @@ private struct ConversationModelSettingsView: View {
       .foregroundStyle(.secondary)
     }
     .onAppear {
-      store.refreshLocalMLXModels()
+      store.refreshLocalMLXModelsInBackground()
       ensureCurrentMLXModelSelectionIsAvailable()
     }
     .onChange(of: store.localMLXModelIDs) { _, _ in
@@ -3317,10 +3349,11 @@ private struct ConversationModelSettingsView: View {
         }()
         let selectedMLXModelID: String? = {
           guard needsMLXModel else { return nil }
-          store.refreshLocalMLXModels()
+          store.refreshLocalMLXModelsInBackground()
           return store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID)
+            ?? normalizedModel(store.settings.localMLXModelID)
         }()
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           switch newSelection {
           case .apple:
             guard store.appleIntelligenceIsAvailable else {
@@ -3366,7 +3399,7 @@ private struct ConversationModelSettingsView: View {
       },
       set: { model in
         guard store.localMLXModelIDs.contains(model) else { return }
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           conversation.modelID = model
         }
         didSaveDefaults = false
@@ -3383,13 +3416,13 @@ private struct ConversationModelSettingsView: View {
       let model = store.availableLocalMLXModelID(preferred: store.currentConversation?.modelID)
     else {
       guard !currentModel.isEmpty else { return }
-      store.updateCurrentConversation { conversation in
+      store.updateCurrentConversationSettings { conversation in
         conversation.modelID = ""
       }
       return
     }
     guard currentModel != model else { return }
-    store.updateCurrentConversation { conversation in
+    store.updateCurrentConversationSettings { conversation in
       conversation.modelID = model
     }
   }
@@ -3401,7 +3434,7 @@ private struct ConversationModelSettingsView: View {
         return model.isEmpty ? defaultModel : model
       },
       set: { model in
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           conversation.modelID = model
         }
         didSaveDefaults = false
@@ -3413,7 +3446,7 @@ private struct ConversationModelSettingsView: View {
     Binding(
       get: { store.currentConversation?.usesStreaming ?? true },
       set: { usesStreaming in
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           conversation.usesStreaming = usesStreaming
         }
       }
@@ -3424,7 +3457,7 @@ private struct ConversationModelSettingsView: View {
     Binding(
       get: { store.effectiveShowThinking(for: store.currentConversation) },
       set: { showThinking in
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           conversation.showThinking = showThinking
         }
       }
@@ -3435,7 +3468,7 @@ private struct ConversationModelSettingsView: View {
     Binding(
       get: { store.currentConversation?.enabledTools.contains(.memory) ?? false },
       set: { useMemory in
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           if useMemory {
             conversation.enabledTools.insert(.memory)
           } else {
@@ -3451,7 +3484,7 @@ private struct ConversationModelSettingsView: View {
       get: { store.currentConversation?.reasoningLevel ?? .automatic },
       set: { level in
         guard store.currentConversation?.reasoningLevel != level else { return }
-        store.updateCurrentConversation { conversation in
+        store.updateCurrentConversationSettings { conversation in
           conversation.reasoningLevel = level
         }
       }
