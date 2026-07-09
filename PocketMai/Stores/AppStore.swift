@@ -214,6 +214,8 @@ final class AppStore: ObservableObject {
   private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
   private var deletedConversationIDsBeforeLoad: Set<UUID> = []
   private var launchPlaceholderConversationID: UUID?
+  private var conversationSelectionGeneration = 0
+  private var conversationLoadTasks: [UUID: Task<Conversation?, Never>] = [:]
   private var dataGeneration = 0
   private var hasLoadedLocalMLXModels = false
 
@@ -236,6 +238,21 @@ final class AppStore: ObservableObject {
       let index = indexedConversationIndex(for: selectedConversationID)
     else { return nil }
     return conversations[index]
+  }
+
+  var selectedConversationSummary: ConversationSummary? {
+    guard let selectedConversationID else { return nil }
+    return conversationSummary(withID: selectedConversationID)
+  }
+
+  var selectedConversationIsLoading: Bool {
+    guard let selectedConversationID else { return false }
+    return indexedConversationIndex(for: selectedConversationID) == nil
+      && conversationSummaries.contains { $0.id == selectedConversationID }
+  }
+
+  var selectedConversationPreviewMessages: [ChatMessage] {
+    selectedConversationSummary?.previewMessages.map(\.chatMessage) ?? []
   }
 
   var previousConversationSuggestions: [ConversationSummary] {
@@ -829,14 +846,33 @@ final class AppStore: ObservableObject {
   }
 
   func selectConversation(id: UUID) async {
+    conversationSelectionGeneration += 1
+    let selectionGeneration = conversationSelectionGeneration
     let previousID = selectedConversationID
+    if indexedConversationIndex(for: id) == nil,
+      let summary = conversationSummaries.first(where: { $0.id == id })
+    {
+      setSelectedConversationID(id)
+      selectedConversationIDs.removeAll()
+      selectConversationFolder(summary.folderID)
+    }
     await ensureConversationLoaded(id)
-    guard let index = indexedConversationIndex(for: id) else { return }
+    guard selectionGeneration == conversationSelectionGeneration else { return }
+    guard let index = indexedConversationIndex(for: id) else {
+      if previousID != id, selectedConversationID == id {
+        setSelectedConversationID(previousID)
+      }
+      return
+    }
     setSelectedConversationID(id)
     selectConversationFolder(conversations[index].folderID)
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
+  }
+
+  func preloadConversation(id: UUID) async {
+    await ensureConversationLoaded(id)
   }
 
   func loadStoredConversationsForSearch() async {
@@ -914,10 +950,20 @@ final class AppStore: ObservableObject {
 
   private func ensureConversationLoaded(_ id: UUID) async {
     guard indexedConversationIndex(for: id) == nil else { return }
-    let persistence = self.persistence
-    let loadedConversation = await Task.detached(priority: .userInitiated) {
-      persistence.loadConversation(id: id)
-    }.value
+    let loadTask: Task<Conversation?, Never>
+    if let existingTask = conversationLoadTasks[id] {
+      loadTask = existingTask
+    } else {
+      let persistence = self.persistence
+      let task = Task.detached(priority: .userInitiated) {
+        persistence.loadConversation(id: id)
+      }
+      conversationLoadTasks[id] = task
+      loadTask = task
+    }
+
+    let loadedConversation = await loadTask.value
+    conversationLoadTasks[id] = nil
     guard let conversation = loadedConversation else {
       return
     }
@@ -925,6 +971,7 @@ final class AppStore: ObservableObject {
     conversations.append(conversation)
     sortConversations()
     normalizeUnavailableAppleProviderIfNeeded()
+    persistence.saveConversationSummaries(conversationSummaries)
   }
 
   func draftText(for conversationID: UUID?) -> String {

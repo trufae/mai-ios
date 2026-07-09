@@ -24,7 +24,8 @@ struct SidebarView: View {
   @State private var showingMoveDestinationDialog = false
   @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
-  let onSelectConversation: () -> Void
+  let onSelectConversation: (UUID) -> Void
+  let onDismiss: () -> Void
   @State private var visibleConversations: [ConversationSummary] = []
   @State private var visibleConversationsRefreshTask: Task<Void, Never>?
   @State private var visibleConversationsRefreshGeneration = 0
@@ -199,8 +200,7 @@ struct SidebarView: View {
           if isSelectionMode {
             toggleSelection(of: conversation.id)
           } else {
-            Task { await store.selectConversation(id: conversation.id) }
-            onSelectConversation()
+            onSelectConversation(conversation.id)
           }
         }
         .modifier(
@@ -215,7 +215,7 @@ struct SidebarView: View {
                 selectedIDs = [conversation.id]
               }
             },
-            onAfterClone: onSelectConversation)
+            onAfterClone: onDismiss)
         )
         .listRowBackground(SidebarRowBackground(isSelected: isSelected && !isSelectionMode))
       }

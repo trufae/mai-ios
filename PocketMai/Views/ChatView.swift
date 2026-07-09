@@ -25,6 +25,7 @@ struct ChatView: View {
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
+  let conversationSwitchProgress: CGFloat
   let onShowHistory: () -> Void
 
   var body: some View {
@@ -167,7 +168,11 @@ struct ChatView: View {
 
   @ViewBuilder
   private var bottomControls: some View {
-    if isMessageSelectionMode {
+    if store.selectedConversationIsLoading {
+      Color.clear
+        .frame(height: 82)
+        .transition(.opacity)
+    } else if isMessageSelectionMode {
       messageSelectionActions
     } else {
       composer
@@ -263,10 +268,14 @@ struct ChatView: View {
         coordinator: exportCoordinator)
     } label: {
       VStack(spacing: 1) {
-        Text(store.currentConversation?.displayTitle ?? "Chat")
-          .font(.headline)
-          .lineLimit(1)
-          .foregroundStyle(.primary)
+        Text(
+          store.currentConversation?.displayTitle
+            ?? store.selectedConversationSummary?.displayTitle
+            ?? "Chat"
+        )
+        .font(.headline)
+        .lineLimit(1)
+        .foregroundStyle(.primary)
         Text(providerSubtitle)
           .font(.caption2)
           .foregroundStyle(.secondary)
@@ -277,6 +286,7 @@ struct ChatView: View {
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
+    .disabled(store.selectedConversationIsLoading)
     .accessibilityHint("Tap for chat options")
   }
 
@@ -342,6 +352,7 @@ struct ChatView: View {
 
   private var providerSubtitle: String {
     if store.isCompacting { return "Compacting…" }
+    if store.selectedConversationIsLoading { return "Loading…" }
     guard let conversation = store.currentConversation else { return "No conversation" }
     let providerName = providerLabel(for: conversation)
     let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -395,7 +406,9 @@ struct ChatView: View {
     } label: {
       Image(systemName: "square.and.pencil")
     }
-    .disabled(currentConversationIsEmpty || isMessageSelectionMode)
+    .disabled(
+      currentConversationIsEmpty || store.selectedConversationIsLoading || isMessageSelectionMode
+    )
     .accessibilityLabel("New Chat")
     .help("New Chat")
   }
@@ -471,116 +484,143 @@ struct ChatView: View {
   }
 
   private var messages: some View {
-    ScrollViewReader { proxy in
-      ScrollView(.vertical) {
-        VStack(spacing: 14) {
-          if currentConversationIsEmpty && liveVoiceSession.previewMessage == nil {
-            emptyState
-              .containerRelativeFrame(.vertical)
-          } else {
-            ForEach(store.currentConversation?.messages ?? []) { message in
-              MessageSelectionRow(
-                isSelectionMode: isMessageSelectionMode,
-                isSelected: selectedMessageIDs.contains(message.id)
-              ) {
-                toggleMessageSelection(message.id)
-              } content: {
+    GeometryReader { scrollGeometry in
+      ScrollViewReader { proxy in
+        ScrollView(.vertical) {
+          let conversation = store.currentConversation
+          let isPreviewingConversation = store.selectedConversationIsLoading && conversation == nil
+          let renderedMessages =
+            conversation?.messages
+            ?? store.selectedConversationPreviewMessages
+          VStack(spacing: 14) {
+            if isPreviewingConversation && renderedMessages.isEmpty {
+              compactLoadingState
+            } else if !isPreviewingConversation && currentConversationIsEmpty
+              && liveVoiceSession.previewMessage == nil
+            {
+              emptyState
+                .containerRelativeFrame(.vertical)
+            } else {
+              ForEach(renderedMessages) { message in
+                MessageSelectionRow(
+                  isSelectionMode: !isPreviewingConversation && isMessageSelectionMode,
+                  isSelected: !isPreviewingConversation && selectedMessageIDs.contains(message.id)
+                ) {
+                  if !isPreviewingConversation {
+                    toggleMessageSelection(message.id)
+                  }
+                } content: {
+                  MessageBubble(
+                    message: message,
+                    toolSettings: currentToolSettings,
+                    openAIEndpoints: store.settings.airplaneModeEnabled
+                      ? [] : store.settings.openAIEndpoints,
+                    skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
+                    appearance: store.settings.appearance,
+                    renderMarkdown: store.settings.renderMarkdownInChat,
+                    renderImages: store.settings.renderMarkdownImagesInChat,
+                    onDelete: { messagePendingDeletion = message },
+                    onBeginSelection: { beginMessageSelection(with: message.id) },
+                    onEdit: { editedText in editMessage(message, text: editedText) },
+                    onEditAttachment: { attachmentID, editedText in
+                      editTextAttachment(message, attachmentID: attachmentID, text: editedText)
+                    },
+                    onResubmit: message.role == .user
+                      ? { Task { await store.resubmit(message) } }
+                      : nil,
+                    onTrimFromHere: { messagePendingTrimAndResubmit = message },
+                    onRestartFresh: { messagePendingRestartFresh = message },
+                    onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
+                    onSpeakFromHere: { speakFromHere(message) },
+                    showThinking: store.effectiveShowThinking(for: store.currentConversation),
+                    isWaitingForResponse: isWaitingForResponse(message),
+                    onStreamingTextChange: { _ in
+                      guard !userScrolledAfterLastMessage else { return }
+                      scrollToBottom(proxy, animated: false)
+                    }
+                  )
+                }
+                .allowsHitTesting(!isPreviewingConversation)
+                .opacity(isPreviewingConversation ? 0.82 : 1)
+                .background {
+                  MessageListAnchorMarker(messageID: message.id)
+                }
+                .id(message.id)
+              }
+              if isPreviewingConversation {
+                compactLoadingFooter
+              }
+              if let preview = liveVoiceSession.previewMessage {
                 MessageBubble(
-                  message: message,
+                  message: preview,
                   toolSettings: currentToolSettings,
                   openAIEndpoints: store.settings.airplaneModeEnabled
                     ? [] : store.settings.openAIEndpoints,
-                  skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
                   appearance: store.settings.appearance,
                   renderMarkdown: store.settings.renderMarkdownInChat,
                   renderImages: store.settings.renderMarkdownImagesInChat,
-                  onDelete: { messagePendingDeletion = message },
-                  onBeginSelection: { beginMessageSelection(with: message.id) },
-                  onEdit: { editedText in editMessage(message, text: editedText) },
-                  onEditAttachment: { attachmentID, editedText in
-                    editTextAttachment(message, attachmentID: attachmentID, text: editedText)
-                  },
-                  onResubmit: message.role == .user
-                    ? { Task { await store.resubmit(message) } }
-                    : nil,
-                  onTrimFromHere: { messagePendingTrimAndResubmit = message },
-                  onRestartFresh: { messagePendingRestartFresh = message },
-                  onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
-                  onSpeakFromHere: { speakFromHere(message) },
+                  onDelete: {},
                   showThinking: store.effectiveShowThinking(for: store.currentConversation),
-                  isWaitingForResponse: isWaitingForResponse(message),
-                  onStreamingTextChange: { _ in
-                    guard !userScrolledAfterLastMessage else { return }
-                    scrollToBottom(proxy, animated: false)
-                  }
+                  isWaitingForResponse: false
                 )
+                .id(preview.id)
               }
-              .background {
-                MessageListAnchorMarker(messageID: message.id)
-              }
-              .id(message.id)
             }
-            if let preview = liveVoiceSession.previewMessage {
-              MessageBubble(
-                message: preview,
-                toolSettings: currentToolSettings,
-                openAIEndpoints: store.settings.airplaneModeEnabled
-                  ? [] : store.settings.openAIEndpoints,
-                appearance: store.settings.appearance,
-                renderMarkdown: store.settings.renderMarkdownInChat,
-                renderImages: store.settings.renderMarkdownImagesInChat,
-                onDelete: {},
-                showThinking: store.effectiveShowThinking(for: store.currentConversation),
-                isWaitingForResponse: false
-              )
-              .id(preview.id)
-            }
+            Color.clear
+              .frame(height: 1)
+              .id(messageListBottomID)
           }
-          Color.clear
-            .frame(height: 1)
-            .id(messageListBottomID)
+          .padding()
+          .frame(minHeight: scrollGeometry.size.height, alignment: .bottom)
+          .containerRelativeFrame(.horizontal)
+          .frame(maxWidth: .infinity, alignment: .center)
+          .background {
+            MessageListPinchGestureBridge(
+              onChanged: { magnification, scrollView, location in
+                updateMessageFontSize(for: magnification, in: scrollView, at: location)
+              },
+              onEnded: endMessageFontSizePinch
+            )
+          }
         }
-        .padding()
-        .containerRelativeFrame(.horizontal)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .background {
-          MessageListPinchGestureBridge(
-            onChanged: { magnification, scrollView, location in
-              updateMessageFontSize(for: magnification, in: scrollView, at: location)
-            },
-            onEnded: endMessageFontSizePinch
-          )
+        .id(store.selectedConversationID)
+        .modifier(MessageListConversationSwitchEffect(progress: conversationSwitchProgress))
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(messageListScrollGesture)
+        .onAppear {
+          scrollToBottomAfterLayout(proxy, animated: false)
         }
-      }
-      .id(store.selectedConversationID)
-      .defaultScrollAnchor(.bottom)
-      .scrollDismissesKeyboard(.interactively)
-      .simultaneousGesture(messageListScrollGesture)
-      .onChange(of: lastMessageSnapshot) { old, new in
-        if old.conversationID != new.conversationID {
+        .onChange(of: store.selectedConversationID) { _, _ in
           userScrolledAfterLastMessage = false
-          return
+          scrollToBottomAfterLayout(proxy, animated: false)
         }
-        if old.messageID != new.messageID {
-          userScrolledAfterLastMessage = false
-          scrollToBottom(proxy, animated: true)
-          return
+        .onChange(of: lastMessageSnapshot) { old, new in
+          if old.conversationID != new.conversationID {
+            userScrolledAfterLastMessage = false
+            scrollToBottomAfterLayout(proxy, animated: false)
+            return
+          }
+          if old.messageID != new.messageID {
+            userScrolledAfterLastMessage = false
+            scrollToBottomAfterLayout(proxy, animated: true)
+            return
+          }
+          guard old.text != new.text, !userScrolledAfterLastMessage else { return }
+          DispatchQueue.main.async {
+            scrollToBottom(proxy, animated: false)
+          }
         }
-        guard old.text != new.text, !userScrolledAfterLastMessage else { return }
-        DispatchQueue.main.async {
+        .onChange(of: liveVoiceSession.transcript) { _, _ in
+          guard !userScrolledAfterLastMessage else { return }
           scrollToBottom(proxy, animated: false)
         }
-      }
-      .onChange(of: liveVoiceSession.transcript) { _, _ in
-        guard !userScrolledAfterLastMessage else { return }
-        scrollToBottom(proxy, animated: false)
-      }
-      .onChange(of: pendingScrollToMessageID) { _, target in
-        guard let target else { return }
-        withAnimation(.snappy) {
-          proxy.scrollTo(target, anchor: .center)
+        .onChange(of: pendingScrollToMessageID) { _, target in
+          guard let target else { return }
+          withAnimation(.snappy) {
+            proxy.scrollTo(target, anchor: .center)
+          }
+          pendingScrollToMessageID = nil
         }
-        pendingScrollToMessageID = nil
       }
     }
   }
@@ -643,6 +683,28 @@ struct ChatView: View {
     var text: String?
   }
 
+  private struct MessageListConversationSwitchEffect: ViewModifier, Equatable {
+    let progress: CGFloat
+
+    private var clampedProgress: CGFloat {
+      min(max(progress, 0), 1)
+    }
+
+    func body(content: Content) -> some View {
+      let progress = clampedProgress
+      content
+        .compositingGroup()
+        .blur(radius: 5 * progress, opaque: false)
+        .saturation(1 - 0.16 * progress)
+        .overlay {
+          Color(uiColor: .systemBackground)
+            .opacity(0.07 * progress)
+            .allowsHitTesting(false)
+        }
+        .clipped()
+    }
+  }
+
   private var lastMessageSnapshot: LastMessageSnapshot {
     let convo = store.currentConversation
     let last = convo?.messages.last
@@ -664,6 +726,19 @@ struct ChatView: View {
       }
     } else {
       proxy.scrollTo(messageListBottomID, anchor: .bottom)
+    }
+  }
+
+  private func scrollToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
+    guard !userScrolledAfterLastMessage else { return }
+    scrollToBottom(proxy, animated: animated)
+    DispatchQueue.main.async {
+      guard !userScrolledAfterLastMessage else { return }
+      scrollToBottom(proxy, animated: false)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+      guard !userScrolledAfterLastMessage else { return }
+      scrollToBottom(proxy, animated: false)
     }
   }
 
@@ -919,6 +994,34 @@ struct ChatView: View {
         + scrollView.adjustedContentInset.bottom
     )
     return min(max(y, minimumY), maximumY)
+  }
+
+  private var compactLoadingState: some View {
+    VStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.regular)
+      Text(store.selectedConversationSummary?.displayTitle ?? "Loading conversation")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.primary)
+        .lineLimit(2)
+        .multilineTextAlignment(.center)
+    }
+    .padding(.horizontal, 24)
+    .frame(maxWidth: 430)
+    .frame(maxWidth: .infinity)
+    .padding(.top, 34)
+  }
+
+  private var compactLoadingFooter: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+        .controlSize(.small)
+      Text("Loading full chat...")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 6)
+    .frame(maxWidth: .infinity)
   }
 
   private var emptyState: some View {
@@ -1239,7 +1342,9 @@ private enum ConversationRecencyLabel {
 
 // Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @StateObject still re-trigger body.
 extension ChatView: Equatable {
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    abs(lhs.conversationSwitchProgress - rhs.conversationSwitchProgress) < 0.001
+  }
 }
 
 struct ReasoningLevelControl: View {

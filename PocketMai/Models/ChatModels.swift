@@ -928,6 +928,37 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct ConversationPreviewMessage: Identifiable, Codable, Equatable, Sendable {
+  var id: UUID
+  var role: ChatRole
+  var text: String
+  var displayText: String?
+  var createdAt: Date
+
+  init(message: ChatMessage) {
+    id = message.id
+    role = message.role
+    text = Self.clippedText(message.text)
+    displayText = message.displayText.map(Self.clippedText)
+    createdAt = message.createdAt
+  }
+
+  var chatMessage: ChatMessage {
+    ChatMessage(
+      id: id,
+      role: role,
+      text: text,
+      displayText: displayText,
+      createdAt: createdAt)
+  }
+
+  private static func clippedText(_ text: String) -> String {
+    let limit = 6_000
+    guard text.count > limit else { return text }
+    return String(text.prefix(limit)) + "..."
+  }
+}
+
 struct ConversationFolderDefaults: Codable, Equatable, Sendable {
   var systemPromptID: UUID?
   var provider: ProviderKind?
@@ -1054,6 +1085,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   var folderID: String
   var preview: String
   var hasMessages: Bool
+  var previewMessages: [ConversationPreviewMessage]
 
   init(conversation: Conversation) {
     id = conversation.id
@@ -1064,6 +1096,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     folderID = conversation.folderID
     hasMessages = !conversation.messages.isEmpty
     preview = Self.previewText(from: conversation.messages)
+    previewMessages = Self.previewMessages(from: conversation.messages)
   }
 
   var isArchived: Bool {
@@ -1087,6 +1120,15 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     let text = MessageContentFilter.previewText(from: message.presentationText)
     guard !text.isEmpty else { return nil }
     return text
+  }
+
+  private static func previewMessages(from messages: [ChatMessage])
+    -> [ConversationPreviewMessage]
+  {
+    messages
+      .filter { $0.role == .user || $0.role == .assistant }
+      .suffix(6)
+      .map(ConversationPreviewMessage.init(message:))
   }
 
   static func mostRecent(
@@ -1116,6 +1158,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     case folderID
     case preview
     case hasMessages
+    case previewMessages
   }
 
   init(from decoder: Decoder) throws {
@@ -1131,6 +1174,8 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
       legacyIsArchived: legacyArchived)
     preview = (try? container.decode(String.self, forKey: .preview)) ?? ""
     hasMessages = (try? container.decode(Bool.self, forKey: .hasMessages)) ?? true
+    previewMessages =
+      (try? container.decode([ConversationPreviewMessage].self, forKey: .previewMessages)) ?? []
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1144,6 +1189,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     try container.encode(folderID, forKey: .folderID)
     try container.encode(preview, forKey: .preview)
     try container.encode(hasMessages, forKey: .hasMessages)
+    try container.encode(previewMessages, forKey: .previewMessages)
   }
 }
 

@@ -364,6 +364,32 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  func saveConversationSummaries(_ summaries: [ConversationSummary]) {
+    let summarySnapshot = summaries
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.prepareForAccess()
+      let localStorage = self.localStorageURLs
+      let iCloudStorage = self.iCloudStorageURLs()
+      let localSummaries = self.persistableSummaries(
+        summarySnapshot.filter { $0.folderID != ConversationFolder.iCloudID },
+        loadedIDs: [],
+        storage: localStorage)
+      let iCloudSummaries = self.persistableSummaries(
+        summarySnapshot.filter { $0.folderID == ConversationFolder.iCloudID },
+        loadedIDs: [],
+        storage: iCloudStorage)
+      _ = Self.persistConversationIndex(
+        ids: localSummaries.map(\.id),
+        summaries: localSummaries,
+        storage: localStorage)
+      _ = Self.persistConversationIndex(
+        ids: iCloudSummaries.map(\.id),
+        summaries: iCloudSummaries,
+        storage: iCloudStorage)
+    }
+  }
+
   func loadSettings() -> AppSettings {
     prepareForAccess()
     guard let data = try? Data(contentsOf: settingsURL),

@@ -9,6 +9,9 @@ struct ContentView: View {
   @State private var historyDragOffset: CGFloat = 0
   @State private var historyDragIsActive = false
   @State private var historyDragExclusionFrame: CGRect?
+  @State private var sidebarSelectionGeneration = 0
+  @State private var conversationSwitchBlurProgress: CGFloat = 0
+  @State private var pendingConversationSwitchID: UUID?
 
   var body: some View {
     GeometryReader { proxy in
@@ -20,7 +23,8 @@ struct ContentView: View {
       ZStack(alignment: .leading) {
         SidebarView(
           showingSettings: $showingSettings,
-          onSelectConversation: closeHistoryPanel
+          onSelectConversation: selectConversationFromSidebar,
+          onDismiss: { closeHistoryPanel() }
         )
         .equatable()
         .frame(width: panelWidth)
@@ -38,6 +42,7 @@ struct ContentView: View {
 
           NavigationStack {
             ChatView(
+              conversationSwitchProgress: conversationSwitchBlurProgress,
               onShowHistory: {
                 toggleHistoryPanel()
               }
@@ -99,6 +104,10 @@ struct ContentView: View {
         store.refreshLocalMLXModelsInBackground()
       }
     }
+    .onChange(of: store.selectedConversationID) { _, newID in
+      guard let newID, newID == pendingConversationSwitchID else { return }
+      finishConversationSwitchTransition(generation: sidebarSelectionGeneration)
+    }
     .tint(store.settings.appearance.tintColor)
     .accentColor(store.settings.appearance.tintColor)
   }
@@ -108,8 +117,43 @@ struct ContentView: View {
     return min(max(baseOffset + historyDragOffset, 0), panelWidth)
   }
 
-  private func closeHistoryPanel() {
-    setHistoryPanelOpen(false, animation: historyPanelAnimation)
+  private func selectConversationFromSidebar(_ id: UUID) {
+    guard id != store.selectedConversationID else {
+      closeHistoryPanel()
+      return
+    }
+
+    sidebarSelectionGeneration += 1
+    let selectionGeneration = sidebarSelectionGeneration
+    pendingConversationSwitchID = id
+    withAnimation(.easeOut(duration: 0.12)) {
+      conversationSwitchBlurProgress = 1
+    }
+    Task {
+      await store.preloadConversation(id: id)
+    }
+    closeHistoryPanel {
+      guard sidebarSelectionGeneration == selectionGeneration else { return }
+      Task { @MainActor in
+        guard sidebarSelectionGeneration == selectionGeneration else { return }
+        await store.selectConversation(id: id)
+        if store.selectedConversationID == id {
+          finishConversationSwitchTransition(generation: selectionGeneration)
+        }
+      }
+    }
+  }
+
+  private func finishConversationSwitchTransition(generation: Int) {
+    guard sidebarSelectionGeneration == generation else { return }
+    pendingConversationSwitchID = nil
+    withAnimation(.easeOut(duration: 0.16)) {
+      conversationSwitchBlurProgress = 0
+    }
+  }
+
+  private func closeHistoryPanel(completion: (() -> Void)? = nil) {
+    setHistoryPanelOpen(false, animation: historyPanelAnimation, completion: completion)
   }
 
   private func toggleHistoryPanel() {
@@ -120,7 +164,11 @@ struct ContentView: View {
     .interactiveSpring(response: 0.32, dampingFraction: 0.86)
   }
 
-  private func setHistoryPanelOpen(_ isOpen: Bool, animation: Animation) {
+  private func setHistoryPanelOpen(
+    _ isOpen: Bool,
+    animation: Animation,
+    completion: (() -> Void)? = nil
+  ) {
     let visibilityChanged = showingHistory != isOpen
     withAnimation(animation, completionCriteria: .logicallyComplete) {
       showingHistory = isOpen
@@ -130,6 +178,7 @@ struct ContentView: View {
       if visibilityChanged {
         store.sidebarVisibilitySettled()
       }
+      completion?()
     }
   }
 
