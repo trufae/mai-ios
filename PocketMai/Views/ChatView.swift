@@ -1999,20 +1999,24 @@ private struct ChatComposer: View {
 
   private var toolMenuPopover: some View {
     VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 12) {
-        Button {
-          openToolPicker()
-        } label: {
-          toolMenuRowLabel("Tools...", systemImage: "wrench.and.screwdriver")
-        }
-        .disabled(!toolsEnabled)
-        .opacity(toolsEnabled ? 1 : 0.45)
-        .buttonStyle(.plain)
-
-        Toggle("", isOn: toolsEnabledBinding)
-          .labelsHidden()
-          .toggleStyle(.switch)
+      Toggle(isOn: toolsEnabledBinding) {
+        toolMenuRowLabel("Enable Tools", systemImage: "wrench.and.screwdriver")
       }
+      .toggleStyle(.switch)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      Button {
+        openToolPicker()
+      } label: {
+        toolMenuRowLabel(
+          "Select Tools...",
+          systemImage: "checklist",
+          trailingText: "(\(enabledToolSelectionCount))")
+      }
+      .disabled(!toolsEnabled)
+      .opacity(toolsEnabled ? 1 : 0.45)
+      .buttonStyle(.plain)
       .padding(.horizontal, 12)
       .padding(.vertical, 9)
 
@@ -2067,7 +2071,11 @@ private struct ChatComposer: View {
     .background(.regularMaterial)
   }
 
-  private func toolMenuRowLabel(_ title: String, systemImage: String) -> some View {
+  private func toolMenuRowLabel(
+    _ title: String,
+    systemImage: String,
+    trailingText: String? = nil
+  ) -> some View {
     HStack(spacing: 10) {
       Image(systemName: systemImage)
         .foregroundStyle(.secondary)
@@ -2075,6 +2083,10 @@ private struct ChatComposer: View {
       Text(title)
         .foregroundStyle(.primary)
       Spacer()
+      if let trailingText {
+        Text(trailingText)
+          .foregroundStyle(.secondary)
+      }
     }
     .contentShape(Rectangle())
   }
@@ -2087,6 +2099,20 @@ private struct ChatComposer: View {
 
   private var toolsEnabled: Bool {
     store.currentConversation?.toolsEnabled ?? true
+  }
+
+  private var enabledToolSelectionCount: Int {
+    let builtInToolCount = BuiltInToolID.allCases.filter {
+      $0 != .memory && (store.currentConversation?.enabledTools.contains($0) ?? false)
+    }.count
+    let enabledMCPTools =
+      store.currentConversation?.enabledMCPTools ?? store.settings.defaultEnabledMCPTools
+    let mcpToolCount = store.mcpTools.reduce(0) { count, entry in
+      count + entry.value.filter {
+        enabledMCPTools.contains(MCPToolSelection.key(serverID: entry.key, toolName: $0.name))
+      }.count
+    }
+    return builtInToolCount + mcpToolCount
   }
 
   private var toolsEnabledBinding: Binding<Bool> {
