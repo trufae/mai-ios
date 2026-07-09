@@ -115,6 +115,7 @@ struct MessageBubble: View {
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
+  var onEditAttachment: ((UUID, String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -137,6 +138,7 @@ struct MessageBubble: View {
       onDelete: onDelete,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
+      onEditAttachment: onEditAttachment,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
@@ -163,6 +165,7 @@ private struct StreamingMessageBubble: View {
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
+  var onEditAttachment: ((UUID, String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -185,6 +188,7 @@ private struct StreamingMessageBubble: View {
       onDelete: onDelete,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
+      onEditAttachment: onEditAttachment,
       onResubmit: onResubmit,
       onTrimFromHere: onTrimFromHere,
       onRestartFresh: onRestartFresh,
@@ -214,6 +218,7 @@ private struct MessageBubbleContent: View, Equatable {
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
+  var onEditAttachment: ((UUID, String) -> Void)? = nil
   var onResubmit: (() -> Void)? = nil
   var onTrimFromHere: (() -> Void)? = nil
   var onRestartFresh: (() -> Void)? = nil
@@ -416,9 +421,12 @@ private struct MessageBubbleContent: View, Equatable {
         MessageTextSelectionSheet(
           title: attachment.displayName,
           text: attachment.text ?? "",
+          appearance: appearance,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
-          fontFamily: appearance.fontFamily(for: message.role))
+          fontFamily: appearance.fontFamily(for: message.role),
+          isEditable: onEditAttachment != nil,
+          onSave: { text in onEditAttachment?(attachment.id, text) })
       }
       .fullScreenCover(item: $selectedImageAttachment) { attachment in
         if let image = MessageAttachmentImage.uiImage(from: attachment),

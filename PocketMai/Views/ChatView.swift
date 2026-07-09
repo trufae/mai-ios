@@ -432,6 +432,28 @@ struct ChatView: View {
     }
   }
 
+  private func editTextAttachment(_ message: ChatMessage, attachmentID: UUID, text: String) {
+    guard
+      let currentAttachment = store.currentConversation?.messages.first(where: {
+        $0.id == message.id
+      })?.attachments.first(where: { $0.id == attachmentID }),
+      currentAttachment.text != text
+    else {
+      return
+    }
+    store.updateCurrentConversation { conversation in
+      guard let messageIndex = conversation.messages.firstIndex(where: { $0.id == message.id }),
+        let attachmentIndex = conversation.messages[messageIndex].attachments.firstIndex(where: {
+          $0.id == attachmentID
+        }),
+        conversation.messages[messageIndex].attachments[attachmentIndex].kind == .textFile
+      else {
+        return
+      }
+      conversation.messages[messageIndex].attachments[attachmentIndex].text = text
+    }
+  }
+
   private var providerStatus: (message: String, systemImage: String, color: Color)? {
     if let conversation = store.currentConversation,
       store.settings.airplaneModeEnabled,
@@ -475,6 +497,9 @@ struct ChatView: View {
                   onDelete: { messagePendingDeletion = message },
                   onBeginSelection: { beginMessageSelection(with: message.id) },
                   onEdit: { editedText in editMessage(message, text: editedText) },
+                  onEditAttachment: { attachmentID, editedText in
+                    editTextAttachment(message, attachmentID: attachmentID, text: editedText)
+                  },
                   onResubmit: message.role == .user
                     ? { Task { await store.resubmit(message) } }
                     : nil,
