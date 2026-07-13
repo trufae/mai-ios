@@ -145,7 +145,13 @@ final class AppStore: ObservableObject {
   private static let openAPIServerSystemPromptID = UUID(
     uuidString: "00000000-0000-0000-0000-000000011434")!
 
-  @Published var conversations: [Conversation]
+  /// Loaded full conversations are an internal cache. The UI observes only `activeConversation`
+  /// and lightweight summaries, so loading or mutating an unrelated cached chat cannot invalidate
+  /// the active message hierarchy.
+  private(set) var conversations: [Conversation] {
+    didSet { publishActiveConversationIfNeeded() }
+  }
+  @Published private(set) var activeConversation: Conversation? = nil
   @Published var conversationSummaries: [ConversationSummary] = []
   @Published private(set) var recentConversationSummaries: [ConversationSummary] = []
   @Published var selectedConversationID: UUID?
@@ -202,6 +208,7 @@ final class AppStore: ObservableObject {
   private let persistence: PersistenceStore
   private var conversationDrafts: [UUID: String] = [:]
   private var conversationIndexByID: [UUID: Int] = [:]
+  private var activeConversationPublicationKey: ActiveConversationPublicationKey?
   private var hasLoadedPersistedSettings = false
   private var pendingSettingsSave = false
   private var pendingRememberedConversationIDBeforeSettingsLoad: UUID?
@@ -234,10 +241,7 @@ final class AppStore: ObservableObject {
   }
 
   var currentConversation: Conversation? {
-    guard let selectedConversationID,
-      let index = indexedConversationIndex(for: selectedConversationID)
-    else { return nil }
-    return conversations[index]
+    activeConversation
   }
 
   var selectedConversationSummary: ConversationSummary? {
@@ -808,6 +812,7 @@ final class AppStore: ObservableObject {
 
   private func setSelectedConversationID(_ id: UUID?, remember: Bool = true) {
     selectedConversationID = id
+    publishActiveConversationIfNeeded(force: true)
     if remember {
       rememberSelectedConversationID(id)
     }
@@ -3381,6 +3386,79 @@ final class AppStore: ObservableObject {
     return indexedConversationIndex(for: selectedConversationID)
   }
 
+  private struct ActiveConversationPublicationKey: Equatable {
+    let id: UUID
+    let updatedAt: Date
+    let messageCount: Int
+    let lastMessage: ChatMessageRenderKey?
+    let title: String
+    let provider: ProviderKind
+    let modelID: String
+    let endpointID: UUID?
+    let systemPromptID: UUID?
+    let toolsEnabled: Bool
+    let enabledTools: Set<BuiltInToolID>
+    let usesStreaming: Bool
+    let enabledMCPServers: Set<UUID>
+    let enabledMCPTools: Set<String>
+    let disabledMCPTools: Set<String>
+    let reasoningLevel: ReasoningLevel
+    let showThinking: Bool
+    let folderID: String
+    let languageOverrideIdentifier: String?
+
+    init(_ conversation: Conversation) {
+      id = conversation.id
+      updatedAt = conversation.updatedAt
+      messageCount = conversation.messages.count
+      lastMessage = conversation.messages.last.map(ChatMessageRenderKey.init)
+      title = conversation.title
+      provider = conversation.provider
+      modelID = conversation.modelID
+      endpointID = conversation.endpointID
+      systemPromptID = conversation.systemPromptID
+      toolsEnabled = conversation.toolsEnabled
+      enabledTools = conversation.enabledTools
+      usesStreaming = conversation.usesStreaming
+      enabledMCPServers = conversation.enabledMCPServers
+      enabledMCPTools = conversation.enabledMCPTools
+      disabledMCPTools = conversation.disabledMCPTools
+      reasoningLevel = conversation.reasoningLevel
+      showThinking = conversation.showThinking
+      folderID = conversation.folderID
+      languageOverrideIdentifier = conversation.languageOverrideIdentifier
+    }
+  }
+
+  private func publishActiveConversationIfNeeded(force: Bool = false) {
+    guard let selectedConversationID,
+      let conversation = cachedConversation(withID: selectedConversationID)
+    else {
+      if force || activeConversation != nil {
+        activeConversationPublicationKey = nil
+        activeConversation = nil
+      }
+      return
+    }
+
+    let publicationKey = ActiveConversationPublicationKey(conversation)
+    guard force || publicationKey != activeConversationPublicationKey else { return }
+    activeConversationPublicationKey = publicationKey
+    activeConversation = conversation
+  }
+
+  /// Avoid a scan on ordinary message mutations. A fallback is needed briefly while an array
+  /// insertion, removal, or sort is in progress and the index cache still describes the old order.
+  private func cachedConversation(withID id: UUID) -> Conversation? {
+    if let index = conversationIndexByID[id],
+      conversations.indices.contains(index),
+      conversations[index].id == id
+    {
+      return conversations[index]
+    }
+    return conversations.first(where: { $0.id == id })
+  }
+
   private func indexedConversationIndex(for id: UUID) -> Int? {
     if let index = conversationIndexByID[id],
       conversations.indices.contains(index),
@@ -4464,7 +4542,7 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$errorMessage)
       observe(store.$toolCallApprovalRequests)
     case .chat:
-      observe(store.$conversations)
+      observe(store.$activeConversation)
       observe(store.$conversationSummaries)
       observe(store.$recentConversationSummaries)
       observe(store.$selectedConversationID)
@@ -4482,7 +4560,6 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$appleAvailabilityMessage)
       observe(store.$openAPIServerState)
     case .sidebar:
-      observe(store.$conversations)
       observe(store.$conversationSummaries)
       observe(store.$selectedConversationID)
       observe(store.$selectedConversationIDs)

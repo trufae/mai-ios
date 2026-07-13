@@ -928,6 +928,50 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+/// The fields that can change a bubble's rendered output. Image payloads are deliberately absent:
+/// attachment identity and metadata select the async image cache without comparing base64 strings.
+struct ChatMessageRenderKey: Equatable, Sendable {
+  struct Attachment: Equatable, Sendable {
+    let id: UUID
+    let kind: String
+    let filename: String
+    let mimeType: String
+    let text: String?
+    let hasImageData: Bool
+    let width: Int?
+    let height: Int?
+
+    init(_ attachment: ChatAttachment) {
+      id = attachment.id
+      kind = attachment.kind.rawValue
+      filename = attachment.filename
+      mimeType = attachment.mimeType
+      text = attachment.kind == .textFile ? attachment.text : nil
+      hasImageData = attachment.dataBase64?.isEmpty == false
+      width = attachment.width
+      height = attachment.height
+    }
+  }
+
+  let id: UUID
+  let role: ChatRole
+  let text: String
+  let displayText: String?
+  let createdAt: Date
+  let voiceRecordingFilename: String?
+  let attachments: [Attachment]
+
+  init(_ message: ChatMessage) {
+    id = message.id
+    role = message.role
+    text = message.text
+    displayText = message.displayText
+    createdAt = message.createdAt
+    voiceRecordingFilename = message.voiceRecordingFilename
+    attachments = message.attachments.map(Attachment.init)
+  }
+}
+
 struct ConversationPreviewMessage: Identifiable, Codable, Equatable, Sendable {
   var id: UUID
   var role: ChatRole

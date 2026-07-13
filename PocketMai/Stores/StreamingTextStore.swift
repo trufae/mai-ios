@@ -17,6 +17,7 @@ final class StreamingTextStore: ObservableObject {
   private var pendingTexts: [UUID: String] = [:]
   private var publishTasks: [UUID: Task<Void, Never>] = [:]
   private var lastPublishAt: [UUID: Date] = [:]
+  private var publishingSuspended = false
   private static let publishInterval: TimeInterval = 0.12
 
   func textObject(for id: UUID) -> StreamingText {
@@ -34,6 +35,11 @@ final class StreamingTextStore: ObservableObject {
 
   func enqueue(_ text: String, for id: UUID) {
     guard currentText(for: id) != text else { return }
+
+    if publishingSuspended {
+      pendingTexts[id] = text
+      return
+    }
 
     let now = Date()
     let lastPublish = lastPublishAt[id] ?? .distantPast
@@ -64,6 +70,32 @@ final class StreamingTextStore: ObservableObject {
     }
   }
 
+  /// Keeps the latest streamed text but stops observable publications while a complex view is
+  /// being interactively transformed. Resuming emits at most one update per active message.
+  func setPublishingSuspended(_ suspended: Bool) {
+    guard publishingSuspended != suspended else { return }
+    publishingSuspended = suspended
+
+    if suspended {
+      for task in publishTasks.values {
+        task.cancel()
+      }
+      publishTasks.removeAll()
+      return
+    }
+
+    let queuedTexts = pendingTexts
+    pendingTexts.removeAll()
+    let now = Date()
+    for (id, text) in queuedTexts {
+      lastPublishAt[id] = now
+      let object = textObject(for: id)
+      if object.text != text {
+        object.setText(text)
+      }
+    }
+  }
+
   func clear(id: UUID) {
     pendingTexts.removeValue(forKey: id)
     lastPublishAt.removeValue(forKey: id)
@@ -80,6 +112,7 @@ final class StreamingTextStore: ObservableObject {
     publishTasks.removeAll()
     pendingTexts.removeAll()
     lastPublishAt.removeAll()
+    publishingSuspended = false
     for object in textObjects.values {
       object.setText(nil)
     }

@@ -179,6 +179,7 @@ private struct StreamingMessageBubble: View {
   var body: some View {
     MessageBubbleContent(
       message: message,
+      messageRenderKey: ChatMessageRenderKey(message),
       streamingOverride: streamingText.text,
       toolSettings: toolSettings,
       openAIEndpoints: openAIEndpoints,
@@ -209,6 +210,7 @@ private struct StreamingMessageBubble: View {
 
 private struct MessageBubbleContent: View, Equatable {
   let message: ChatMessage
+  let messageRenderKey: ChatMessageRenderKey
   var streamingOverride: String? = nil
   let toolSettings: NativeToolSettings
   let openAIEndpoints: [OpenAIEndpoint]
@@ -244,7 +246,8 @@ private struct MessageBubbleContent: View, Equatable {
   /// the canonical message nor the streaming override has changed. Closure
   /// equality is irrelevant because actions are invoked only from fresh menus.
   nonisolated static func == (lhs: MessageBubbleContent, rhs: MessageBubbleContent) -> Bool {
-    lhs.message == rhs.message && lhs.streamingOverride == rhs.streamingOverride
+    lhs.messageRenderKey == rhs.messageRenderKey
+      && lhs.streamingOverride == rhs.streamingOverride
       && lhs.toolSettings == rhs.toolSettings
       && lhs.openAIEndpoints == rhs.openAIEndpoints
       && lhs.skipTechnicalContentInTTS == rhs.skipTechnicalContentInTTS
