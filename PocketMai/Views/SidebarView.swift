@@ -13,7 +13,8 @@ extension View {
 }
 
 struct SidebarView: View {
-  @EnvironmentObject private var store: AppStore
+  @ObservedObject var storeObservation: AppStoreViewObservation
+  let store: AppStore
   @Binding var showingSettings: Bool
   @State private var isSearchActive = false
   @State private var searchText = ""
@@ -205,6 +206,7 @@ struct SidebarView: View {
         }
         .modifier(
           ConversationSummaryActionsModifier(
+            store: store,
             conversation: conversation,
             isCurrent: isSelected,
             isEnabled: !isSelectionMode,
@@ -555,7 +557,7 @@ struct PendingConversationRename: Identifiable {
 }
 
 struct ConversationSummaryActionsModifier: ViewModifier {
-  @EnvironmentObject private var store: AppStore
+  let store: AppStore
   let conversation: ConversationSummary
   let isCurrent: Bool
   let isEnabled: Bool
@@ -1439,7 +1441,7 @@ private struct SidebarRowBackground: View {
   }
 }
 
-// Suppresses parent-driven re-invalidation; @State / @EnvironmentObject / @Binding still re-trigger body.
+// Suppresses parent-driven re-invalidation; focused store observation, state, and bindings still update it.
 extension SidebarView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 }

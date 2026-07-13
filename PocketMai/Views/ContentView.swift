@@ -2,15 +2,16 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-  @EnvironmentObject private var store: AppStore
+  let store: AppStore
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var screenshotService = ChatScreenshotService()
+  @StateObject private var contentStoreObservation = AppStoreViewObservation(scope: .content)
+  @StateObject private var chatStoreObservation = AppStoreViewObservation(scope: .chat)
+  @StateObject private var sidebarStoreObservation = AppStoreViewObservation(scope: .sidebar)
   @State private var showingSettings = false
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
   @State private var sidebarSelectionGeneration = 0
-  @State private var conversationSwitchBlurProgress: CGFloat = 0
-  @State private var pendingConversationSwitchID: UUID?
 
   var body: some View {
     GeometryReader { proxy in
@@ -21,6 +22,8 @@ struct ContentView: View {
 
       ZStack(alignment: .leading) {
         SidebarView(
+          storeObservation: sidebarStoreObservation,
+          store: store,
           showingSettings: $showingSettings,
           onSelectConversation: selectConversationFromSidebar,
           onDismiss: { closeHistoryPanel() }
@@ -41,13 +44,14 @@ struct ContentView: View {
 
           NavigationStack {
             ChatView(
+              storeObservation: chatStoreObservation,
+              store: store,
               renderInvalidationKey: ChatView.RenderInvalidationKey(
                 selectedConversationID: store.selectedConversationID,
                 selectedConversationIsLoading: store.selectedConversationIsLoading,
                 appearance: store.settings.appearance,
                 renderMarkdownInChat: store.settings.renderMarkdownInChat,
                 renderMarkdownImagesInChat: store.settings.renderMarkdownImagesInChat),
-              conversationSwitchProgress: conversationSwitchBlurProgress,
               onShowHistory: {
                 toggleHistoryPanel()
               }
@@ -100,6 +104,9 @@ struct ContentView: View {
       )
     }
     .onAppear {
+      contentStoreObservation.connect(to: store)
+      chatStoreObservation.connect(to: store)
+      sidebarStoreObservation.connect(to: store)
       screenshotService.store = store
     }
     .onChange(of: scenePhase) { _, phase in
@@ -107,10 +114,6 @@ struct ContentView: View {
         store.refreshAppleIntelligenceAvailabilityInBackground()
         store.refreshLocalMLXModelsInBackground()
       }
-    }
-    .onChange(of: store.selectedConversationID) { _, newID in
-      guard let newID, newID == pendingConversationSwitchID else { return }
-      finishConversationSwitchTransition(generation: sidebarSelectionGeneration)
     }
     .tint(store.settings.appearance.tintColor)
     .accentColor(store.settings.appearance.tintColor)
@@ -124,10 +127,6 @@ struct ContentView: View {
 
     sidebarSelectionGeneration += 1
     let selectionGeneration = sidebarSelectionGeneration
-    pendingConversationSwitchID = id
-    withAnimation(.easeOut(duration: 0.12)) {
-      conversationSwitchBlurProgress = 1
-    }
     Task {
       await store.preloadConversation(id: id)
     }
@@ -136,18 +135,7 @@ struct ContentView: View {
       Task { @MainActor in
         guard sidebarSelectionGeneration == selectionGeneration else { return }
         await store.selectConversation(id: id)
-        if store.selectedConversationID == id {
-          finishConversationSwitchTransition(generation: selectionGeneration)
-        }
       }
-    }
-  }
-
-  private func finishConversationSwitchTransition(generation: Int) {
-    guard sidebarSelectionGeneration == generation else { return }
-    pendingConversationSwitchID = nil
-    withAnimation(.easeOut(duration: 0.16)) {
-      conversationSwitchBlurProgress = 0
     }
   }
 

@@ -964,14 +964,43 @@ final class AppStore: ObservableObject {
 
     let loadedConversation = await loadTask.value
     conversationLoadTasks[id] = nil
-    guard let conversation = loadedConversation else {
+    guard var conversation = loadedConversation else {
       return
     }
     guard indexedConversationIndex(for: id) == nil else { return }
-    conversations.append(conversation)
-    sortConversations()
-    normalizeUnavailableAppleProviderIfNeeded()
+    let normalizedProvider = normalizeUnavailableAppleProviderIfNeeded(in: &conversation)
+    let insertionIndex = conversations.firstIndex {
+      Self.conversationPrecedes(conversation, $0)
+    } ?? conversations.endIndex
+    conversations.insert(conversation, at: insertionIndex)
+    rebuildConversationIndexes()
+    if normalizedProvider {
+      saveConversations()
+    }
+
+    guard !conversationSummaries.contains(where: { $0.id == id }) else { return }
+    let summary = ConversationSummary(conversation: conversation)
+    let summaryInsertionIndex = conversationSummaries.firstIndex {
+      Self.summaryPrecedes(summary, $0)
+    } ?? conversationSummaries.endIndex
+    conversationSummaries.insert(summary, at: summaryInsertionIndex)
+    refreshRecentConversationSummaries()
     persistence.saveConversationSummaries(conversationSummaries)
+  }
+
+  private func normalizeUnavailableAppleProviderIfNeeded(
+    in conversation: inout Conversation
+  ) -> Bool {
+    guard appleAvailabilityReport.kind != .checking,
+      !appleIntelligenceIsAvailable,
+      conversation.provider == .apple
+    else {
+      return false
+    }
+    conversation.provider = .mlx
+    conversation.endpointID = nil
+    conversation.modelID = fallbackLocalMLXModelID(preferred: settings.localMLXModelID)
+    return true
   }
 
   func draftText(for conversationID: UUID?) -> String {
@@ -3253,29 +3282,39 @@ final class AppStore: ObservableObject {
   }
 
   nonisolated static func sortedConversations(_ conversations: [Conversation]) -> [Conversation] {
-    conversations.sorted { lhs, rhs in
-      if lhs.isPinned != rhs.isPinned {
-        return lhs.isPinned && !rhs.isPinned
-      }
-      if lhs.updatedAt != rhs.updatedAt {
-        return lhs.updatedAt > rhs.updatedAt
-      }
-      return lhs.createdAt > rhs.createdAt
-    }
+    conversations.sorted(by: conversationPrecedes)
   }
 
   nonisolated static func sortedSummaries(_ summaries: [ConversationSummary])
     -> [ConversationSummary]
   {
-    summaries.sorted { lhs, rhs in
-      if lhs.isPinned != rhs.isPinned {
-        return lhs.isPinned && !rhs.isPinned
-      }
-      if lhs.updatedAt != rhs.updatedAt {
-        return lhs.updatedAt > rhs.updatedAt
-      }
-      return lhs.createdAt > rhs.createdAt
+    summaries.sorted(by: summaryPrecedes)
+  }
+
+  nonisolated private static func conversationPrecedes(
+    _ lhs: Conversation,
+    _ rhs: Conversation
+  ) -> Bool {
+    if lhs.isPinned != rhs.isPinned {
+      return lhs.isPinned && !rhs.isPinned
     }
+    if lhs.updatedAt != rhs.updatedAt {
+      return lhs.updatedAt > rhs.updatedAt
+    }
+    return lhs.createdAt > rhs.createdAt
+  }
+
+  nonisolated private static func summaryPrecedes(
+    _ lhs: ConversationSummary,
+    _ rhs: ConversationSummary
+  ) -> Bool {
+    if lhs.isPinned != rhs.isPinned {
+      return lhs.isPinned && !rhs.isPinned
+    }
+    if lhs.updatedAt != rhs.updatedAt {
+      return lhs.updatedAt > rhs.updatedAt
+    }
+    return lhs.createdAt > rhs.createdAt
   }
 
   private func discardSelectedDisposableConversation() {
@@ -4387,6 +4426,95 @@ final class AppStore: ObservableObject {
     }
     _ = try? PocketMaiDirectories.ensureFilesWorkspace()
     return "Removed \(removed) workspace item\(removed == 1 ? "" : "s")."
+  }
+}
+
+/// A narrow observation boundary for large view trees that use AppStore for actions but should
+/// not be invalidated by every unrelated @Published property on the monolithic store.
+@MainActor
+final class AppStoreViewObservation: ObservableObject {
+  enum Scope {
+    case application
+    case content
+    case chat
+    case sidebar
+  }
+
+  @Published private(set) var revision = 0
+
+  private let scope: Scope
+  private var cancellables: Set<AnyCancellable> = []
+  private weak var connectedStore: AppStore?
+  private var invalidationScheduled = false
+
+  init(scope: Scope) {
+    self.scope = scope
+  }
+
+  func connect(to store: AppStore) {
+    guard connectedStore !== store else { return }
+    connectedStore = store
+    cancellables.removeAll()
+
+    switch scope {
+    case .application:
+      observe(store.$settings)
+    case .content:
+      observe(store.$settings)
+      observe(store.$errorMessage)
+      observe(store.$toolCallApprovalRequests)
+    case .chat:
+      observe(store.$conversations)
+      observe(store.$conversationSummaries)
+      observe(store.$recentConversationSummaries)
+      observe(store.$selectedConversationID)
+      observe(store.$settings)
+      observe(store.$respondingConversationIDs)
+      observe(store.$isCompacting)
+      observe(store.$endpointStatuses)
+      observe(store.$endpointModels)
+      observe(store.$localMLXModelIDs)
+      observe(store.$mcpStatuses)
+      observe(store.$mcpTools)
+      observe(store.$mcpResources)
+      observe(store.$draftStorageRevision)
+      observe(store.$appleAvailabilityReport)
+      observe(store.$appleAvailabilityMessage)
+      observe(store.$openAPIServerState)
+    case .sidebar:
+      observe(store.$conversations)
+      observe(store.$conversationSummaries)
+      observe(store.$selectedConversationID)
+      observe(store.$selectedConversationIDs)
+      observe(store.$settings)
+      observe(store.$respondingConversationIDs)
+      observe(store.$endpointStatuses)
+      observe(store.$endpointModels)
+      observe(store.$localMLXModelIDs)
+      observe(store.$appleAvailabilityReport)
+      observe(store.$appleAvailabilityMessage)
+    }
+  }
+
+  private func observe<P: Publisher>(_ publisher: P) where P.Failure == Never {
+    publisher
+      .sink { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.scheduleInvalidation()
+        }
+      }
+      .store(in: &cancellables)
+  }
+
+  private func scheduleInvalidation() {
+    guard !invalidationScheduled else { return }
+    invalidationScheduled = true
+    Task { @MainActor [weak self] in
+      await Task.yield()
+      guard let self else { return }
+      invalidationScheduled = false
+      revision &+= 1
+    }
   }
 }
 

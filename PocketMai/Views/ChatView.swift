@@ -12,7 +12,7 @@ struct ChatView: View {
     var renderMarkdownImagesInChat: Bool
   }
 
-  @EnvironmentObject private var store: AppStore
+  @ObservedObject var storeObservation: AppStoreViewObservation
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
   @State private var showingProviderModelSheet = false
@@ -27,14 +27,17 @@ struct ChatView: View {
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
   @State private var fontSizePinchBase: Double?
+  @State private var fontSizePinchTarget: Double?
+  @State private var fontSizePinchVisualScale: CGFloat = 1
+  @State private var fontSizePinchAnchor: UnitPoint = .center
   @State private var fontSizePinchContentFraction: CGFloat?
   @State private var fontSizePinchViewportY: CGFloat?
   @State private var keyboardOverlap: CGFloat = 0
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
+  let store: AppStore
   let renderInvalidationKey: RenderInvalidationKey
-  let conversationSwitchProgress: CGFloat
   let onShowHistory: () -> Void
 
   var body: some View {
@@ -145,7 +148,8 @@ struct ChatView: View {
       .animation(.snappy, value: isMessageSelectionMode)
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbarBackground(.hidden, for: .navigationBar)
+      .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+      .toolbarBackground(.visible, for: .navigationBar)
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
           Button(action: onShowHistory) {
@@ -501,7 +505,7 @@ struct ChatView: View {
           let renderedMessages =
             conversation?.messages
             ?? store.selectedConversationPreviewMessages
-          VStack(spacing: 14) {
+          LazyVStack(spacing: 14) {
             if isPreviewingConversation && renderedMessages.isEmpty {
               compactLoadingState
             } else if !isPreviewingConversation && currentConversationIsEmpty
@@ -580,17 +584,18 @@ struct ChatView: View {
           .frame(minHeight: scrollGeometry.size.height, alignment: .bottom)
           .containerRelativeFrame(.horizontal)
           .frame(maxWidth: .infinity, alignment: .center)
+          .scaleEffect(fontSizePinchVisualScale, anchor: fontSizePinchAnchor)
           .background {
             MessageListPinchBridge(
               onChanged: { magnification, scrollView, location in
                 updateMessageFontSize(for: magnification, in: scrollView, at: location)
               },
-              onEnded: endMessageFontSizePinch
+              onEnded: { scrollView in
+                endMessageFontSizePinch(in: scrollView)
+              }
             )
           }
         }
-        .id(store.selectedConversationID)
-        .modifier(MessageListConversationSwitchEffect(progress: conversationSwitchProgress))
         .scrollDismissesKeyboard(.interactively)
         .onScrollPhaseChange { _, phase in
           if phase == .interacting {
@@ -693,28 +698,6 @@ struct ChatView: View {
     var text: String?
   }
 
-  private struct MessageListConversationSwitchEffect: ViewModifier, Equatable {
-    let progress: CGFloat
-
-    private var clampedProgress: CGFloat {
-      min(max(progress, 0), 1)
-    }
-
-    func body(content: Content) -> some View {
-      let progress = clampedProgress
-      content
-        .compositingGroup()
-        .blur(radius: 2 * progress, opaque: false)
-        .saturation(1 - 0.16 * progress)
-        .overlay {
-          Color(uiColor: .systemBackground)
-            .opacity(0.07 * progress)
-            .allowsHitTesting(false)
-        }
-        .clipped()
-    }
-  }
-
   private var lastMessageSnapshot: LastMessageSnapshot {
     let convo = store.currentConversation
     let last = convo?.messages.last
@@ -741,14 +724,9 @@ struct ChatView: View {
 
   private func scrollToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
     guard !userScrolledAfterLastMessage else { return }
-    scrollToBottom(proxy, animated: animated)
     DispatchQueue.main.async {
       guard !userScrolledAfterLastMessage else { return }
-      scrollToBottom(proxy, animated: false)
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-      guard !userScrolledAfterLastMessage else { return }
-      scrollToBottom(proxy, animated: false)
+      scrollToBottom(proxy, animated: animated)
     }
   }
 
@@ -826,40 +804,57 @@ struct ChatView: View {
     at contentPoint: CGPoint
   ) {
     let baseSize = fontSizePinchBase ?? store.settings.appearance.fontSize
-    fontSizePinchBase = baseSize
     userScrolledAfterLastMessage = true
 
-    let rawSize = baseSize * max(Double(magnification), 0.1)
+    let rawSize = AppearanceSettings.clampedFontSize(
+      baseSize * max(Double(magnification), 0.1))
     let steppedSize =
       (rawSize / AppearanceSettings.fontSizeStep).rounded() * AppearanceSettings.fontSizeStep
     let clampedSize = AppearanceSettings.clampedFontSize(steppedSize)
-    guard store.settings.appearance.fontSize != clampedSize else { return }
 
     let contentHeight = max(scrollView.contentSize.height, 1)
-    let contentFraction =
-      fontSizePinchContentFraction ?? min(max(contentPoint.y / contentHeight, 0), 1)
-    fontSizePinchContentFraction = contentFraction
-    let viewportY: CGFloat
-    if let cached = fontSizePinchViewportY {
-      viewportY = cached
-    } else {
-      viewportY = contentPoint.y - scrollView.contentOffset.y
-      fontSizePinchViewportY = viewportY
+    if fontSizePinchBase == nil {
+      fontSizePinchBase = baseSize
+      fontSizePinchContentFraction = min(max(contentPoint.y / contentHeight, 0), 1)
+      fontSizePinchViewportY = contentPoint.y - scrollView.contentOffset.y
+      fontSizePinchAnchor = UnitPoint(
+        x: min(max(contentPoint.x / max(scrollView.contentSize.width, 1), 0), 1),
+        y: min(max(contentPoint.y / contentHeight, 0), 1))
     }
 
-    store.settings.appearance.fontSize = clampedSize
-
-    preservePinchPosition(
-      in: scrollView,
-      contentFraction: contentFraction,
-      viewportY: viewportY)
+    fontSizePinchTarget = clampedSize
+    fontSizePinchVisualScale = CGFloat(rawSize / max(baseSize, 0.1))
   }
 
-  private func endMessageFontSizePinch() {
+  private func endMessageFontSizePinch(in scrollView: UIScrollView) {
+    let targetSize = fontSizePinchTarget
+    let contentFraction = fontSizePinchContentFraction
+    let viewportY = fontSizePinchViewportY
+    let changed = targetSize != nil && targetSize != store.settings.appearance.fontSize
+
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      fontSizePinchVisualScale = 1
+    }
+    if let targetSize, changed {
+      store.settings.appearance.fontSize = targetSize
+    }
+    if let contentFraction, let viewportY, changed {
+      preservePinchPosition(
+        in: scrollView,
+        contentFraction: contentFraction,
+        viewportY: viewportY)
+    }
+
     fontSizePinchBase = nil
+    fontSizePinchTarget = nil
     fontSizePinchContentFraction = nil
     fontSizePinchViewportY = nil
-    store.saveSettings()
+    fontSizePinchAnchor = .center
+    if changed {
+      store.saveSettings()
+    }
   }
 
   private func preservePinchPosition(
@@ -930,6 +925,7 @@ struct ChatView: View {
 
         if !suggestions.isEmpty {
           PreviousConversationSuggestions(
+            store: store,
             suggestions: suggestions,
             exportCoordinator: exportCoordinator
           ) { id in
@@ -1074,7 +1070,7 @@ private struct EmptyChatLogo: View {
 }
 
 private struct PreviousConversationSuggestions: View {
-  @EnvironmentObject private var store: AppStore
+  let store: AppStore
   let suggestions: [ConversationSummary]
   @ObservedObject var exportCoordinator: ConversationExportCoordinator
   let onSelect: (UUID) -> Void
@@ -1098,6 +1094,7 @@ private struct PreviousConversationSuggestions: View {
           )
           .modifier(
             ConversationSummaryActionsModifier(
+              store: store,
               conversation: suggestion,
               isCurrent: store.selectedConversationID == suggestion.id,
               isEnabled: true,
@@ -1236,7 +1233,6 @@ private enum ConversationRecencyLabel {
 extension ChatView: Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.renderInvalidationKey == rhs.renderInvalidationKey
-      && abs(lhs.conversationSwitchProgress - rhs.conversationSwitchProgress) < 0.001
   }
 }
 
@@ -2144,7 +2140,7 @@ private struct ChatComposer: View {
     for (index, item) in items.enumerated() {
       do {
         guard let data = try await item.loadTransferable(type: Data.self),
-          let image = UIImage(data: data)
+          let image = await AttachmentImageLoader.decodeImageData(data)
         else {
           failedCount += 1
           continue
@@ -2382,20 +2378,7 @@ private struct AttachmentPill: View {
 
   @ViewBuilder
   private var imageThumbnail: some View {
-    if let image = image {
-      Image(uiImage: image)
-        .resizable()
-        .interpolation(.high)
-        .aspectRatio(contentMode: .fill)
-        .frame(width: 40, height: 40)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    } else {
-      Image(systemName: "photo")
-        .foregroundStyle(.secondary)
-        .frame(width: 40, height: 40)
-        .background(Color.secondary.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
+    AttachmentImageThumbnail(attachment: attachment, side: 40, cornerRadius: 6)
   }
 
   private var removeButton: some View {
@@ -2411,28 +2394,13 @@ private struct AttachmentPill: View {
     if let width = attachment.width, let height = attachment.height {
       return "\(width)x\(height)"
     }
-    if let image {
-      let width = Int((image.size.width * image.scale).rounded())
-      let height = Int((image.size.height * image.scale).rounded())
-      return "\(width)x\(height)"
-    }
     return "Image"
-  }
-
-  private var image: UIImage? {
-    guard attachment.kind == .image,
-      let dataBase64 = attachment.dataBase64,
-      let data = Data(base64Encoded: dataBase64)
-    else {
-      return nil
-    }
-    return UIImage(data: data)
   }
 }
 
 private struct MessageListPinchBridge: UIViewRepresentable {
   var onChanged: (CGFloat, UIScrollView, CGPoint) -> Void
-  var onEnded: () -> Void
+  var onEnded: (UIScrollView) -> Void
 
   func makeCoordinator() -> Coordinator {
     Coordinator(onChanged: onChanged, onEnded: onEnded)
@@ -2463,14 +2431,14 @@ private struct MessageListPinchBridge: UIViewRepresentable {
 
   final class Coordinator: NSObject, UIGestureRecognizerDelegate {
     var onChanged: (CGFloat, UIScrollView, CGPoint) -> Void
-    var onEnded: () -> Void
+    var onEnded: (UIScrollView) -> Void
 
     private weak var scrollView: UIScrollView?
     private var pinchGesture: UIPinchGestureRecognizer?
 
     init(
       onChanged: @escaping (CGFloat, UIScrollView, CGPoint) -> Void,
-      onEnded: @escaping () -> Void
+      onEnded: @escaping (UIScrollView) -> Void
     ) {
       self.onChanged = onChanged
       self.onEnded = onEnded
@@ -2504,7 +2472,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
       case .began, .changed:
         onChanged(recognizer.scale, scrollView, recognizer.location(in: scrollView))
       case .ended, .cancelled, .failed:
-        onEnded()
+        onEnded(scrollView)
       default:
         break
       }

@@ -2,16 +2,27 @@ import SwiftUI
 
 @main
 struct PocketMaiApp: App {
-  @StateObject private var store = AppStore()
-  @StateObject private var ttsPlayer = TTSPlayer.shared
+  @State private var store = AppStore()
+  private let ttsPlayer = TTSPlayer.shared
 
   var body: some Scene {
     WindowGroup {
-      ContentView()
+      PocketMaiRootView(store: store, ttsPlayer: ttsPlayer)
+    }
+  }
+}
+
+private struct PocketMaiRootView: View {
+  let store: AppStore
+  let ttsPlayer: TTSPlayer
+  @StateObject private var storeObservation = AppStoreViewObservation(scope: .application)
+
+  var body: some View {
+    ContentView(store: store)
         .environmentObject(store)
         .environmentObject(store.streamingTextStore)
         .environmentObject(ttsPlayer)
         .preferredColorScheme(store.settings.appearance.theme.colorScheme)
-    }
+        .onAppear { storeObservation.connect(to: store) }
   }
 }

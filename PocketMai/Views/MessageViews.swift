@@ -1,4 +1,5 @@
 import Photos
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -429,11 +430,7 @@ private struct MessageBubbleContent: View, Equatable {
           onSave: { text in onEditAttachment?(attachment.id, text) })
       }
       .fullScreenCover(item: $selectedImageAttachment) { attachment in
-        if let image = MessageAttachmentImage.uiImage(from: attachment),
-          let imageData = MessageAttachmentImage.data(from: attachment)
-        {
-          MessageImageFullscreenView(image: image, imageData: imageData)
-        }
+        MessageImageFullscreenLoader(attachment: attachment)
       }
       .imageSaveNotice($imageSaveNotice)
     if !isLiveAssistantResponse {
@@ -738,16 +735,8 @@ private struct MessageAttachmentRow: View {
 
   @ViewBuilder
   private var preview: some View {
-    if attachment.kind == .image,
-      let dataBase64 = attachment.dataBase64,
-      let data = Data(base64Encoded: dataBase64),
-      let uiImage = UIImage(data: data)
-    {
-      Image(uiImage: uiImage)
-        .resizable()
-        .scaledToFill()
-        .frame(width: 34, height: 34)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    if attachment.kind == .image {
+      AttachmentImageThumbnail(attachment: attachment, side: 34, cornerRadius: 6)
     } else {
       Image(systemName: attachment.kind == .image ? "photo" : "doc.text")
         .font(.title3)
@@ -774,53 +763,61 @@ private struct MessageAttachmentRow: View {
 
 private struct MessageImageAttachmentView: View {
   @Environment(\.displayScale) private var displayScale
+  @State private var uiImage: UIImage?
 
   let attachment: ChatAttachment
   let onOpen: () -> Void
   let onSave: () -> Void
 
   var body: some View {
-    if let uiImage = MessageAttachmentImage.uiImage(from: attachment) {
-      let preview = previewMetrics(for: uiImage)
-      Button(action: onOpen) {
-        Image(uiImage: uiImage)
-          .resizable()
-          .interpolation(.high)
-          .aspectRatio(uiImage.size, contentMode: .fit)
-          .frame(
-            maxWidth: preview.size.width,
-            maxHeight: preview.size.height,
-            alignment: .center
-          )
-          .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-          .overlay(alignment: .bottomTrailing) {
-            Text(dimensionsLabel(for: uiImage))
-              .font(.system(size: 9, weight: .semibold, design: .monospaced))
-              .foregroundStyle(.primary)
-              .lineLimit(1)
-              .minimumScaleFactor(0.7)
-              .padding(.horizontal, 5)
-              .padding(.vertical, 3)
-              .background(.regularMaterial, in: Capsule())
-              .padding(5)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Attached image")
-      .contextMenu {
-        Button(action: onSave) {
-          Label("Save Image", systemImage: "square.and.arrow.down")
+    Group {
+      if let uiImage {
+        let preview = previewMetrics(for: uiImage)
+        Button(action: onOpen) {
+          Image(uiImage: uiImage)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(uiImage.size, contentMode: .fit)
+            .frame(
+              maxWidth: preview.size.width,
+              maxHeight: preview.size.height,
+              alignment: .center
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+              Text(dimensionsLabel(for: uiImage))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                .background(.regularMaterial, in: Capsule())
+                .padding(5)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Attached image")
+        .contextMenu {
+          Button(action: onSave) {
+            Label("Save Image", systemImage: "square.and.arrow.down")
+          }
+        }
+      } else {
+        Image(systemName: "photo")
+          .font(.title2)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
+          .background(Color.secondary.opacity(0.08))
+          .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .accessibilityLabel("Image loading")
       }
-    } else {
-      Image(systemName: "photo")
-        .font(.title2)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityLabel("Image unavailable")
+    }
+    .task(id: AttachmentImageLoader.cacheIdentity(for: attachment, maxPixelDimension: 1_260)) {
+      uiImage = await AttachmentImageLoader.shared.image(
+        for: attachment,
+        maxPixelDimension: 1_260)
     }
   }
 
@@ -933,6 +930,38 @@ private struct MessageImageFullscreenView: View {
   }
 }
 
+private struct MessageImageFullscreenLoader: View {
+  private let maximumDisplayPixelDimension = 4_096
+  let attachment: ChatAttachment
+  @State private var image: UIImage?
+  @State private var imageData: Data?
+
+  var body: some View {
+    Group {
+      if let image, let imageData {
+        MessageImageFullscreenView(image: image, imageData: imageData)
+      } else {
+        ZStack {
+          Color(uiColor: .systemBackground).ignoresSafeArea()
+          ProgressView()
+        }
+      }
+    }
+    .task(
+      id: AttachmentImageLoader.cacheIdentity(
+        for: attachment,
+        maxPixelDimension: maximumDisplayPixelDimension)
+    ) {
+      async let loadedImage = AttachmentImageLoader.shared.image(
+        for: attachment,
+        maxPixelDimension: maximumDisplayPixelDimension)
+      async let loadedData = AttachmentImageLoader.shared.data(for: attachment)
+      image = await loadedImage
+      imageData = await loadedData
+    }
+  }
+}
+
 private struct ZoomableUIImageView: UIViewRepresentable {
   let image: UIImage
   let onSwipeDown: () -> Void
@@ -1037,31 +1066,16 @@ private struct ZoomableUIImageView: UIViewRepresentable {
   }
 }
 
-private enum MessageAttachmentImage {
-  static func data(from attachment: ChatAttachment) -> Data? {
-    guard attachment.kind == .image,
-      let dataBase64 = attachment.dataBase64,
-      !dataBase64.isEmpty
-    else {
-      return nil
-    }
-    return Data(base64Encoded: dataBase64)
-  }
-
-  static func uiImage(from attachment: ChatAttachment) -> UIImage? {
-    guard let data = data(from: attachment) else { return nil }
-    return UIImage(data: data)
-  }
-
+enum MessageAttachmentImage {
   static func saveToPhotoLibrary(_ attachment: ChatAttachment) async throws {
-    guard let data = data(from: attachment) else {
+    guard let data = await AttachmentImageLoader.shared.data(for: attachment) else {
       throw MessageImageSaveError("This image could not be decoded.")
     }
     try await saveImageDataToPhotoLibrary(data)
   }
 
   static func saveImageDataToPhotoLibrary(_ data: Data) async throws {
-    guard UIImage(data: data) != nil else {
+    guard await AttachmentImageLoader.isImageData(data) else {
       throw MessageImageSaveError("This image could not be decoded.")
     }
     let status = await photoLibraryAddAuthorizationStatus()
@@ -1103,6 +1117,217 @@ private enum MessageAttachmentImage {
       return false
     @unknown default:
       return false
+    }
+  }
+}
+
+struct AttachmentImageThumbnail: View {
+  let attachment: ChatAttachment
+  let side: CGFloat
+  let cornerRadius: CGFloat
+  @State private var image: UIImage?
+
+  var body: some View {
+    Group {
+      if let image {
+        Image(uiImage: image)
+          .resizable()
+          .interpolation(.high)
+          .scaledToFill()
+      } else {
+        Image(systemName: "photo")
+          .foregroundStyle(.secondary)
+          .background(Color.secondary.opacity(0.12))
+      }
+    }
+    .frame(width: side, height: side)
+    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    .task(id: AttachmentImageLoader.cacheIdentity(for: attachment, maxPixelDimension: pixelSide)) {
+      image = await AttachmentImageLoader.shared.image(
+        for: attachment,
+        maxPixelDimension: pixelSide)
+    }
+  }
+
+  private var pixelSide: Int {
+    max(64, Int((side * 3).rounded(.up)))
+  }
+}
+
+actor AttachmentImageLoader {
+  static let shared = AttachmentImageLoader()
+
+  struct DecodedImage: @unchecked Sendable {
+    let value: UIImage
+  }
+
+  private struct AttachmentKey: Hashable, Sendable {
+    let id: UUID
+    let encodedLength: Int
+  }
+
+  private struct ImageKey: Hashable, Sendable {
+    let attachment: AttachmentKey
+    let maxPixelDimension: Int?
+  }
+
+  private struct CacheEntry<Value> {
+    let value: Value
+    let cost: Int
+    var access: UInt64
+  }
+
+  private var dataCache: [AttachmentKey: CacheEntry<Data>] = [:]
+  private var imageCache: [ImageKey: CacheEntry<DecodedImage>] = [:]
+  private var dataTasks: [AttachmentKey: Task<Data?, Never>] = [:]
+  private var imageTasks: [ImageKey: Task<DecodedImage?, Never>] = [:]
+  private var dataCacheCost = 0
+  private var imageCacheCost = 0
+  private var accessCounter: UInt64 = 0
+
+  private let maximumDataCacheCost = 16 * 1_024 * 1_024
+  private let maximumImageCacheCost = 56 * 1_024 * 1_024
+  private let maximumImageCount = 80
+
+  nonisolated static func cacheIdentity(
+    for attachment: ChatAttachment,
+    maxPixelDimension: Int?
+  ) -> String {
+    "\(attachment.id.uuidString):\(attachment.dataBase64?.count ?? 0):\(maxPixelDimension ?? 0)"
+  }
+
+  func data(for attachment: ChatAttachment) async -> Data? {
+    guard attachment.kind == .image,
+      let encoded = attachment.dataBase64,
+      !encoded.isEmpty
+    else {
+      return nil
+    }
+    let key = AttachmentKey(id: attachment.id, encodedLength: encoded.count)
+    if var cached = dataCache[key] {
+      cached.access = nextAccess()
+      dataCache[key] = cached
+      return cached.value
+    }
+    if let task = dataTasks[key] {
+      return await task.value
+    }
+
+    let task = Task.detached(priority: .userInitiated) {
+      Data(base64Encoded: encoded)
+    }
+    dataTasks[key] = task
+    let result = await task.value
+    dataTasks[key] = nil
+    if let result {
+      insertData(result, for: key)
+    }
+    return result
+  }
+
+  func image(for attachment: ChatAttachment, maxPixelDimension: Int?) async -> UIImage? {
+    guard attachment.kind == .image else { return nil }
+    let attachmentKey = AttachmentKey(
+      id: attachment.id,
+      encodedLength: attachment.dataBase64?.count ?? 0)
+    let key = ImageKey(attachment: attachmentKey, maxPixelDimension: maxPixelDimension)
+    if var cached = imageCache[key] {
+      cached.access = nextAccess()
+      imageCache[key] = cached
+      return cached.value.value
+    }
+    if let task = imageTasks[key] {
+      return await task.value?.value
+    }
+    guard let data = await data(for: attachment) else { return nil }
+
+    let task = Task.detached(priority: .userInitiated) {
+      AttachmentImageLoader.decode(data: data, maxPixelDimension: maxPixelDimension)
+    }
+    imageTasks[key] = task
+    let result = await task.value
+    imageTasks[key] = nil
+    if let result {
+      insertImage(result, for: key)
+    }
+    return result?.value
+  }
+
+  nonisolated static func decodeImageData(
+    _ data: Data,
+    maxPixelDimension: Int? = nil
+  ) async -> UIImage? {
+    await Task.detached(priority: .userInitiated) {
+      AttachmentImageLoader.decode(data: data, maxPixelDimension: maxPixelDimension)?.value
+    }.value
+  }
+
+  nonisolated static func isImageData(_ data: Data) async -> Bool {
+    await Task.detached(priority: .utility) {
+      CGImageSourceCreateWithData(data as CFData, nil) != nil
+    }.value
+  }
+
+  private nonisolated static func decode(
+    data: Data,
+    maxPixelDimension: Int?
+  ) -> DecodedImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    let sourceWidth = sourceProperties?[kCGImagePropertyPixelWidth] as? Int ?? 1
+    let sourceHeight = sourceProperties?[kCGImagePropertyPixelHeight] as? Int ?? 1
+    let target = max(1, maxPixelDimension ?? max(sourceWidth, sourceHeight))
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: target,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceShouldCache: true,
+    ]
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    else {
+      return nil
+    }
+    return DecodedImage(value: UIImage(cgImage: cgImage, scale: 1, orientation: .up))
+  }
+
+  private func nextAccess() -> UInt64 {
+    accessCounter &+= 1
+    return accessCounter
+  }
+
+  private func insertData(_ data: Data, for key: AttachmentKey) {
+    let cost = data.count
+    guard cost <= maximumDataCacheCost else { return }
+    if let old = dataCache.updateValue(
+      CacheEntry(value: data, cost: cost, access: nextAccess()),
+      forKey: key)
+    {
+      dataCacheCost -= old.cost
+    }
+    dataCacheCost += cost
+    while dataCacheCost > maximumDataCacheCost,
+      let oldest = dataCache.min(by: { $0.value.access < $1.value.access })?.key
+    {
+      dataCacheCost -= dataCache.removeValue(forKey: oldest)?.cost ?? 0
+    }
+  }
+
+  private func insertImage(_ image: DecodedImage, for key: ImageKey) {
+    let cgImage = image.value.cgImage
+    let cost = max(1, (cgImage?.bytesPerRow ?? 0) * (cgImage?.height ?? 0))
+    guard cost <= maximumImageCacheCost else { return }
+    if let old = imageCache.updateValue(
+      CacheEntry(value: image, cost: cost, access: nextAccess()),
+      forKey: key)
+    {
+      imageCacheCost -= old.cost
+    }
+    imageCacheCost += cost
+    while imageCacheCost > maximumImageCacheCost || imageCache.count > maximumImageCount,
+      let oldest = imageCache.min(by: { $0.value.access < $1.value.access })?.key
+    {
+      imageCacheCost -= imageCache.removeValue(forKey: oldest)?.cost ?? 0
     }
   }
 }
@@ -3223,7 +3448,7 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   }
 
   func updateUIView(_ textView: LinkHitTestingTextView, context: Context) {
-    configure(textView)
+    configure(textView, coordinator: context.coordinator)
   }
 
   func sizeThatFits(
@@ -3233,7 +3458,7 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   )
     -> CGSize?
   {
-    configure(textView)
+    configure(textView, coordinator: context.coordinator)
     guard let width = proposal.width, width.isFinite, width > 0 else {
       return nil
     }
@@ -3243,14 +3468,23 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
     return CGSize(width: width, height: ceil(height))
   }
 
-  private func configure(_ textView: LinkHitTestingTextView) {
-    textView.attributedText = nsAttributedInlineMarkdown(
-      value,
+  private func configure(_ textView: LinkHitTestingTextView, coordinator: Coordinator) {
+    if coordinator.needsAttributedTextUpdate(
+      value: value,
       font: font,
       lineSpacing: lineSpacing,
       alignment: alignment,
       foregroundColor: foregroundColor,
       strikethrough: strikethrough)
+    {
+      textView.attributedText = nsAttributedInlineMarkdown(
+        value,
+        font: font,
+        lineSpacing: lineSpacing,
+        alignment: alignment,
+        foregroundColor: foregroundColor,
+        strikethrough: strikethrough)
+    }
     textView.allowsTextInteraction = allowsTextSelection
     textView.allowsLinkInteraction = allowsLinkInteraction
     textView.textDragInteraction?.isEnabled = allowsTextSelection
@@ -3259,6 +3493,39 @@ private struct JustifiedMarkdownTextView: UIViewRepresentable {
   }
 
   final class Coordinator: NSObject, UITextViewDelegate {
+    private var value: String?
+    private var font: UIFont?
+    private var lineSpacing: Double?
+    private var alignment: NSTextAlignment?
+    private var foregroundColor: UIColor?
+    private var strikethrough: Bool?
+
+    func needsAttributedTextUpdate(
+      value: String,
+      font: UIFont,
+      lineSpacing: Double,
+      alignment: NSTextAlignment,
+      foregroundColor: UIColor,
+      strikethrough: Bool
+    ) -> Bool {
+      guard self.value == value,
+        self.font?.isEqual(font) == true,
+        self.lineSpacing == lineSpacing,
+        self.alignment == alignment,
+        self.foregroundColor?.isEqual(foregroundColor) == true,
+        self.strikethrough == strikethrough
+      else {
+        self.value = value
+        self.font = font
+        self.lineSpacing = lineSpacing
+        self.alignment = alignment
+        self.foregroundColor = foregroundColor
+        self.strikethrough = strikethrough
+        return true
+      }
+      return false
+    }
+
     func textView(
       _ textView: UITextView,
       primaryActionFor textItem: UITextItem,
