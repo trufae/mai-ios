@@ -27,7 +27,7 @@ struct ChatView: View {
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
   @State private var fontSizePinchBase: Double?
-  @State private var fontSizePinchAnchor: MessageListPinchAnchor?
+  @State private var fontSizePinchContentFraction: CGFloat?
   @State private var fontSizePinchViewportY: CGFloat?
   @State private var keyboardOverlap: CGFloat = 0
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
@@ -551,9 +551,6 @@ struct ChatView: View {
                 }
                 .allowsHitTesting(!isPreviewingConversation)
                 .opacity(isPreviewingConversation ? 0.82 : 1)
-                .background {
-                  MessageListAnchorMarker(messageID: message.id)
-                }
                 .id(message.id)
               }
               if isPreviewingConversation {
@@ -584,7 +581,7 @@ struct ChatView: View {
           .containerRelativeFrame(.horizontal)
           .frame(maxWidth: .infinity, alignment: .center)
           .background {
-            MessageListPinchGestureBridge(
+            MessageListPinchBridge(
               onChanged: { magnification, scrollView, location in
                 updateMessageFontSize(for: magnification, in: scrollView, at: location)
               },
@@ -595,7 +592,11 @@ struct ChatView: View {
         .id(store.selectedConversationID)
         .modifier(MessageListConversationSwitchEffect(progress: conversationSwitchProgress))
         .scrollDismissesKeyboard(.interactively)
-        .simultaneousGesture(messageListScrollGesture)
+        .onScrollPhaseChange { _, phase in
+          if phase == .interacting {
+            userScrolledAfterLastMessage = true
+          }
+        }
         .onAppear {
           scrollToBottomAfterLayout(proxy, animated: false)
         }
@@ -819,14 +820,6 @@ struct ChatView: View {
     cancelMessageSelection()
   }
 
-  private var messageListScrollGesture: some Gesture {
-    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-      .onChanged { value in
-        guard abs(value.translation.height) > abs(value.translation.width) else { return }
-        userScrolledAfterLastMessage = true
-      }
-  }
-
   private func updateMessageFontSize(
     for magnification: CGFloat,
     in scrollView: UIScrollView,
@@ -842,15 +835,10 @@ struct ChatView: View {
     let clampedSize = AppearanceSettings.clampedFontSize(steppedSize)
     guard store.settings.appearance.fontSize != clampedSize else { return }
 
-    // Capture anchor and viewport position once per gesture — reusing them avoids the
-    // O(n) UIView tree walk on every tick and prevents anchor drift as fingers move.
-    let anchor: MessageListPinchAnchor
-    if let cached = fontSizePinchAnchor {
-      anchor = cached
-    } else {
-      anchor = makePinchAnchor(in: scrollView, at: contentPoint)
-      fontSizePinchAnchor = anchor
-    }
+    let contentHeight = max(scrollView.contentSize.height, 1)
+    let contentFraction =
+      fontSizePinchContentFraction ?? min(max(contentPoint.y / contentHeight, 0), 1)
+    fontSizePinchContentFraction = contentFraction
     let viewportY: CGFloat
     if let cached = fontSizePinchViewportY {
       viewportY = cached
@@ -863,136 +851,30 @@ struct ChatView: View {
 
     preservePinchPosition(
       in: scrollView,
-      anchor: anchor,
+      contentFraction: contentFraction,
       viewportY: viewportY)
   }
 
   private func endMessageFontSizePinch() {
     fontSizePinchBase = nil
-    fontSizePinchAnchor = nil
+    fontSizePinchContentFraction = nil
     fontSizePinchViewportY = nil
     store.saveSettings()
   }
 
   private func preservePinchPosition(
     in scrollView: UIScrollView,
-    anchor: MessageListPinchAnchor,
+    contentFraction: CGFloat,
     viewportY: CGFloat
   ) {
     DispatchQueue.main.async {
       scrollView.layoutIfNeeded()
-      let targetContentY = resolvedContentY(for: anchor, in: scrollView)
+      let targetContentY = max(scrollView.contentSize.height, 1) * contentFraction
       let targetY = targetContentY - viewportY
       scrollView.setContentOffset(
         CGPoint(x: 0, y: clampedScrollOffsetY(targetY, in: scrollView)),
         animated: false)
     }
-  }
-
-  private func makePinchAnchor(
-    in scrollView: UIScrollView,
-    at contentPoint: CGPoint
-  ) -> MessageListPinchAnchor {
-    let fallbackContentHeight = max(scrollView.contentSize.height, 1)
-    guard let anchorView = nearestMessageAnchorView(in: scrollView, to: contentPoint) else {
-      return MessageListPinchAnchor(
-        messageID: nil,
-        unitY: 0,
-        fallbackContentY: contentPoint.y,
-        fallbackContentHeight: fallbackContentHeight)
-    }
-
-    let frame = anchorView.convert(anchorView.bounds, to: scrollView)
-    let unitY =
-      frame.height > 1
-      ? min(max((contentPoint.y - frame.minY) / frame.height, 0), 1)
-      : 0
-    return MessageListPinchAnchor(
-      messageID: anchorView.messageID,
-      unitY: unitY,
-      fallbackContentY: contentPoint.y,
-      fallbackContentHeight: fallbackContentHeight)
-  }
-
-  private func resolvedContentY(
-    for anchor: MessageListPinchAnchor,
-    in scrollView: UIScrollView
-  ) -> CGFloat {
-    if let messageID = anchor.messageID,
-      let anchorView = messageAnchorView(with: messageID, in: scrollView)
-    {
-      let frame = anchorView.convert(anchorView.bounds, to: scrollView)
-      if frame.height > 0 {
-        return frame.minY + frame.height * anchor.unitY
-      }
-    }
-
-    let newContentHeight = max(scrollView.contentSize.height, 1)
-    return anchor.fallbackContentY * newContentHeight / anchor.fallbackContentHeight
-  }
-
-  private func nearestMessageAnchorView(
-    in scrollView: UIScrollView,
-    to contentPoint: CGPoint
-  ) -> MessageListAnchorUIView? {
-    var best:
-      (view: MessageListAnchorUIView, verticalDistance: CGFloat, horizontalDistance: CGFloat)?
-
-    func visit(_ view: UIView) {
-      if let anchorView = view as? MessageListAnchorUIView {
-        let frame = anchorView.convert(anchorView.bounds, to: scrollView)
-        if frame.width > 0 && frame.height > 0 {
-          let verticalDistance: CGFloat
-          if frame.minY <= contentPoint.y && contentPoint.y <= frame.maxY {
-            verticalDistance = 0
-          } else {
-            verticalDistance = min(
-              abs(contentPoint.y - frame.minY),
-              abs(contentPoint.y - frame.maxY))
-          }
-
-          let horizontalDistance: CGFloat
-          if frame.minX <= contentPoint.x && contentPoint.x <= frame.maxX {
-            horizontalDistance = 0
-          } else {
-            horizontalDistance = min(
-              abs(contentPoint.x - frame.minX),
-              abs(contentPoint.x - frame.maxX))
-          }
-
-          if best == nil
-            || verticalDistance < best!.verticalDistance
-            || (verticalDistance == best!.verticalDistance
-              && horizontalDistance < best!.horizontalDistance)
-          {
-            best = (anchorView, verticalDistance, horizontalDistance)
-          }
-        }
-      }
-
-      view.subviews.forEach(visit)
-    }
-
-    visit(scrollView)
-    return best?.view
-  }
-
-  private func messageAnchorView(
-    with messageID: UUID,
-    in rootView: UIView
-  ) -> MessageListAnchorUIView? {
-    if let anchorView = rootView as? MessageListAnchorUIView,
-      anchorView.messageID == messageID
-    {
-      return anchorView
-    }
-
-    for subview in rootView.subviews {
-      if let anchorView = messageAnchorView(with: messageID, in: subview) {
-        return anchorView
-      }
-    }
-    return nil
   }
 
   private func clampedScrollOffsetY(_ y: CGFloat, in scrollView: UIScrollView) -> CGFloat {
@@ -1605,14 +1487,6 @@ private struct ChatComposer: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
-    .background {
-      GeometryReader { proxy in
-        Color.clear.preference(
-          key: HistoryPanelDragExclusionFramePreferenceKey.self,
-          value: proxy.frame(in: .named(HistoryPanelDragCoordinateSpace.name)))
-      }
-    }
-    .simultaneousGesture(composerKeyboardDismissGesture)
     .onAppear {
       draftText = store.draftText(for: conversationID)
     }
@@ -2057,18 +1931,6 @@ private struct ChatComposer: View {
     promptAutocompleteSuppressedCommand = option.commandName
     persistDraftTextNow(completed)
     composerFocused = true
-  }
-
-  private var composerKeyboardDismissGesture: some Gesture {
-    DragGesture(minimumDistance: 12, coordinateSpace: .local)
-      .onEnded { value in
-        guard value.translation.height > 24,
-          value.translation.height > abs(value.translation.width)
-        else {
-          return
-        }
-        composerFocused = false
-      }
   }
 
   private var toolMenu: some View {
@@ -2568,42 +2430,7 @@ private struct AttachmentPill: View {
   }
 }
 
-private struct MessageListPinchAnchor {
-  let messageID: UUID?
-  let unitY: CGFloat
-  let fallbackContentY: CGFloat
-  let fallbackContentHeight: CGFloat
-}
-
-private final class MessageListAnchorUIView: UIView {
-  var messageID: UUID
-
-  init(messageID: UUID) {
-    self.messageID = messageID
-    super.init(frame: .zero)
-    backgroundColor = .clear
-    isUserInteractionEnabled = false
-  }
-
-  @available(*, unavailable)
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) has not been implemented")
-  }
-}
-
-private struct MessageListAnchorMarker: UIViewRepresentable {
-  let messageID: UUID
-
-  func makeUIView(context: Context) -> MessageListAnchorUIView {
-    MessageListAnchorUIView(messageID: messageID)
-  }
-
-  func updateUIView(_ view: MessageListAnchorUIView, context: Context) {
-    view.messageID = messageID
-  }
-}
-
-private struct MessageListPinchGestureBridge: UIViewRepresentable {
+private struct MessageListPinchBridge: UIViewRepresentable {
   var onChanged: (CGFloat, UIScrollView, CGPoint) -> Void
   var onEnded: () -> Void
 
@@ -2612,11 +2439,11 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
   }
 
   func makeUIView(context: Context) -> UIView {
-    let view = UIView()
+    let view = MessageListPinchHostView()
     view.backgroundColor = .clear
     view.isUserInteractionEnabled = false
-    DispatchQueue.main.async {
-      context.coordinator.installIfNeeded(from: view)
+    view.onHierarchyChange = { [weak coordinator = context.coordinator] view in
+      coordinator?.installIfNeeded(from: view)
     }
     return view
   }
@@ -2630,6 +2457,7 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
   }
 
   static func dismantleUIView(_ view: UIView, coordinator: Coordinator) {
+    (view as? MessageListPinchHostView)?.onHierarchyChange = nil
     coordinator.uninstall()
   }
 
@@ -2638,11 +2466,7 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
     var onEnded: () -> Void
 
     private weak var scrollView: UIScrollView?
-    private weak var hostView: UIView?
     private var pinchGesture: UIPinchGestureRecognizer?
-    private var originalPanMaximumNumberOfTouches: Int?
-    private var originalShowsVerticalScrollIndicator: Bool?
-    private var originalShowsHorizontalScrollIndicator: Bool?
 
     init(
       onChanged: @escaping (CGFloat, UIScrollView, CGPoint) -> Void,
@@ -2653,7 +2477,6 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
     }
 
     func installIfNeeded(from view: UIView) {
-      hostView = view
       guard let target = findScrollView(from: view) else { return }
       guard target !== scrollView || pinchGesture == nil else { return }
 
@@ -2661,73 +2484,30 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
 
       let gesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
       gesture.cancelsTouchesInView = false
-      gesture.delaysTouchesBegan = false
-      gesture.delaysTouchesEnded = false
       gesture.delegate = self
       target.addGestureRecognizer(gesture)
-      target.panGestureRecognizer.require(toFail: gesture)
-      originalPanMaximumNumberOfTouches = target.panGestureRecognizer.maximumNumberOfTouches
-      target.panGestureRecognizer.maximumNumberOfTouches = 1
       scrollView = target
       pinchGesture = gesture
     }
 
     func uninstall() {
-      restoreScrollIndicators()
-      if let scrollView, let originalPanMaximumNumberOfTouches {
-        scrollView.panGestureRecognizer.maximumNumberOfTouches =
-          originalPanMaximumNumberOfTouches
-      }
       if let pinchGesture, let scrollView {
         scrollView.removeGestureRecognizer(pinchGesture)
       }
       pinchGesture = nil
       scrollView = nil
-      originalPanMaximumNumberOfTouches = nil
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
       guard let scrollView else { return }
       switch recognizer.state {
-      case .began:
-        hideScrollIndicators(in: scrollView)
-        onChanged(recognizer.scale, scrollView, recognizer.location(in: scrollView))
-      case .changed:
+      case .began, .changed:
         onChanged(recognizer.scale, scrollView, recognizer.location(in: scrollView))
       case .ended, .cancelled, .failed:
-        restoreScrollIndicators()
         onEnded()
       default:
         break
       }
-    }
-
-    private func hideScrollIndicators(in scrollView: UIScrollView) {
-      if originalShowsVerticalScrollIndicator == nil {
-        originalShowsVerticalScrollIndicator = scrollView.showsVerticalScrollIndicator
-      }
-      if originalShowsHorizontalScrollIndicator == nil {
-        originalShowsHorizontalScrollIndicator = scrollView.showsHorizontalScrollIndicator
-      }
-      scrollView.showsVerticalScrollIndicator = false
-      scrollView.showsHorizontalScrollIndicator = false
-    }
-
-    private func restoreScrollIndicators() {
-      guard let scrollView else { return }
-      if let originalShowsVerticalScrollIndicator {
-        scrollView.showsVerticalScrollIndicator = originalShowsVerticalScrollIndicator
-      }
-      if let originalShowsHorizontalScrollIndicator {
-        scrollView.showsHorizontalScrollIndicator = originalShowsHorizontalScrollIndicator
-      }
-      originalShowsVerticalScrollIndicator = nil
-      originalShowsHorizontalScrollIndicator = nil
-    }
-
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-      guard let pinch = gestureRecognizer as? UIPinchGestureRecognizer else { return true }
-      return pinch.numberOfTouches >= 2
     }
 
     func gestureRecognizer(
@@ -2735,16 +2515,6 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
       true
-    }
-
-    private func findScrollView(from view: UIView) -> UIScrollView? {
-      if let ancestor = ancestorScrollView(from: view) {
-        return ancestor
-      }
-      guard let window = view.window else { return nil }
-      let frame = view.convert(view.bounds, to: window)
-      let center = CGPoint(x: frame.midX, y: frame.midY)
-      return largestScrollView(containing: center, in: window)
     }
 
     private func ancestorScrollView(from view: UIView) -> UIScrollView? {
@@ -2758,8 +2528,19 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       return nil
     }
 
+    private func findScrollView(from view: UIView) -> UIScrollView? {
+      if let ancestor = ancestorScrollView(from: view) {
+        return ancestor
+      }
+      guard let window = view.window else { return nil }
+      let center = view.convert(
+        CGPoint(x: view.bounds.midX, y: view.bounds.midY),
+        to: window)
+      return largestScrollView(containing: center, in: window)
+    }
+
     private func largestScrollView(containing point: CGPoint, in root: UIView) -> UIScrollView? {
-      var best: (scrollView: UIScrollView, area: CGFloat)?
+      var best: (view: UIScrollView, area: CGFloat)?
 
       func visit(_ view: UIView) {
         guard !view.isHidden, view.alpha > 0.01 else { return }
@@ -2776,7 +2557,28 @@ private struct MessageListPinchGestureBridge: UIViewRepresentable {
       }
 
       visit(root)
-      return best?.scrollView
+      return best?.view
+    }
+  }
+}
+
+private final class MessageListPinchHostView: UIView {
+  var onHierarchyChange: ((UIView) -> Void)?
+
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    notifyHierarchyChange()
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    notifyHierarchyChange()
+  }
+
+  private func notifyHierarchyChange() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      onHierarchyChange?(self)
     }
   }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
   @EnvironmentObject private var store: AppStore
@@ -7,8 +8,6 @@ struct ContentView: View {
   @State private var showingSettings = false
   @State private var showingHistory = false
   @State private var historyDragOffset: CGFloat = 0
-  @State private var historyDragIsActive = false
-  @State private var historyDragExclusionFrame: CGRect?
   @State private var sidebarSelectionGeneration = 0
   @State private var conversationSwitchBlurProgress: CGFloat = 0
   @State private var pendingConversationSwitchID: UUID?
@@ -16,8 +15,8 @@ struct ContentView: View {
   var body: some View {
     GeometryReader { proxy in
       let panelWidth = min(max(proxy.size.width * 0.82, 300), 390)
-      let historyDragActivationWidth = proxy.size.width / 3
-      let panelOffset = clampedHistoryOffset(panelWidth: panelWidth)
+      let basePanelOffset = showingHistory ? panelWidth : 0
+      let panelOffset = min(max(basePanelOffset + historyDragOffset, 0), panelWidth)
       let revealProgress = panelOffset / panelWidth
 
       ZStack(alignment: .leading) {
@@ -73,17 +72,6 @@ struct ContentView: View {
         .zIndex(1)
       }
       .background(Color(uiColor: .systemGroupedBackground))
-      .contentShape(Rectangle())
-      .coordinateSpace(name: HistoryPanelDragCoordinateSpace.name)
-      .onPreferenceChange(HistoryPanelDragExclusionFramePreferenceKey.self) { frame in
-        historyDragExclusionFrame = frame
-      }
-      .simultaneousGesture(
-        historyPanelDragGesture(
-          panelWidth: panelWidth,
-          activationWidth: historyDragActivationWidth,
-          exclusionFrame: historyDragExclusionFrame)
-      )
     }
     .ignoresSafeArea()
     .sheet(isPresented: $showingSettings) {
@@ -101,6 +89,16 @@ struct ContentView: View {
       Text(store.errorMessage ?? "")
     }
     .background(ChatScreenshotServiceInstaller(service: screenshotService))
+    .background {
+      HistoryPanelPanBridge(
+        isEnabled: !showingSettings && store.activeToolCallApprovalRequest == nil,
+        isOpen: showingHistory,
+        onChanged: { historyDragOffset = $0 },
+        onEnded: {
+          setHistoryPanelOpen($0, animation: historyPanelAnimation)
+        }
+      )
+    }
     .onAppear {
       screenshotService.store = store
     }
@@ -116,11 +114,6 @@ struct ContentView: View {
     }
     .tint(store.settings.appearance.tintColor)
     .accentColor(store.settings.appearance.tintColor)
-  }
-
-  private func clampedHistoryOffset(panelWidth: CGFloat) -> CGFloat {
-    let baseOffset = showingHistory ? panelWidth : 0
-    return min(max(baseOffset + historyDragOffset, 0), panelWidth)
   }
 
   private func selectConversationFromSidebar(_ id: UUID) {
@@ -179,77 +172,12 @@ struct ContentView: View {
     withAnimation(animation, completionCriteria: .logicallyComplete) {
       showingHistory = isOpen
       historyDragOffset = 0
-      historyDragIsActive = false
     } completion: {
       if visibilityChanged {
         store.sidebarVisibilitySettled()
       }
       completion?()
     }
-  }
-
-  private func historyPanelDragGesture(
-    panelWidth: CGFloat,
-    activationWidth: CGFloat,
-    exclusionFrame: CGRect?
-  )
-    -> some Gesture
-  {
-    DragGesture(minimumDistance: 12, coordinateSpace: .local)
-      .onChanged { value in
-        if !historyDragIsActive {
-          guard
-            shouldHandleHistoryDrag(
-              value,
-              activationWidth: activationWidth,
-              exclusionFrame: exclusionFrame)
-          else { return }
-          historyDragIsActive = true
-        }
-
-        let baseOffset = showingHistory ? panelWidth : 0
-        let draggedOffset = min(max(baseOffset + value.translation.width, 0), panelWidth)
-        historyDragOffset = draggedOffset - baseOffset
-      }
-      .onEnded { value in
-        guard
-          historyDragIsActive
-            || shouldHandleHistoryDrag(
-              value,
-              activationWidth: activationWidth,
-              exclusionFrame: exclusionFrame)
-        else {
-          historyDragOffset = 0
-          historyDragIsActive = false
-          return
-        }
-
-        let baseOffset = showingHistory ? panelWidth : 0
-        let projectedOffset = min(
-          max(baseOffset + value.predictedEndTranslation.width, 0), panelWidth)
-        setHistoryPanelOpen(
-          projectedOffset > panelWidth * 0.45,
-          animation: historyPanelAnimation)
-      }
-  }
-
-  private func shouldHandleHistoryDrag(
-    _ value: DragGesture.Value,
-    activationWidth: CGFloat,
-    exclusionFrame: CGRect?
-  ) -> Bool
-  {
-    let horizontal = value.translation.width
-    let vertical = abs(value.translation.height)
-    guard abs(horizontal) > 12, abs(horizontal) > vertical * 1.4 else { return false }
-
-    if showingHistory {
-      return true
-    }
-    if let exclusionFrame, exclusionFrame.contains(value.startLocation) {
-      return false
-    }
-    return horizontal > 0 && value.startLocation.x <= activationWidth
   }
 
   private var toolCallApprovalBinding: Binding<ToolCallApprovalRequest?> {
@@ -267,15 +195,168 @@ struct ContentView: View {
   }
 }
 
-enum HistoryPanelDragCoordinateSpace {
-  static let name = "HistoryPanelDragCoordinateSpace"
+private struct HistoryPanelPanBridge: UIViewRepresentable {
+  let isEnabled: Bool
+  let isOpen: Bool
+  let onChanged: (CGFloat) -> Void
+  let onEnded: (Bool) -> Void
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(
+      isEnabled: isEnabled,
+      isOpen: isOpen,
+      onChanged: onChanged,
+      onEnded: onEnded)
+  }
+
+  func makeUIView(context: Context) -> HierarchyTrackingView {
+    let view = HierarchyTrackingView()
+    view.isUserInteractionEnabled = false
+    view.onHierarchyChange = { [weak coordinator = context.coordinator] view in
+      coordinator?.installIfNeeded(from: view)
+    }
+    return view
+  }
+
+  func updateUIView(_ view: HierarchyTrackingView, context: Context) {
+    context.coordinator.isEnabled = isEnabled
+    context.coordinator.isOpen = isOpen
+    context.coordinator.onChanged = onChanged
+    context.coordinator.onEnded = onEnded
+    context.coordinator.installIfNeeded(from: view)
+  }
+
+  static func dismantleUIView(_ view: HierarchyTrackingView, coordinator: Coordinator) {
+    view.onHierarchyChange = nil
+    coordinator.uninstall()
+  }
+
+  final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    var isEnabled: Bool {
+      didSet { panGesture?.isEnabled = isEnabled }
+    }
+    var isOpen: Bool
+    var onChanged: (CGFloat) -> Void
+    var onEnded: (Bool) -> Void
+
+    private weak var installedView: UIView?
+    private var panGesture: UIPanGestureRecognizer?
+    private var startedOpen = false
+
+    init(
+      isEnabled: Bool,
+      isOpen: Bool,
+      onChanged: @escaping (CGFloat) -> Void,
+      onEnded: @escaping (Bool) -> Void
+    ) {
+      self.isEnabled = isEnabled
+      self.isOpen = isOpen
+      self.onChanged = onChanged
+      self.onEnded = onEnded
+    }
+
+    func installIfNeeded(from hostView: UIView) {
+      guard let target = hostView.window else { return }
+      guard target !== installedView || panGesture == nil else {
+        panGesture?.isEnabled = isEnabled
+        return
+      }
+
+      uninstall()
+      let gesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+      gesture.cancelsTouchesInView = false
+      gesture.maximumNumberOfTouches = 1
+      gesture.delegate = self
+      gesture.isEnabled = isEnabled
+      target.addGestureRecognizer(gesture)
+      installedView = target
+      panGesture = gesture
+    }
+
+    func uninstall() {
+      if let panGesture, let installedView {
+        installedView.removeGestureRecognizer(panGesture)
+      }
+      panGesture = nil
+      installedView = nil
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+      guard let view = recognizer.view else { return }
+      let translation = recognizer.translation(in: view)
+      let directionalTranslation = startedOpen
+        ? min(translation.x, 0)
+        : max(translation.x, 0)
+
+      switch recognizer.state {
+      case .began:
+        startedOpen = isOpen
+        onChanged(0)
+      case .changed:
+        onChanged(directionalTranslation)
+      case .ended:
+        let panelWidth = resolvedPanelWidth(for: view.bounds.width)
+        let velocity = recognizer.velocity(in: view)
+        let baseOffset = startedOpen ? panelWidth : 0
+        let projectedOffset = min(
+          max(baseOffset + directionalTranslation + velocity.x * 0.18, 0),
+          panelWidth)
+        onEnded(projectedOffset > panelWidth * 0.45)
+      case .cancelled, .failed:
+        onEnded(startedOpen)
+      default:
+        break
+      }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+      guard isEnabled, let pan = gestureRecognizer as? UIPanGestureRecognizer,
+        let view = pan.view
+      else { return false }
+
+      let location = pan.location(in: view)
+      let translation = pan.translation(in: view)
+      let velocity = pan.velocity(in: view)
+      let startX = location.x - translation.x
+      let isHorizontal = abs(velocity.x) > abs(velocity.y) * 1.15
+      if isOpen {
+        let panelWidth = resolvedPanelWidth(for: view.bounds.width)
+        return startX >= panelWidth && velocity.x < 0 && isHorizontal
+      }
+      return startX <= view.bounds.width / 3 && velocity.x > 0 && isHorizontal
+    }
+
+    func gestureRecognizer(
+      _ gestureRecognizer: UIGestureRecognizer,
+      shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+      true
+    }
+
+    private func resolvedPanelWidth(for availableWidth: CGFloat) -> CGFloat {
+      min(max(availableWidth * 0.82, 300), 390)
+    }
+  }
 }
 
-struct HistoryPanelDragExclusionFramePreferenceKey: PreferenceKey {
-  static let defaultValue: CGRect? = nil
+private final class HierarchyTrackingView: UIView {
+  var onHierarchyChange: ((UIView) -> Void)?
 
-  static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
-    value = nextValue() ?? value
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    notifyHierarchyChange()
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    notifyHierarchyChange()
+  }
+
+  private func notifyHierarchyChange() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      onHierarchyChange?(self)
+    }
   }
 }
 
