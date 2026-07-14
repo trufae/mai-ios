@@ -15,6 +15,11 @@ private struct PersistedRecentConversationCache: Codable {
   var entries: [PersistedRecentConversationEntry]
 }
 
+private struct PersistedLaunchConversationCache: Codable {
+  var version = 1
+  var summaries: [ConversationSummary]
+}
+
 private struct PersistedRecentConversationEntry: Codable {
   var filename: String
   var summary: ConversationSummary
@@ -105,6 +110,10 @@ final class PersistenceStore: @unchecked Sendable {
     localBaseURL.appendingPathComponent("drafts.json")
   }
 
+  private var launchConversationCacheURL: URL {
+    localBaseURL.appendingPathComponent("recent-conversations.json")
+  }
+
   func loadConversations() -> [Conversation] {
     prepareForAccess()
     var conversations = loadConversations(from: localStorageURLs)
@@ -116,9 +125,11 @@ final class PersistenceStore: @unchecked Sendable {
 
   func loadConversationSummaries() -> [ConversationSummary] {
     prepareForAccess()
-    return Self.mergedSummaries(
+    let summaries = Self.mergedSummaries(
       loadConversationSummaries(from: localStorageURLs)
         + loadConversationSummaries(from: iCloudStorageURLs()))
+    Self.persistLaunchConversationCache(summaries, to: launchConversationCacheURL)
+    return summaries
   }
 
   func loadRecentConversationSummaries(
@@ -132,6 +143,20 @@ final class PersistenceStore: @unchecked Sendable {
             from: iCloudStorageURLs(migrateFallback: false),
             limit: limit)),
       limit: limit)
+  }
+
+  /// Loads only the device-local launch cache. Keep this separate from the merged loader so the
+  /// welcome screen never waits for iCloud container discovery or coordinated cloud file access.
+  func loadLocalRecentConversationSummaries(
+    limit: Int = ConversationSummary.recentCacheLimit
+  ) -> [ConversationSummary] {
+    prepareForAccess()
+    if let data = try? Data(contentsOf: launchConversationCacheURL),
+      let cache = try? makeDecoder().decode(PersistedLaunchConversationCache.self, from: data)
+    {
+      return ConversationSummary.mostRecent(cache.summaries, limit: limit)
+    }
+    return loadRecentConversationSummaries(from: localStorageURLs, limit: limit)
   }
 
   func loadConversation(id: UUID) -> Conversation? {
@@ -297,6 +322,9 @@ final class PersistenceStore: @unchecked Sendable {
         )
         if persistedLocal && persistedICloud {
           self.persistedConversationsByID = byID
+          Self.persistLaunchConversationCache(
+            snapshot.map(ConversationSummary.init),
+            to: self.launchConversationCacheURL)
         }
       }
       self.pendingConversations = item
@@ -357,6 +385,9 @@ final class PersistenceStore: @unchecked Sendable {
           for conversation in conversationSnapshot {
             self.persistedConversationsByID[conversation.id] = conversation
           }
+          Self.persistLaunchConversationCache(
+            summarySnapshot,
+            to: self.launchConversationCacheURL)
         }
       }
       self.pendingConversations = item
@@ -379,14 +410,19 @@ final class PersistenceStore: @unchecked Sendable {
         summarySnapshot.filter { $0.folderID == ConversationFolder.iCloudID },
         loadedIDs: [],
         storage: iCloudStorage)
-      _ = Self.persistConversationIndex(
+      let persistedLocal = Self.persistConversationIndex(
         ids: localSummaries.map(\.id),
         summaries: localSummaries,
         storage: localStorage)
-      _ = Self.persistConversationIndex(
+      let persistedICloud = Self.persistConversationIndex(
         ids: iCloudSummaries.map(\.id),
         summaries: iCloudSummaries,
         storage: iCloudStorage)
+      if persistedLocal && persistedICloud {
+        Self.persistLaunchConversationCache(
+          summarySnapshot,
+          to: self.launchConversationCacheURL)
+      }
     }
   }
 
@@ -481,6 +517,26 @@ final class PersistenceStore: @unchecked Sendable {
       try data.write(to: url, options: [.atomic])
     } catch {
       // Persistence errors are surfaced through the next successful read; avoid blocking.
+    }
+  }
+
+  private static func persistLaunchConversationCache(
+    _ summaries: [ConversationSummary],
+    to url: URL
+  ) {
+    do {
+      let cache = PersistedLaunchConversationCache(
+        summaries: ConversationSummary.mostRecent(summaries))
+      let data = try makeEncoder().encode(cache)
+      if (try? Data(contentsOf: url)) == data {
+        return
+      }
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true)
+      try data.write(to: url, options: [.atomic])
+    } catch {
+      // The full indexes remain authoritative and will refresh this cache on the next load/save.
     }
   }
 

@@ -619,14 +619,17 @@ final class AppStore: ObservableObject {
     let loadedSettings = await settingsTask.value
     guard generation == dataGeneration else { return }
     applyLoadedSettings(loadedSettings)
-    refreshLocalMLXModelsInBackground()
-    refreshConfiguredEndpointsInBackground()
 
+    // Publish the tiny device-local cache before touching iCloud or the full conversation index.
+    // The complete summary load below will merge cloud and local results afterward.
     let recentSummaries = await Task.detached(priority: .userInitiated) {
-      persistence.loadRecentConversationSummaries()
+      persistence.loadLocalRecentConversationSummaries()
     }.value
     guard generation == dataGeneration else { return }
     mergeLoadedSummaries(recentSummaries)
+
+    refreshLocalMLXModelsInBackground()
+    refreshConfiguredEndpointsInBackground()
 
     let summaries = await Task.detached(priority: .utility) {
       persistence.loadConversationSummaries()

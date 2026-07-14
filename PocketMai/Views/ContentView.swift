@@ -10,6 +10,7 @@ struct ContentView: View {
   @StateObject private var sidebarStoreObservation = AppStoreViewObservation(scope: .sidebar)
   @State private var showingSettings = false
   @State private var showingHistory = false
+  @State private var isHistoryPanelMounted = false
   @State private var historyDragOffset: CGFloat = 0
   @State private var sidebarSelectionGeneration = 0
 
@@ -21,23 +22,25 @@ struct ContentView: View {
       let revealProgress = panelOffset / panelWidth
 
       ZStack(alignment: .leading) {
-        SidebarView(
-          storeObservation: sidebarStoreObservation,
-          store: store,
-          showingSettings: $showingSettings,
-          onSelectConversation: selectConversationFromSidebar,
-          onDismiss: { closeHistoryPanel() }
-        )
-        .equatable()
-        .frame(width: panelWidth)
-        .frame(maxHeight: .infinity)
-        .modifier(SidebarPlaneEffect(progress: revealProgress))
-        .background { SidebarBlurBackground() }
-        .overlay { SidebarDistanceTone(progress: revealProgress) }
-        .opacity(panelOffset > 0 ? 1 : 0)
-        .allowsHitTesting(panelOffset > 0)
-        .accessibilityHidden(panelOffset == 0)
-        .zIndex(0)
+        if isHistoryPanelMounted {
+          SidebarView(
+            storeObservation: sidebarStoreObservation,
+            store: store,
+            showingSettings: $showingSettings,
+            onSelectConversation: selectConversationFromSidebar,
+            onDismiss: { closeHistoryPanel() }
+          )
+          .equatable()
+          .frame(width: panelWidth)
+          .frame(maxHeight: .infinity)
+          .modifier(SidebarPlaneEffect(progress: revealProgress))
+          .background { SidebarBlurBackground() }
+          .overlay { SidebarDistanceTone(progress: revealProgress) }
+          .opacity(panelOffset > 0 ? 1 : 0)
+          .allowsHitTesting(panelOffset > 0)
+          .accessibilityHidden(panelOffset == 0)
+          .zIndex(0)
+        }
 
         ZStack {
           ChatScreenBackground()
@@ -97,7 +100,12 @@ struct ContentView: View {
       HistoryPanelPanBridge(
         isEnabled: !showingSettings && store.activeToolCallApprovalRequest == nil,
         isOpen: showingHistory,
-        onChanged: { historyDragOffset = $0 },
+        onChanged: { offset in
+          if offset > 0 {
+            mountHistoryPanel()
+          }
+          historyDragOffset = offset
+        },
         onEnded: {
           setHistoryPanelOpen($0, animation: historyPanelAnimation)
         }
@@ -106,7 +114,6 @@ struct ContentView: View {
     .onAppear {
       contentStoreObservation.connect(to: store)
       chatStoreObservation.connect(to: store)
-      sidebarStoreObservation.connect(to: store)
       screenshotService.store = store
     }
     .onChange(of: scenePhase) { _, phase in
@@ -156,6 +163,9 @@ struct ContentView: View {
     animation: Animation,
     completion: (() -> Void)? = nil
   ) {
+    if isOpen {
+      mountHistoryPanel()
+    }
     let visibilityChanged = showingHistory != isOpen
     withAnimation(animation, completionCriteria: .logicallyComplete) {
       showingHistory = isOpen
@@ -164,8 +174,17 @@ struct ContentView: View {
       if visibilityChanged {
         store.sidebarVisibilitySettled()
       }
+      if !isOpen {
+        isHistoryPanelMounted = false
+      }
       completion?()
     }
+  }
+
+  private func mountHistoryPanel() {
+    guard !isHistoryPanelMounted else { return }
+    sidebarStoreObservation.connect(to: store)
+    isHistoryPanelMounted = true
   }
 
   private var toolCallApprovalBinding: Binding<ToolCallApprovalRequest?> {
