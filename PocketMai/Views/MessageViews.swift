@@ -3276,8 +3276,12 @@ private struct MarkdownInlineImage: Equatable {
 }
 
 private enum MarkdownInlineImageScanner {
+  @MainActor private static var cachedSegments: [String: [MarkdownInlineSegment]] = [:]
+
+  @MainActor
   static func segments(in value: String) -> [MarkdownInlineSegment] {
     guard value.contains("![") else { return [.text(value)] }
+    if let cached = cachedSegments[value] { return cached }
 
     let chars = Array(value)
     var segments: [MarkdownInlineSegment] = []
@@ -3302,7 +3306,12 @@ private enum MarkdownInlineImageScanner {
     }
 
     appendText(chars, range: textStart..<chars.count, to: &segments)
-    return segments.isEmpty ? [.text(value)] : segments
+    let result = segments.isEmpty ? [.text(value)] : segments
+    if cachedSegments.count >= 128 {
+      cachedSegments.removeAll(keepingCapacity: true)
+    }
+    cachedSegments[value] = result
+    return result
   }
 
   private static func imageToken(in chars: [Character], at index: Int)
@@ -3623,10 +3632,24 @@ extension AppearanceSettings {
 }
 
 private enum MarkdownInlineLinkScanner {
+  @MainActor private static var cachedResults: [String: Bool] = [:]
+
   /// Reports whether the inline markdown resolves to one or more links.
   /// A cheap textual pre-check avoids parsing strings that cannot contain a
   /// markdown link or autolink.
+  @MainActor
   static func containsLink(_ value: String) -> Bool {
+    if let cached = cachedResults[value] { return cached }
+    let result = containsUncachedLink(value)
+    if cachedResults.count >= 384 {
+      cachedResults.removeAll(keepingCapacity: true)
+    }
+    cachedResults[value] = result
+    return result
+  }
+
+  @MainActor
+  private static func containsUncachedLink(_ value: String) -> Bool {
     if value.contains("](") || value.contains("<http") {
       if attributedInlineMarkdown(value).runs.contains(where: { $0.link != nil }) {
         return true
@@ -3636,29 +3659,66 @@ private enum MarkdownInlineLinkScanner {
   }
 }
 
-private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString
-{
-  let normalized = MarkdownInlineSymbols.displayString(value)
-  var attributed =
-    (try? AttributedString(
-      markdown: normalized,
-      options: AttributedString.MarkdownParsingOptions(
-        interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-    ?? AttributedString(normalized)
-  for run in attributed.runs.reversed() {
-    let text = String(attributed.characters[run.range])
-    if run.inlinePresentationIntent?.contains(.inlineHTML) == true,
-      text.range(of: "^<br\\s*/?>$", options: [.regularExpression, .caseInsensitive]) != nil
-    {
-      attributed.replaceSubrange(run.range, with: AttributedString("\n"))
+@MainActor
+private enum MarkdownInlineAttributedCache {
+  private static let maxEntries = 384
+  private static var entries: [String: AttributedString] = [:]
+  private static var accessOrder: [String] = []
+
+  static func baseAttributedString(for value: String) -> AttributedString {
+    if let cached = entries[value] {
+      markAccessed(value)
+      return cached
     }
+
+    let normalized = MarkdownInlineSymbols.displayString(value)
+    var attributed =
+      (try? AttributedString(
+        markdown: normalized,
+        options: AttributedString.MarkdownParsingOptions(
+          interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+      ?? AttributedString(normalized)
+    for run in attributed.runs.reversed() {
+      let text = String(attributed.characters[run.range])
+      if run.inlinePresentationIntent?.contains(.inlineHTML) == true,
+        text.range(of: "^<br\\s*/?>$", options: [.regularExpression, .caseInsensitive]) != nil
+      {
+        attributed.replaceSubrange(run.range, with: AttributedString("\n"))
+      }
+    }
+
+    let result = MarkdownInlineStyleApplier.styled(
+      MarkdownInlineTokenColorizer.colorized(attributed))
+    entries[value] = result
+    markAccessed(value)
+    if accessOrder.count > maxEntries, let oldest = accessOrder.first {
+      accessOrder.removeFirst()
+      entries.removeValue(forKey: oldest)
+    }
+    return result
   }
-  return MarkdownInlineStyleApplier.styled(
-    MarkdownInlineTokenColorizer.colorized(attributed),
-    strongFont: strongFont
-  )
+
+  private static func markAccessed(_ value: String) {
+    accessOrder.removeAll { $0 == value }
+    accessOrder.append(value)
+  }
 }
 
+@MainActor
+private func attributedInlineMarkdown(_ value: String, strongFont: Font? = nil) -> AttributedString
+{
+  var attributed = MarkdownInlineAttributedCache.baseAttributedString(for: value)
+  guard let strongFont else { return attributed }
+  let strongRanges = attributed.runs.compactMap { run in
+    run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true ? run.range : nil
+  }
+  for range in strongRanges {
+    attributed[range].font = strongFont
+  }
+  return attributed
+}
+
+@MainActor
 private func nsAttributedInlineMarkdown(
   _ value: String,
   font: UIFont,
@@ -5820,6 +5880,7 @@ extension MarkdownBlock {
 }
 
 enum MarkdownParser {
+  @MainActor
   static func mayContainMarkdown(_ text: String) -> Bool {
     guard !text.isEmpty else { return false }
     if MarkdownInlineLinkScanner.containsLink(text) {

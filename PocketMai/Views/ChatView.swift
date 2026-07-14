@@ -550,6 +550,14 @@ struct ChatView: View {
                     }
                   )
                 }
+                .onGeometryChange(for: CGRect.self) { geometry in
+                  geometry.frame(in: .named(MessageFontPinchSession.coordinateSpaceName))
+                } action: { frame in
+                  messageFontPinchSession.updateFrame(frame, for: message.id)
+                }
+                .onDisappear {
+                  messageFontPinchSession.removeFrame(for: message.id)
+                }
                 .allowsHitTesting(!isPreviewingConversation)
                 .opacity(isPreviewingConversation ? 0.82 : 1)
                 .id(message.id)
@@ -584,8 +592,11 @@ struct ChatView: View {
           .background {
             MessageListPinchBridge(
               baseFontSize: store.settings.appearance.fontSize,
-              onBegan: {
+              onBegan: { scrollView, viewportY in
                 messageFontPinchSession.isActive = true
+                messageFontPinchSession.captureAnchor(
+                  at: viewportY,
+                  viewportHeight: scrollView.bounds.height)
                 store.streamingTextStore.setPublishingSuspended(true)
               },
               onEnded: { magnification, scrollView, contentFraction, viewportY in
@@ -593,15 +604,18 @@ struct ChatView: View {
                   magnification: magnification,
                   in: scrollView,
                   contentFraction: contentFraction,
-                  viewportY: viewportY)
+                  viewportY: viewportY,
+                  proxy: proxy)
               },
               onCancelled: {
                 messageFontPinchSession.isActive = false
+                messageFontPinchSession.clearAnchor()
                 store.streamingTextStore.setPublishingSuspended(false)
               }
             )
           }
         }
+        .coordinateSpace(name: MessageFontPinchSession.coordinateSpaceName)
         .scrollDismissesKeyboard(.interactively)
         .onScrollPhaseChange { _, phase in
           if phase == .interacting {
@@ -612,6 +626,7 @@ struct ChatView: View {
           scrollToBottomAfterLayout(proxy, animated: false)
         }
         .onChange(of: store.selectedConversationID) { _, _ in
+          messageFontPinchSession.resetMetrics()
           userScrolledAfterLastMessage = false
           scrollToBottomAfterLayout(proxy, animated: false)
         }
@@ -809,7 +824,8 @@ struct ChatView: View {
     magnification: CGFloat,
     in scrollView: UIScrollView,
     contentFraction: CGFloat,
-    viewportY: CGFloat
+    viewportY: CGFloat,
+    proxy: ScrollViewProxy
   ) {
     messageFontPinchSession.isActive = false
 
@@ -820,6 +836,7 @@ struct ChatView: View {
       (rawSize / AppearanceSettings.fontSizeStep).rounded() * AppearanceSettings.fontSizeStep
     let targetSize = AppearanceSettings.clampedFontSize(steppedSize)
     guard targetSize != baseSize else {
+      messageFontPinchSession.clearAnchor()
       store.streamingTextStore.setPublishingSuspended(false)
       return
     }
@@ -833,18 +850,67 @@ struct ChatView: View {
     preservePinchPosition(
       in: scrollView,
       contentFraction: contentFraction,
-      viewportY: viewportY)
-    store.saveSettings()
-    // Let the one real font layout finish before publishing any streamed text queued during pinch.
-    DispatchQueue.main.async {
+      viewportY: viewportY,
+      proxy: proxy
+    ) {
       store.streamingTextStore.setPublishingSuspended(false)
     }
+    store.saveSettings()
   }
 
   private func preservePinchPosition(
     in scrollView: UIScrollView,
     contentFraction: CGFloat,
-    viewportY: CGFloat
+    viewportY: CGFloat,
+    proxy: ScrollViewProxy,
+    completion: @escaping () -> Void
+  ) {
+    guard let anchor = messageFontPinchSession.semanticAnchor else {
+      preserveProportionalPinchPosition(
+        in: scrollView,
+        contentFraction: contentFraction,
+        viewportY: viewportY,
+        completion: completion)
+      return
+    }
+
+    Task { @MainActor in
+      // First make the semantic row materialize under the new font metrics. Its exact position is
+      // corrected on the following layout turns, so LazyVStack height estimates are not trusted.
+      await Task.yield()
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
+        proxy.scrollTo(anchor.messageID, anchor: .center)
+      }
+      await Task.yield()
+      scrollView.layoutIfNeeded()
+      await Task.yield()
+
+      guard let frame = messageFontPinchSession.frame(for: anchor.messageID) else {
+        messageFontPinchSession.clearAnchor()
+        preserveProportionalPinchPosition(
+          in: scrollView,
+          contentFraction: contentFraction,
+          viewportY: viewportY,
+          completion: completion)
+        return
+      }
+      let measuredAnchorY = frame.minY + frame.height * anchor.rowFraction
+      let correctedOffsetY = scrollView.contentOffset.y + measuredAnchorY - anchor.viewportY
+      scrollView.setContentOffset(
+        CGPoint(x: 0, y: clampedScrollOffsetY(correctedOffsetY, in: scrollView)),
+        animated: false)
+      messageFontPinchSession.clearAnchor()
+      completion()
+    }
+  }
+
+  private func preserveProportionalPinchPosition(
+    in scrollView: UIScrollView,
+    contentFraction: CGFloat,
+    viewportY: CGFloat,
+    completion: @escaping () -> Void
   ) {
     DispatchQueue.main.async {
       scrollView.layoutIfNeeded()
@@ -853,6 +919,7 @@ struct ChatView: View {
       scrollView.setContentOffset(
         CGPoint(x: 0, y: clampedScrollOffsetY(targetY, in: scrollView)),
         animated: false)
+      completion()
     }
   }
 
@@ -2384,12 +2451,70 @@ private struct AttachmentPill: View {
 
 @MainActor
 private final class MessageFontPinchSession {
+  struct SemanticAnchor {
+    let messageID: UUID
+    let rowFraction: CGFloat
+    let viewportY: CGFloat
+  }
+
+  nonisolated static let coordinateSpaceName = "ChatMessageViewport"
+
   var isActive = false
+  private(set) var semanticAnchor: SemanticAnchor?
+  private var rowFrames: [UUID: CGRect] = [:]
+
+  func updateFrame(_ frame: CGRect, for messageID: UUID) {
+    guard frame.height.isFinite, frame.height > 0, frame.minY.isFinite else { return }
+    rowFrames[messageID] = frame
+  }
+
+  func removeFrame(for messageID: UUID) {
+    rowFrames.removeValue(forKey: messageID)
+  }
+
+  func captureAnchor(at viewportY: CGFloat, viewportHeight: CGFloat) {
+    let visibleFrames = rowFrames.filter { _, frame in
+      frame.maxY >= 0 && frame.minY <= viewportHeight
+    }
+    guard
+      let (messageID, frame) = visibleFrames.min(by: { lhs, rhs in
+        lhs.value.distance(toY: viewportY) < rhs.value.distance(toY: viewportY)
+      })
+    else {
+      semanticAnchor = nil
+      return
+    }
+    semanticAnchor = SemanticAnchor(
+      messageID: messageID,
+      rowFraction: min(max((viewportY - frame.minY) / max(frame.height, 1), 0), 1),
+      viewportY: viewportY)
+  }
+
+  func frame(for messageID: UUID) -> CGRect? {
+    rowFrames[messageID]
+  }
+
+  func clearAnchor() {
+    semanticAnchor = nil
+  }
+
+  func resetMetrics() {
+    semanticAnchor = nil
+    rowFrames.removeAll(keepingCapacity: true)
+  }
+}
+
+private extension CGRect {
+  func distance(toY y: CGFloat) -> CGFloat {
+    if y < minY { return minY - y }
+    if y > maxY { return y - maxY }
+    return 0
+  }
 }
 
 private struct MessageListPinchBridge: UIViewRepresentable {
   let baseFontSize: Double
-  var onBegan: () -> Void
+  var onBegan: (UIScrollView, CGFloat) -> Void
   var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
   var onCancelled: () -> Void
 
@@ -2428,7 +2553,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
 
   final class Coordinator: NSObject, UIGestureRecognizerDelegate {
     var baseFontSize: Double
-    var onBegan: () -> Void
+    var onBegan: (UIScrollView, CGFloat) -> Void
     var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
     var onCancelled: () -> Void
 
@@ -2447,7 +2572,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
 
     init(
       baseFontSize: Double,
-      onBegan: @escaping () -> Void,
+      onBegan: @escaping (UIScrollView, CGFloat) -> Void,
       onEnded: @escaping (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void,
       onCancelled: @escaping () -> Void
     ) {
@@ -2515,7 +2640,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
         pinchAnchor = touchMidpoint(of: recognizer, in: transformView)
       }
       scrollView.panGestureRecognizer.isEnabled = false
-      onBegan()
+      onBegan(scrollView, viewportY ?? contentPoint.y - scrollView.contentOffset.y)
       applyTransform(for: recognizer, in: scrollView)
     }
 
