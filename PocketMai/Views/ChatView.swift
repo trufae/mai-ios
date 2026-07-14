@@ -591,6 +591,7 @@ struct ChatView: View {
           .frame(maxWidth: .infinity, alignment: .center)
           .background {
             MessageListPinchBridge(
+              zoomMethod: store.settings.appearance.zoomMethod,
               baseFontSize: store.settings.appearance.fontSize,
               onBegan: { scrollView, viewportY in
                 messageFontPinchSession.isActive = true
@@ -611,6 +612,15 @@ struct ChatView: View {
                 messageFontPinchSession.isActive = false
                 messageFontPinchSession.clearAnchor()
                 store.streamingTextStore.setPublishingSuspended(false)
+              },
+              onRealtimeChanged: { magnification, scrollView, contentPoint in
+                updateRealtimeMessageFontSize(
+                  for: magnification,
+                  in: scrollView,
+                  at: contentPoint)
+              },
+              onRealtimeEnded: { scrollView in
+                endRealtimeMessageFontSizePinch(in: scrollView, proxy: proxy)
               }
             )
           }
@@ -818,6 +828,96 @@ struct ChatView: View {
     store.deleteMessages(deletion.ids)
     messageBatchPendingDeletion = nil
     cancelMessageSelection()
+  }
+
+  private func updateRealtimeMessageFontSize(
+    for magnification: CGFloat,
+    in scrollView: UIScrollView,
+    at contentPoint: CGPoint
+  ) {
+    let currentSize = store.settings.appearance.fontSize
+    let baseSize = messageFontPinchSession.realtimeBaseFontSize ?? currentSize
+    let viewportY = contentPoint.y - scrollView.contentOffset.y
+
+    if messageFontPinchSession.realtimeBaseFontSize == nil {
+      messageFontPinchSession.isActive = true
+      userScrolledAfterLastMessage = true
+      messageFontPinchSession.captureAnchor(
+        at: viewportY,
+        viewportHeight: scrollView.bounds.height)
+      messageFontPinchSession.beginRealtime(
+        baseFontSize: baseSize,
+        contentPointY: contentPoint.y,
+        contentHeight: scrollView.contentSize.height,
+        viewportY: viewportY)
+    }
+
+    let rawSize = baseSize * max(Double(magnification), 0.1)
+    let steppedSize =
+      (rawSize / AppearanceSettings.fontSizeStep).rounded() * AppearanceSettings.fontSizeStep
+    let targetSize = AppearanceSettings.clampedFontSize(steppedSize)
+    guard targetSize != currentSize else { return }
+
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      store.settings.appearance.fontSize = targetSize
+    }
+
+    // Reflow is asynchronous. Coalesce position corrections so an older pinch tick cannot move
+    // the viewport after a newer font size has already been applied.
+    let revision = messageFontPinchSession.nextRealtimeRevision()
+    Task { @MainActor in
+      await Task.yield()
+      guard messageFontPinchSession.isCurrentRealtimeRevision(revision) else { return }
+      scrollView.layoutIfNeeded()
+      await Task.yield()
+      guard messageFontPinchSession.isCurrentRealtimeRevision(revision) else { return }
+
+      if let anchor = messageFontPinchSession.semanticAnchor,
+        let frame = messageFontPinchSession.frame(for: anchor.messageID)
+      {
+        let measuredAnchorY = frame.minY + frame.height * anchor.rowFraction
+        let correctedOffsetY = scrollView.contentOffset.y + measuredAnchorY - anchor.viewportY
+        scrollView.setContentOffset(
+          CGPoint(x: 0, y: clampedScrollOffsetY(correctedOffsetY, in: scrollView)),
+          animated: false)
+      } else {
+        let targetContentY =
+          max(scrollView.contentSize.height, 1)
+          * messageFontPinchSession.realtimeContentFraction
+        let targetY = targetContentY - messageFontPinchSession.realtimeViewportY
+        scrollView.setContentOffset(
+          CGPoint(x: 0, y: clampedScrollOffsetY(targetY, in: scrollView)),
+          animated: false)
+      }
+    }
+  }
+
+  private func endRealtimeMessageFontSizePinch(
+    in scrollView: UIScrollView,
+    proxy: ScrollViewProxy
+  ) {
+    messageFontPinchSession.isActive = false
+    messageFontPinchSession.invalidateRealtimeUpdates()
+    guard let baseSize = messageFontPinchSession.realtimeBaseFontSize else {
+      messageFontPinchSession.finishRealtime()
+      return
+    }
+    guard store.settings.appearance.fontSize != baseSize else {
+      messageFontPinchSession.finishRealtime()
+      return
+    }
+
+    preservePinchPosition(
+      in: scrollView,
+      contentFraction: messageFontPinchSession.realtimeContentFraction,
+      viewportY: messageFontPinchSession.realtimeViewportY,
+      proxy: proxy
+    ) {
+      messageFontPinchSession.finishRealtime()
+    }
+    store.saveSettings()
   }
 
   private func endMessageFontSizePinch(
@@ -2461,7 +2561,11 @@ private final class MessageFontPinchSession {
 
   var isActive = false
   private(set) var semanticAnchor: SemanticAnchor?
+  private(set) var realtimeBaseFontSize: Double?
+  private(set) var realtimeContentFraction: CGFloat = 0
+  private(set) var realtimeViewportY: CGFloat = 0
   private var rowFrames: [UUID: CGRect] = [:]
+  private var realtimeRevision = 0
 
   func updateFrame(_ frame: CGRect, for messageID: UUID) {
     guard frame.height.isFinite, frame.height > 0, frame.minY.isFinite else { return }
@@ -2498,8 +2602,42 @@ private final class MessageFontPinchSession {
     semanticAnchor = nil
   }
 
+  func beginRealtime(
+    baseFontSize: Double,
+    contentPointY: CGFloat,
+    contentHeight: CGFloat,
+    viewportY: CGFloat
+  ) {
+    guard realtimeBaseFontSize == nil else { return }
+    realtimeBaseFontSize = baseFontSize
+    realtimeContentFraction = min(max(contentPointY / max(contentHeight, 1), 0), 1)
+    realtimeViewportY = viewportY
+  }
+
+  func nextRealtimeRevision() -> Int {
+    realtimeRevision += 1
+    return realtimeRevision
+  }
+
+  func isCurrentRealtimeRevision(_ revision: Int) -> Bool {
+    realtimeRevision == revision
+  }
+
+  func invalidateRealtimeUpdates() {
+    realtimeRevision += 1
+  }
+
+  func finishRealtime() {
+    realtimeRevision += 1
+    realtimeBaseFontSize = nil
+    realtimeContentFraction = 0
+    realtimeViewportY = 0
+    semanticAnchor = nil
+  }
+
   func resetMetrics() {
     semanticAnchor = nil
+    finishRealtime()
     rowFrames.removeAll(keepingCapacity: true)
   }
 }
@@ -2513,17 +2651,23 @@ private extension CGRect {
 }
 
 private struct MessageListPinchBridge: UIViewRepresentable {
+  let zoomMethod: AppearanceZoomMethod
   let baseFontSize: Double
   var onBegan: (UIScrollView, CGFloat) -> Void
   var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
   var onCancelled: () -> Void
+  var onRealtimeChanged: (CGFloat, UIScrollView, CGPoint) -> Void
+  var onRealtimeEnded: (UIScrollView) -> Void
 
   func makeCoordinator() -> Coordinator {
     Coordinator(
+      zoomMethod: zoomMethod,
       baseFontSize: baseFontSize,
       onBegan: onBegan,
       onEnded: onEnded,
-      onCancelled: onCancelled)
+      onCancelled: onCancelled,
+      onRealtimeChanged: onRealtimeChanged,
+      onRealtimeEnded: onRealtimeEnded)
   }
 
   func makeUIView(context: Context) -> UIView {
@@ -2537,10 +2681,13 @@ private struct MessageListPinchBridge: UIViewRepresentable {
   }
 
   func updateUIView(_ view: UIView, context: Context) {
-    context.coordinator.baseFontSize = baseFontSize
     context.coordinator.onBegan = onBegan
     context.coordinator.onEnded = onEnded
     context.coordinator.onCancelled = onCancelled
+    context.coordinator.onRealtimeChanged = onRealtimeChanged
+    context.coordinator.onRealtimeEnded = onRealtimeEnded
+    context.coordinator.setZoomMethod(zoomMethod)
+    context.coordinator.baseFontSize = baseFontSize
     DispatchQueue.main.async {
       context.coordinator.installIfNeeded(from: view)
     }
@@ -2552,10 +2699,13 @@ private struct MessageListPinchBridge: UIViewRepresentable {
   }
 
   final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    private(set) var zoomMethod: AppearanceZoomMethod
     var baseFontSize: Double
     var onBegan: (UIScrollView, CGFloat) -> Void
     var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
     var onCancelled: () -> Void
+    var onRealtimeChanged: (CGFloat, UIScrollView, CGPoint) -> Void
+    var onRealtimeEnded: (UIScrollView) -> Void
 
     private weak var hostView: UIView?
     private weak var scrollView: UIScrollView?
@@ -2569,20 +2719,37 @@ private struct MessageListPinchBridge: UIViewRepresentable {
     private var contentFraction: CGFloat?
     private var viewportY: CGFloat?
     private var isPinching = false
+    private var showsVerticalScrollIndicator = true
 
     init(
+      zoomMethod: AppearanceZoomMethod,
       baseFontSize: Double,
       onBegan: @escaping (UIScrollView, CGFloat) -> Void,
       onEnded: @escaping (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void,
-      onCancelled: @escaping () -> Void
+      onCancelled: @escaping () -> Void,
+      onRealtimeChanged: @escaping (CGFloat, UIScrollView, CGPoint) -> Void,
+      onRealtimeEnded: @escaping (UIScrollView) -> Void
     ) {
+      self.zoomMethod = zoomMethod
       self.baseFontSize = baseFontSize
       self.onBegan = onBegan
       self.onEnded = onEnded
       self.onCancelled = onCancelled
+      self.onRealtimeChanged = onRealtimeChanged
+      self.onRealtimeEnded = onRealtimeEnded
+    }
+
+    func setZoomMethod(_ zoomMethod: AppearanceZoomMethod) {
+      guard self.zoomMethod != zoomMethod else { return }
+      cancelActivePinch()
+      self.zoomMethod = zoomMethod
     }
 
     func installIfNeeded(from view: UIView) {
+      guard zoomMethod != .disabled else {
+        uninstall()
+        return
+      }
       guard let target = findScrollView(from: view) else { return }
       guard target !== scrollView || pinchGesture == nil else { return }
 
@@ -2590,6 +2757,8 @@ private struct MessageListPinchBridge: UIViewRepresentable {
 
       let gesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
       gesture.cancelsTouchesInView = false
+      gesture.delaysTouchesBegan = false
+      gesture.delaysTouchesEnded = false
       gesture.delegate = self
       target.addGestureRecognizer(gesture)
       hostView = view
@@ -2611,11 +2780,33 @@ private struct MessageListPinchBridge: UIViewRepresentable {
       guard let scrollView else { return }
       switch recognizer.state {
       case .began:
-        beginPinch(recognizer, in: scrollView)
+        switch zoomMethod {
+        case .tiled:
+          beginPinch(recognizer, in: scrollView)
+        case .realtime:
+          beginRealtimePinch(recognizer, in: scrollView)
+        case .disabled:
+          break
+        }
       case .changed:
-        applyTransform(for: recognizer, in: scrollView)
+        switch zoomMethod {
+        case .tiled:
+          applyTransform(for: recognizer, in: scrollView)
+        case .realtime:
+          sendRealtimeChange(recognizer, in: scrollView)
+        case .disabled:
+          break
+        }
       case .ended:
-        finishPinch(recognizer, in: scrollView)
+        switch zoomMethod {
+        case .tiled:
+          finishPinch(recognizer, in: scrollView)
+        case .realtime:
+          sendRealtimeChange(recognizer, in: scrollView)
+          finishRealtimePinch(in: scrollView)
+        case .disabled:
+          break
+        }
       case .cancelled, .failed:
         cancelActivePinch()
       default:
@@ -2642,6 +2833,37 @@ private struct MessageListPinchBridge: UIViewRepresentable {
       scrollView.panGestureRecognizer.isEnabled = false
       onBegan(scrollView, viewportY ?? contentPoint.y - scrollView.contentOffset.y)
       applyTransform(for: recognizer, in: scrollView)
+    }
+
+    private func beginRealtimePinch(
+      _ recognizer: UIPinchGestureRecognizer,
+      in scrollView: UIScrollView
+    ) {
+      guard !isPinching else { return }
+      isPinching = true
+      showsVerticalScrollIndicator = scrollView.showsVerticalScrollIndicator
+      scrollView.showsVerticalScrollIndicator = false
+      scrollView.panGestureRecognizer.isEnabled = false
+      sendRealtimeChange(recognizer, in: scrollView)
+    }
+
+    private func sendRealtimeChange(
+      _ recognizer: UIPinchGestureRecognizer,
+      in scrollView: UIScrollView
+    ) {
+      guard isPinching else { return }
+      onRealtimeChanged(
+        recognizer.scale,
+        scrollView,
+        touchMidpoint(of: recognizer, in: scrollView))
+    }
+
+    private func finishRealtimePinch(in scrollView: UIScrollView) {
+      guard isPinching else { return }
+      isPinching = false
+      scrollView.panGestureRecognizer.isEnabled = true
+      scrollView.showsVerticalScrollIndicator = showsVerticalScrollIndicator
+      onRealtimeEnded(scrollView)
     }
 
     private func applyTransform(
@@ -2684,6 +2906,14 @@ private struct MessageListPinchBridge: UIViewRepresentable {
     private func cancelActivePinch() {
       guard isPinching else { return }
       let activeScrollView = scrollView
+      if zoomMethod == .realtime {
+        if let activeScrollView {
+          finishRealtimePinch(in: activeScrollView)
+        } else {
+          isPinching = false
+        }
+        return
+      }
       resetTransform()
       if let activeScrollView {
         resetPinchState(in: activeScrollView)
@@ -2749,6 +2979,10 @@ private struct MessageListPinchBridge: UIViewRepresentable {
       shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
       true
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+      zoomMethod != .disabled && gestureRecognizer.numberOfTouches >= 2
     }
 
     private func ancestorScrollView(from view: UIView) -> UIScrollView? {

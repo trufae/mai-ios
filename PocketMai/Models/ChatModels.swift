@@ -204,6 +204,33 @@ enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+enum AppearanceZoomMethod: String, Codable, CaseIterable, Identifiable, Sendable {
+  case realtime
+  case tiled
+  case disabled
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .realtime: "Realtime"
+    case .tiled: "Tiled"
+    case .disabled: "Disabled"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .realtime:
+      "Changes and reflows the font continuously while you pinch."
+    case .tiled:
+      "Scales the rendered conversation, then changes the font when you release."
+    case .disabled:
+      "Turns off the conversation pinch-to-zoom gesture."
+    }
+  }
+}
+
 enum SolidBubbleMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case user
   case both
@@ -255,6 +282,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   var assistantFontFamily: AppearanceFontFamily = .serif
   var fontSize: Double = 17
   var lineSpacing: Double = 3
+  var zoomMethod: AppearanceZoomMethod = .realtime
   var tint: AppearanceTint = .system
   var theme: AppearanceTheme = .system
   var solidBubbles: SolidBubbleMode = .user
@@ -277,7 +305,8 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case userFontFamily, assistantFontFamily, fontFamily, fontSize, lineSpacing, tint, theme
+    case userFontFamily, assistantFontFamily, fontFamily, fontSize, lineSpacing, zoomMethod, tint,
+      theme
     case solidBubbles, solidResponseBubbles, colorizeResponseBubbles, liveMarkdown, justifyText,
       unwrappedTables
     case hapticsEnabled, vibrateOnEveryStreamPacket
@@ -294,6 +323,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     fontSize = Self.clampedFontSize((try? c.decode(Double.self, forKey: .fontSize)) ?? 17)
     lineSpacing =
       Self.clampedLineSpacing((try? c.decode(Double.self, forKey: .lineSpacing)) ?? 3)
+    zoomMethod = (try? c.decode(AppearanceZoomMethod.self, forKey: .zoomMethod)) ?? .realtime
     tint = (try? c.decode(AppearanceTint.self, forKey: .tint)) ?? .system
     theme = (try? c.decode(AppearanceTheme.self, forKey: .theme)) ?? .system
     if let decoded = try? c.decode(SolidBubbleMode.self, forKey: .solidBubbles) {
@@ -320,6 +350,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
     try c.encode(assistantFontFamily, forKey: .assistantFontFamily)
     try c.encode(fontSize, forKey: .fontSize)
     try c.encode(lineSpacing, forKey: .lineSpacing)
+    try c.encode(zoomMethod, forKey: .zoomMethod)
     try c.encode(tint, forKey: .tint)
     try c.encode(theme, forKey: .theme)
     try c.encode(solidBubbles, forKey: .solidBubbles)

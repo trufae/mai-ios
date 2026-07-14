@@ -764,6 +764,17 @@ struct SettingsView: View {
     fontPickerContent("User", selection: \.appearance.userFontFamily)
     fontPickerContent("Assistant", selection: \.appearance.assistantFontFamily)
 
+    Picker("Pinch zoom", selection: settingsBinding(\.appearance.zoomMethod)) {
+      ForEach(AppearanceZoomMethod.allCases) { method in
+        Text(method.displayName).tag(method)
+      }
+    }
+    .pickerStyle(.menu)
+
+    Text(store.settings.appearance.zoomMethod.detail)
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
     Stepper(
       value: settingsBinding(\.appearance.fontSize),
       in: AppearanceSettings.fontSizeRange,
