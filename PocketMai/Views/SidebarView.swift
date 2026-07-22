@@ -1690,16 +1690,9 @@ private struct ConversationRow: View {
             .transition(.opacity.combined(with: .move(edge: .leading)))
         }
         VStack(alignment: .leading, spacing: 4) {
-          HStack {
-            Text(conversation.displayTitle)
-              .font(.body.weight(.medium))
-              .lineLimit(1)
-            if conversation.isPinned {
-              Image(systemName: "pin.fill")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-          }
+          Text(conversation.displayTitle)
+            .font(.body.weight(.medium))
+            .lineLimit(1)
           Text(conversation.displayPreview)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -1709,7 +1702,16 @@ private struct ConversationRow: View {
         responseIndicator
       }
       .padding(.vertical, 5)
+      .padding(.trailing, 14)
       .contentShape(Rectangle())
+      .overlay(alignment: .topTrailing) {
+        if conversation.isPinned {
+          Image(systemName: "pin.fill")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+        }
+      }
     }
     .buttonStyle(.plain)
   }
