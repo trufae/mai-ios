@@ -1295,16 +1295,14 @@ final class AppStore: ObservableObject {
   }
 
   func deleteConversations(_ ids: Set<UUID>) {
+    guard !ids.isEmpty else { return }
+    let replacementID = replacementConversationID(afterDeleting: ids)
     let removedMessages = voiceRecordingMessages(in: ids)
     if !hasLoadedPersistedConversations {
       deletedConversationIDsBeforeLoad.formUnion(ids)
     }
     for id in ids {
-      responseTasks[id]?.cancel()
-      responseTasks[id] = nil
-      responseTaskTokens[id] = nil
-      endResponseBackgroundTask(for: id)
-      respondingConversationIDs.remove(id)
+      abandonResponse(in: id)
       conversationDrafts.removeValue(forKey: id)
       if !hasLoadedPersistedDrafts {
         deletedDraftIDsBeforeLoad.insert(id)
@@ -1321,14 +1319,29 @@ final class AppStore: ObservableObject {
     removeSummaries(for: ids)
     selectedConversationIDs.removeAll()
     if let selectedConversationID, ids.contains(selectedConversationID) {
-      setSelectedConversationID(conversations.first?.id)
-    }
-    if conversations.isEmpty {
-      setSelectedConversationID(nil)
-      createInitialConversationIfNeeded()
+      if let replacementID {
+        setSelectedConversationID(replacementID)
+        Task { await selectConversation(id: replacementID) }
+      } else {
+        setSelectedConversationID(nil)
+        createInitialConversationIfNeeded()
+      }
     }
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
+  }
+
+  private func replacementConversationID(afterDeleting ids: Set<UUID>) -> UUID? {
+    guard let selectedConversationID, ids.contains(selectedConversationID) else { return nil }
+    let visibleIDs = conversationSummaries
+      .filter { $0.folderID == selectedConversationFolderID }
+      .map(\.id)
+    if let index = visibleIDs.firstIndex(of: selectedConversationID) {
+      return visibleIDs[(index + 1)...].first { !ids.contains($0) }
+        ?? visibleIDs[..<index].last { !ids.contains($0) }
+        ?? conversationSummaries.first { !ids.contains($0.id) }?.id
+    }
+    return conversationSummaries.first { !ids.contains($0.id) }?.id
   }
 
   private func voiceRecordingMessages(in conversationIDs: Set<UUID>) -> [ChatMessage] {

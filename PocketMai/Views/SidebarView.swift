@@ -43,19 +43,12 @@ struct SidebarView: View {
       sidebarEdgeFades
       floatingActions
     }
-    .alert(
-      pendingDeletion?.title ?? "Delete conversations?",
-      isPresented: deletionConfirmationBinding,
-      presenting: pendingDeletion
-    ) { deletion in
-      Button("Cancel", role: .cancel) {
-        pendingDeletion = nil
+    .conversationDeletionAlert($pendingDeletion) { ids in
+      store.deleteConversations(ids)
+      withAnimation {
+        isSelectionMode = false
+        selectedIDs.removeAll()
       }
-      Button(deletion.buttonTitle, role: .destructive) {
-        confirmDeletion(deletion)
-      }
-    } message: { deletion in
-      Text(deletion.message)
     }
     .confirmationDialog(
       moveDestinationDialogTitle,
@@ -454,29 +447,6 @@ struct SidebarView: View {
     pendingDeletion = .selected(selectedIDs)
   }
 
-  private func confirmDeletion(_ deletion: PendingConversationDeletion) {
-    guard !deletion.ids.isEmpty else {
-      pendingDeletion = nil
-      return
-    }
-    store.deleteConversations(deletion.ids)
-    withAnimation {
-      isSelectionMode = false
-      selectedIDs.removeAll()
-    }
-    pendingDeletion = nil
-  }
-
-  private var deletionConfirmationBinding: Binding<Bool> {
-    Binding {
-      pendingDeletion != nil
-    } set: { isPresented in
-      if !isPresented {
-        pendingDeletion = nil
-      }
-    }
-  }
-
   private func updateKeyboardOverlap(from notification: Notification) {
     withAnimation(keyboardAnimation(from: notification)) {
       keyboardOverlap = keyboardOverlap(from: notification)
@@ -549,7 +519,38 @@ struct PendingConversationDeletion: Identifiable {
         "\(ids.count) selected conversation\(ids.count == 1 ? "" : "s") and their messages will be deleted. This cannot be undone."
     )
   }
+}
 
+extension View {
+  fileprivate func conversationDeletionAlert(
+    _ deletion: Binding<PendingConversationDeletion?>,
+    onConfirm: @escaping (Set<UUID>) -> Void
+  ) -> some View {
+    modifier(ConversationDeletionAlertModifier(deletion: deletion, onConfirm: onConfirm))
+  }
+}
+
+private struct ConversationDeletionAlertModifier: ViewModifier {
+  @Binding var deletion: PendingConversationDeletion?
+  let onConfirm: (Set<UUID>) -> Void
+
+  func body(content: Content) -> some View {
+    content.alert(
+      deletion?.title ?? "Delete conversations?",
+      isPresented: Binding(
+        get: { deletion != nil },
+        set: { if !$0 { deletion = nil } }),
+      presenting: deletion
+    ) { pending in
+      Button("Cancel", role: .cancel) { deletion = nil }
+      Button(pending.buttonTitle, role: .destructive) {
+        onConfirm(pending.ids)
+        deletion = nil
+      }
+    } message: { pending in
+      Text(pending.message)
+    }
+  }
 }
 
 struct PendingConversationRename: Identifiable {
@@ -587,19 +588,8 @@ struct ConversationSummaryActionsModifier: ViewModifier {
             saveRename()
           }
         }
-        .alert(
-          pendingDeletion?.title ?? "Delete conversation?",
-          isPresented: deletionConfirmationBinding,
-          presenting: pendingDeletion
-        ) { deletion in
-          Button("Cancel", role: .cancel) {
-            pendingDeletion = nil
-          }
-          Button(deletion.buttonTitle, role: .destructive) {
-            confirmDeletion(deletion)
-          }
-        } message: { deletion in
-          Text(deletion.message)
+        .conversationDeletionAlert($pendingDeletion) { ids in
+          store.deleteConversations(ids)
         }
     } else {
       content
@@ -694,25 +684,6 @@ struct ConversationSummaryActionsModifier: ViewModifier {
     } set: { isPresented in
       if !isPresented {
         clearRename()
-      }
-    }
-  }
-
-  private func confirmDeletion(_ deletion: PendingConversationDeletion) {
-    guard !deletion.ids.isEmpty else {
-      pendingDeletion = nil
-      return
-    }
-    store.deleteConversations(deletion.ids)
-    pendingDeletion = nil
-  }
-
-  private var deletionConfirmationBinding: Binding<Bool> {
-    Binding {
-      pendingDeletion != nil
-    } set: { isPresented in
-      if !isPresented {
-        pendingDeletion = nil
       }
     }
   }
