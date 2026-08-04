@@ -1579,8 +1579,7 @@ private struct ChatComposer: View {
 
   private var canSubmitDraft: Bool {
     !isResponding
-      && (!draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        || !pendingAttachments.isEmpty)
+      && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private var shouldShowPromptAutocomplete: Bool {
