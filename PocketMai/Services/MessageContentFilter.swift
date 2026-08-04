@@ -67,6 +67,13 @@ enum MessageContentFilter {
     return String(trimmed.prefix(maxLength))
   }
 
+  static func markdownPlainText(from text: String) -> String {
+    text.components(separatedBy: .newlines).map { line in
+      guard let attributed = try? AttributedString(markdown: line) else { return line }
+      return String(attributed.characters)
+    }.joined(separator: "\n")
+  }
+
   private static func scan(_ text: String, hiding tags: Set<String>) -> RenderedMessageContent {
     var cursor = text.startIndex
     var visible = ""

@@ -1183,7 +1183,9 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   }
 
   var displayPreview: String {
-    preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No messages" : preview
+    let plainText = MessageContentFilter.markdownPlainText(from: preview)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return plainText.isEmpty ? "No messages" : plainText
   }
 
   private static func previewText(from messages: [ChatMessage]) -> String {
