@@ -113,6 +113,7 @@ struct MessageBubble: View {
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
+  var searchHighlight: MessageSearchMatch? = nil
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
@@ -136,6 +137,7 @@ struct MessageBubble: View {
       appearance: appearance,
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
+      searchHighlight: searchHighlight,
       onDelete: onDelete,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
@@ -163,6 +165,7 @@ private struct StreamingMessageBubble: View {
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
+  var searchHighlight: MessageSearchMatch? = nil
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
@@ -187,6 +190,7 @@ private struct StreamingMessageBubble: View {
       appearance: appearance,
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
+      searchHighlight: searchHighlight,
       onDelete: onDelete,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
@@ -218,6 +222,7 @@ private struct MessageBubbleContent: View, Equatable {
   let appearance: AppearanceSettings
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
+  var searchHighlight: MessageSearchMatch? = nil
   let onDelete: () -> Void
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
@@ -254,6 +259,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.appearance == rhs.appearance
       && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.renderImages == rhs.renderImages
+      && lhs.searchHighlight == rhs.searchHighlight
       && lhs.showThinking == rhs.showThinking
       && lhs.isWaitingForResponse == rhs.isWaitingForResponse
       && lhs.colorScheme == rhs.colorScheme
@@ -280,6 +286,7 @@ private struct MessageBubbleContent: View, Equatable {
             rawText: displayText,
             markdownBlocks: markdownBlocks,
             usesMarkdown: usesMarkdown,
+            visiblePartIndex: prepared.visiblePartIndex(at: index),
             actionText: prepared.visibleText,
             includeMessageExtras: index == prepared.firstVisiblePartIndex
           )
@@ -320,6 +327,7 @@ private struct MessageBubbleContent: View, Equatable {
           rawText: displayText,
           markdownBlocks: markdownBlocks,
           usesMarkdown: usesMarkdown,
+          visiblePartIndex: 0,
           actionText: prepared.visibleText,
           includeMessageExtras: true
         )
@@ -337,6 +345,7 @@ private struct MessageBubbleContent: View, Equatable {
     rawText: String,
     markdownBlocks: [MarkdownBlock],
     usesMarkdown: Bool,
+    visiblePartIndex: Int,
     actionText: String? = nil,
     includeMessageExtras: Bool = true
   )
@@ -372,6 +381,18 @@ private struct MessageBubbleContent: View, Equatable {
             .font(messageFont)
             .foregroundStyle(.secondary)
         }
+      } else if let searchHighlight,
+        searchHighlight.visiblePartIndex == visiblePartIndex
+      {
+        Text(
+          searchHighlight.attributedText(
+            in: MessageContentFilter.markdownPlainText(from: visibleText))
+        )
+        .font(messageFont)
+        .lineSpacing(CGFloat(appearance.lineSpacing))
+        .foregroundStyleIfPresent(plainBodyForegroundStyle)
+        .fixedSize(horizontal: false, vertical: true)
+        .id(searchHighlight)
       } else if usesMarkdown {
         MarkdownContentView(
           blocks: markdownBlocks,
@@ -1894,10 +1915,11 @@ private struct PreparedMessageContent {
   let hideBubble: Bool
 
   var firstVisiblePartIndex: Int? {
-    parts.firstIndex {
-      if case .visible = $0 { return true }
-      return false
-    }
+    parts.firstIndex(where: \.isVisible)
+  }
+
+  func visiblePartIndex(at partIndex: Int) -> Int {
+    parts[..<partIndex].count(where: \.isVisible)
   }
 }
 
@@ -1912,6 +1934,11 @@ private enum MessageRenderPart: Identifiable {
     case .visible(let id, _), .tool(let id, _), .reasoning(let id, _), .transcript(let id, _):
       return id
     }
+  }
+
+  var isVisible: Bool {
+    if case .visible = self { return true }
+    return false
   }
 }
 

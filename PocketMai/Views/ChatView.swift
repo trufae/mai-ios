@@ -26,6 +26,7 @@ struct ChatView: View {
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
+  @State private var chatSearch = ChatSearchState()
   @State private var messageFontPinchSession = MessageFontPinchSession()
   @State private var keyboardOverlap: CGFloat = 0
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
@@ -43,9 +44,16 @@ struct ChatView: View {
     chatViewWithSheetsAndToolbar
       .onChange(of: store.selectedConversationID) { _, _ in
         cancelMessageSelection()
+        withAnimation(.snappy) { chatSearch.cancel() }
       }
       .onChange(of: currentMessageIDs) { _, _ in
         pruneSelectedMessages()
+        if chatSearch.isActive {
+          chatSearch.rebuild(messages: store.currentConversation?.messages ?? [])
+        }
+      }
+      .onChange(of: chatSearch.query) { _, _ in
+        chatSearch.refresh()
       }
       .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
         updateKeyboardOverlap(from: $0)
@@ -193,7 +201,9 @@ struct ChatView: View {
 
   @ViewBuilder
   private var bottomControls: some View {
-    if store.selectedConversationIsLoading {
+    if chatSearch.isActive {
+      ChatSearchBar(search: $chatSearch)
+    } else if store.selectedConversationIsLoading {
       Color.clear
         .frame(height: 82)
         .transition(.opacity)
@@ -224,6 +234,12 @@ struct ChatView: View {
       } label: {
         Label("Change Title...", systemImage: "pencil")
       }
+      Button {
+        beginChatSearch()
+      } label: {
+        Label("Search...", systemImage: "magnifyingglass")
+      }
+      .disabled(currentConversationIsEmpty || liveVoiceSession.isActive)
       Divider()
       Button {
         showingProviderModelSheet = true
@@ -464,6 +480,9 @@ struct ChatView: View {
       conversation.messages[index].text = text
       conversation.messages[index].displayText = nil
     }
+    if chatSearch.isActive {
+      chatSearch.rebuild(messages: store.currentConversation?.messages ?? [])
+    }
   }
 
   private func editTextAttachment(_ message: ChatMessage, attachmentID: UUID, text: String) {
@@ -525,6 +544,8 @@ struct ChatView: View {
                 .containerRelativeFrame(.vertical)
             } else {
               ForEach(renderedMessages) { message in
+                let match = chatSearch.currentMatch
+                let searchHighlight = match?.messageID == message.id ? match : nil
                 MessageSelectionRow(
                   isSelectionMode: !isPreviewingConversation && isMessageSelectionMode,
                   isSelected: !isPreviewingConversation && selectedMessageIDs.contains(message.id)
@@ -542,6 +563,7 @@ struct ChatView: View {
                     appearance: store.settings.appearance,
                     renderMarkdown: store.settings.renderMarkdownInChat,
                     renderImages: store.settings.renderMarkdownImagesInChat,
+                    searchHighlight: searchHighlight,
                     onDelete: { messagePendingDeletion = message },
                     onBeginSelection: { beginMessageSelection(with: message.id) },
                     onEdit: { editedText in editMessage(message, text: editedText) },
@@ -681,6 +703,18 @@ struct ChatView: View {
           }
           pendingScrollToMessageID = nil
         }
+        .onChange(of: chatSearch.currentMatch) { _, target in
+          guard !messageFontPinchSession.isActive,
+            let target
+          else {
+            return
+          }
+          DispatchQueue.main.async {
+            withAnimation(.snappy) {
+              proxy.scrollTo(target, anchor: .center)
+            }
+          }
+        }
       }
     }
   }
@@ -731,6 +765,14 @@ struct ChatView: View {
 
   private var currentMessageIDs: [UUID] {
     store.currentConversation?.messages.map(\.id) ?? []
+  }
+
+  private func beginChatSearch() {
+    cancelMessageSelection()
+    userScrolledAfterLastMessage = true
+    withAnimation(.snappy) {
+      chatSearch.begin(messages: store.currentConversation?.messages ?? [])
+    }
   }
 
   private var selectedMessages: [ChatMessage] {
