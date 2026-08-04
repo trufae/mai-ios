@@ -815,6 +815,9 @@ final class AppStore: ObservableObject {
 
   private func setSelectedConversationID(_ id: UUID?, remember: Bool = true) {
     selectedConversationID = id
+    if let id {
+      updateConversationUnreadState(id: id, isUnread: false)
+    }
     publishActiveConversationIfNeeded(force: true)
     if remember {
       rememberSelectedConversationID(id)
@@ -948,6 +951,34 @@ final class AppStore: ObservableObject {
     conversations[index].updatedAt = Date()
     sortConversations()
     saveConversations()
+  }
+
+  func setConversationUnread(id: UUID, isUnread: Bool) async {
+    await ensureConversationLoaded(id)
+    updateConversationUnreadState(id: id, isUnread: isUnread)
+  }
+
+  func markConversationRead(id: UUID) {
+    updateConversationUnreadState(id: id, isUnread: false)
+  }
+
+  private func updateConversationUnreadState(id: UUID, isUnread: Bool) {
+    if let index = indexedConversationIndex(for: id) {
+      guard conversations[index].isUnread != isUnread else { return }
+      conversations[index].isUnread = isUnread
+      upsertSummary(for: conversations[index])
+      saveConversations()
+      return
+    }
+
+    guard let index = conversationSummaries.firstIndex(where: { $0.id == id }),
+      conversationSummaries[index].isUnread != isUnread
+    else {
+      return
+    }
+    conversationSummaries[index].isUnread = isUnread
+    refreshRecentConversationSummaries()
+    persistence.saveConversationSummaries(conversationSummaries)
   }
 
   func cloneConversation(id: UUID) async {
@@ -1414,6 +1445,7 @@ final class AppStore: ObservableObject {
     cloned.createdAt = now
     cloned.updatedAt = now
     cloned.isPinned = false
+    cloned.isUnread = false
     cloned.lastContextSignature = nil
     if let index = indexedConversationIndex(for: conversation.id) {
       conversations.insert(cloned, at: index)
@@ -2243,6 +2275,7 @@ final class AppStore: ObservableObject {
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
       guard responseTaskTokens[conversationID] == responseTaskToken else { return }
+      let messageCountBeforeResponse = conversation(withID: conversationID)?.messages.count ?? 0
       defer {
         if responseTaskTokens[conversationID] == responseTaskToken {
           respondingConversationIDs.remove(conversationID)
@@ -2257,6 +2290,12 @@ final class AppStore: ObservableObject {
         context: context,
         store: self
       )
+      if selectedConversationID != conversationID,
+        let conversation = conversation(withID: conversationID),
+        conversation.messages.count > messageCountBeforeResponse
+      {
+        updateConversationUnreadState(id: conversationID, isUnread: true)
+      }
     }
     responseTasks[conversationID] = task
     beginResponseBackgroundTask(for: conversationID)

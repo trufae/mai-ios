@@ -128,6 +128,7 @@ struct ContentView: View {
 
   private func selectConversationFromSidebar(_ id: UUID) {
     guard id != store.selectedConversationID else {
+      store.markConversationRead(id: id)
       closeHistoryPanel()
       return
     }

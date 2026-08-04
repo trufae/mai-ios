@@ -621,6 +621,28 @@ struct ConversationSummaryActionsModifier: ViewModifier {
       )
     }
 
+    Button {
+      Task {
+        await store.setConversationUnread(
+          id: conversation.id,
+          isUnread: !conversation.isUnread)
+      }
+    } label: {
+      Label(
+        conversation.isUnread ? "Mark as Read" : "Mark as Unread",
+        systemImage: conversation.isUnread ? "envelope.open" : "envelope.badge"
+      )
+    }
+
+    Button {
+      Task { await store.cloneConversation(id: conversation.id) }
+      onAfterClone()
+    } label: {
+      Label("Clone Conversation", systemImage: "doc.on.doc")
+    }
+
+    Divider()
+
     Menu {
       ForEach(store.conversationFolders) { folder in
         Button {
@@ -637,15 +659,6 @@ struct ConversationSummaryActionsModifier: ViewModifier {
     } label: {
       Label("Move to Folder", systemImage: "folder")
     }
-
-    Button {
-      Task { await store.cloneConversation(id: conversation.id) }
-      onAfterClone()
-    } label: {
-      Label("Clone Conversation", systemImage: "doc.on.doc")
-    }
-
-    Divider()
 
     ConversationExportMenu(conversationID: conversation.id, coordinator: exportCoordinator)
 
@@ -1690,12 +1703,20 @@ private struct ConversationRow: View {
             .transition(.opacity.combined(with: .move(edge: .leading)))
         }
         VStack(alignment: .leading, spacing: 4) {
-          Text(conversation.displayTitle)
-            .font(.body.weight(.medium))
-            .lineLimit(1)
+          HStack(spacing: 6) {
+            Text(conversation.displayTitle)
+              .font(.body.weight(conversation.isUnread ? .semibold : .medium))
+              .lineLimit(1)
+            if conversation.isUnread {
+              Circle()
+                .fill(Color.accentColor)
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            }
+          }
           Text(conversation.displayPreview)
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(.caption.weight(conversation.isUnread ? .semibold : .regular))
+            .foregroundStyle(conversation.isUnread ? .primary : .secondary)
             .lineLimit(2)
         }
         Spacer()
@@ -1714,6 +1735,7 @@ private struct ConversationRow: View {
       }
     }
     .buttonStyle(.plain)
+    .accessibilityValue(conversation.isUnread ? "Unread" : "")
   }
 
   @ViewBuilder

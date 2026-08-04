@@ -1157,6 +1157,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   var createdAt: Date
   var updatedAt: Date
   var isPinned: Bool
+  var isUnread: Bool
   var folderID: String
   var preview: String
   var hasMessages: Bool
@@ -1168,6 +1169,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     createdAt = conversation.createdAt
     updatedAt = conversation.updatedAt
     isPinned = conversation.isPinned
+    isUnread = conversation.isUnread
     folderID = conversation.folderID
     hasMessages = !conversation.messages.isEmpty
     preview = Self.previewText(from: conversation.messages)
@@ -1231,6 +1233,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     case createdAt
     case updatedAt
     case isPinned
+    case isUnread
     case isArchived
     case folderID
     case preview
@@ -1245,6 +1248,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     isPinned = try container.decode(Bool.self, forKey: .isPinned)
+    isUnread = (try? container.decode(Bool.self, forKey: .isUnread)) ?? false
     let legacyArchived = (try? container.decode(Bool.self, forKey: .isArchived)) ?? false
     folderID = Conversation.normalizedFolderID(
       try? container.decode(String.self, forKey: .folderID),
@@ -1262,6 +1266,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
     try container.encode(createdAt, forKey: .createdAt)
     try container.encode(updatedAt, forKey: .updatedAt)
     try container.encode(isPinned, forKey: .isPinned)
+    try container.encode(isUnread, forKey: .isUnread)
     try container.encode(isArchived, forKey: .isArchived)
     try container.encode(folderID, forKey: .folderID)
     try container.encode(preview, forKey: .preview)
@@ -1284,6 +1289,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var enabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var usesStreaming: Bool = true
   var isPinned: Bool = false
+  var isUnread: Bool = false
   var enabledMCPServers: Set<UUID> = AppSettings.defaultMCPServers
   var enabledMCPTools: Set<String> = AppSettings.defaultMCPTools
   var disabledMCPTools: Set<String> = []
@@ -1314,6 +1320,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case enabledTools
     case usesStreaming
     case isPinned
+    case isUnread
     case enabledMCPServers
     case enabledMCPTools
     case disabledMCPTools
@@ -1341,6 +1348,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     enabledTools = try container.decode(Set<BuiltInToolID>.self, forKey: .enabledTools)
     usesStreaming = try container.decode(Bool.self, forKey: .usesStreaming)
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
+    isUnread = (try? container.decode(Bool.self, forKey: .isUnread)) ?? false
     enabledMCPServers =
       (try? container.decode(Set<UUID>.self, forKey: .enabledMCPServers)) ?? []
     enabledMCPTools =
@@ -1377,6 +1385,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(enabledTools, forKey: .enabledTools)
     try container.encode(usesStreaming, forKey: .usesStreaming)
     try container.encode(isPinned, forKey: .isPinned)
+    try container.encode(isUnread, forKey: .isUnread)
     try container.encode(enabledMCPServers, forKey: .enabledMCPServers)
     try container.encode(enabledMCPTools, forKey: .enabledMCPTools)
     try container.encode(disabledMCPTools, forKey: .disabledMCPTools)

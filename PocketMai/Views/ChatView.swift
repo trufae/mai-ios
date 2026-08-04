@@ -148,8 +148,21 @@ struct ChatView: View {
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
           Button(action: onShowHistory) {
-            Image(systemName: "sidebar.left")
+            ZStack(alignment: .topTrailing) {
+              Image(systemName: "sidebar.left")
+              if hasUnreadConversations {
+                Circle()
+                  .fill(Color.accentColor)
+                  .frame(width: 8, height: 8)
+                  .offset(x: 4, y: -3)
+                  .accessibilityHidden(true)
+              }
+            }
           }
+          .accessibilityLabel(
+            hasUnreadConversations
+              ? "Show conversations, unread messages"
+              : "Show conversations")
           .help("Show conversations")
         }
         ToolbarItem(placement: .principal) {
@@ -159,6 +172,10 @@ struct ChatView: View {
           trailingMenu
         }
       }
+  }
+
+  private var hasUnreadConversations: Bool {
+    store.conversationSummaries.contains(where: \.isUnread)
   }
 
   private var chatLayout: some View {
