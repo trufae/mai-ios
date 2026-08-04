@@ -568,7 +568,8 @@ private enum DestroyAction: Identifiable {
       return
         "All OpenAI-compatible endpoints and their stored API keys will be removed from this device."
     case .prompts:
-      return "Custom system prompts and user prompts will be removed, and the compact prompt restored to default."
+      return
+        "Custom prompts will be removed, and the stock system, user, and compact prompts restored."
     case .toolSettings:
       return
         "Tool settings, voices, todos, imported tool files, and tool-calling preferences will be reset to defaults."
@@ -626,7 +627,7 @@ struct SettingsDestroyView: View {
         destroyRow(
           title: "Prompts",
           systemImage: "text.bubble",
-          description: "Restore the default prompt and remove user prompts.",
+          description: "Restore stock prompts and remove custom prompts.",
           action: .prompts)
         destroyRow(
           title: "Tool Settings",

@@ -4489,7 +4489,7 @@ final class AppStore: ObservableObject {
 
   func clearSystemPrompts() {
     settings.systemPrompts = [AppSettings.defaultSystemPrompt]
-    settings.userPrompts = []
+    settings.userPrompts = AppSettings.defaultUserPrompts
     settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
     settings.compactPrompt = AppSettings.defaultCompactPrompt
     saveSettings()

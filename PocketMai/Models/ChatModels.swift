@@ -2576,6 +2576,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
+  static let currentStockPromptsVersion = 1
   static let recentChatLanguageLimit = 3
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
@@ -2589,6 +2590,18 @@ struct AppSettings: Codable, Equatable, Sendable {
     text:
       "You are a helpful, concise assistant for a private text-only chat app. Prefer clear answers and preserve useful formatting."
   )
+  static let goalUserPrompt = UserPrompt(
+    id: UUID(uuidString: "3E95C9C9-9E2D-4E3F-A7A8-4AD40A69D0B1")!,
+    name: "goal",
+    text: """
+      Treat the request below as a research goal.
+
+      Plan and carry out the research needed to satisfy it. Break the goal into concrete questions, use available tools to gather current evidence, prefer primary sources, corroborate important claims, and follow promising leads. Keep track of uncertainties and conflicting evidence instead of guessing. Continue until the evidence is sufficient or you are genuinely blocked.
+
+      Return a concise synthesis that directly answers the goal, cites or links the sources used, distinguishes facts from inference, and calls out remaining uncertainty. If no research goal follows these instructions, ask for one.
+      """
+  )
+  static let defaultUserPrompts = [goalUserPrompt]
   static let defaultCompactPrompt = """
     Compact the transcript below into durable context for continuing the same chat.
 
@@ -2614,11 +2627,12 @@ struct AppSettings: Codable, Equatable, Sendable {
   var showThinkingByDefault: Bool = false
   var openAIEndpoints: [OpenAIEndpoint] = []
   var systemPrompts: [SystemPrompt] = [AppSettings.defaultSystemPrompt]
-  var userPrompts: [UserPrompt] = []
+  var userPrompts: [UserPrompt] = AppSettings.defaultUserPrompts
   var defaultSystemPromptID: UUID = AppSettings.defaultSystemPrompt.id
   var compactPrompt: String = AppSettings.defaultCompactPrompt
   var defaultEnabledTools: Set<BuiltInToolID> = AppSettings.defaultTools
   var settingsVersion: Int = AppSettings.currentSettingsVersion
+  var stockPromptsVersion: Int = AppSettings.currentStockPromptsVersion
   var defaultEnabledMCPServers: Set<UUID> = AppSettings.defaultMCPServers
   var defaultEnabledMCPTools: Set<String> = AppSettings.defaultMCPTools
   var toolSettings: NativeToolSettings = .defaults
@@ -2758,7 +2772,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case settingsVersion
+    case settingsVersion, stockPromptsVersion
     case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
       showThinkingByDefault
     case openAIEndpoints, systemPrompts, userPrompts, defaultSystemPromptID, compactPrompt
@@ -2782,6 +2796,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     let storedSettingsVersion =
       (try? c.decode(Int.self, forKey: .settingsVersion)) ?? 0
     settingsVersion = Self.currentSettingsVersion
+    let storedStockPromptsVersion =
+      (try? c.decode(Int.self, forKey: .stockPromptsVersion)) ?? 0
+    stockPromptsVersion = Self.currentStockPromptsVersion
     defaultProvider =
       (try? c.decode(ProviderKind.self, forKey: .defaultProvider)) ?? .mlx
     appleModelID = (try? c.decode(String.self, forKey: .appleModelID)) ?? ""
@@ -2798,6 +2815,15 @@ struct AppSettings: Codable, Equatable, Sendable {
       ?? [AppSettings.defaultSystemPrompt]
     userPrompts =
       (try? c.decode([UserPrompt].self, forKey: .userPrompts)) ?? []
+    if storedStockPromptsVersion < Self.currentStockPromptsVersion {
+      let existingCommands = Set(
+        (systemPrompts.map(\.slashCommandName) + userPrompts.map(\.slashCommandName))
+          .map(PromptSlashCommand.normalized))
+      userPrompts.append(
+        contentsOf: Self.defaultUserPrompts.filter {
+          !existingCommands.contains(PromptSlashCommand.normalized($0.slashCommandName))
+        })
+    }
     defaultSystemPromptID =
       (try? c.decode(UUID.self, forKey: .defaultSystemPromptID))
       ?? (systemPrompts.first?.id ?? AppSettings.defaultSystemPrompt.id)
