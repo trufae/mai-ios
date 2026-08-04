@@ -135,7 +135,7 @@ let endpointProviderPresets: [EndpointProviderPreset] = [
 private let customProviderTag = "__custom__"
 
 private enum TTSVoiceCache {
-  static let voices: [AVSpeechSynthesisVoice] = AVSpeechSynthesisVoice.speechVoices().sorted {
+  static let voices: [AVSpeechSynthesisVoice] = SystemLanguageSupport.textToSpeechVoices.sorted {
     $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
   }
 

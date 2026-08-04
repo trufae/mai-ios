@@ -5,6 +5,10 @@ struct PocketMaiApp: App {
   @State private var store = AppStore()
   private let ttsPlayer = TTSPlayer.shared
 
+  init() {
+    SystemLanguageSupport.preload()
+  }
+
   var body: some Scene {
     WindowGroup {
       PocketMaiRootView(store: store, ttsPlayer: ttsPlayer)

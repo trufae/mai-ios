@@ -188,7 +188,20 @@ struct ChatView: View {
   }
 
   private var chatTitle: some View {
-    Menu {
+    let languageOptions = SystemLanguageSupport.chatLanguageIdentifiers(
+      including: currentLanguageOverrideIdentifier
+    )
+    let availableLanguageIdentifiers = Set(languageOptions)
+    let recentLanguageOptions = AppSettings.normalizedRecentChatLanguageIdentifiers(
+      store.settings.recentChatLanguageIdentifiers
+    )
+    .filter { availableLanguageIdentifiers.contains($0) }
+    let recentLanguageIdentifiers = Set(recentLanguageOptions)
+    let remainingLanguageOptions = languageOptions.filter {
+      !recentLanguageIdentifiers.contains($0)
+    }
+
+    return Menu {
       Button {
         beginRename()
       } label: {
@@ -228,7 +241,7 @@ struct ChatView: View {
           }
         }
         Divider()
-        ForEach(recentLanguageMenuOptions, id: \.self) { identifier in
+        ForEach(recentLanguageOptions, id: \.self) { identifier in
           Button {
             store.setCurrentConversationLanguageOverride(identifier)
           } label: {
@@ -239,10 +252,10 @@ struct ChatView: View {
             }
           }
         }
-        if !recentLanguageMenuOptions.isEmpty {
+        if !recentLanguageOptions.isEmpty {
           Divider()
         }
-        ForEach(remainingLanguageMenuOptions, id: \.self) { identifier in
+        ForEach(remainingLanguageOptions, id: \.self) { identifier in
           Button {
             store.setCurrentConversationLanguageOverride(identifier)
           } label: {
@@ -316,23 +329,6 @@ struct ChatView: View {
 
   private var currentLanguageOverrideIdentifier: String? {
     store.currentConversation?.effectiveLanguageOverrideIdentifier
-  }
-
-  private var languageMenuOptions: [String] {
-    SystemLanguageSupport.chatLanguageIdentifiers(including: currentLanguageOverrideIdentifier)
-  }
-
-  private var recentLanguageMenuOptions: [String] {
-    let availableIdentifiers = Set(languageMenuOptions)
-    return AppSettings.normalizedRecentChatLanguageIdentifiers(
-      store.settings.recentChatLanguageIdentifiers
-    )
-    .filter { availableIdentifiers.contains($0) }
-  }
-
-  private var remainingLanguageMenuOptions: [String] {
-    let recentIdentifiers = Set(recentLanguageMenuOptions)
-    return languageMenuOptions.filter { !recentIdentifiers.contains($0) }
   }
 
   private var currentToolSettings: NativeToolSettings {
@@ -595,11 +591,9 @@ struct ChatView: View {
             MessageListPinchBridge(
               zoomMethod: store.settings.appearance.zoomMethod,
               baseFontSize: store.settings.appearance.fontSize,
-              onBegan: { scrollView, viewportY in
+              onBegan: { scrollView, contentPoint in
                 messageFontPinchSession.isActive = true
-                messageFontPinchSession.captureAnchor(
-                  at: viewportY,
-                  viewportHeight: scrollView.bounds.height)
+                messageFontPinchSession.captureAnchor(in: scrollView, at: contentPoint)
                 store.streamingTextStore.setPublishingSuspended(true)
               },
               onEnded: { magnification, scrollView, contentFraction, viewportY in
@@ -844,9 +838,7 @@ struct ChatView: View {
     if messageFontPinchSession.realtimeBaseFontSize == nil {
       messageFontPinchSession.isActive = true
       userScrolledAfterLastMessage = true
-      messageFontPinchSession.captureAnchor(
-        at: viewportY,
-        viewportHeight: scrollView.bounds.height)
+      messageFontPinchSession.captureAnchor(in: scrollView, at: contentPoint)
       messageFontPinchSession.beginRealtime(
         baseFontSize: baseSize,
         contentPointY: contentPoint.y,
@@ -876,7 +868,15 @@ struct ChatView: View {
       await Task.yield()
       guard messageFontPinchSession.isCurrentRealtimeRevision(revision) else { return }
 
-      if let anchor = messageFontPinchSession.semanticAnchor,
+      if let textCorrection = messageFontPinchSession.textAnchorCorrection(in: scrollView) {
+        scrollView.setContentOffset(
+          CGPoint(
+            x: 0,
+            y: clampedScrollOffsetY(
+              scrollView.contentOffset.y + textCorrection,
+              in: scrollView)),
+          animated: false)
+      } else if let anchor = messageFontPinchSession.semanticAnchor,
         let frame = messageFontPinchSession.frame(for: anchor.messageID)
       {
         let measuredAnchorY = frame.minY + frame.height * anchor.rowFraction
@@ -967,7 +967,8 @@ struct ChatView: View {
     proxy: ScrollViewProxy,
     completion: @escaping () -> Void
   ) {
-    guard let anchor = messageFontPinchSession.semanticAnchor else {
+    let anchor = messageFontPinchSession.semanticAnchor
+    guard messageFontPinchSession.hasTextAnchor || anchor != nil else {
       preserveProportionalPinchPosition(
         in: scrollView,
         contentFraction: contentFraction,
@@ -977,9 +978,37 @@ struct ChatView: View {
     }
 
     Task { @MainActor in
-      // First make the semantic row materialize under the new font metrics. Its exact position is
-      // corrected on the following layout turns, so LazyVStack height estimates are not trusted.
       await Task.yield()
+      scrollView.layoutIfNeeded()
+      await Task.yield()
+
+      // The word under the initial two-finger midpoint is the primary anchor. Resolving it touches
+      // only one existing TextKit layout and avoids scanning or re-tokenizing the message tree.
+      if let textCorrection = messageFontPinchSession.textAnchorCorrection(in: scrollView) {
+        scrollView.setContentOffset(
+          CGPoint(
+            x: 0,
+            y: clampedScrollOffsetY(
+              scrollView.contentOffset.y + textCorrection,
+              in: scrollView)),
+          animated: false)
+        messageFontPinchSession.clearAnchor()
+        completion()
+        return
+      }
+
+      guard let anchor else {
+        messageFontPinchSession.clearAnchor()
+        preserveProportionalPinchPosition(
+          in: scrollView,
+          contentFraction: contentFraction,
+          viewportY: viewportY,
+          completion: completion)
+        return
+      }
+
+      // If the UIKit text view was replaced, make the semantic row materialize and use its
+      // proportional point. This is also the path for SwiftUI-only text blocks.
       var transaction = Transaction()
       transaction.disablesAnimations = true
       withTransaction(transaction) {
@@ -2567,7 +2596,16 @@ private final class MessageFontPinchSession {
   private(set) var realtimeContentFraction: CGFloat = 0
   private(set) var realtimeViewportY: CGFloat = 0
   private var rowFrames: [UUID: CGRect] = [:]
+  private weak var textAnchorView: UITextView?
+  private var textAnchorRange: NSRange?
+  private var textAnchorValue: String?
+  private var textAnchorUnitY: CGFloat = 0.5
+  private var textAnchorViewportY: CGFloat?
   private var realtimeRevision = 0
+
+  var hasTextAnchor: Bool {
+    textAnchorView != nil && textAnchorRange != nil && textAnchorViewportY != nil
+  }
 
   func updateFrame(_ frame: CGRect, for messageID: UUID) {
     guard frame.height.isFinite, frame.height > 0, frame.minY.isFinite else { return }
@@ -2578,7 +2616,13 @@ private final class MessageFontPinchSession {
     rowFrames.removeValue(forKey: messageID)
   }
 
-  func captureAnchor(at viewportY: CGFloat, viewportHeight: CGFloat) {
+  func captureAnchor(in scrollView: UIScrollView, at contentPoint: CGPoint) {
+    let viewportY = contentPoint.y - scrollView.contentOffset.y
+    captureSemanticAnchor(at: viewportY, viewportHeight: scrollView.bounds.height)
+    captureTextAnchor(in: scrollView, at: contentPoint, viewportY: viewportY)
+  }
+
+  private func captureSemanticAnchor(at viewportY: CGFloat, viewportHeight: CGFloat) {
     let visibleFrames = rowFrames.filter { _, frame in
       frame.maxY >= 0 && frame.minY <= viewportHeight
     }
@@ -2602,6 +2646,18 @@ private final class MessageFontPinchSession {
 
   func clearAnchor() {
     semanticAnchor = nil
+    textAnchorView = nil
+    textAnchorRange = nil
+    textAnchorValue = nil
+    textAnchorUnitY = 0.5
+    textAnchorViewportY = nil
+  }
+
+  func textAnchorCorrection(in scrollView: UIScrollView) -> CGFloat? {
+    guard let targetViewportY = textAnchorViewportY,
+      let resolvedViewportY = resolvedTextAnchorViewportY(in: scrollView)
+    else { return nil }
+    return resolvedViewportY - targetViewportY
   }
 
   func beginRealtime(
@@ -2634,13 +2690,143 @@ private final class MessageFontPinchSession {
     realtimeBaseFontSize = nil
     realtimeContentFraction = 0
     realtimeViewportY = 0
-    semanticAnchor = nil
+    clearAnchor()
   }
 
   func resetMetrics() {
-    semanticAnchor = nil
     finishRealtime()
     rowFrames.removeAll(keepingCapacity: true)
+  }
+
+  private func captureTextAnchor(
+    in scrollView: UIScrollView,
+    at contentPoint: CGPoint,
+    viewportY: CGFloat
+  ) {
+    textAnchorView = nil
+    textAnchorRange = nil
+    textAnchorValue = nil
+    textAnchorViewportY = nil
+
+    guard let textView = textView(at: contentPoint, in: scrollView),
+      textView.textStorage.length > 0
+    else { return }
+
+    textView.layoutIfNeeded()
+    let layoutManager = textView.layoutManager
+    layoutManager.ensureLayout(for: textView.textContainer)
+    let localPoint = textView.convert(contentPoint, from: scrollView)
+    let textContainerPoint = CGPoint(
+      x: localPoint.x - textView.textContainerInset.left,
+      y: localPoint.y - textView.textContainerInset.top)
+    let characterIndex = layoutManager.characterIndex(
+      for: textContainerPoint,
+      in: textView.textContainer,
+      fractionOfDistanceBetweenInsertionPoints: nil)
+    let clampedIndex = min(max(characterIndex, 0), textView.textStorage.length - 1)
+    let range = wordRange(at: clampedIndex, in: textView.textStorage.string as NSString)
+    guard let rect = textRect(for: range, in: textView), rect.height > 0 else { return }
+
+    let wordTop = textView.textContainerInset.top + rect.minY
+    textAnchorView = textView
+    textAnchorRange = range
+    textAnchorValue = (textView.textStorage.string as NSString).substring(with: range)
+    textAnchorUnitY = min(max((localPoint.y - wordTop) / rect.height, 0), 1)
+    textAnchorViewportY = viewportY
+  }
+
+  private func resolvedTextAnchorViewportY(in scrollView: UIScrollView) -> CGFloat? {
+    guard let textView = textAnchorView,
+      textView.isDescendant(of: scrollView),
+      let range = textAnchorRange,
+      let value = textAnchorValue,
+      range.location >= 0,
+      NSMaxRange(range) <= textView.textStorage.length,
+      (textView.textStorage.string as NSString).substring(with: range) == value
+    else { return nil }
+
+    textView.layoutIfNeeded()
+    guard let rect = textRect(for: range, in: textView), rect.height > 0 else { return nil }
+    let localPoint = CGPoint(
+      x: textView.textContainerInset.left + rect.midX,
+      y: textView.textContainerInset.top + rect.minY + rect.height * textAnchorUnitY)
+    let contentPoint = textView.convert(localPoint, to: scrollView)
+    return contentPoint.y - scrollView.contentOffset.y
+  }
+
+  private func textView(at contentPoint: CGPoint, in scrollView: UIScrollView) -> UITextView? {
+    func find(in view: UIView) -> UITextView? {
+      for subview in view.subviews.reversed()
+      where !subview.isHidden && subview.alpha > 0.01
+      {
+        let localPoint = subview.convert(contentPoint, from: scrollView)
+        guard subview.bounds.insetBy(dx: -4, dy: -4).contains(localPoint) else { continue }
+        if let textView = subview as? UITextView, textView.textStorage.length > 0 {
+          return textView
+        }
+        if let nested = find(in: subview) {
+          return nested
+        }
+      }
+      return nil
+    }
+    return find(in: scrollView)
+  }
+
+  private func wordRange(at characterIndex: Int, in string: NSString) -> NSRange {
+    guard string.length > 0 else { return NSRange(location: 0, length: 0) }
+    let wordCharacters = CharacterSet.alphanumerics.union(
+      CharacterSet(charactersIn: "_'’"))
+
+    func composedRange(at index: Int) -> NSRange {
+      string.rangeOfComposedCharacterSequence(at: min(max(index, 0), string.length - 1))
+    }
+
+    func isWord(at index: Int) -> Bool {
+      let range = composedRange(at: index)
+      return string.substring(with: range).rangeOfCharacter(from: wordCharacters) != nil
+    }
+
+    var seed = min(max(characterIndex, 0), string.length - 1)
+    if !isWord(at: seed) {
+      for distance in 1...32 {
+        let left = seed - distance
+        let right = seed + distance
+        if left >= 0, isWord(at: left) {
+          seed = left
+          break
+        }
+        if right < string.length, isWord(at: right) {
+          seed = right
+          break
+        }
+      }
+    }
+    guard isWord(at: seed) else { return composedRange(at: seed) }
+
+    var range = composedRange(at: seed)
+    while range.location > 0 {
+      let previous = composedRange(at: range.location - 1)
+      guard isWord(at: previous.location) else { break }
+      range = NSUnionRange(range, previous)
+    }
+    while NSMaxRange(range) < string.length {
+      let next = composedRange(at: NSMaxRange(range))
+      guard isWord(at: next.location) else { break }
+      range = NSUnionRange(range, next)
+    }
+    return range
+  }
+
+  private func textRect(for range: NSRange, in textView: UITextView) -> CGRect? {
+    guard range.length > 0, NSMaxRange(range) <= textView.textStorage.length else { return nil }
+    let layoutManager = textView.layoutManager
+    layoutManager.ensureLayout(for: textView.textContainer)
+    let glyphRange = layoutManager.glyphRange(
+      forCharacterRange: range,
+      actualCharacterRange: nil)
+    guard glyphRange.length > 0 else { return nil }
+    return layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
   }
 }
 
@@ -2655,7 +2841,7 @@ private extension CGRect {
 private struct MessageListPinchBridge: UIViewRepresentable {
   let zoomMethod: AppearanceZoomMethod
   let baseFontSize: Double
-  var onBegan: (UIScrollView, CGFloat) -> Void
+  var onBegan: (UIScrollView, CGPoint) -> Void
   var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
   var onCancelled: () -> Void
   var onRealtimeChanged: (CGFloat, UIScrollView, CGPoint) -> Void
@@ -2703,7 +2889,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
   final class Coordinator: NSObject, UIGestureRecognizerDelegate {
     private(set) var zoomMethod: AppearanceZoomMethod
     var baseFontSize: Double
-    var onBegan: (UIScrollView, CGFloat) -> Void
+    var onBegan: (UIScrollView, CGPoint) -> Void
     var onEnded: (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void
     var onCancelled: () -> Void
     var onRealtimeChanged: (CGFloat, UIScrollView, CGPoint) -> Void
@@ -2726,7 +2912,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
     init(
       zoomMethod: AppearanceZoomMethod,
       baseFontSize: Double,
-      onBegan: @escaping (UIScrollView, CGFloat) -> Void,
+      onBegan: @escaping (UIScrollView, CGPoint) -> Void,
       onEnded: @escaping (CGFloat, UIScrollView, CGFloat, CGFloat) -> Void,
       onCancelled: @escaping () -> Void,
       onRealtimeChanged: @escaping (CGFloat, UIScrollView, CGPoint) -> Void,
@@ -2833,7 +3019,7 @@ private struct MessageListPinchBridge: UIViewRepresentable {
         pinchAnchor = touchMidpoint(of: recognizer, in: transformView)
       }
       scrollView.panGestureRecognizer.isEnabled = false
-      onBegan(scrollView, viewportY ?? contentPoint.y - scrollView.contentOffset.y)
+      onBegan(scrollView, contentPoint)
       applyTransform(for: recognizer, in: scrollView)
     }
 
