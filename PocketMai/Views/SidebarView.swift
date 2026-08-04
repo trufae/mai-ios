@@ -106,24 +106,38 @@ struct SidebarView: View {
     let query = searchQuery
     let folderID = store.selectedConversationFolderID
     let summaries = store.conversationSummaries
-    let loadedMessageTextsByID: [UUID: [String]]
-    if query.isEmpty {
-      loadedMessageTextsByID = [:]
-    } else {
-      loadedMessageTextsByID = Dictionary(
-        uniqueKeysWithValues: store.conversations.map { conversation in
-          (conversation.id, conversation.messages.map(\.text))
-        })
-    }
 
     visibleConversationsRefreshTask = Task { @MainActor in
-      let next = await Self.filteredVisibleConversations(
-        summaries: summaries,
-        query: query,
-        folderID: folderID,
-        loadedMessageTextsByID: loadedMessageTextsByID)
+      if !query.isEmpty {
+        do {
+          try await Task.sleep(for: .milliseconds(150))
+        } catch {
+          return
+        }
+      }
       guard !Task.isCancelled,
         visibleConversationsRefreshGeneration == generation
+      else {
+        return
+      }
+
+      let loadedConversations = query.isEmpty ? [] : store.conversations
+
+      let filteringTask = Task.detached(priority: .userInitiated) {
+        Self.filteredVisibleConversations(
+          summaries: summaries,
+          query: query,
+          folderID: folderID,
+          loadedConversations: loadedConversations)
+      }
+      let next = await withTaskCancellationHandler {
+        await filteringTask.value
+      } onCancel: {
+        filteringTask.cancel()
+      }
+      guard !Task.isCancelled,
+        visibleConversationsRefreshGeneration == generation,
+        let next
       else {
         return
       }
@@ -133,39 +147,60 @@ struct SidebarView: View {
     }
   }
 
-  private static func filteredVisibleConversations(
+  nonisolated private static func filteredVisibleConversations(
     summaries: [ConversationSummary],
     query: String,
     folderID: String,
-    loadedMessageTextsByID: [UUID: [String]]
-  ) async -> [ConversationSummary] {
-    await Task.detached(priority: .userInitiated) {
+    loadedConversations: [Conversation]
+  ) -> [ConversationSummary]? {
+    var loadedConversationsByID: [UUID: Conversation] = [:]
+    if !query.isEmpty {
+      loadedConversationsByID.reserveCapacity(loadedConversations.count)
+      for conversation in loadedConversations {
+        guard !Task.isCancelled else { return nil }
+        loadedConversationsByID[conversation.id] = conversation
+      }
+    }
+
+    var visible: [ConversationSummary] = []
+    visible.reserveCapacity(summaries.count)
+    for summary in summaries {
+      guard !Task.isCancelled else { return nil }
       if query.isEmpty {
-        return summaries.filter { $0.folderID == folderID }
+        if summary.folderID == folderID {
+          visible.append(summary)
+        }
+      } else if conversation(
+        summary,
+        matches: query,
+        loadedMessages: loadedConversationsByID[summary.id]?.messages ?? [])
+      {
+        visible.append(summary)
       }
-      return summaries.filter {
-        conversation(
-          $0,
-          matches: query,
-          loadedMessageTexts: loadedMessageTextsByID[$0.id] ?? [])
-      }
-    }.value
+    }
+    return visible
   }
 
-  private static func conversation(
+  nonisolated private static func conversation(
     _ summary: ConversationSummary,
     matches query: String,
-    loadedMessageTexts: [String]
+    loadedMessages: [ChatMessage]
   ) -> Bool {
     guard !query.isEmpty else { return true }
     if text(summary.displayTitle, contains: query) || text(summary.displayPreview, contains: query)
     {
       return true
     }
-    return loadedMessageTexts.contains { text($0, contains: query) }
+    for message in loadedMessages {
+      guard !Task.isCancelled else { return false }
+      if text(message.text, contains: query) {
+        return true
+      }
+    }
+    return false
   }
 
-  private static func text(_ text: String, contains query: String) -> Bool {
+  nonisolated private static func text(_ text: String, contains query: String) -> Bool {
     text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
   }
 
