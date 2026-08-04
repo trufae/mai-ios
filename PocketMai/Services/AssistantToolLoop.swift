@@ -1199,12 +1199,10 @@ enum AssistantToolLoop {
       ? baseSystem
       : "\(baseSystem)\n\n## Context\n\(requestState.context)"
     var messages = [ConversationDebugPromptMessage(role: "system", content: systemContent)]
-    let limited: [ChatMessage] = {
-      if let limit = store.settings.contextWindowMode.messageLimit {
-        return Array(conversation.messages.suffix(limit))
-      }
-      return conversation.messages
-    }()
+    let limited = PromptComposer.contextMessages(
+      from: conversation,
+      settings: store.settings,
+      limit: store.settings.contextWindowMode.messageLimit)
     messages.append(
       contentsOf: limited.flatMap { message in
         PromptComposer.contextTranscriptEntries(from: message, settings: store.settings).map {

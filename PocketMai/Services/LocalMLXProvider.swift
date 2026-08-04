@@ -291,12 +291,8 @@ actor LocalMLXProvider {
     var messages: [Chat.Message] = [.system(systemContent)]
 
     let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
-    let limited: [ChatMessage] = {
-      if let effectiveLimit {
-        return Array(conversation.messages.suffix(effectiveLimit))
-      }
-      return conversation.messages
-    }()
+    let limited = PromptComposer.contextMessages(
+      from: conversation, settings: settings, limit: effectiveLimit)
 
     for message in limited {
       for entry in PromptComposer.contextTranscriptEntries(from: message, settings: settings) {

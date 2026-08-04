@@ -3879,10 +3879,8 @@ final class AppStore: ObservableObject {
     toolPrompt: String = "",
     toolPromptInContext: Bool = false
   ) -> [ConversationDebugPromptMessage] {
-    let limited: [ChatMessage] = {
-      if let messageLimit { return Array(conversation.messages.suffix(messageLimit)) }
-      return conversation.messages
-    }()
+    let limited = PromptComposer.contextMessages(
+      from: conversation, settings: settings, limit: messageLimit)
     var messages = [ConversationDebugPromptMessage(role: "system", content: systemPrompt)]
     messages.append(
       contentsOf: limited.flatMap { message in

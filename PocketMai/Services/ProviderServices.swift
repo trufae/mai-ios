@@ -20,6 +20,7 @@ enum ChatProviderError: LocalizedError {
   case emptyResponse
   case appleModelUnavailable(String)
   case providerRequestFailed(String)
+  case providerHTTPError(statusCode: Int, message: String)
   case providerUnavailableInAirplaneMode(String)
 
   var errorDescription: String? {
@@ -29,6 +30,10 @@ enum ChatProviderError: LocalizedError {
     case .emptyResponse: "The provider returned an empty response."
     case .appleModelUnavailable(let reason): reason
     case .providerRequestFailed(let reason): reason
+    case .providerHTTPError(let statusCode, let message):
+      message.isEmpty
+        ? "Provider returned HTTP \(statusCode)."
+        : "Provider returned HTTP \(statusCode): \(message)"
     case .providerUnavailableInAirplaneMode(let name):
       "Airplane mode is enabled. Switch this chat to MLX Local before using \(name)."
     }
@@ -124,10 +129,13 @@ enum ChatProviderRouter {
       return true
     }
     let candidates: [String] = {
-      if let chatError = error as? ChatProviderError,
-        case .providerRequestFailed(let message) = chatError
-      {
-        return [message, error.localizedDescription]
+      if let chatError = error as? ChatProviderError {
+        switch chatError {
+        case .providerRequestFailed(let message), .providerHTTPError(_, let message):
+          return [message, error.localizedDescription]
+        default:
+          break
+        }
       }
       return [error.localizedDescription]
     }()
@@ -143,10 +151,9 @@ enum ChatProviderRouter {
   }
 }
 
-// Per-endpoint, per-model capability flags learned at runtime — either from the
-// provider's /models response (when it exposes modality info) or from a prior
-// 400 response that rejected our request. Consulted before any name-based
-// heuristic so the answer reflects what the provider actually accepts.
+// Per-endpoint, per-model capability flags learned from provider metadata.
+// Request failures must not mutate capability: a working vision model may still
+// return a transient timeout, 5xx, or endpoint-specific validation error.
 final class ModelCapabilityCache: @unchecked Sendable {
   struct Entry {
     var supportsImageInput: Bool?
@@ -356,24 +363,24 @@ enum PromptComposer {
       : "\(baseSystem)\n\n## Context\n\(context)"
     var messages = [OpenAIMessage(role: "system", content: systemContent)]
     let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
-    let limited: [ChatMessage] = {
-      if let limit = effectiveLimit {
-        return Array(conversation.messages.suffix(limit))
-      }
-      return conversation.messages
-    }()
+    let limited = contextMessages(
+      from: conversation,
+      settings: settings,
+      limit: effectiveLimit,
+      excludingMessageID: excludingMessageID)
     let echoReasoningContent = OpenAICompatibleProvider.shouldEchoReasoningContent(
       model: model, endpoint: endpoint, settings: settings)
     let includeImageAttachments = ProviderVisionSupport.openAICompatibleSupportsVision(
       model: model, endpoint: endpoint)
+    let latestUserMessageID = limited.last(where: { $0.role == .user })?.id
     messages.append(
       contentsOf: limited.flatMap { message -> [OpenAIMessage] in
-        if message.id == excludingMessageID { return [] }
         return openAIHistoryMessages(
           from: message,
           includeAssistantResponses: settings.includeAssistantResponsesInContext,
           echoReasoningContent: echoReasoningContent,
-          includeImageAttachments: includeImageAttachments)
+          includeImageAttachments: includeImageAttachments
+            && message.id == latestUserMessageID)
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
@@ -580,10 +587,7 @@ enum PromptComposer {
   )
     -> String
   {
-    let limited: [ChatMessage] = {
-      if let limit { return Array(conversation.messages.suffix(limit)) }
-      return conversation.messages
-    }()
+    let limited = contextMessages(from: conversation, settings: settings, limit: limit)
     let transcript = limited.flatMap { message -> [String] in
       contextTranscriptEntries(from: message, settings: settings).map { entry in
         "\(entry.displayName):\n\(entry.content)"
@@ -597,6 +601,20 @@ enum PromptComposer {
   struct TranscriptEntry {
     var displayName: String
     var content: String
+  }
+
+  static func contextMessages(
+    from conversation: Conversation,
+    settings: AppSettings,
+    limit: Int?,
+    excludingMessageID: UUID? = nil
+  ) -> [ChatMessage] {
+    let usable = conversation.messages.filter { message in
+      message.id != excludingMessageID
+        && !contextTranscriptEntries(from: message, settings: settings).isEmpty
+    }
+    guard let limit else { return usable }
+    return Array(usable.suffix(limit))
   }
 
   static func contextTranscriptEntries(
@@ -900,6 +918,11 @@ enum AppleFoundationProvider {
 enum OpenAIMessageContent: Encodable, Sendable {
   case text(String)
   case parts([OpenAIMessageContentPart])
+
+  var containsImageInput: Bool {
+    guard case .parts(let parts) = self else { return false }
+    return parts.contains { $0.imageURL != nil }
+  }
 
   func encode(to encoder: Encoder) throws {
     var container = encoder.singleValueContainer()
@@ -1697,34 +1720,40 @@ enum OpenAICompatibleProvider {
       request.conversation.modelID.isEmpty ? endpoint.defaultModel : request.conversation.modelID
 
     func send() async throws -> String {
+      let messages = PromptComposer.openAIMessages(
+        conversation: request.conversation,
+        settings: request.settings,
+        context: request.context,
+        model: model,
+        endpoint: endpoint,
+        excludingMessageID: request.nativeContinuationMessages.isEmpty
+          ? nil : request.assistantMessageID,
+        nativeContinuationMessages: request.nativeContinuationMessages,
+        toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
+        toolPromptInContext: request.toolPromptInContext,
+        messageLimitOverride: request.messageLimitOverride
+      )
       let body = try JSONEncoder().encode(
         OpenAIChatRequest(
           model: model,
-          messages: PromptComposer.openAIMessages(
-            conversation: request.conversation,
-            settings: request.settings,
-            context: request.context,
-            model: model,
-            endpoint: endpoint,
-            excludingMessageID: request.nativeContinuationMessages.isEmpty
-              ? nil : request.assistantMessageID,
-            nativeContinuationMessages: request.nativeContinuationMessages,
-            toolPrompt: request.nativeTools == nil ? request.toolPrompt : "",
-            toolPromptInContext: request.toolPromptInContext,
-            messageLimitOverride: request.messageLimitOverride
-          ),
+          messages: messages,
           stream: request.conversation.usesStreaming,
           tools: request.nativeTools,
           reasoningLevel: request.conversation.reasoningLevel,
           endpoint: endpoint
         )
       )
-      let urlRequest = try endpointRequest(
+      var urlRequest = try endpointRequest(
         endpoint: endpoint,
         url: chatCompletionsURL(from: endpoint.baseURL),
         method: "POST",
         contentType: "application/json",
         body: body)
+      if messages.contains(where: { $0.content?.containsImageInput == true }) {
+        // Larger vision models may need more than URLRequest's default 60 seconds
+        // before producing their first streamed byte. Do not retry the large payload.
+        urlRequest.timeoutInterval = 180
+      }
 
       if request.conversation.usesStreaming {
         return try await stream(request: urlRequest, onUpdate: onUpdate)
@@ -1732,37 +1761,7 @@ enum OpenAICompatibleProvider {
       return try await completeOnce(request: urlRequest, onUpdate: onUpdate)
     }
 
-    // First attempt uses whatever the current capability cache + heuristics decide.
-    // If the provider rejects the request specifically because of image_url parts
-    // we just sent, remember that fact and retry once without images. The rebuilt
-    // body will skip the attachments because openAICompatibleSupportsVision now
-    // sees the cached "false" entry.
-    let visionWasEnabled = ProviderVisionSupport.openAICompatibleSupportsVision(
-      model: model, endpoint: endpoint)
-    do {
-      return try await send()
-    } catch let error as ChatProviderError
-      where visionWasEnabled
-      && isImageInputRejection(error)
-    {
-      ModelCapabilityCache.shared.record(
-        supportsImageInput: false, endpointID: endpoint.id, model: model)
-      return try await send()
-    }
-  }
-
-  private static func isImageInputRejection(_ error: ChatProviderError) -> Bool {
-    guard case .providerRequestFailed(let message) = error else { return false }
-    let lower = message.lowercased()
-    // "image_url" only ever appears in provider errors that reject the OpenAI-style
-    // image content variant (e.g. DeepSeek's "unknown variant `image_url`, expected `text`").
-    if lower.contains("image_url") { return true }
-    if lower.contains("image input")
-      && (lower.contains("not supported") || lower.contains("unsupported"))
-    {
-      return true
-    }
-    return false
+    return try await send()
   }
 
   static func selectedEndpoint(for conversation: Conversation, settings: AppSettings)
@@ -2064,16 +2063,15 @@ enum OpenAICompatibleProvider {
     if let error = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
       let message = error.error.message ?? "Request failed"
       let type = error.error.type.map { " (\($0))" } ?? ""
-      return .providerRequestFailed("Provider returned HTTP \(statusCode): \(message)\(type)")
+      return .providerHTTPError(statusCode: statusCode, message: "\(message)\(type)")
     }
     let body =
       String(data: data, encoding: .utf8)?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if body.isEmpty {
-      return .providerRequestFailed("Provider returned HTTP \(statusCode).")
+      return .providerHTTPError(statusCode: statusCode, message: "")
     }
-    return .providerRequestFailed(
-      "Provider returned HTTP \(statusCode): \(String(body.prefix(500)))")
+    return .providerHTTPError(statusCode: statusCode, message: String(body.prefix(500)))
   }
 
   private static func decodeChatResponseText(from data: Data) throws -> String {

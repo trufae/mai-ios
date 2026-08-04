@@ -1295,6 +1295,8 @@ enum MCPHTTPClient {
         return true
       case .providerRequestFailed(let message):
         return message.localizedCaseInsensitiveContains("non-JSON")
+      case .providerHTTPError:
+        return false
       case .missingEndpoint, .appleModelUnavailable, .providerUnavailableInAirplaneMode:
         return false
       }
