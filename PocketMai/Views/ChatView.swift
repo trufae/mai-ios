@@ -500,7 +500,9 @@ struct ChatView: View {
           let renderedMessages =
             conversation?.messages
             ?? store.selectedConversationPreviewMessages
-          LazyVStack(spacing: 14) {
+          // A single response can be several viewports tall and changes height while streaming.
+          // LazyVStack can retain a stale row estimate and scroll past the rendered content.
+          VStack(spacing: 14) {
             if isPreviewingConversation && renderedMessages.isEmpty {
               compactLoadingState
             } else if !isPreviewingConversation && currentConversationIsEmpty
@@ -546,7 +548,7 @@ struct ChatView: View {
                       guard !messageFontPinchSession.isActive,
                         !userScrolledAfterLastMessage
                       else { return }
-                      scrollToBottom(proxy, animated: false)
+                      scrollToBottomAfterLayout(proxy, animated: false)
                     }
                   )
                 }
