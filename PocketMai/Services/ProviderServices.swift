@@ -1869,14 +1869,8 @@ enum OpenAICompatibleProvider {
     return key.isEmpty ? nil : "Bearer \(key)"
   }
 
-  private static func authorizationHeader(from request: URLRequest) -> String? {
-    request.value(forHTTPHeaderField: "Authorization")
-  }
-
   private static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorizationHeader(from: request),
-      originalRequest: request)
+    let delegate = ProviderRedirectDelegate(originalRequest: request)
     return try await URLSession.shared.data(for: request, delegate: delegate)
   }
 
@@ -1898,9 +1892,7 @@ enum OpenAICompatibleProvider {
     request: URLRequest,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorizationHeader(from: request),
-      originalRequest: request)
+    let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: delegate)
     let statusCode = (response as? HTTPURLResponse)?.statusCode
     var accumulated = ""
@@ -2153,17 +2145,12 @@ enum OpenAICompatibleProvider {
   }
 }
 
-final class RedirectPreservingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-  private let authorization: String?
-  private let method: String
-  private let body: Data?
-  private let contentType: String?
+final class ProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+  private let originalRequest: URLRequest
+  private let redirectCounter = ProviderRedirectCounter()
 
-  init(authorization: String?, originalRequest: URLRequest) {
-    self.authorization = authorization
-    self.method = originalRequest.httpMethod ?? "GET"
-    self.body = originalRequest.httpBody
-    self.contentType = originalRequest.value(forHTTPHeaderField: "Content-Type")
+  init(originalRequest: URLRequest) {
+    self.originalRequest = originalRequest
   }
 
   func urlSession(
@@ -2172,17 +2159,25 @@ final class RedirectPreservingDelegate: NSObject, URLSessionTaskDelegate, @unche
     willPerformHTTPRedirection response: HTTPURLResponse,
     newRequest request: URLRequest
   ) async -> URLRequest? {
-    var modified = request
-    modified.httpMethod = method
-    if let body, modified.httpBody == nil {
-      modified.httpBody = body
+    guard
+      let redirectedRequest = ProviderRedirectPolicy.redirectedRequest(
+        originalRequest: originalRequest,
+        response: response,
+        proposedRequest: request),
+      await redirectCounter.claimSlot()
+    else {
+      return nil
     }
-    if let contentType, modified.value(forHTTPHeaderField: "Content-Type") == nil {
-      modified.setValue(contentType, forHTTPHeaderField: "Content-Type")
-    }
-    if let authorization, modified.value(forHTTPHeaderField: "Authorization") == nil {
-      modified.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
-    return modified
+    return redirectedRequest
+  }
+}
+
+private actor ProviderRedirectCounter {
+  private var count = 0
+
+  func claimSlot() -> Bool {
+    guard count < ProviderRedirectPolicy.maximumRedirectCount else { return false }
+    count += 1
+    return true
   }
 }

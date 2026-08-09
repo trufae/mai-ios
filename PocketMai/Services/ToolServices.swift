@@ -716,8 +716,7 @@ enum WebSearchService {
     request.timeoutInterval = requestTimeout
     request.httpBody = try? JSONSerialization.data(withJSONObject: ["query": query])
 
-    let delegate = RedirectPreservingDelegate(
-      authorization: authorization, originalRequest: request)
+    let delegate = ProviderRedirectDelegate(originalRequest: request)
     guard
       let (data, response) = try? await URLSession.shared.data(for: request, delegate: delegate),
       let http = response as? HTTPURLResponse,
