@@ -624,7 +624,6 @@ struct ChatView: View {
           }
           .padding()
           .frame(minHeight: scrollGeometry.size.height, alignment: .bottom)
-          .containerRelativeFrame(.horizontal)
           .frame(maxWidth: .infinity, alignment: .center)
           .background {
             MessageListPinchBridge(
