@@ -1742,12 +1742,6 @@ private struct ConversationRow: View {
             Text(conversation.displayTitle)
               .font(.body.weight(conversation.isUnread ? .semibold : .medium))
               .lineLimit(1)
-            if conversation.isUnread {
-              Circle()
-                .fill(Color.accentColor)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
-            }
           }
           Text(conversation.displayPreview)
             .font(.caption.weight(conversation.isUnread ? .semibold : .regular))
@@ -1761,11 +1755,19 @@ private struct ConversationRow: View {
       .padding(.trailing, 14)
       .contentShape(Rectangle())
       .overlay(alignment: .topTrailing) {
-        if conversation.isPinned {
-          Image(systemName: "pin.fill")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .accessibilityHidden(true)
+        HStack(spacing: 4) {
+          if conversation.isPinned {
+            Image(systemName: "pin.fill")
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .accessibilityHidden(true)
+          }
+          if conversation.isUnread {
+            Circle()
+              .fill(Color.accentColor)
+              .frame(width: 8, height: 8)
+              .accessibilityHidden(true)
+          }
         }
       }
     }
