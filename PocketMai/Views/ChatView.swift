@@ -1153,38 +1153,65 @@ struct ChatView: View {
   private var emptyState: some View {
     GeometryReader { proxy in
       let suggestions = store.previousConversationSuggestions
-      let hasSuggestions = !suggestions.isEmpty
-      VStack(spacing: 20) {
-        VStack(spacing: 12) {
-          EmptyChatLogo()
-          Text("Your pocket assistant")
-            .font(.title3)
-            .foregroundStyle(.primary)
-            .multilineTextAlignment(.center)
-        }
+      let showsLandscapeSuggestions = proxy.size.width > proxy.size.height && !suggestions.isEmpty
 
-        if !suggestions.isEmpty {
-          PreviousConversationSuggestions(
-            store: store,
-            suggestions: suggestions,
-            exportCoordinator: exportCoordinator
-          ) { id in
-            Task { await store.selectConversation(id: id) }
+      Group {
+        if showsLandscapeSuggestions {
+          HStack(spacing: 32) {
+            emptyStateBrand
+              .frame(maxWidth: .infinity)
+
+            PreviousConversationSuggestions(
+              store: store,
+              suggestions: suggestions,
+              exportCoordinator: exportCoordinator
+            ) { id in
+              Task { await store.selectConversation(id: id) }
+            }
+            .frame(maxWidth: .infinity)
           }
+          .frame(maxWidth: 900)
+          .padding(.horizontal, 24)
+        } else {
+          VStack(spacing: 20) {
+            emptyStateBrand
+
+            if !suggestions.isEmpty {
+              PreviousConversationSuggestions(
+                store: store,
+                suggestions: suggestions,
+                exportCoordinator: exportCoordinator
+              ) { id in
+                Task { await store.selectConversation(id: id) }
+              }
+            }
+          }
+          .frame(maxWidth: 430)
+          .padding(.horizontal, 24)
         }
       }
-      .frame(maxWidth: 430)
-      .padding(.horizontal, 24)
       .frame(width: proxy.size.width)
       .position(
         x: proxy.size.width / 2,
-        y: emptyStateCenterY(in: proxy.size.height, hasSuggestions: hasSuggestions))
+        y: emptyStateCenterY(
+          in: proxy.size.height,
+          hasSuggestions: !suggestions.isEmpty))
     }
     .frame(maxWidth: .infinity)
   }
 
+  private var emptyStateBrand: some View {
+    VStack(spacing: 12) {
+      EmptyChatLogo()
+      Text("Your pocket assistant")
+        .font(.title3)
+        .foregroundStyle(.primary)
+        .multilineTextAlignment(.center)
+    }
+  }
+
   private func emptyStateCenterY(in height: CGFloat, hasSuggestions: Bool) -> CGFloat {
-    let baseY = height * (2.0 / 3.0)
+    let baseY = height / 2
     guard hasSuggestions, keyboardOverlap > 0 else { return baseY }
     let lift = min(keyboardOverlap * 0.18, 64)
     return max(height * 0.48, baseY - lift)
