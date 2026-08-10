@@ -3,79 +3,78 @@ import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
-// MARK: - Runner
+// MARK: - Running session
 
-struct WebXDCRunnerSheet: View {
-  @EnvironmentObject private var store: AppStore
-  @Environment(\.dismiss) private var dismiss
-
-  let app: WebXDCAppInfo
-
-  var body: some View {
-    NavigationStack {
-      WebXDCWebView(app: app, store: store)
-        .ignoresSafeArea(edges: .bottom)
-        .navigationTitle(app.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .confirmationAction) {
-            Button("Close") { dismiss() }
-          }
-        }
-    }
-  }
-}
-
-private struct WebXDCWebView: UIViewRepresentable {
-  let app: WebXDCAppInfo
-  let store: AppStore
-
+/// A running webxdc app. Owns the WKWebView so the app keeps its state while
+/// the runner sheet is closed; it stays attached to the chat it was started
+/// from until explicitly stopped.
+@MainActor
+final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
   static let appScheme = "xdc"
 
-  func makeCoordinator() -> Coordinator {
-    Coordinator(app: app, store: store)
-  }
+  let app: WebXDCAppInfo
+  let conversationID: UUID?
+  private(set) var webView: WKWebView!
+  private weak var store: AppStore?
+  private var outbox: [(prompt: String, display: String, expectsUpdate: Bool)] = []
+  private var flushTask: Task<Void, Never>?
+  private var awaitingAssistantUpdate = false
 
-  func makeUIView(context: Context) -> WKWebView {
-    let coordinator = context.coordinator
+  nonisolated var id: UUID { app.id }
+
+  init(app: WebXDCAppInfo, conversationID: UUID?, store: AppStore) {
+    self.app = app
+    self.conversationID = conversationID
+    self.store = store
+    super.init()
+
     let configuration = WKWebViewConfiguration()
     configuration.setURLSchemeHandler(
       WebXDCSchemeHandler(
         rootURL: WebXDCLibrary.currentRevisionURL(app),
-        bridgeScript: coordinator.bridgeScript),
+        bridgeScript: WebXDCBridge.script(selfAddr: "you@pocketmai", selfName: "You")),
       forURLScheme: Self.appScheme)
     configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: app.id)
-    configuration.userContentController.add(coordinator, name: "webxdc")
-    let allowInternet = store.settings.toolSettings.webxdcAllowInternet
+    configuration.userContentController.add(self, name: "webxdc")
     let webView = WKWebView(frame: .zero, configuration: configuration)
-    webView.navigationDelegate = coordinator
+    webView.navigationDelegate = self
     webView.isOpaque = false
-    coordinator.webView = webView
-    coordinator.registerListener()
+    self.webView = webView
+
+    store.webxdcHub.addListener(appID: app.id, token: ObjectIdentifier(self)) {
+      [weak self] update in
+      if update.sender == "assistant" {
+        self?.awaitingAssistantUpdate = false
+      }
+      self?.deliver([update])
+    }
+
     let load = {
       if let url = URL(string: "\(Self.appScheme)://app/index.html") {
         webView.load(URLRequest(url: url))
       }
     }
-    if allowInternet {
+    if store.settings.toolSettings.webxdcAllowInternet {
       load()
     } else {
       // Attach the network-blocking rules before the first load so no remote
       // subresource can slip through while they compile.
-      WebXDCWebView.blockNetworkRuleList { ruleList in
+      Self.blockNetworkRuleList { ruleList in
         if let ruleList {
           webView.configuration.userContentController.add(ruleList)
         }
         load()
       }
     }
-    return webView
   }
 
-  func updateUIView(_ uiView: WKWebView, context: Context) {}
-
-  static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
-    coordinator.tearDown()
+  func stop() {
+    flushTask?.cancel()
+    flushTask = nil
+    outbox.removeAll()
+    store?.webxdcHub.removeListener(appID: app.id, token: ObjectIdentifier(self))
+    webView.stopLoading()
+    webView.configuration.userContentController.removeScriptMessageHandler(forName: "webxdc")
   }
 
   /// Content rules blocking http/https/websocket loads. The filter must stay
@@ -93,145 +92,267 @@ private struct WebXDCWebView: UIViewRepresentable {
     }
   }
 
-  @MainActor
-  final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-    private let app: WebXDCAppInfo
-    private weak var store: AppStore?
-    weak var webView: WKWebView?
-    private var listenerRegistered = false
+  private func handleSendUpdate(_ body: [String: Any]) {
+    guard let store else { return }
+    let payloadJSON = (body["payload"] as? String) ?? "null"
+    let info = nonEmpty(body["info"] as? String)
+    let document = nonEmpty(body["document"] as? String)
+    let summary = nonEmpty(body["summary"] as? String)
+    let update = store.webxdcHub.post(
+      appID: app.id,
+      payloadJSON: payloadJSON,
+      info: info,
+      document: document,
+      summary: summary,
+      sender: "app")
+    guard store.settings.toolSettings.webxdcChatInteractionEnabled else { return }
+    var prompt =
+      "[webxdc app '\(app.name)' sent update serial \(update.serial)] payload: \(payloadJSON)"
+    if let info { prompt += "\ninfo: \(info)" }
+    prompt +=
+      "\nReply by calling the webxdc_send_update tool (app='\(app.name)') with the JSON payload the app expects. Never print that JSON as plain text in the chat."
+    let display = info ?? "[\(app.name)] \(payloadJSON)"
+    enqueueChat(prompt: prompt, display: display, expectsUpdate: true)
+  }
 
-    init(app: WebXDCAppInfo, store: AppStore) {
-      self.app = app
-      self.store = store
-    }
-
-    var bridgeScript: String {
-      WebXDCBridge.script(selfAddr: "you@pocketmai", selfName: "You")
-    }
-
-    func registerListener() {
-      guard let store, !listenerRegistered else { return }
-      listenerRegistered = true
-      store.webxdcHub.addListener(appID: app.id, token: ObjectIdentifier(self)) {
-        [weak self] update in
-        self?.deliver([update])
-      }
-    }
-
-    func tearDown() {
-      store?.webxdcHub.removeListener(appID: app.id, token: ObjectIdentifier(self))
-      webView?.configuration.userContentController.removeScriptMessageHandler(forName: "webxdc")
-      listenerRegistered = false
-    }
-
-    func userContentController(
-      _ userContentController: WKUserContentController,
-      didReceive message: WKScriptMessage
-    ) {
-      guard message.name == "webxdc", let body = message.body as? [String: Any],
-        let type = body["type"] as? String
-      else { return }
-      switch type {
-      case "ready":
-        let since = (body["serial"] as? NSNumber)?.intValue ?? 0
-        let updates = (store?.webxdcHub.updates(appID: app.id) ?? [])
-          .filter { $0.serial > since }
-        deliver(updates)
-      case "sendUpdate":
-        handleSendUpdate(body)
-      case "sendToChat":
-        let text = (body["text"] as? String ?? "").trimmingCharacters(
-          in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        sendToConversation(prompt: text, displayText: text)
-      default:
-        break
-      }
-    }
-
-    private func handleSendUpdate(_ body: [String: Any]) {
-      guard let store else { return }
-      let payloadJSON = (body["payload"] as? String) ?? "null"
-      let info = nonEmpty(body["info"] as? String)
-      let document = nonEmpty(body["document"] as? String)
-      let summary = nonEmpty(body["summary"] as? String)
-      let update = store.webxdcHub.post(
-        appID: app.id,
-        payloadJSON: payloadJSON,
-        info: info,
-        document: document,
-        summary: summary,
-        sender: "app")
-      guard store.settings.toolSettings.webxdcChatInteractionEnabled else { return }
-      var prompt =
-        "[webxdc app '\(app.name)' sent update serial \(update.serial)] payload: \(payloadJSON)"
-      if let info { prompt += "\ninfo: \(info)" }
-      prompt +=
-        "\nRespond in chat, and use the webxdc_send_update tool when the app should receive data back."
-      let display = info ?? "[\(app.name)] \(payloadJSON)"
-      sendToConversation(prompt: prompt, displayText: display)
-    }
-
-    private func sendToConversation(prompt: String, displayText: String) {
-      guard let store else { return }
-      Task { @MainActor in
-        _ = await store.send(prompt: prompt, displayText: displayText)
-      }
-    }
-
-    private func deliver(_ updates: [WebXDCUpdate]) {
-      guard !updates.isEmpty, let webView else { return }
-      let items: [[String: Any]] = updates.map { update in
-        var item: [String: Any] = [
-          "serial": update.serial,
-          "payloadJSON": update.payloadJSON,
-        ]
-        if let info = update.info { item["info"] = info }
-        if let document = update.document { item["document"] = document }
-        if let summary = update.summary { item["summary"] = summary }
-        return item
-      }
-      guard let data = try? JSONSerialization.data(withJSONObject: items),
-        var json = String(data: data, encoding: .utf8)
-      else { return }
-      json = json
-        .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-        .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
-      webView.evaluateJavaScript("window.__webxdcDeliver(\(json));", completionHandler: nil)
-    }
-
-    private func nonEmpty(_ value: String?) -> String? {
-      guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        return nil
-      }
-      return value
-    }
-
-    func webView(
-      _ webView: WKWebView,
-      decidePolicyFor navigationAction: WKNavigationAction,
-      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
-      guard let url = navigationAction.request.url else {
-        decisionHandler(.cancel)
-        return
-      }
-      let scheme = url.scheme?.lowercased() ?? ""
-      if scheme == WebXDCWebView.appScheme || scheme == "about" || scheme == "blob"
-        || scheme == "data"
-      {
-        decisionHandler(.allow)
-        return
-      }
-      if (scheme == "http" || scheme == "https"),
-        store?.settings.toolSettings.webxdcAllowInternet == true
-      {
-        decisionHandler(.allow)
-        return
-      }
-      decisionHandler(.cancel)
+  /// Chat sends are queued: a send that lands while the assistant is still
+  /// responding would otherwise be silently dropped by AppStore.send, which
+  /// loses game moves.
+  private func enqueueChat(prompt: String, display: String, expectsUpdate: Bool) {
+    outbox.append((prompt, display, expectsUpdate))
+    guard flushTask == nil else { return }
+    flushTask = Task { [weak self] in
+      await self?.flushOutbox()
+      self?.flushTask = nil
     }
   }
+
+  private func flushOutbox() async {
+    while !outbox.isEmpty, !Task.isCancelled {
+      guard let store else { return }
+      if let conversationID {
+        var ticks = 0
+        while store.currentConversation?.id != conversationID
+          || store.isResponding(in: conversationID)
+        {
+          if Task.isCancelled { return }
+          guard ticks < 1200 else {
+            outbox.removeAll()
+            return
+          }
+          try? await Task.sleep(nanoseconds: 250_000_000)
+          ticks += 1
+        }
+      }
+      let item = outbox.removeFirst()
+      awaitingAssistantUpdate = item.expectsUpdate
+      let sent = await store.send(prompt: item.prompt, displayText: item.display)
+      if sent, item.expectsUpdate, awaitingAssistantUpdate {
+        recoverAssistantPayloadFromChat()
+      }
+      awaitingAssistantUpdate = false
+    }
+  }
+
+  /// Small models sometimes print the JSON payload as chat text instead of
+  /// calling webxdc_send_update. When a turn triggered by an app update ends
+  /// without an assistant update, salvage the first JSON object from the
+  /// assistant's reply and deliver it to the app.
+  private func recoverAssistantPayloadFromChat() {
+    guard let store, let conversationID,
+      store.currentConversation?.id == conversationID,
+      let message = store.currentConversation?.messages.last(where: { $0.role == .assistant })
+    else { return }
+    let cleaned = Self.strippedBlocks(message.text, tags: ["think", "tool_run"])
+    guard let json = Self.firstJSONObjectString(in: cleaned) else { return }
+    store.webxdcHub.post(
+      appID: app.id,
+      payloadJSON: json,
+      info: nil,
+      document: nil,
+      summary: nil,
+      sender: "assistant")
+  }
+
+  private static func strippedBlocks(_ text: String, tags: [String]) -> String {
+    var result = text
+    for tag in tags {
+      while let open = result.range(of: "<\(tag)>"),
+        let close = result.range(
+          of: "</\(tag)>", range: open.upperBound..<result.endIndex)
+      {
+        result.removeSubrange(open.lowerBound..<close.upperBound)
+      }
+    }
+    return result
+  }
+
+  private static func firstJSONObjectString(in text: String) -> String? {
+    guard let start = text.firstIndex(of: "{") else { return nil }
+    var depth = 0
+    var inString = false
+    var escaped = false
+    var index = start
+    while index < text.endIndex {
+      let character = text[index]
+      if inString {
+        if escaped {
+          escaped = false
+        } else if character == "\\" {
+          escaped = true
+        } else if character == "\"" {
+          inString = false
+        }
+      } else {
+        switch character {
+        case "\"":
+          inString = true
+        case "{":
+          depth += 1
+        case "}":
+          depth -= 1
+          if depth == 0 {
+            let candidate = String(text[start...index])
+            guard let data = candidate.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: data)) != nil
+            else { return nil }
+            return candidate
+          }
+        default:
+          break
+        }
+      }
+      index = text.index(after: index)
+    }
+    return nil
+  }
+
+  private func deliver(_ updates: [WebXDCUpdate]) {
+    guard !updates.isEmpty, let webView else { return }
+    let items: [[String: Any]] = updates.map { update in
+      var item: [String: Any] = [
+        "serial": update.serial,
+        "payloadJSON": update.payloadJSON,
+      ]
+      if let info = update.info { item["info"] = info }
+      if let document = update.document { item["document"] = document }
+      if let summary = update.summary { item["summary"] = summary }
+      return item
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: items),
+      var json = String(data: data, encoding: .utf8)
+    else { return }
+    json = json
+      .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+      .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    webView.evaluateJavaScript("window.__webxdcDeliver(\(json));", completionHandler: nil)
+  }
+
+  private func nonEmpty(_ value: String?) -> String? {
+    guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return nil
+    }
+    return value
+  }
+}
+
+extension WebXDCRunningSession: WKScriptMessageHandler {
+  func userContentController(
+    _ userContentController: WKUserContentController,
+    didReceive message: WKScriptMessage
+  ) {
+    guard message.name == "webxdc", let body = message.body as? [String: Any],
+      let type = body["type"] as? String
+    else { return }
+    switch type {
+    case "ready":
+      let since = (body["serial"] as? NSNumber)?.intValue ?? 0
+      let updates = (store?.webxdcHub.updates(appID: app.id) ?? [])
+        .filter { $0.serial > since }
+      deliver(updates)
+    case "sendUpdate":
+      handleSendUpdate(body)
+    case "sendToChat":
+      let text = (body["text"] as? String ?? "").trimmingCharacters(
+        in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { return }
+      enqueueChat(prompt: text, display: text, expectsUpdate: false)
+    default:
+      break
+    }
+  }
+}
+
+extension WebXDCRunningSession: WKNavigationDelegate {
+  func webView(
+    _ webView: WKWebView,
+    decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+  ) {
+    guard let url = navigationAction.request.url else {
+      decisionHandler(.cancel)
+      return
+    }
+    let scheme = url.scheme?.lowercased() ?? ""
+    if scheme == Self.appScheme || scheme == "about" || scheme == "blob" || scheme == "data" {
+      decisionHandler(.allow)
+      return
+    }
+    if (scheme == "http" || scheme == "https"),
+      store?.settings.toolSettings.webxdcAllowInternet == true
+    {
+      decisionHandler(.allow)
+      return
+    }
+    decisionHandler(.cancel)
+  }
+}
+
+// MARK: - Runner sheet
+
+struct WebXDCRunnerSheet: View {
+  @EnvironmentObject private var store: AppStore
+  @Environment(\.dismiss) private var dismiss
+
+  let session: WebXDCRunningSession
+
+  var body: some View {
+    NavigationStack {
+      WebXDCWebViewContainer(webView: session.webView)
+        .ignoresSafeArea(edges: .bottom)
+        .navigationTitle(session.app.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            if isThinking {
+              HStack(spacing: 6) {
+                ProgressView()
+                Text("Thinking...")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              .accessibilityLabel("The assistant is responding")
+            }
+          }
+          ToolbarItem(placement: .confirmationAction) {
+            Button("Close") { dismiss() }
+          }
+        }
+    }
+  }
+
+  private var isThinking: Bool {
+    guard let conversationID = session.conversationID else { return false }
+    return store.isResponding(in: conversationID)
+  }
+}
+
+private struct WebXDCWebViewContainer: UIViewRepresentable {
+  let webView: WKWebView
+
+  func makeUIView(context: Context) -> WKWebView { webView }
+
+  func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
 /// Serves app files for the xdc:// scheme and injects the standard webxdc.js
@@ -346,7 +467,9 @@ enum WebXDCBridge {
         },
         setUpdateListener: function (callback, serial) {
           listener = callback;
-          pending.forEach(function (update) { callback(update); });
+          // Discard anything buffered before the listener existed: the ready
+          // handshake makes the host resend every update newer than `serial`,
+          // so replaying the buffer here would deliver duplicates.
           pending = [];
           post({ type: "ready", serial: serial || 0 });
           return Promise.resolve();
@@ -555,7 +678,7 @@ struct WebXDCAppDetailView: View {
   @State private var editingFile: WebXDCEditingFile?
   @State private var newFilePath = ""
   @State private var shareURL: URL?
-  @State private var runningApp: WebXDCAppInfo?
+  @State private var runningSession: WebXDCRunningSession?
   @State private var showingIconImporter = false
   @State private var showingDeleteConfirmation = false
   @State private var errorMessage: String?
@@ -592,8 +715,8 @@ struct WebXDCAppDetailView: View {
           saveFile(path: file.path, text: newText)
         })
     }
-    .sheet(item: $runningApp) { app in
-      WebXDCRunnerSheet(app: app)
+    .sheet(item: $runningSession) { session in
+      WebXDCRunnerSheet(session: session)
         .environmentObject(store)
     }
     .sheet(isPresented: shareBinding) {
@@ -730,7 +853,7 @@ struct WebXDCAppDetailView: View {
   private func actionsSection(_ app: WebXDCAppInfo) -> some View {
     Section {
       Button {
-        runningApp = app
+        runningSession = store.startWebXDCSession(app: app)
       } label: {
         Label("Run App", systemImage: "play.circle")
       }

@@ -204,6 +204,7 @@ final class AppStore: ObservableObject {
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
   lazy var webxdcHub = WebXDCUpdateHub()
+  @Published var activeWebXDCSession: WebXDCRunningSession?
   private let responseHaptics = ResponseHaptics()
   private let openAPIServer = OpenAPIServer()
   private let persistence: PersistenceStore
@@ -1482,6 +1483,25 @@ final class AppStore: ObservableObject {
     conversations[index].updatedAt = Date()
     sortConversations()
     saveConversations()
+  }
+
+  /// Returns the running session for the app, reusing it when the same app is
+  /// already running so reopening the runner keeps the page state.
+  @discardableResult
+  func startWebXDCSession(app: WebXDCAppInfo) -> WebXDCRunningSession {
+    if let session = activeWebXDCSession, session.app.id == app.id {
+      return session
+    }
+    activeWebXDCSession?.stop()
+    let session = WebXDCRunningSession(
+      app: app, conversationID: currentConversation?.id, store: self)
+    activeWebXDCSession = session
+    return session
+  }
+
+  func stopWebXDCSession() {
+    activeWebXDCSession?.stop()
+    activeWebXDCSession = nil
   }
 
   func send(

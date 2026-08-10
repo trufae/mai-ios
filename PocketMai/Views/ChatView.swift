@@ -26,6 +26,8 @@ struct ChatView: View {
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
   @State private var pendingScrollToMessageID: UUID?
+  @State private var showingWebXDCRunnerFromBar = false
+  @State private var showingWebXDCStopConfirmation = false
   @State private var chatSearch = ChatSearchState()
   @State private var messageFontPinchSession = MessageFontPinchSession()
   @State private var keyboardOverlap: CGFloat = 0
@@ -194,8 +196,66 @@ struct ChatView: View {
       NowSpeakingBar { messageID in
         pendingScrollToMessageID = messageID
       }
+      if let session = currentWebXDCSession {
+        webxdcSessionBar(session)
+      }
       messages
       bottomControls
+    }
+  }
+
+  private var currentWebXDCSession: WebXDCRunningSession? {
+    guard let session = store.activeWebXDCSession,
+      let conversationID = session.conversationID,
+      conversationID == store.currentConversation?.id
+    else { return nil }
+    return session
+  }
+
+  private func webxdcSessionBar(_ session: WebXDCRunningSession) -> some View {
+    HStack(spacing: 10) {
+      WebXDCAppIcon(app: session.app, size: 26)
+      Text(session.app.name)
+        .font(.subheadline.weight(.medium))
+        .lineLimit(1)
+      if store.isResponding(in: session.conversationID ?? UUID()) {
+        ProgressView()
+          .controlSize(.small)
+      } else {
+        Text("Running")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Button {
+        showingWebXDCStopConfirmation = true
+      } label: {
+        Image(systemName: "xmark.circle.fill")
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.borderless)
+      .accessibilityLabel("Stop app")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(.thinMaterial)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      showingWebXDCRunnerFromBar = true
+    }
+    .sheet(isPresented: $showingWebXDCRunnerFromBar) {
+      if let session = store.activeWebXDCSession {
+        WebXDCRunnerSheet(session: session)
+          .environmentObject(store)
+      }
+    }
+    .alert("Stop '\(session.app.name)'?", isPresented: $showingWebXDCStopConfirmation) {
+      Button("Cancel", role: .cancel) {}
+      Button("Stop App", role: .destructive) {
+        store.stopWebXDCSession()
+      }
+    } message: {
+      Text("The app will be closed and its unsaved in-page state will be lost.")
     }
   }
 
@@ -1657,7 +1717,8 @@ private struct ChatComposer: View {
   @State private var showingImagePicker = false
   @State private var showingCameraPicker = false
   @State private var showingWebXDCLauncher = false
-  @State private var runningWebXDCApp: WebXDCAppInfo?
+  @State private var showingWebXDCRunner = false
+  @State private var showingWebXDCStopConfirmation = false
   @State private var selectedPhotoItems: [PhotosPickerItem] = []
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
@@ -1807,13 +1868,16 @@ private struct ChatComposer: View {
     }
     .sheet(isPresented: $showingWebXDCLauncher) {
       WebXDCAppLauncherSheet { app in
-        runningWebXDCApp = app
+        store.startWebXDCSession(app: app)
+        showingWebXDCRunner = true
       }
       .environmentObject(store)
     }
-    .sheet(item: $runningWebXDCApp) { app in
-      WebXDCRunnerSheet(app: app)
-        .environmentObject(store)
+    .sheet(isPresented: $showingWebXDCRunner) {
+      if let session = store.activeWebXDCSession {
+        WebXDCRunnerSheet(session: session)
+          .environmentObject(store)
+      }
     }
     .alert(
       "Attachment failed",
