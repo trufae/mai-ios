@@ -489,6 +489,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case files
   case calendar
   case clipboard
+  case alarms
   case memory
 
   var id: String { rawValue }
@@ -497,14 +498,16 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     switch self {
     case .datetime, .language, .location, .memory:
       return true
-    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
+      .alarms:
       return false
     }
   }
 
   var isCallableTool: Bool {
     switch self {
-    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard:
+    case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
+      .alarms:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -524,6 +527,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .files: "Files"
     case .calendar: "Calendar"
     case .clipboard: "Clipboard"
+    case .alarms: "Alarms"
     case .memory: "Memory"
     }
   }
@@ -541,6 +545,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .files: "folder"
     case .calendar: "calendar"
     case .clipboard: "doc.on.clipboard"
+    case .alarms: "alarm"
     case .memory: "brain"
     }
   }
@@ -550,7 +555,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather, .webSearch:
       return true
     case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .calendar,
-      .clipboard, .memory:
+      .clipboard, .alarms, .memory:
       return false
     }
   }

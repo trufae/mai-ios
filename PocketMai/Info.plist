@@ -28,6 +28,8 @@
 	<string>PocketMai scans for Ollama servers and can serve the selected chat to local Ollama or OpenAI-compatible clients.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>PocketMai uses the camera to attach a picture to your chat when you choose Take picture.</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>PocketMai can schedule alarms only when the Alarms tool is enabled and called in chat.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>PocketMai can read your calendar events only when the Calendar tool is enabled and called in chat.</string>
 	<key>NSCalendarsUsageDescription</key>

@@ -1527,6 +1527,12 @@ struct SettingsView: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+    case .alarms:
+      Text(
+        "Lets the assistant schedule, list, and cancel real alarms on this device, such as 'in 5 minutes' or at a specific time or weekday. Disabled by default; each call asks for confirmation, requires the AlarmKit permission, and needs iOS 26.1 or later."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     case .memory:
       TextEditor(text: settingsBinding(\.memory))
         .frame(minHeight: 140)

@@ -2680,6 +2680,7 @@ enum ToolCallParser {
     case "todo": return "checklist"
     case "files": return "folder"
     case "clipboard": return "doc.on.clipboard"
+    case "alarms": return "alarm"
     case "memory": return "brain"
     default: return "wrench.and.screwdriver"
     }

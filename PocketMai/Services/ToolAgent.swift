@@ -63,6 +63,10 @@ enum BuiltInToolCatalog {
       id: .clipboard,
       toolNames: [ClipboardTool.getName, ClipboardTool.setName],
       approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .alarms,
+      toolNames: [AlarmTool.setName, AlarmTool.listName, AlarmTool.cancelName],
+      approvalKind: .confirm),
   ]
 
   static func definitions(
@@ -151,6 +155,12 @@ enum BuiltInToolCatalog {
       return ClipboardTool.getText()
     case ClipboardTool.setName:
       return ClipboardTool.setText(arguments: call.argumentValues)
+    case AlarmTool.setName:
+      return await AlarmTool.set(arguments: call.argumentValues)
+    case AlarmTool.listName:
+      return AlarmTool.list()
+    case AlarmTool.cancelName:
+      return AlarmTool.cancel(arguments: call.argumentValues)
     default:
       return nil
     }
@@ -203,6 +213,8 @@ enum BuiltInToolCatalog {
       return CalendarTool.definitions(settings: settings.toolSettings)
     case .clipboard:
       return ClipboardTool.definitions
+    case .alarms:
+      return AlarmTool.definitions
     case .memory:
       return []
     }
