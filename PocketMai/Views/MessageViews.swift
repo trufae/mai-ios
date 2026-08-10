@@ -5075,7 +5075,6 @@ enum MarkdownInlineSymbols {
 
 struct MarkdownTableView: View {
   @Environment(\.isFullChatScreenshotRendering) private var isFullChatScreenshotRendering
-  @State private var wrappedAvailableWidth: CGFloat = 0
 
   let headers: [String]
   let rows: [[String]]
@@ -5112,79 +5111,92 @@ struct MarkdownTableView: View {
   var body: some View {
     if appearance.unwrappedTables && !isFullChatScreenshotRendering {
       ScrollView(.horizontal, showsIndicators: true) {
-        tableGrid(unwrapped: true, columnWidths: nil)
+        unwrappedTable
       }
     } else {
-      tableGrid(unwrapped: false, columnWidths: wrappedColumnWidths)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-          GeometryReader { proxy in
-            Color.clear.preference(
-              key: MarkdownTableWidthPreferenceKey.self,
-              value: proxy.size.width)
-          }
-        )
-        .onPreferenceChange(MarkdownTableWidthPreferenceKey.self) { width in
-          guard width > 0, abs(wrappedAvailableWidth - width) > 0.5 else { return }
-          wrappedAvailableWidth = width
-        }
+      wrappedTable
     }
   }
 
-  private func tableGrid(unwrapped: Bool, columnWidths: [CGFloat]?) -> some View {
-    Grid(
-      alignment: .topLeading,
-      horizontalSpacing: 0,
-      verticalSpacing: 0
-    ) {
-      GridRow {
-        ForEach(Array(headers.enumerated()), id: \.offset) { idx, header in
-          cellView(
-            header,
-            columnIndex: idx,
-            isHeader: true,
-            unwrapped: unwrapped,
-            columnWidth: columnWidth(columnWidths, at: idx))
-        }
-      }
-      .background(Color.secondary.opacity(0.10))
-      Divider().opacity(0.5)
-      ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
-        GridRow {
-          ForEach(0..<headers.count, id: \.self) { idx in
-            let value = idx < row.count ? row[idx] : ""
+  private var wrappedTable: some View {
+    let tableRows = [headers] + rows
+    let rowCount = tableRows.count
+    return styledTable(
+      LazyVGrid(columns: wrappedColumns, alignment: .leading, spacing: 0) {
+        ForEach(Array(tableRows.enumerated()), id: \.offset) { rowIndex, row in
+          ForEach(headers.indices, id: \.self) { columnIndex in
             cellView(
-              value,
-              columnIndex: idx,
-              isHeader: false,
-              unwrapped: unwrapped,
-              columnWidth: columnWidth(columnWidths, at: idx))
+              columnIndex < row.count ? row[columnIndex] : "",
+              columnIndex: columnIndex,
+              isHeader: rowIndex == 0,
+              unwrapped: false
+            )
+            .background(
+              rowIndex == 0
+                ? Color.secondary.opacity(0.10)
+                : rowIndex.isMultiple(of: 2)
+                  ? Color.secondary.opacity(0.05)
+                  : Color.clear
+            )
+            .overlay(alignment: .bottom) {
+              if rowIndex < rowCount - 1 {
+                Divider().opacity(rowIndex == 0 ? 0.5 : 0.25)
+              }
+            }
           }
         }
-        .background(rowIdx.isMultiple(of: 2) ? Color.clear : Color.secondary.opacity(0.05))
-        if rowIdx < rows.count - 1 {
-          Divider().opacity(0.25)
-        }
-      }
-    }
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(.secondary.opacity(0.25), lineWidth: 0.5)
-    )
+      })
   }
 
-  @ViewBuilder
+  private var wrappedColumns: [GridItem] {
+    headers.indices.map { columnIndex in
+      GridItem(
+        .flexible(minimum: 1),
+        spacing: 0,
+        alignment: frameAlignment(textAlignment(for: columnIndex)))
+    }
+  }
+
+  private var unwrappedTable: some View {
+    styledTable(
+      Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+        GridRow {
+          ForEach(Array(headers.enumerated()), id: \.offset) { columnIndex, header in
+            cellView(
+              header,
+              columnIndex: columnIndex,
+              isHeader: true,
+              unwrapped: true)
+          }
+        }
+        .background(Color.secondary.opacity(0.10))
+        Divider().opacity(0.5)
+        ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+          GridRow {
+            ForEach(headers.indices, id: \.self) { columnIndex in
+              cellView(
+                columnIndex < row.count ? row[columnIndex] : "",
+                columnIndex: columnIndex,
+                isHeader: false,
+                unwrapped: true)
+            }
+          }
+          .background(rowIndex.isMultiple(of: 2) ? Color.clear : Color.secondary.opacity(0.05))
+          if rowIndex < rows.count - 1 {
+            Divider().opacity(0.25)
+          }
+        }
+      })
+  }
+
   private func cellView(
     _ value: String,
     columnIndex: Int,
     isHeader: Bool,
-    unwrapped: Bool,
-    columnWidth: CGFloat?
+    unwrapped: Bool
   ) -> some View {
-    let alignment = columnIndex < alignments.count ? alignments[columnIndex] : .leading
-    let maxWidth: CGFloat? = unwrapped ? nil : .infinity
-    let cell = MarkdownInlineText(
+    let alignment = textAlignment(for: columnIndex)
+    return MarkdownInlineText(
       value: value,
       appearance: appearance,
       font: isHeader
@@ -5204,12 +5216,22 @@ struct MarkdownTableView: View {
     .fixedSize(horizontal: unwrapped, vertical: false)
     .padding(.horizontal, appearance.markdownMetric(10))
     .padding(.vertical, appearance.markdownMetric(8))
+    .frame(
+      maxWidth: unwrapped ? nil : .infinity,
+      maxHeight: unwrapped ? nil : .infinity,
+      alignment: frameAlignment(alignment))
+  }
 
-    if let columnWidth {
-      cell.frame(width: columnWidth, alignment: frameAlignment(alignment))
-    } else {
-      cell.frame(maxWidth: maxWidth, alignment: frameAlignment(alignment))
-    }
+  private func styledTable<Content: View>(_ content: Content) -> some View {
+    content
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(.secondary.opacity(0.25), lineWidth: 0.5))
+  }
+
+  private func textAlignment(for columnIndex: Int) -> TextAlignment {
+    alignments.indices.contains(columnIndex) ? alignments[columnIndex] : .leading
   }
 
   private func frameAlignment(_ alignment: TextAlignment) -> Alignment {
@@ -5218,149 +5240,6 @@ struct MarkdownTableView: View {
     case .center: return .center
     case .trailing: return .trailing
     }
-  }
-
-  private func columnWidth(_ widths: [CGFloat]?, at index: Int) -> CGFloat? {
-    guard let widths, widths.indices.contains(index) else { return nil }
-    return widths[index]
-  }
-
-  private var wrappedColumnWidths: [CGFloat]? {
-    guard wrappedAvailableWidth > 0, !headers.isEmpty else { return nil }
-    return columnWidths(for: wrappedAvailableWidth)
-  }
-
-  private func columnWidths(for availableWidth: CGFloat) -> [CGFloat] {
-    let columnCount = headers.count
-    guard columnCount > 0 else { return [] }
-
-    let averageWidth = availableWidth / CGFloat(columnCount)
-    let columnMetrics = measuredColumnMetrics()
-    let idealWidths = columnMetrics.idealWidths
-    let titleWidths = columnMetrics.titleWidths
-    let minimumWidth = max(appearance.markdownMetric(34), averageWidth * 0.28)
-    var widths = Array(repeating: averageWidth, count: columnCount)
-    var floorWidths = Array(repeating: CGFloat(1), count: columnCount)
-    var flexibleColumns: [Int] = []
-    var fixedWidth: CGFloat = 0
-
-    for index in 0..<columnCount {
-      let ideal = min(max(idealWidths[index], minimumWidth), availableWidth)
-      if ideal < averageWidth {
-        widths[index] = ideal
-        floorWidths[index] = ideal
-        fixedWidth += ideal
-      } else {
-        floorWidths[index] = min(max(titleWidths[index], minimumWidth), availableWidth)
-        flexibleColumns.append(index)
-      }
-    }
-
-    guard !flexibleColumns.isEmpty else {
-      return widths
-    }
-
-    let remainingWidth = max(
-      availableWidth - fixedWidth, minimumWidth * CGFloat(flexibleColumns.count))
-    let flexibleIdealWidth = flexibleColumns.reduce(CGFloat(0)) { total, index in
-      total + max(idealWidths[index], minimumWidth)
-    }
-
-    for index in flexibleColumns {
-      let share =
-        flexibleIdealWidth > 0
-        ? remainingWidth * max(idealWidths[index], minimumWidth) / flexibleIdealWidth
-        : remainingWidth / CGFloat(flexibleColumns.count)
-      widths[index] = max(share, minimumWidth)
-    }
-
-    return widthsFittingAvailableWidth(
-      widths, availableWidth: availableWidth, floorWidths: floorWidths)
-  }
-
-  private func widthsFittingAvailableWidth(
-    _ widths: [CGFloat],
-    availableWidth: CGFloat,
-    floorWidths: [CGFloat]
-  ) -> [CGFloat] {
-    let totalWidth = widths.reduce(0, +)
-    guard totalWidth > availableWidth, totalWidth > 0 else {
-      return widths
-    }
-
-    let floors = widths.indices.map { index in
-      min(widths[index], max(floorWidths[index], 1))
-    }
-    let floorTotal = floors.reduce(0, +)
-    guard floorTotal < availableWidth else {
-      return floors
-    }
-
-    let shrinkCapacity = widths.indices.reduce(CGFloat(0)) { total, index in
-      total + max(widths[index] - floors[index], 0)
-    }
-    guard shrinkCapacity > 0 else {
-      return widths
-    }
-
-    let excessWidth = totalWidth - availableWidth
-    return widths.indices.map { index in
-      let capacity = max(widths[index] - floors[index], 0)
-      let shrink = excessWidth * capacity / shrinkCapacity
-      return max(widths[index] - shrink, floors[index])
-    }
-  }
-
-  private func measuredColumnMetrics() -> MarkdownTableColumnMetrics {
-    let columnCount = headers.count
-    var titleWidths = Array(repeating: CGFloat(0), count: columnCount)
-    var idealWidths = Array(repeating: CGFloat(0), count: columnCount)
-    let headerFont = fontFamily.uiFont(size: appearance.fontSize).withWeight(.semibold)
-    let bodyFont = fontFamily.uiFont(size: appearance.fontSize).italicizedIf(italic)
-
-    for (index, header) in headers.enumerated() {
-      let width = measuredCellWidth(header, font: headerFont)
-      titleWidths[index] = width
-      idealWidths[index] = max(idealWidths[index], width)
-    }
-    for row in rows {
-      for index in 0..<columnCount {
-        let value = index < row.count ? row[index] : ""
-        idealWidths[index] = max(idealWidths[index], measuredCellWidth(value, font: bodyFont))
-      }
-    }
-
-    return MarkdownTableColumnMetrics(titleWidths: titleWidths, idealWidths: idealWidths)
-  }
-
-  private func measuredCellWidth(_ raw: String, font: UIFont) -> CGFloat {
-    let horizontalPadding = appearance.markdownMetric(20)
-    let measurementAllowance = max(appearance.markdownMetric(4), 3)
-    return ceil(measuredTextWidth(raw, font: font) + horizontalPadding + measurementAllowance)
-  }
-
-  private func measuredTextWidth(_ raw: String, font: UIFont) -> CGFloat {
-    let text = MarkdownInlineSymbols.displayString(raw)
-    let lines = text.components(separatedBy: .newlines)
-    let measured = lines.reduce(CGFloat(0)) { width, line in
-      let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !value.isEmpty else { return width }
-      return max(width, (value as NSString).size(withAttributes: [.font: font]).width)
-    }
-    return measured
-  }
-}
-
-private struct MarkdownTableColumnMetrics {
-  let titleWidths: [CGFloat]
-  let idealWidths: [CGFloat]
-}
-
-private struct MarkdownTableWidthPreferenceKey: PreferenceKey {
-  static let defaultValue: CGFloat = 0
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = max(value, nextValue())
   }
 }
 

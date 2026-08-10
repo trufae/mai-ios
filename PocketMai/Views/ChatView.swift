@@ -623,8 +623,10 @@ struct ChatView: View {
               .id(messageListBottomID)
           }
           .padding()
+          // Pin the scroll content to the viewport without using
+          // containerRelativeFrame, which can create a layout cycle on rotation.
+          .frame(width: scrollGeometry.size.width, alignment: .center)
           .frame(minHeight: scrollGeometry.size.height, alignment: .bottom)
-          .frame(maxWidth: .infinity, alignment: .center)
           .background {
             MessageListPinchBridge(
               zoomMethod: store.settings.appearance.zoomMethod,
