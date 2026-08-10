@@ -1548,64 +1548,34 @@ struct SettingsView: View {
       .font(.caption)
       .foregroundStyle(.secondary)
     case .webxdc:
-      VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: 6) {
         Text("WebXDC Runtime")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
-        Toggle(
-          "Internet and WebSockets",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowInternet))
-        Toggle(
-          "Chat bridge",
-          isOn: settingsBinding(\.toolSettings.webxdcChatInteractionEnabled))
-        Toggle(
-          "GPS location",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowGPSLocation))
-        Toggle(
-          "Accelerometer and gyroscope",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowMotionSensors))
-        Toggle(
-          "WebAssembly",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowWASM))
-        Toggle(
-          "WebGL",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowWebGL))
-        Toggle(
-          "Canvas 2D",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowCanvas2D))
-        Toggle(
-          "Audio playback",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowAudioPlayback))
-        Toggle(
-          "Camera",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowCamera))
-        Toggle(
-          "Microphone",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowMicrophone))
-        Toggle(
-          "Clipboard",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowClipboard))
-        Toggle(
-          "File import",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowFileImport))
-        Toggle(
-          "Local storage",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowLocalStorage))
-        Toggle(
-          "Service workers",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowServiceWorkers))
-        Toggle(
-          "Notifications",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowNotifications))
-        Toggle(
-          "Realtime channels",
-          isOn: settingsBinding(\.toolSettings.webxdcAllowRealtimeChannels))
+          .padding(.bottom, 2)
+        webXDCToggle("Internet and WebSockets", \.toolSettings.webxdcAllowInternet)
+        webXDCToggle("Chat bridge", \.toolSettings.webxdcChatInteractionEnabled)
+        webXDCToggle("GPS location", \.toolSettings.webxdcAllowGPSLocation)
+        webXDCToggle("Accelerometer and gyroscope", \.toolSettings.webxdcAllowMotionSensors)
+        webXDCToggle("WebAssembly", \.toolSettings.webxdcAllowWASM)
+        webXDCToggle("WebGL", \.toolSettings.webxdcAllowWebGL)
+        webXDCToggle("Canvas 2D", \.toolSettings.webxdcAllowCanvas2D)
+        webXDCToggle("Audio playback", \.toolSettings.webxdcAllowAudioPlayback)
+        webXDCToggle("Camera", \.toolSettings.webxdcAllowCamera)
+        webXDCToggle("Microphone", \.toolSettings.webxdcAllowMicrophone)
+        webXDCToggle("Clipboard", \.toolSettings.webxdcAllowClipboard)
+        webXDCToggle("File import", \.toolSettings.webxdcAllowFileImport)
+        webXDCToggle("Local storage", \.toolSettings.webxdcAllowLocalStorage)
+        webXDCToggle("Service workers", \.toolSettings.webxdcAllowServiceWorkers)
+        webXDCToggle("Notifications", \.toolSettings.webxdcAllowNotifications)
+        webXDCToggle("Realtime channels", \.toolSettings.webxdcAllowRealtimeChannels)
         Button {
           resetWebXDCOptions()
         } label: {
           Label("Reset WebXDC Options", systemImage: "arrow.counterclockwise")
         }
         .buttonStyle(.borderless)
+        .padding(.top, 6)
       }
       Text(
         "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Safe defaults keep apps offline and deny device resources; changing runtime options applies to newly opened app sessions. Manage apps from the grid button in the Settings toolbar."
@@ -2108,6 +2078,14 @@ struct SettingsView: View {
     store.settings.toolSettings.webxdcAllowNotifications = false
     store.settings.toolSettings.webxdcAllowRealtimeChannels = false
     store.saveSettings()
+  }
+
+  private func webXDCToggle(
+    _ title: String,
+    _ keyPath: WritableKeyPath<AppSettings, Bool>
+  ) -> some View {
+    Toggle(title, isOn: settingsBinding(keyPath))
+      .frame(maxWidth: .infinity, minHeight: 38, alignment: .center)
   }
 
   private var mcpRequestTimeoutBinding: Binding<Int> {
