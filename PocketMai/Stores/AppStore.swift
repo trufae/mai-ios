@@ -203,6 +203,7 @@ final class AppStore: ObservableObject {
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
+  lazy var webxdcHub = WebXDCUpdateHub()
   private let responseHaptics = ResponseHaptics()
   private let openAPIServer = OpenAPIServer()
   private let persistence: PersistenceStore

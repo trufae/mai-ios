@@ -1288,8 +1288,14 @@ enum AgentTooling {
     if let name = object["name"] as? String,
       !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
+      // Only treat arguments.name as the tool name when the nested object is
+      // itself a wrapped call (it carries its own arguments container) or the
+      // outer name is a generic placeholder. A real tool call may legitimately
+      // take a "name" argument (e.g. webxdc_create name=...), and that must
+      // stay an argument.
       if let nested = object["arguments"] as? [String: Any],
-        let nestedName = nested["name"] as? String
+        let nestedName = nested["name"] as? String,
+        looksLikeWrappedCall(nested) || isPlaceholderToolName(name)
       {
         return ["name": nestedName, "arguments": toolArguments(from: nested)]
       }
@@ -1308,6 +1314,21 @@ enum AgentTooling {
       return ["name": name, "arguments": toolArguments(from: function)]
     }
     return nil
+  }
+
+  private static func looksLikeWrappedCall(_ object: [String: Any]) -> Bool {
+    ["arguments", "args", "parameters", "params", "input"].contains { key in
+      object[key] is [String: Any] || object[key] is String
+    }
+  }
+
+  private static func isPlaceholderToolName(_ name: String) -> Bool {
+    switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "tool_call", "toolcall", "tool_use", "function_call", "call", "tool", "function":
+      return true
+    default:
+      return false
+    }
   }
 
   private static func toolArguments(from object: [String: Any]) -> [String: Any] {

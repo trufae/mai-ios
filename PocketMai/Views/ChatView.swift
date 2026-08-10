@@ -1656,6 +1656,8 @@ private struct ChatComposer: View {
   @State private var showingTextFileImporter = false
   @State private var showingImagePicker = false
   @State private var showingCameraPicker = false
+  @State private var showingWebXDCLauncher = false
+  @State private var runningWebXDCApp: WebXDCAppInfo?
   @State private var selectedPhotoItems: [PhotosPickerItem] = []
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
@@ -1802,6 +1804,16 @@ private struct ChatComposer: View {
         importCameraImageAttachment(image)
       }
       .ignoresSafeArea()
+    }
+    .sheet(isPresented: $showingWebXDCLauncher) {
+      WebXDCAppLauncherSheet { app in
+        runningWebXDCApp = app
+      }
+      .environmentObject(store)
+    }
+    .sheet(item: $runningWebXDCApp) { app in
+      WebXDCRunnerSheet(app: app)
+        .environmentObject(store)
     }
     .alert(
       "Attachment failed",
@@ -2287,6 +2299,18 @@ private struct ChatComposer: View {
       }
       .disabled(!canTakePicture)
       .opacity(canTakePicture ? 1 : 0.45)
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      Divider()
+
+      Button {
+        showingToolMenu = false
+        showingWebXDCLauncher = true
+      } label: {
+        toolMenuRowLabel("Start App", systemImage: "square.grid.2x2")
+      }
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
       .padding(.vertical, 9)

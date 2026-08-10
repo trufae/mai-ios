@@ -67,6 +67,10 @@ enum BuiltInToolCatalog {
       id: .alarms,
       toolNames: [AlarmTool.setName, AlarmTool.listName, AlarmTool.cancelName],
       approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .webxdc,
+      toolNames: WebXDCTool.toolNames,
+      approvalKind: .confirm),
   ]
 
   static func definitions(
@@ -161,6 +165,9 @@ enum BuiltInToolCatalog {
       return AlarmTool.list()
     case AlarmTool.cancelName:
       return AlarmTool.cancel(arguments: call.argumentValues)
+    case let name where WebXDCTool.toolNames.contains(name):
+      return WebXDCTool.execute(
+        name: name, arguments: call.argumentValues, hub: store.webxdcHub)
     default:
       return nil
     }
@@ -215,6 +222,8 @@ enum BuiltInToolCatalog {
       return ClipboardTool.definitions
     case .alarms:
       return AlarmTool.definitions
+    case .webxdc:
+      return WebXDCTool.definitions
     case .memory:
       return []
     }

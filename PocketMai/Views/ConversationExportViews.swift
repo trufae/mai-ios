@@ -303,7 +303,7 @@ private struct AudioExportProgressView: View {
   }
 }
 
-private struct ActivityShareSheet: UIViewControllerRepresentable {
+struct ActivityShareSheet: UIViewControllerRepresentable {
   let activityItems: [Any]
 
   func makeUIViewController(context: Context) -> UIActivityViewController {

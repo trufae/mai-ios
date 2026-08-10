@@ -301,6 +301,7 @@ struct SettingsView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
   @State private var showingToolFileImporter = false
+  @State private var showingAppsPanel = false
   @State private var newTodoTitle = ""
   @State private var showingClearMemoryConfirmation = false
   @State private var showingBackgroundVoiceConfirmation = false
@@ -412,11 +413,25 @@ struct SettingsView: View {
           .help(store.settings.airplaneModeEnabled ? "Go online" : "Go offline")
         }
 
+        ToolbarItem(placement: .cancellationAction) {
+          Button {
+            showingAppsPanel = true
+          } label: {
+            Label("Apps", systemImage: "square.grid.2x2")
+          }
+          .accessibilityLabel("Manage webxdc apps")
+          .help("Manage apps")
+        }
+
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { saveAndDismiss() }
         }
       }
       .settingsToast($toastMessage)
+      .sheet(isPresented: $showingAppsPanel) {
+        WebXDCAppsPanel()
+          .environmentObject(store)
+      }
       .fileImporter(
         isPresented: $showingToolFileImporter,
         allowedContentTypes: [.text, .plainText, .json, .sourceCode]
@@ -1519,6 +1534,18 @@ struct SettingsView: View {
     case .clipboard:
       Text(
         "Lets the assistant read and replace the text on the system clipboard. Disabled by default because the clipboard may contain sensitive data such as passwords; each call asks for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    case .webxdc:
+      Toggle(
+        "Allow internet in apps",
+        isOn: settingsBinding(\.toolSettings.webxdcAllowInternet))
+      Toggle(
+        "Apps can talk to the chat",
+        isOn: settingsBinding(\.toolSettings.webxdcChatInteractionEnabled))
+      Text(
+        "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Apps run sandboxed with no internet unless allowed above; when chat interaction is on, a running app's updates are sent to the assistant and it can answer through webxdc_send_update. Manage apps from the grid button in the Settings toolbar."
       )
       .font(.caption)
       .foregroundStyle(.secondary)

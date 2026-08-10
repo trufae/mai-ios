@@ -486,6 +486,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case calendar
   case clipboard
   case alarms
+  case webxdc
   case memory
 
   var id: String { rawValue }
@@ -495,7 +496,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .datetime, .language, .location, .memory:
       return true
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms:
+      .alarms, .webxdc:
       return false
     }
   }
@@ -503,7 +504,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   var isCallableTool: Bool {
     switch self {
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms:
+      .alarms, .webxdc:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -524,6 +525,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .calendar: "Calendar"
     case .clipboard: "Clipboard"
     case .alarms: "Alarms"
+    case .webxdc: "WebXDC Apps"
     case .memory: "Memory"
     }
   }
@@ -542,6 +544,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .calendar: "calendar"
     case .clipboard: "doc.on.clipboard"
     case .alarms: "alarm"
+    case .webxdc: "square.grid.2x2"
     case .memory: "brain"
     }
   }
@@ -551,7 +554,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .weather, .webSearch:
       return true
     case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .calendar,
-      .clipboard, .alarms, .memory:
+      .clipboard, .alarms, .webxdc, .memory:
       return false
     }
   }
@@ -2480,6 +2483,8 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
   var filesWorkspaceAccessEnabled: Bool = false
+  var webxdcAllowInternet: Bool = false
+  var webxdcChatInteractionEnabled: Bool = true
   var voices: VoiceSettings = .defaults
 
   static let defaults = NativeToolSettings()
@@ -2492,6 +2497,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case webSearchSearXNGURL, webSearchSearXNGUsername, webSearchSearXNGPassword
     case webSearchFetchingEnabled, calendarEventCreationEnabled, todos, files
     case filesWorkspaceAccessEnabled
+    case webxdcAllowInternet, webxdcChatInteractionEnabled
     case voices
   }
 
@@ -2537,6 +2543,11 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     filesWorkspaceAccessEnabled =
       (try? c.decode(Bool.self, forKey: .filesWorkspaceAccessEnabled))
       ?? defaults.filesWorkspaceAccessEnabled
+    webxdcAllowInternet =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowInternet)) ?? defaults.webxdcAllowInternet
+    webxdcChatInteractionEnabled =
+      (try? c.decode(Bool.self, forKey: .webxdcChatInteractionEnabled))
+      ?? defaults.webxdcChatInteractionEnabled
 
     if let decoded = try? c.decode(VoiceSettings.self, forKey: .voices) {
       voices = decoded
