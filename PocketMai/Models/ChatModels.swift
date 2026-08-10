@@ -2673,6 +2673,8 @@ struct AppSettings: Codable, Equatable, Sendable {
   static let defaultMCPTools: Set<String> = []
   static let defaultMCPRequestTimeoutSeconds = 60
   static let mcpRequestTimeoutRange = 5...300
+  static let defaultLLMRequestTimeoutSeconds = 600
+  static let llmRequestTimeoutChoices = [60, 180, 300, 600, 900, 1800]
   static let defaultSystemPrompt = SystemPrompt(
     name: "Helpful",
     text:
@@ -2727,6 +2729,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var toolSettings: NativeToolSettings = .defaults
   var mcpServers: [MCPServer] = []
   var mcpRequestTimeoutSeconds: Int = AppSettings.defaultMCPRequestTimeoutSeconds
+  var llmRequestTimeoutSeconds: Int = AppSettings.defaultLLMRequestTimeoutSeconds
   var memory: String = ""
   var toolCallingMode: ToolCallingMode = .text
   var maxToolCallsPerTurn: Int = 8
@@ -2759,8 +2762,16 @@ struct AppSettings: Codable, Equatable, Sendable {
     min(mcpRequestTimeoutRange.upperBound, max(mcpRequestTimeoutRange.lowerBound, seconds))
   }
 
+  static func normalizedLLMRequestTimeoutSeconds(_ seconds: Int) -> Int {
+    llmRequestTimeoutChoices.contains(seconds) ? seconds : defaultLLMRequestTimeoutSeconds
+  }
+
   var mcpRequestTimeoutInterval: TimeInterval {
     TimeInterval(Self.clampedMCPRequestTimeoutSeconds(mcpRequestTimeoutSeconds))
+  }
+
+  var llmRequestTimeoutInterval: TimeInterval {
+    TimeInterval(Self.normalizedLLMRequestTimeoutSeconds(llmRequestTimeoutSeconds))
   }
 
   func defaultPrompt() -> SystemPrompt {
@@ -2867,7 +2878,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     case openAIEndpoints, systemPrompts, userPrompts, defaultSystemPromptID, compactPrompt
     case defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
-    case toolSettings, mcpServers, mcpRequestTimeoutSeconds, memory, toolCallingMode,
+    case toolSettings, mcpServers, mcpRequestTimeoutSeconds, llmRequestTimeoutSeconds, memory,
+      toolCallingMode,
       maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
@@ -2949,6 +2961,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     mcpRequestTimeoutSeconds = Self.clampedMCPRequestTimeoutSeconds(
       (try? c.decode(Int.self, forKey: .mcpRequestTimeoutSeconds))
         ?? Self.defaultMCPRequestTimeoutSeconds)
+    llmRequestTimeoutSeconds = Self.normalizedLLMRequestTimeoutSeconds(
+      (try? c.decode(Int.self, forKey: .llmRequestTimeoutSeconds))
+        ?? Self.defaultLLMRequestTimeoutSeconds)
     memory = (try? c.decode(String.self, forKey: .memory)) ?? ""
     let storedMode = (try? c.decode(String.self, forKey: .toolCallingMode)) ?? "text"
     let migratedFromLegacyProxy = (storedMode == "proxy")

@@ -457,6 +457,15 @@ struct SettingsView: View {
   private var advancedOptionsContent: some View {
     Toggle("Show thinking", isOn: settingsBinding(\.showThinkingByDefault))
     Toggle("Stream responses", isOn: settingsBinding(\.streamByDefault))
+    Picker("LLM Timeout", selection: llmRequestTimeoutBinding) {
+      ForEach(AppSettings.llmRequestTimeoutChoices, id: \.self) { seconds in
+        Text(llmTimeoutLabel(seconds)).tag(seconds)
+      }
+    }
+    .pickerStyle(.menu)
+    Text("Cancels a model response if it runs longer than this.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
     Picker("Conversation Context", selection: settingsBinding(\.contextWindowMode)) {
       ForEach(ContextWindowMode.allCases) { mode in
         Text(mode.displayName).tag(mode)
@@ -2109,6 +2118,26 @@ struct SettingsView: View {
         store.saveSettings()
       }
     )
+  }
+
+  private var llmRequestTimeoutBinding: Binding<Int> {
+    Binding(
+      get: {
+        AppSettings.normalizedLLMRequestTimeoutSeconds(store.settings.llmRequestTimeoutSeconds)
+      },
+      set: { value in
+        store.settings.llmRequestTimeoutSeconds =
+          AppSettings.normalizedLLMRequestTimeoutSeconds(value)
+        store.saveSettings()
+      }
+    )
+  }
+
+  private func llmTimeoutLabel(_ seconds: Int) -> String {
+    if seconds >= 60, seconds.isMultiple(of: 60) {
+      return "\(seconds / 60) min"
+    }
+    return "\(seconds)s"
   }
 
   private var openAPIServerPortBinding: Binding<Int> {

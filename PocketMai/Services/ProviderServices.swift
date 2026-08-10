@@ -78,7 +78,10 @@ enum ChatProviderRouter {
     var attempts = 0
     while true {
       do {
-        return try await dispatch(request: current, onUpdate: onUpdate)
+        let attemptRequest = current
+        return try await withTimeout(seconds: attemptRequest.settings.llmRequestTimeoutInterval) {
+          try await dispatch(request: attemptRequest, onUpdate: onUpdate)
+        }
       } catch {
         attempts += 1
         guard attempts <= 3, isContextOverflowError(error) else { throw error }
@@ -148,6 +151,35 @@ enum ChatProviderRouter {
       if needles.contains(where: { lower.contains($0) }) { return true }
     }
     return false
+  }
+
+  private static func withTimeout<T: Sendable>(
+    seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> T
+  ) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask {
+        try await operation()
+      }
+      group.addTask {
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        throw ChatProviderError.providerRequestFailed(
+          "LLM call timed out after \(Self.formattedTimeout(seconds)).")
+      }
+      guard let result = try await group.next() else {
+        throw ChatProviderError.emptyResponse
+      }
+      group.cancelAll()
+      return result
+    }
+  }
+
+  private static func formattedTimeout(_ seconds: TimeInterval) -> String {
+    let total = Int(seconds.rounded())
+    if total >= 60, total.isMultiple(of: 60) {
+      return "\(total / 60) minute\(total == 60 ? "" : "s")"
+    }
+    return "\(total) seconds"
   }
 }
 
@@ -1749,11 +1781,7 @@ enum OpenAICompatibleProvider {
         method: "POST",
         contentType: "application/json",
         body: body)
-      if messages.contains(where: { $0.content?.containsImageInput == true }) {
-        // Larger vision models may need more than URLRequest's default 60 seconds
-        // before producing their first streamed byte. Do not retry the large payload.
-        urlRequest.timeoutInterval = 180
-      }
+      urlRequest.timeoutInterval = request.settings.llmRequestTimeoutInterval
 
       if request.conversation.usesStreaming {
         return try await stream(request: urlRequest, onUpdate: onUpdate)
