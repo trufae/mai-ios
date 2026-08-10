@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 
 enum ToolApprovalKind: Sendable {
   case auto
@@ -57,6 +58,10 @@ enum BuiltInToolCatalog {
     BuiltInToolCatalogEntry(
       id: .calendar,
       toolNames: [CalendarTool.readName, CalendarTool.createName],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .clipboard,
+      toolNames: [ClipboardTool.getName, ClipboardTool.setName],
       approvalKind: .confirm),
   ]
 
@@ -142,6 +147,10 @@ enum BuiltInToolCatalog {
       return await CalendarTool.createEvent(
         arguments: call.argumentValues,
         settings: store.settings.toolSettings)
+    case ClipboardTool.getName:
+      return ClipboardTool.getText()
+    case ClipboardTool.setName:
+      return ClipboardTool.setText(arguments: call.argumentValues)
     default:
       return nil
     }
@@ -192,6 +201,8 @@ enum BuiltInToolCatalog {
       return FileWorkspaceTool.definitions
     case .calendar:
       return CalendarTool.definitions(settings: settings.toolSettings)
+    case .clipboard:
+      return ClipboardTool.definitions
     case .memory:
       return []
     }
@@ -899,6 +910,49 @@ enum CalendarTool {
     settings: NativeToolSettings
   ) async -> String {
     await CalendarEventService.createEvent(arguments: arguments, settings: settings)
+  }
+}
+
+@MainActor
+enum ClipboardTool {
+  static let getName = "clipboard_get_text"
+  static let setName = "clipboard_set_text"
+
+  static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: getName,
+      description: "Read the current text content of the system clipboard.",
+      parameters: []
+    ),
+    ToolDefinition(
+      name: setName,
+      description: "Replace the system clipboard content with the given text.",
+      parameters: [
+        ToolParameterDef(
+          name: "text", type: "string",
+          description: "Text to place on the clipboard.",
+          required: true)
+      ]
+    ),
+  ]
+
+  static func getText() -> String {
+    guard UIPasteboard.general.hasStrings else {
+      return "The clipboard has no text content."
+    }
+    guard let text = UIPasteboard.general.string, !text.isEmpty else {
+      return "The clipboard has no text content."
+    }
+    return text
+  }
+
+  static func setText(arguments: [String: AgentToolArgumentValue]) -> String {
+    let text =
+      arguments["text"]?.stringValue ?? arguments["content"]?.stringValue
+      ?? arguments["value"]?.stringValue ?? ""
+    guard !text.isEmpty else { return "Error: text is required." }
+    UIPasteboard.general.string = text
+    return "Copied \(text.count) characters to the clipboard."
   }
 }
 

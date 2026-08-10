@@ -1521,6 +1521,12 @@ struct SettingsView: View {
       .onDelete { offsets in
         pendingDeletion = PendingSettingsDeletion(kind: .file, offsets: offsets)
       }
+    case .clipboard:
+      Text(
+        "Lets the assistant read and replace the text on the system clipboard. Disabled by default because the clipboard may contain sensitive data such as passwords; each call asks for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     case .memory:
       TextEditor(text: settingsBinding(\.memory))
         .frame(minHeight: 140)

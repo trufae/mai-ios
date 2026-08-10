@@ -2679,6 +2679,7 @@ enum ToolCallParser {
     case "web search": return "magnifyingglass"
     case "todo": return "checklist"
     case "files": return "folder"
+    case "clipboard": return "doc.on.clipboard"
     case "memory": return "brain"
     default: return "wrench.and.screwdriver"
     }
