@@ -208,6 +208,46 @@ enum WebXDCLibrary {
     return app
   }
 
+  @discardableResult
+  static func deleteOtherRevisions(_ app: WebXDCAppInfo, keeping revision: Int) throws
+    -> WebXDCAppInfo
+  {
+    var app = app
+    guard let keptRevision = app.revisions.first(where: { $0.number == revision }) else {
+      throw WebXDCError.message("Revision \(revision) does not exist.")
+    }
+
+    let appRoot = appURL(app.id)
+    let keptURL = revisionURL(app, revision: revision)
+    let canonicalURL = revisionURL(app, revision: 1)
+    let temporaryURL =
+      appRoot
+      .appendingPathComponent(".rev-\(revision)-keep-\(UUID().uuidString)", isDirectory: true)
+
+    if revision != 1 {
+      try FileManager.default.moveItem(at: keptURL, to: temporaryURL)
+    }
+
+    for oldRevision in app.revisions {
+      if oldRevision.number == revision && revision == 1 {
+        continue
+      }
+      let oldURL = revisionURL(app, revision: oldRevision.number)
+      try? FileManager.default.removeItem(at: oldURL)
+    }
+
+    if revision != 1 {
+      try FileManager.default.moveItem(at: temporaryURL, to: canonicalURL)
+    }
+
+    app.revisions = [
+      WebXDCRevision(number: 1, date: keptRevision.date, note: "created")
+    ]
+    app.currentRevision = 1
+    try save(app)
+    return app
+  }
+
   // MARK: - Files
 
   static func validatedRelativePath(_ rawPath: String) throws -> String {

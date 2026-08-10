@@ -29,12 +29,19 @@ final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
     super.init()
 
     let configuration = WKWebViewConfiguration()
+    let webxdcSettings = store.settings.toolSettings
     configuration.setURLSchemeHandler(
       WebXDCSchemeHandler(
         rootURL: WebXDCLibrary.currentRevisionURL(app),
-        bridgeScript: WebXDCBridge.script(selfAddr: "you@pocketmai", selfName: "You")),
+        bridgeScript: WebXDCBridge.script(
+          selfAddr: "you@pocketmai", selfName: "You", settings: webxdcSettings)),
       forURLScheme: Self.appScheme)
     configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: app.id)
+    configuration.userContentController.addUserScript(
+      WKUserScript(
+        source: WebXDCRuntimePolicy.script(settings: webxdcSettings),
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false))
     configuration.userContentController.add(self, name: "webxdc")
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.navigationDelegate = self
@@ -420,7 +427,7 @@ private final class WebXDCSchemeHandler: NSObject, WKURLSchemeHandler {
 }
 
 enum WebXDCBridge {
-  static func script(selfAddr: String, selfName: String) -> String {
+  static func script(selfAddr: String, selfName: String, settings: NativeToolSettings) -> String {
     """
     (function () {
       if (window.webxdc) { return; }
@@ -484,9 +491,15 @@ enum WebXDCBridge {
           return Promise.resolve();
         },
         importFiles: function (filter) {
+          if (!\(settings.webxdcAllowFileImport ? "true" : "false")) {
+            return Promise.resolve([]);
+          }
           return Promise.resolve([]);
         },
         joinRealtimeChannel: function () {
+          if (!\(settings.webxdcAllowRealtimeChannels ? "true" : "false")) {
+            throw new Error("realtime channels are disabled in PocketMai");
+          }
           throw new Error("realtime channels are not supported in PocketMai");
         }
       };
@@ -498,6 +511,107 @@ enum WebXDCBridge {
     let data = (try? JSONSerialization.data(
       withJSONObject: value, options: [.fragmentsAllowed]))
     return data.flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+  }
+}
+
+enum WebXDCRuntimePolicy {
+  static func script(settings: NativeToolSettings) -> String {
+    """
+    (function () {
+      var policy = {
+        gps: \(settings.webxdcAllowGPSLocation ? "true" : "false"),
+        motion: \(settings.webxdcAllowMotionSensors ? "true" : "false"),
+        wasm: \(settings.webxdcAllowWASM ? "true" : "false"),
+        webgl: \(settings.webxdcAllowWebGL ? "true" : "false"),
+        canvas2d: \(settings.webxdcAllowCanvas2D ? "true" : "false"),
+        audio: \(settings.webxdcAllowAudioPlayback ? "true" : "false"),
+        camera: \(settings.webxdcAllowCamera ? "true" : "false"),
+        microphone: \(settings.webxdcAllowMicrophone ? "true" : "false"),
+        clipboard: \(settings.webxdcAllowClipboard ? "true" : "false"),
+        storage: \(settings.webxdcAllowLocalStorage ? "true" : "false"),
+        serviceWorkers: \(settings.webxdcAllowServiceWorkers ? "true" : "false"),
+        notifications: \(settings.webxdcAllowNotifications ? "true" : "false")
+      };
+      function denied(name) {
+        return new DOMException(name + " is disabled in PocketMai WebXDC settings", "NotAllowedError");
+      }
+      function hide(object, name) {
+        try { Object.defineProperty(object, name, { configurable: true, get: function () { return undefined; } }); } catch (e) {}
+      }
+      if (!policy.gps && navigator) {
+        hide(Navigator.prototype, "geolocation");
+        hide(navigator, "geolocation");
+      }
+      if (!policy.motion) {
+        hide(window, "DeviceMotionEvent");
+        hide(window, "DeviceOrientationEvent");
+        var addEventListener = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function (type, listener, options) {
+          if (type === "devicemotion" || type === "deviceorientation" || type === "deviceorientationabsolute") {
+            return;
+          }
+          return addEventListener.call(this, type, listener, options);
+        };
+      }
+      if (!policy.wasm) {
+        hide(window, "WebAssembly");
+      }
+      if ((!policy.webgl || !policy.canvas2d) && window.HTMLCanvasElement) {
+        var getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type) {
+          var kind = String(type || "").toLowerCase();
+          if (!policy.webgl && (kind === "webgl" || kind === "experimental-webgl" || kind === "webgl2")) {
+            return null;
+          }
+          if (!policy.canvas2d && kind === "2d") {
+            return null;
+          }
+          return getContext.apply(this, arguments);
+        };
+      }
+      if (!policy.audio) {
+        hide(window, "AudioContext");
+        hide(window, "webkitAudioContext");
+        if (window.HTMLMediaElement) {
+          HTMLMediaElement.prototype.play = function () { return Promise.reject(denied("audio playback")); };
+        }
+      }
+      if ((!policy.camera || !policy.microphone) && navigator && navigator.mediaDevices) {
+        var mediaDevices = navigator.mediaDevices;
+        var getUserMedia = mediaDevices.getUserMedia ? mediaDevices.getUserMedia.bind(mediaDevices) : null;
+        mediaDevices.getUserMedia = function (constraints) {
+          constraints = constraints || {};
+          if ((constraints.video && !policy.camera) || (constraints.audio && !policy.microphone)) {
+            return Promise.reject(denied("media capture"));
+          }
+          return getUserMedia ? getUserMedia(constraints) : Promise.reject(denied("media capture"));
+        };
+        if (!policy.camera && !policy.microphone) {
+          mediaDevices.enumerateDevices = function () { return Promise.resolve([]); };
+        }
+      }
+      if (!policy.clipboard && navigator) {
+        hide(Navigator.prototype, "clipboard");
+        hide(navigator, "clipboard");
+      }
+      if (!policy.storage) {
+        hide(window, "localStorage");
+        hide(window, "sessionStorage");
+        hide(window, "indexedDB");
+        if (navigator) {
+          hide(Navigator.prototype, "storage");
+          hide(navigator, "storage");
+        }
+      }
+      if (!policy.serviceWorkers && navigator) {
+        hide(Navigator.prototype, "serviceWorker");
+        hide(navigator, "serviceWorker");
+      }
+      if (!policy.notifications) {
+        hide(window, "Notification");
+      }
+    })();
+    """
   }
 }
 
@@ -681,6 +795,7 @@ struct WebXDCAppDetailView: View {
   @State private var runningSession: WebXDCRunningSession?
   @State private var showingIconImporter = false
   @State private var showingDeleteConfirmation = false
+  @State private var showingDeleteOtherRevisionsConfirmation = false
   @State private var errorMessage: String?
 
   init(appID: UUID, onChange: @escaping () -> Void = {}) {
@@ -737,6 +852,16 @@ struct WebXDCAppDetailView: View {
       Button("Delete", role: .destructive) { deleteApp() }
     } message: {
       Text("All revisions will be removed. This cannot be undone.")
+    }
+    .alert("Delete other revisions?", isPresented: $showingDeleteOtherRevisionsConfirmation) {
+      Button("Cancel", role: .cancel) {}
+      Button("Delete Others", role: .destructive) {
+        if let app {
+          deleteOtherRevisions(app)
+        }
+      }
+    } message: {
+      Text("Only the selected revision will remain, and it will become revision 1.")
     }
     .alert("Something went wrong", isPresented: errorBinding) {
       Button("OK") { errorMessage = nil }
@@ -799,6 +924,11 @@ struct WebXDCAppDetailView: View {
           deleteCurrentRevision(app)
         } label: {
           Label("Delete Revision \(app.currentRevision)", systemImage: "clock.arrow.circlepath")
+        }
+        Button(role: .destructive) {
+          showingDeleteOtherRevisionsConfirmation = true
+        } label: {
+          Label("Delete Other Revisions", systemImage: "trash")
         }
       }
     }
@@ -965,6 +1095,15 @@ struct WebXDCAppDetailView: View {
   private func deleteCurrentRevision(_ app: WebXDCAppInfo) {
     do {
       _ = try WebXDCLibrary.deleteRevision(app, revision: app.currentRevision)
+      reload()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func deleteOtherRevisions(_ app: WebXDCAppInfo) {
+    do {
+      _ = try WebXDCLibrary.deleteOtherRevisions(app, keeping: app.currentRevision)
       reload()
     } catch {
       errorMessage = error.localizedDescription

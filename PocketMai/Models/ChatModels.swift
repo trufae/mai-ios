@@ -2485,6 +2485,20 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var filesWorkspaceAccessEnabled: Bool = false
   var webxdcAllowInternet: Bool = false
   var webxdcChatInteractionEnabled: Bool = true
+  var webxdcAllowGPSLocation: Bool = false
+  var webxdcAllowMotionSensors: Bool = false
+  var webxdcAllowWASM: Bool = true
+  var webxdcAllowWebGL: Bool = true
+  var webxdcAllowCanvas2D: Bool = true
+  var webxdcAllowAudioPlayback: Bool = true
+  var webxdcAllowCamera: Bool = false
+  var webxdcAllowMicrophone: Bool = false
+  var webxdcAllowClipboard: Bool = false
+  var webxdcAllowFileImport: Bool = false
+  var webxdcAllowLocalStorage: Bool = true
+  var webxdcAllowServiceWorkers: Bool = false
+  var webxdcAllowNotifications: Bool = false
+  var webxdcAllowRealtimeChannels: Bool = false
   var voices: VoiceSettings = .defaults
 
   static let defaults = NativeToolSettings()
@@ -2498,6 +2512,11 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case webSearchFetchingEnabled, calendarEventCreationEnabled, todos, files
     case filesWorkspaceAccessEnabled
     case webxdcAllowInternet, webxdcChatInteractionEnabled
+    case webxdcAllowGPSLocation, webxdcAllowMotionSensors, webxdcAllowWASM
+    case webxdcAllowWebGL, webxdcAllowCanvas2D, webxdcAllowAudioPlayback
+    case webxdcAllowCamera, webxdcAllowMicrophone, webxdcAllowClipboard
+    case webxdcAllowFileImport, webxdcAllowLocalStorage, webxdcAllowServiceWorkers
+    case webxdcAllowNotifications, webxdcAllowRealtimeChannels
     case voices
   }
 
@@ -2548,6 +2567,44 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     webxdcChatInteractionEnabled =
       (try? c.decode(Bool.self, forKey: .webxdcChatInteractionEnabled))
       ?? defaults.webxdcChatInteractionEnabled
+    webxdcAllowGPSLocation =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowGPSLocation))
+      ?? defaults.webxdcAllowGPSLocation
+    webxdcAllowMotionSensors =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowMotionSensors))
+      ?? defaults.webxdcAllowMotionSensors
+    webxdcAllowWASM =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowWASM)) ?? defaults.webxdcAllowWASM
+    webxdcAllowWebGL =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowWebGL)) ?? defaults.webxdcAllowWebGL
+    webxdcAllowCanvas2D =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowCanvas2D)) ?? defaults.webxdcAllowCanvas2D
+    webxdcAllowAudioPlayback =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowAudioPlayback))
+      ?? defaults.webxdcAllowAudioPlayback
+    webxdcAllowCamera =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowCamera)) ?? defaults.webxdcAllowCamera
+    webxdcAllowMicrophone =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowMicrophone))
+      ?? defaults.webxdcAllowMicrophone
+    webxdcAllowClipboard =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowClipboard))
+      ?? defaults.webxdcAllowClipboard
+    webxdcAllowFileImport =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowFileImport))
+      ?? defaults.webxdcAllowFileImport
+    webxdcAllowLocalStorage =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowLocalStorage))
+      ?? defaults.webxdcAllowLocalStorage
+    webxdcAllowServiceWorkers =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowServiceWorkers))
+      ?? defaults.webxdcAllowServiceWorkers
+    webxdcAllowNotifications =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowNotifications))
+      ?? defaults.webxdcAllowNotifications
+    webxdcAllowRealtimeChannels =
+      (try? c.decode(Bool.self, forKey: .webxdcAllowRealtimeChannels))
+      ?? defaults.webxdcAllowRealtimeChannels
 
     if let decoded = try? c.decode(VoiceSettings.self, forKey: .voices) {
       voices = decoded
@@ -2585,6 +2642,22 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(todos, forKey: .todos)
     try c.encode(files, forKey: .files)
     try c.encode(filesWorkspaceAccessEnabled, forKey: .filesWorkspaceAccessEnabled)
+    try c.encode(webxdcAllowInternet, forKey: .webxdcAllowInternet)
+    try c.encode(webxdcChatInteractionEnabled, forKey: .webxdcChatInteractionEnabled)
+    try c.encode(webxdcAllowGPSLocation, forKey: .webxdcAllowGPSLocation)
+    try c.encode(webxdcAllowMotionSensors, forKey: .webxdcAllowMotionSensors)
+    try c.encode(webxdcAllowWASM, forKey: .webxdcAllowWASM)
+    try c.encode(webxdcAllowWebGL, forKey: .webxdcAllowWebGL)
+    try c.encode(webxdcAllowCanvas2D, forKey: .webxdcAllowCanvas2D)
+    try c.encode(webxdcAllowAudioPlayback, forKey: .webxdcAllowAudioPlayback)
+    try c.encode(webxdcAllowCamera, forKey: .webxdcAllowCamera)
+    try c.encode(webxdcAllowMicrophone, forKey: .webxdcAllowMicrophone)
+    try c.encode(webxdcAllowClipboard, forKey: .webxdcAllowClipboard)
+    try c.encode(webxdcAllowFileImport, forKey: .webxdcAllowFileImport)
+    try c.encode(webxdcAllowLocalStorage, forKey: .webxdcAllowLocalStorage)
+    try c.encode(webxdcAllowServiceWorkers, forKey: .webxdcAllowServiceWorkers)
+    try c.encode(webxdcAllowNotifications, forKey: .webxdcAllowNotifications)
+    try c.encode(webxdcAllowRealtimeChannels, forKey: .webxdcAllowRealtimeChannels)
     try c.encode(voices, forKey: .voices)
   }
 }

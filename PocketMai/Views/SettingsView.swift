@@ -1539,14 +1539,67 @@ struct SettingsView: View {
       .font(.caption)
       .foregroundStyle(.secondary)
     case .webxdc:
-      Toggle(
-        "Allow internet in apps",
-        isOn: settingsBinding(\.toolSettings.webxdcAllowInternet))
-      Toggle(
-        "Apps can talk to the chat",
-        isOn: settingsBinding(\.toolSettings.webxdcChatInteractionEnabled))
+      VStack(alignment: .leading, spacing: 10) {
+        Text("WebXDC Runtime")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Toggle(
+          "Internet and WebSockets",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowInternet))
+        Toggle(
+          "Chat bridge",
+          isOn: settingsBinding(\.toolSettings.webxdcChatInteractionEnabled))
+        Toggle(
+          "GPS location",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowGPSLocation))
+        Toggle(
+          "Accelerometer and gyroscope",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowMotionSensors))
+        Toggle(
+          "WebAssembly",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowWASM))
+        Toggle(
+          "WebGL",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowWebGL))
+        Toggle(
+          "Canvas 2D",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowCanvas2D))
+        Toggle(
+          "Audio playback",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowAudioPlayback))
+        Toggle(
+          "Camera",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowCamera))
+        Toggle(
+          "Microphone",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowMicrophone))
+        Toggle(
+          "Clipboard",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowClipboard))
+        Toggle(
+          "File import",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowFileImport))
+        Toggle(
+          "Local storage",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowLocalStorage))
+        Toggle(
+          "Service workers",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowServiceWorkers))
+        Toggle(
+          "Notifications",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowNotifications))
+        Toggle(
+          "Realtime channels",
+          isOn: settingsBinding(\.toolSettings.webxdcAllowRealtimeChannels))
+        Button {
+          resetWebXDCOptions()
+        } label: {
+          Label("Reset WebXDC Options", systemImage: "arrow.counterclockwise")
+        }
+        .buttonStyle(.borderless)
+      }
       Text(
-        "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Apps run sandboxed with no internet unless allowed above; when chat interaction is on, a running app's updates are sent to the assistant and it can answer through webxdc_send_update. Manage apps from the grid button in the Settings toolbar."
+        "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Safe defaults keep apps offline and deny device resources; changing runtime options applies to newly opened app sessions. Manage apps from the grid button in the Settings toolbar."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
@@ -2026,6 +2079,26 @@ struct SettingsView: View {
         store.saveSettings()
       }
     )
+  }
+
+  private func resetWebXDCOptions() {
+    store.settings.toolSettings.webxdcAllowInternet = false
+    store.settings.toolSettings.webxdcChatInteractionEnabled = true
+    store.settings.toolSettings.webxdcAllowGPSLocation = false
+    store.settings.toolSettings.webxdcAllowMotionSensors = false
+    store.settings.toolSettings.webxdcAllowWASM = true
+    store.settings.toolSettings.webxdcAllowWebGL = true
+    store.settings.toolSettings.webxdcAllowCanvas2D = true
+    store.settings.toolSettings.webxdcAllowAudioPlayback = true
+    store.settings.toolSettings.webxdcAllowCamera = false
+    store.settings.toolSettings.webxdcAllowMicrophone = false
+    store.settings.toolSettings.webxdcAllowClipboard = false
+    store.settings.toolSettings.webxdcAllowFileImport = false
+    store.settings.toolSettings.webxdcAllowLocalStorage = true
+    store.settings.toolSettings.webxdcAllowServiceWorkers = false
+    store.settings.toolSettings.webxdcAllowNotifications = false
+    store.settings.toolSettings.webxdcAllowRealtimeChannels = false
+    store.saveSettings()
   }
 
   private var mcpRequestTimeoutBinding: Binding<Int> {
