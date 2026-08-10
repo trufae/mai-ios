@@ -67,7 +67,7 @@ final class ResponseHaptics {
     completionGenerator.prepare()
     completionGenerator.notificationOccurred(.success)
     completionGenerator.prepare()
-    playLockedCompletionFallbackIfNeeded()
+    playCompletionVibrationFallback()
   }
 
   func sidebarVisibilitySettled() {
@@ -93,8 +93,7 @@ final class ResponseHaptics {
     }
   }
 
-  private func playLockedCompletionFallbackIfNeeded() {
-    guard UIApplication.shared.applicationState != .active else { return }
+  private func playCompletionVibrationFallback() {
     AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
   }
 }

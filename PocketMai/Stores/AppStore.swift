@@ -2353,9 +2353,7 @@ final class AppStore: ObservableObject {
   /// per-token handlers here so they share one throttled fan-out.
   func receiveStreamingAssistantText(_ text: String, for id: UUID, vibrate: Bool) {
     setAssistantMessage(id: id, text: text, role: .assistant, touch: false, streaming: true)
-    guard vibrate, settings.appearance.hapticsEnabled,
-      settings.appearance.vibrateOnEveryStreamPacket
-    else {
+    guard vibrate, settings.appearance.hapticsEnabled else {
       return
     }
     responseHaptics.streamSnapshotReceived(text)

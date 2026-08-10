@@ -853,15 +853,10 @@ struct SettingsView: View {
   @ViewBuilder
   private var hapticsContent: some View {
     Toggle("Enable Haptics", isOn: settingsBinding(\.appearance.hapticsEnabled))
-    Toggle(
-      "Vibrate on Stream Packets",
-      isOn: settingsBinding(\.appearance.vibrateOnEveryStreamPacket)
-    )
-    .disabled(!store.settings.appearance.hapticsEnabled)
     Text(
-      store.settings.appearance.vibrateOnEveryStreamPacket
-        ? "Irregular typing-like taps play while the assistant streams; a completion pulse plays when it ends."
-        : "A completion pulse plays when the assistant response completes."
+      store.settings.appearance.hapticsEnabled
+        ? "Irregular typing-like taps play while the assistant streams; a vibration pulse plays when it ends."
+        : "Assistant response haptics are disabled."
     )
     .font(.caption)
     .foregroundStyle(.secondary)
