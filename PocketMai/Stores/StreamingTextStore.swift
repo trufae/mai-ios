@@ -101,7 +101,6 @@ final class StreamingTextStore: ObservableObject {
     lastPublishAt.removeValue(forKey: id)
     publishTasks[id]?.cancel()
     publishTasks.removeValue(forKey: id)
-    textObjects[id]?.setText(nil)
     textObjects.removeValue(forKey: id)
   }
 
@@ -113,9 +112,6 @@ final class StreamingTextStore: ObservableObject {
     pendingTexts.removeAll()
     lastPublishAt.removeAll()
     publishingSuspended = false
-    for object in textObjects.values {
-      object.setText(nil)
-    }
     textObjects.removeAll()
   }
 }
