@@ -5376,28 +5376,35 @@ struct CodeBlockView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack {
+      HStack(spacing: appearance.markdownMetric(8)) {
         Text(language.isEmpty ? "code" : language)
           .font(.caption.monospaced().weight(.semibold))
           .foregroundStyle(.secondary)
-        Spacer()
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .leading)
         if !isFullChatScreenshotRendering {
-          Button {
-            showingCodePreview = true
-          } label: {
-            Image(systemName: "eye")
+          HStack(spacing: appearance.markdownMetric(8)) {
+            Button {
+              showingCodePreview = true
+            } label: {
+              Image(systemName: "eye")
+            }
+            .adaptiveGlassButtonStyle()
+            .help("View code")
+            Button {
+              UIPasteboard.general.string = code
+            } label: {
+              Image(systemName: "doc.on.doc")
+            }
+            .adaptiveGlassButtonStyle()
+            .help("Copy code")
           }
-          .adaptiveGlassButtonStyle()
-          .help("View code")
-          Button {
-            UIPasteboard.general.string = code
-          } label: {
-            Image(systemName: "doc.on.doc")
-          }
-          .adaptiveGlassButtonStyle()
-          .help("Copy code")
+          .fixedSize(horizontal: true, vertical: false)
+          .layoutPriority(1)
         }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, appearance.markdownMetric(10))
       .padding(.vertical, appearance.markdownMetric(7))
       Divider()
@@ -5417,8 +5424,10 @@ struct CodeBlockView: View {
             .padding(appearance.markdownMetric(12))
             .fixedSize(horizontal: true, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .sheet(isPresented: $showingCodePreview) {
       MessageTextSelectionSheet(
         title: codePreviewTitle,
