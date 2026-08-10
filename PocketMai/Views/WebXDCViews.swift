@@ -346,6 +346,9 @@ struct WebXDCRunnerSheet: View {
           }
         }
     }
+    .presentationDetents([.large])
+    .presentationDragIndicator(.hidden)
+    .interactiveDismissDisabled()
   }
 
   private var isThinking: Bool {
