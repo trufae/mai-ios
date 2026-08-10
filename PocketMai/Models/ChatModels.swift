@@ -2638,6 +2638,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var appleModelID: String = AppSettings.appleDefaultModelID
   var localMLXModelID: String = AppSettings.localMLXDefaultModelID
   var selectedEndpointID: UUID? = nil
+  var defaultReasoningLevel: ReasoningLevel = .automatic
   var streamByDefault: Bool = true
   var showThinkingByDefault: Bool = false
   var openAIEndpoints: [OpenAIEndpoint] = []
@@ -2788,8 +2789,8 @@ struct AppSettings: Codable, Equatable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case settingsVersion, stockPromptsVersion
-    case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID, streamByDefault,
-      showThinkingByDefault
+    case defaultProvider, appleModelID, localMLXModelID, selectedEndpointID,
+      defaultReasoningLevel, streamByDefault, showThinkingByDefault
     case openAIEndpoints, systemPrompts, userPrompts, defaultSystemPromptID, compactPrompt
     case defaultEnabledTools
     case defaultEnabledMCPServers, defaultEnabledMCPTools
@@ -2821,6 +2822,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(String.self, forKey: .localMLXModelID))
       ?? AppSettings.localMLXDefaultModelID
     selectedEndpointID = try? c.decode(UUID.self, forKey: .selectedEndpointID)
+    defaultReasoningLevel =
+      (try? c.decode(ReasoningLevel.self, forKey: .defaultReasoningLevel)) ?? .automatic
     streamByDefault = (try? c.decode(Bool.self, forKey: .streamByDefault)) ?? true
     showThinkingByDefault = (try? c.decode(Bool.self, forKey: .showThinkingByDefault)) ?? false
     openAIEndpoints =

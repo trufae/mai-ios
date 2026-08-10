@@ -790,11 +790,7 @@ final class AppStore: ObservableObject {
       conversation.modelID = defaultProvider.modelID
     }
     conversation.endpointID = defaultProvider.endpointID
-    if let endpointID = defaultProvider.endpointID,
-      let endpoint = settings.openAIEndpoints.first(where: { $0.id == endpointID })
-    {
-      conversation.reasoningLevel = endpoint.defaultReasoningLevel
-    }
+    conversation.reasoningLevel = settings.defaultReasoningLevel
     conversation.systemPromptID = effectiveSystemPromptID(forFolderID: folderID)
     conversation.enabledTools = settings.defaultEnabledTools
     conversation.enabledMCPServers = settings.defaultEnabledMCPServers

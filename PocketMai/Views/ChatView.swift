@@ -4003,6 +4003,33 @@ private struct ConversationModelSettingsView: View {
         if store.currentConversation == nil {
           ContentUnavailableView("No Chat Selected", systemImage: "bubble.left")
         } else {
+          Section {
+            HStack {
+              Button {
+                saveProviderModelAsDefault()
+              } label: {
+                Label(
+                  providerModelDefaultButtonTitle,
+                  systemImage: isCurrentProviderModelDefault ? "checkmark.circle" : "star"
+                )
+              }
+              .disabled(!canSaveProviderModelAsDefault)
+
+              if !isCurrentChatUsingDefaults {
+                Spacer()
+
+                Button {
+                  resetChatSettingsToDefaults()
+                } label: {
+                  Label("Reset defaults", systemImage: "arrow.counterclockwise")
+                }
+              }
+            }
+            .buttonStyle(.borderless)
+          } footer: {
+            Text(providerModelDefaultFooterText)
+          }
+
           Section("Provider") {
             Menu {
               if store.appleIntelligenceIsAvailable {
@@ -4047,20 +4074,6 @@ private struct ConversationModelSettingsView: View {
               .disabled(!store.settings.showThinkingByDefault)
             Toggle("Use memory", isOn: useMemoryBinding)
             Toggle("Stream responses", isOn: streamingBinding)
-          }
-
-          Section {
-            Button {
-              saveProviderModelAsDefault()
-            } label: {
-              Label(
-                providerModelDefaultButtonTitle,
-                systemImage: isCurrentProviderModelDefault ? "checkmark.circle" : "star"
-              )
-            }
-            .disabled(!canSaveProviderModelAsDefault)
-          } footer: {
-            Text(providerModelDefaultFooterText)
           }
         }
       }
@@ -4214,23 +4227,47 @@ private struct ConversationModelSettingsView: View {
   private var isCurrentProviderModelDefault: Bool {
     guard let conversation = store.currentConversation else { return false }
     let defaults = store.effectiveDefaultProviderConfiguration
+    let reasoningMatches = conversation.reasoningLevel == store.settings.defaultReasoningLevel
     switch conversation.provider {
     case .apple:
       return defaults.provider == .apple
         && normalizedModel(conversation.modelID) == normalizedModel(defaults.modelID)
+        && reasoningMatches
     case .mlx:
       let model =
         store.availableLocalMLXModelID(preferred: effectiveMLXModel(conversation))
         ?? effectiveMLXModel(conversation)
       return defaults.provider == .mlx
         && normalizedModel(model) == normalizedModel(defaults.modelID)
+        && reasoningMatches
     case .openAICompatible:
       guard let endpoint = selectedEndpoint else { return false }
       let model = effectiveConversationModel(conversation, endpoint: endpoint)
       return defaults.provider == .openAICompatible
         && defaults.endpointID == endpoint.id
         && normalizedModel(model) == normalizedModel(defaults.modelID)
+        && reasoningMatches
     }
+  }
+
+  private var isCurrentChatUsingDefaults: Bool {
+    guard let conversation = store.currentConversation else { return true }
+    let defaults = store.effectiveProviderConfiguration(forFolderID: conversation.folderID)
+    let defaultModel =
+      defaults.provider == .mlx
+      ? (store.availableLocalMLXModelID(preferred: defaults.modelID)
+        ?? normalizedModel(defaults.modelID))
+      : defaults.modelID
+    let memoryMatches =
+      conversation.enabledTools.contains(.memory)
+      == store.settings.defaultEnabledTools.contains(.memory)
+    return conversation.provider == defaults.provider
+      && conversation.endpointID == defaults.endpointID
+      && normalizedModel(conversation.modelID) == normalizedModel(defaultModel)
+      && conversation.reasoningLevel == store.settings.defaultReasoningLevel
+      && conversation.showThinking == store.settings.showThinkingByDefault
+      && conversation.usesStreaming == store.settings.streamByDefault
+      && memoryMatches
   }
 
   private var providerModelDefaultButtonTitle: String {
@@ -4239,7 +4276,7 @@ private struct ConversationModelSettingsView: View {
 
   private var providerModelDefaultFooterText: String {
     if isCurrentProviderModelDefault {
-      return "These provider and model settings already match the app defaults."
+      return "These provider, model, and reasoning settings already match the app defaults."
     }
     guard let conversation = store.currentConversation else { return "" }
     if conversation.provider == .openAICompatible && store.settings.airplaneModeEnabled {
@@ -4252,9 +4289,9 @@ private struct ConversationModelSettingsView: View {
       return "Download an MLX model before using MLX as the default."
     }
     if didSaveDefaults {
-      return "Future chats will use this provider and model."
+      return "Future chats will use this provider, model, and reasoning level."
     }
-    return "Make these provider and model settings the default for new chats."
+    return "Make these provider, model, and reasoning settings the default for new chats."
   }
 
   private func saveProviderModelAsDefault() {
@@ -4286,8 +4323,33 @@ private struct ConversationModelSettingsView: View {
         store.settings.openAIEndpoints[index].defaultModel = model
       }
     }
+    store.settings.defaultReasoningLevel = conversation.reasoningLevel
     store.saveSettings()
     didSaveDefaults = true
+  }
+
+  private func resetChatSettingsToDefaults() {
+    guard let source = store.currentConversation else { return }
+    let defaults = store.effectiveProviderConfiguration(forFolderID: source.folderID)
+    let defaultModel: String = {
+      guard defaults.provider == .mlx else { return defaults.modelID }
+      return store.availableLocalMLXModelID(preferred: defaults.modelID)
+        ?? normalizedModel(defaults.modelID)
+    }()
+    store.updateCurrentConversationSettings { conversation in
+      conversation.provider = defaults.provider
+      conversation.endpointID = defaults.endpointID
+      conversation.modelID = defaultModel
+      conversation.reasoningLevel = store.settings.defaultReasoningLevel
+      conversation.showThinking = store.settings.showThinkingByDefault
+      conversation.usesStreaming = store.settings.streamByDefault
+      if store.settings.defaultEnabledTools.contains(.memory) {
+        conversation.enabledTools.insert(.memory)
+      } else {
+        conversation.enabledTools.remove(.memory)
+      }
+    }
+    didSaveDefaults = false
   }
 
   private func effectiveConversationModel(

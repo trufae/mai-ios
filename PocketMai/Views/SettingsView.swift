@@ -520,6 +520,7 @@ struct SettingsView: View {
     Section {
       defaultProviderPicker
       defaultModelPicker
+      ReasoningLevelControl(level: settingsBinding(\.defaultReasoningLevel))
       defaultPromptPicker
     } header: {
       Text("Defaults")
