@@ -5,6 +5,16 @@ import WebKit
 
 // MARK: - Running session
 
+struct WebXDCDebugLog: Identifiable, Sendable, Equatable {
+  let id = UUID()
+  let date: Date
+  let level: String
+  let message: String
+  let source: String?
+  let line: Int?
+  let column: Int?
+}
+
 /// A running webxdc app. Owns the WKWebView so the app keeps its state while
 /// the runner sheet is closed; it stays attached to the chat it was started
 /// from until explicitly stopped.
@@ -14,6 +24,7 @@ final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
 
   let app: WebXDCAppInfo
   let conversationID: UUID?
+  @Published private(set) var debugLogs: [WebXDCDebugLog] = []
   private(set) var webView: WKWebView!
   private weak var store: AppStore?
   private var outbox: [(prompt: String, display: String, expectsUpdate: Bool)] = []
@@ -39,10 +50,16 @@ final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
     configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: app.id)
     configuration.userContentController.addUserScript(
       WKUserScript(
+        source: WebXDCDebugBridge.script,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false))
+    configuration.userContentController.addUserScript(
+      WKUserScript(
         source: WebXDCRuntimePolicy.script(settings: webxdcSettings),
         injectionTime: .atDocumentStart,
         forMainFrameOnly: false))
     configuration.userContentController.add(self, name: "webxdc")
+    configuration.userContentController.add(self, name: "webxdcDebug")
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.navigationDelegate = self
     webView.isOpaque = false
@@ -82,6 +99,7 @@ final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
     store?.webxdcHub.removeListener(appID: app.id, token: ObjectIdentifier(self))
     webView.stopLoading()
     webView.configuration.userContentController.removeScriptMessageHandler(forName: "webxdc")
+    webView.configuration.userContentController.removeScriptMessageHandler(forName: "webxdcDebug")
   }
 
   /// Content rules blocking http/https/websocket loads. The filter must stay
@@ -261,6 +279,35 @@ final class WebXDCRunningSession: NSObject, ObservableObject, Identifiable {
     }
     return value
   }
+
+  private func appendDebugLog(
+    level: String,
+    message: String,
+    source: String? = nil,
+    line: Int? = nil,
+    column: Int? = nil
+  ) {
+    let entry = WebXDCDebugLog(
+      date: Date(),
+      level: level,
+      message: message,
+      source: source,
+      line: line,
+      column: column)
+    debugLogs.append(entry)
+    if debugLogs.count > 500 {
+      debugLogs.removeFirst(debugLogs.count - 500)
+    }
+  }
+
+  private func handleDebugMessage(_ body: [String: Any]) {
+    let level = (body["level"] as? String) ?? "log"
+    let message = (body["message"] as? String) ?? ""
+    let source = body["source"] as? String
+    let line = (body["line"] as? NSNumber)?.intValue
+    let column = (body["column"] as? NSNumber)?.intValue
+    appendDebugLog(level: level, message: message, source: source, line: line, column: column)
+  }
 }
 
 extension WebXDCRunningSession: WKScriptMessageHandler {
@@ -268,9 +315,12 @@ extension WebXDCRunningSession: WKScriptMessageHandler {
     _ userContentController: WKUserContentController,
     didReceive message: WKScriptMessage
   ) {
-    guard message.name == "webxdc", let body = message.body as? [String: Any],
-      let type = body["type"] as? String
-    else { return }
+    guard let body = message.body as? [String: Any] else { return }
+    if message.name == "webxdcDebug" {
+      handleDebugMessage(body)
+      return
+    }
+    guard message.name == "webxdc", let type = body["type"] as? String else { return }
     switch type {
     case "ready":
       let since = (body["serial"] as? NSNumber)?.intValue ?? 0
@@ -313,6 +363,26 @@ extension WebXDCRunningSession: WKNavigationDelegate {
     }
     decisionHandler(.cancel)
   }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    appendDebugLog(level: "info", message: "Loaded \(webView.url?.absoluteString ?? "page")")
+  }
+
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    appendDebugLog(level: "error", message: error.localizedDescription)
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    didFailProvisionalNavigation navigation: WKNavigation!,
+    withError error: Error
+  ) {
+    appendDebugLog(level: "error", message: error.localizedDescription)
+  }
+
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    appendDebugLog(level: "error", message: "Web content process terminated.")
+  }
 }
 
 // MARK: - Runner sheet
@@ -321,7 +391,8 @@ struct WebXDCRunnerSheet: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
 
-  let session: WebXDCRunningSession
+  @ObservedObject var session: WebXDCRunningSession
+  @State private var showingDebugLogs = false
 
   var body: some View {
     NavigationStack {
@@ -331,14 +402,21 @@ struct WebXDCRunnerSheet: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
           ToolbarItem(placement: .topBarLeading) {
-            if isThinking {
-              HStack(spacing: 6) {
+            HStack(spacing: 8) {
+              Button {
+                showingDebugLogs = true
+              } label: {
+                Label("Debug Logs", systemImage: "list.bullet.rectangle")
+              }
+              .labelStyle(.iconOnly)
+              .accessibilityLabel("Debug logs")
+              if isThinking {
                 ProgressView()
                 Text("Thinking...")
                   .font(.caption)
                   .foregroundStyle(.secondary)
+                  .accessibilityLabel("The assistant is responding")
               }
-              .accessibilityLabel("The assistant is responding")
             }
           }
           ToolbarItem(placement: .confirmationAction) {
@@ -346,14 +424,90 @@ struct WebXDCRunnerSheet: View {
           }
         }
     }
-    .presentationDetents([.large])
-    .presentationDragIndicator(.hidden)
+    .ignoresSafeArea(edges: .bottom)
     .interactiveDismissDisabled()
+    .sheet(isPresented: $showingDebugLogs) {
+      WebXDCDebugLogView(session: session)
+    }
   }
 
   private var isThinking: Bool {
     guard let conversationID = session.conversationID else { return false }
     return store.isResponding(in: conversationID)
+  }
+}
+
+private struct WebXDCDebugLogView: View {
+  @Environment(\.dismiss) private var dismiss
+  @ObservedObject var session: WebXDCRunningSession
+
+  var body: some View {
+    NavigationStack {
+      List {
+        if session.debugLogs.isEmpty {
+          Text("No logs yet.")
+            .foregroundStyle(.secondary)
+        } else {
+          ForEach(session.debugLogs.reversed()) { log in
+            VStack(alignment: .leading, spacing: 4) {
+              HStack {
+                Text(log.level.uppercased())
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(color(for: log.level))
+                Spacer()
+                Text(formatted(log.date))
+                  .font(.caption2)
+                  .foregroundStyle(.secondary)
+              }
+              Text(log.message)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+              if let location = locationText(log) {
+                Text(location)
+                  .font(.caption2)
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+              }
+            }
+            .padding(.vertical, 4)
+          }
+        }
+      }
+      .navigationTitle("Debug Logs")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
+  }
+
+  private func color(for level: String) -> Color {
+    switch level.lowercased() {
+    case "error": return .red
+    case "warn", "warning": return .orange
+    case "info": return .secondary
+    default: return .primary
+    }
+  }
+
+  private func formatted(_ date: Date) -> String {
+    date.formatted(date: .omitted, time: .standard)
+  }
+
+  private func locationText(_ log: WebXDCDebugLog) -> String? {
+    let source = log.source?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let hasPosition = log.line != nil || log.column != nil
+    if source.isEmpty && !hasPosition { return nil }
+    var text = source.isEmpty ? "unknown source" : source
+    if let line = log.line {
+      text += ":\(line)"
+      if let column = log.column {
+        text += ":\(column)"
+      }
+    }
+    return text
   }
 }
 
@@ -427,6 +581,51 @@ private final class WebXDCSchemeHandler: NSObject, WKURLSchemeHandler {
     default: return "application/octet-stream"
     }
   }
+}
+
+enum WebXDCDebugBridge {
+  static let script = """
+    (function () {
+      if (window.__pocketMaiDebugBridgeInstalled) { return; }
+      window.__pocketMaiDebugBridgeInstalled = true;
+      function text(value) {
+        try {
+          if (value instanceof Error) {
+            return value.stack || value.message || String(value);
+          }
+          if (typeof value === "string") { return value; }
+          return JSON.stringify(value);
+        } catch (e) {
+          try { return String(value); } catch (_) { return "<unprintable>"; }
+        }
+      }
+      function post(level, args, source, line, column) {
+        var message = Array.prototype.slice.call(args || []).map(text).join(" ");
+        try {
+          window.webkit.messageHandlers.webxdcDebug.postMessage({
+            level: level,
+            message: message,
+            source: source || null,
+            line: line || null,
+            column: column || null
+          });
+        } catch (e) {}
+      }
+      ["debug", "log", "info", "warn", "error"].forEach(function (level) {
+        var original = console[level];
+        console[level] = function () {
+          post(level, arguments, null, null, null);
+          if (original) { return original.apply(console, arguments); }
+        };
+      });
+      window.addEventListener("error", function (event) {
+        post("error", [event.message || event.error || "Script error"], event.filename, event.lineno, event.colno);
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        post("error", ["Unhandled promise rejection", event.reason], null, null, null);
+      });
+    })();
+    """
 }
 
 enum WebXDCBridge {
@@ -833,7 +1032,7 @@ struct WebXDCAppDetailView: View {
           saveFile(path: file.path, text: newText)
         })
     }
-    .sheet(item: $runningSession) { session in
+    .fullScreenCover(item: $runningSession) { session in
       WebXDCRunnerSheet(session: session)
         .environmentObject(store)
     }
@@ -888,7 +1087,7 @@ struct WebXDCAppDetailView: View {
   @ViewBuilder
   private func appSection(_ app: WebXDCAppInfo) -> some View {
     Section("App") {
-      HStack(spacing: 12) {
+      HStack(alignment: .top, spacing: 12) {
         Button {
           showingIconImporter = true
         } label: {
@@ -903,6 +1102,8 @@ struct WebXDCAppDetailView: View {
             .font(.caption)
             .onSubmit { saveMetadata() }
         }
+        Spacer(minLength: 8)
+        runAppButton(app)
       }
       if draftName != app.name || draftDescription != app.appDescription {
         Button("Save Details") { saveMetadata() }
@@ -986,11 +1187,6 @@ struct WebXDCAppDetailView: View {
   private func actionsSection(_ app: WebXDCAppInfo) -> some View {
     Section {
       Button {
-        runningSession = store.startWebXDCSession(app: app)
-      } label: {
-        Label("Run App", systemImage: "play.circle")
-      }
-      Button {
         exportApp(app)
       } label: {
         Label("Export .xdc", systemImage: "square.and.arrow.up")
@@ -1003,6 +1199,21 @@ struct WebXDCAppDetailView: View {
     } footer: {
       Text("Exported .xdc files can be shared and used in Delta Chat or another PocketMai.")
     }
+  }
+
+  private func runAppButton(_ app: WebXDCAppInfo) -> some View {
+    Button {
+      runningSession = store.startWebXDCSession(app: app)
+    } label: {
+      Text("RUN")
+        .font(.caption.weight(.bold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 7)
+        .background(Color.blue, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Run app")
   }
 
   private func revisionBinding(_ app: WebXDCAppInfo) -> Binding<Int> {

@@ -243,7 +243,7 @@ struct ChatView: View {
     .onTapGesture {
       showingWebXDCRunnerFromBar = true
     }
-    .sheet(isPresented: $showingWebXDCRunnerFromBar) {
+    .fullScreenCover(isPresented: $showingWebXDCRunnerFromBar) {
       if let session = store.activeWebXDCSession {
         WebXDCRunnerSheet(session: session)
           .environmentObject(store)
@@ -1965,7 +1965,7 @@ private struct ChatComposer: View {
       }
       .environmentObject(store)
     }
-    .sheet(isPresented: $showingWebXDCRunner) {
+    .fullScreenCover(isPresented: $showingWebXDCRunner) {
       if let session = store.activeWebXDCSession {
         WebXDCRunnerSheet(session: session)
           .environmentObject(store)
