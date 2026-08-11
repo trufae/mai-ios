@@ -600,7 +600,7 @@ struct ChatView: View {
             } else if !isPreviewingConversation && currentConversationIsEmpty
               && liveVoiceSession.previewMessage == nil
             {
-              emptyState
+              emptyState(screenIsLandscape: screenIsLandscape(fallbackSize: scrollGeometry.size))
                 .containerRelativeFrame(.vertical)
             } else {
               ForEach(renderedMessages) { message in
@@ -1212,10 +1212,10 @@ struct ChatView: View {
     .frame(maxWidth: .infinity)
   }
 
-  private var emptyState: some View {
+  private func emptyState(screenIsLandscape: Bool) -> some View {
     GeometryReader { proxy in
       let suggestions = store.previousConversationSuggestions
-      let showsLandscapeSuggestions = proxy.size.width > proxy.size.height && !suggestions.isEmpty
+      let showsLandscapeSuggestions = screenIsLandscape && !suggestions.isEmpty
 
       Group {
         if showsLandscapeSuggestions {
@@ -1277,6 +1277,17 @@ struct ChatView: View {
     guard hasSuggestions, keyboardOverlap > 0 else { return baseY }
     let lift = min(keyboardOverlap * 0.18, 64)
     return max(height * 0.48, baseY - lift)
+  }
+
+  private func screenIsLandscape(fallbackSize: CGSize) -> Bool {
+    let screenSize = UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+      .first { $0.activationState == .foregroundActive }?
+      .screen
+      .bounds
+      .size
+      ?? fallbackSize
+    return screenSize.width > screenSize.height
   }
 
   private func updateKeyboardOverlap(from notification: Notification) {
