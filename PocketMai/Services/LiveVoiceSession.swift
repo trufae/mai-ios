@@ -200,6 +200,19 @@ final class LiveVoiceSession: ObservableObject {
     }
   }
 
+  func submitCurrentTurn(store: AppStore, ttsPlayer: TTSPlayer) {
+    guard mode == .conversation else { return }
+    configure(store: store, ttsPlayer: ttsPlayer)
+    switch state {
+    case .listening, .paused:
+      commitCurrentTurn()
+    case .requestingPermission:
+      break
+    default:
+      break
+    }
+  }
+
   private func beginListening(resetTranscript: Bool) {
     guard let store else { return }
     sessionGeneration += 1

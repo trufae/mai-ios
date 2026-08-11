@@ -2150,13 +2150,14 @@ private struct ChatComposer: View {
       .help("Cancel voice note")
     } else {
       Button {
-        liveVoiceSession.togglePauseOrRecord(store: store, ttsPlayer: ttsPlayer)
+        Task { @MainActor in
+          await stopVoiceAndKeepTranscript()
+        }
       } label: {
-        voiceControlImage(liveVoiceSession.primaryControlSystemImage, color: .accentColor)
+        voiceControlImage("stop.fill", color: .red)
       }
       .adaptiveGlassButtonStyle()
-      .disabled(liveVoiceSession.state == .requestingPermission)
-      .help(liveVoiceSession.primaryControlHelp)
+      .help("Stop conversation")
     }
   }
 
@@ -2175,15 +2176,30 @@ private struct ChatComposer: View {
       .help("Attach voice note")
     } else {
       Button {
-        Task { @MainActor in
-          await stopVoiceAndKeepTranscript()
+        if hasVoiceTranscript {
+          liveVoiceSession.submitCurrentTurn(store: store, ttsPlayer: ttsPlayer)
+        } else {
+          liveVoiceSession.togglePauseOrRecord(store: store, ttsPlayer: ttsPlayer)
         }
       } label: {
-        voiceControlImage("stop.fill", color: .red)
+        voiceControlImage(voiceTrailingSystemImage, color: .accentColor)
       }
       .adaptiveGlassButtonStyle()
-      .help("Stop conversation")
+      .disabled(liveVoiceSession.state == .requestingPermission)
+      .help(voiceTrailingHelp)
     }
+  }
+
+  private var hasVoiceTranscript: Bool {
+    !liveVoiceSession.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var voiceTrailingSystemImage: String {
+    hasVoiceTranscript ? "arrow.up" : liveVoiceSession.primaryControlSystemImage
+  }
+
+  private var voiceTrailingHelp: String {
+    hasVoiceTranscript ? "Send message" : liveVoiceSession.primaryControlHelp
   }
 
   private func voiceControlImage(_ systemImage: String, color: Color) -> some View {
