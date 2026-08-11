@@ -310,12 +310,10 @@ struct SettingsView: View {
   @State private var draftEndpoint: OpenAIEndpoint?
   @State private var draftMCPServer: MCPServer?
   @State private var toastMessage: String?
-  @State private var defaultModelFilter = ""
 
   var body: some View {
     NavigationStack(path: $navigationPath) {
       Form {
-        defaultsSection
         providerSection
         appearanceSection
         toolsSection
@@ -525,17 +523,6 @@ struct SettingsView: View {
     Toggle("YOLO mode", isOn: settingsBinding(\.yoloModeEnabled))
   }
 
-  private var defaultsSection: some View {
-    Section {
-      defaultProviderPicker
-      defaultModelPicker
-      ReasoningLevelControl(level: settingsBinding(\.defaultReasoningLevel))
-      defaultPromptPicker
-    } header: {
-      Text("Defaults")
-    }
-  }
-
   private var providerSection: some View {
     Section {
       SettingsLazyDisclosureGroup {
@@ -570,81 +557,6 @@ struct SettingsView: View {
     } header: {
       Text("Inference")
     }
-  }
-
-  @ViewBuilder
-  private var defaultProviderPicker: some View {
-    Picker("Default Provider", selection: defaultProviderBinding) {
-      if store.appleIntelligenceIsAvailable {
-        Label("Apple Intelligence", systemImage: "apple.logo")
-          .tag(DefaultProviderSelection.apple)
-      }
-      Label("MLX Local", systemImage: "cpu")
-        .tag(DefaultProviderSelection.mlx)
-      if !store.settings.airplaneModeEnabled {
-        ForEach(store.settings.openAIEndpoints.filter(\.isEnabled)) { endpoint in
-          Label(endpoint.displayName, systemImage: "network")
-            .tag(DefaultProviderSelection.endpoint(endpoint.id))
-        }
-      }
-    }
-    .pickerStyle(.menu)
-  }
-
-  @ViewBuilder
-  private var defaultModelPicker: some View {
-    switch defaultProviderBinding.wrappedValue {
-    case .apple:
-      let currentModel =
-        store.settings.appleModelID.trimmingCharacters(in: .whitespacesAndNewlines)
-      Picker("Default Model", selection: settingsBinding(\.appleModelID)) {
-        if !currentModel.isEmpty {
-          Text(currentModel).tag(currentModel)
-        }
-        Text("Apple Intelligence").tag(AppSettings.appleDefaultModelID)
-      }
-      .pickerStyle(.menu)
-    case .mlx:
-      let modelIDs = store.localMLXModelIDs
-      Picker("Default Model", selection: defaultMLXModelBinding) {
-        if modelIDs.isEmpty {
-          Text("No downloaded MLX models").tag("")
-        } else {
-          ForEach(modelIDs, id: \.self) { modelID in
-            Text(modelID).tag(modelID)
-          }
-        }
-      }
-      .pickerStyle(.menu)
-      .disabled(modelIDs.isEmpty)
-    case .endpoint(let id):
-      let models = store.endpointModels[id] ?? []
-      if models.isEmpty {
-        LabeledContent("Default Model") {
-          TextField("Model name", text: defaultEndpointModelBinding(for: id))
-            .multilineTextAlignment(.trailing)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-        }
-      } else {
-        FilteredModelPicker(
-          selection: defaultEndpointModelBinding(for: id),
-          filter: $defaultModelFilter,
-          models: models,
-          title: "Default Model",
-          emptySelectionTitle: "Select a model"
-        )
-      }
-    }
-  }
-
-  private var defaultPromptPicker: some View {
-    Picker("Default Prompt", selection: settingsBinding(\.defaultSystemPromptID)) {
-      ForEach(store.settings.systemPrompts) { prompt in
-        Text(prompt.displayName).tag(prompt.id)
-      }
-    }
-    .pickerStyle(.menu)
   }
 
   @ViewBuilder
@@ -1947,91 +1859,6 @@ struct SettingsView: View {
     withAnimation(.snappy) {
       toastMessage = message
     }
-  }
-
-  private var defaultMLXModelBinding: Binding<String> {
-    Binding(
-      get: {
-        store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
-      },
-      set: { modelID in
-        guard store.localMLXModelIDs.contains(modelID) else { return }
-        store.settings.localMLXModelID = modelID
-        store.saveSettings()
-      }
-    )
-  }
-
-  private func defaultEndpointModelBinding(for id: UUID) -> Binding<String> {
-    Binding(
-      get: {
-        store.settings.openAIEndpoints.first(where: { $0.id == id })?.defaultModel ?? ""
-      },
-      set: { modelID in
-        guard let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id })
-        else { return }
-        store.settings.openAIEndpoints[index].defaultModel = modelID
-        store.saveSettings()
-      }
-    )
-  }
-
-  private var defaultProviderBinding: Binding<DefaultProviderSelection> {
-    Binding(
-      get: {
-        if store.settings.airplaneModeEnabled
-          && !store.settings.defaultProvider.isAirplaneModeEligible
-        {
-          return .mlx
-        }
-        switch store.settings.defaultProvider {
-        case .apple:
-          return store.appleIntelligenceIsAvailable ? .apple : .mlx
-        case .mlx:
-          return .mlx
-        case .openAICompatible:
-          if let id = store.settings.selectedEndpointID,
-            store.settings.openAIEndpoints.contains(where: { $0.id == id && $0.isEnabled })
-          {
-            return .endpoint(id)
-          }
-          if let first = store.settings.defaultOpenAIEndpoint {
-            return .endpoint(first.id)
-          }
-          return .mlx
-        }
-      },
-      set: { newValue in
-        switch newValue {
-        case .apple:
-          guard store.appleIntelligenceIsAvailable else {
-            store.refreshLocalMLXModels()
-            store.settings.defaultProvider = .mlx
-            store.settings.localMLXModelID =
-              store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
-            store.saveSettings()
-            return
-          }
-          store.settings.defaultProvider = .apple
-        case .mlx:
-          store.refreshLocalMLXModels()
-          store.settings.defaultProvider = .mlx
-          store.settings.localMLXModelID =
-            store.availableLocalMLXModelID(preferred: store.settings.localMLXModelID) ?? ""
-        case .endpoint(let id):
-          guard !store.settings.airplaneModeEnabled else {
-            showToast(
-              store.appleIntelligenceIsAvailable
-                ? "Airplane Mode is enabled. Choose Apple Intelligence or MLX Local."
-                : "Airplane Mode is enabled. Choose MLX Local.")
-            return
-          }
-          store.settings.defaultProvider = .openAICompatible
-          store.settings.selectedEndpointID = id
-        }
-        store.saveSettings()
-      }
-    )
   }
 
   private func toggleAirplaneMode() {

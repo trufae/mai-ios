@@ -275,20 +275,7 @@ struct ChatView: View {
   }
 
   private var chatTitle: some View {
-    let languageOptions = SystemLanguageSupport.chatLanguageIdentifiers(
-      including: currentLanguageOverrideIdentifier
-    )
-    let availableLanguageIdentifiers = Set(languageOptions)
-    let recentLanguageOptions = AppSettings.normalizedRecentChatLanguageIdentifiers(
-      store.settings.recentChatLanguageIdentifiers
-    )
-    .filter { availableLanguageIdentifiers.contains($0) }
-    let recentLanguageIdentifiers = Set(recentLanguageOptions)
-    let remainingLanguageOptions = languageOptions.filter {
-      !recentLanguageIdentifiers.contains($0)
-    }
-
-    return Menu {
+    Menu {
       Button {
         beginRename()
       } label: {
@@ -304,63 +291,7 @@ struct ChatView: View {
       Button {
         showingProviderModelSheet = true
       } label: {
-        Label("Provider & Model", systemImage: "cpu")
-      }
-      Menu {
-        ForEach(store.settings.systemPrompts) { prompt in
-          Button {
-            store.updateCurrentConversation { conversation in
-              conversation.systemPromptID = prompt.id
-            }
-          } label: {
-            if prompt.id == currentSystemPromptID {
-              Label(prompt.displayName, systemImage: "checkmark")
-            } else {
-              Text(prompt.displayName)
-            }
-          }
-        }
-      } label: {
-        Label("System Prompt", systemImage: "text.bubble")
-      }
-      Menu {
-        Button {
-          store.setCurrentConversationLanguageOverride(nil)
-        } label: {
-          if currentLanguageOverrideIdentifier == nil {
-            Label("Defaults", systemImage: "checkmark")
-          } else {
-            Text("Defaults")
-          }
-        }
-        Divider()
-        ForEach(recentLanguageOptions, id: \.self) { identifier in
-          Button {
-            store.setCurrentConversationLanguageOverride(identifier)
-          } label: {
-            if identifier == currentLanguageOverrideIdentifier {
-              Label(SystemLanguageSupport.languageDisplayName(identifier), systemImage: "checkmark")
-            } else {
-              Text(SystemLanguageSupport.languageDisplayName(identifier))
-            }
-          }
-        }
-        if !recentLanguageOptions.isEmpty {
-          Divider()
-        }
-        ForEach(remainingLanguageOptions, id: \.self) { identifier in
-          Button {
-            store.setCurrentConversationLanguageOverride(identifier)
-          } label: {
-            if identifier == currentLanguageOverrideIdentifier {
-              Label(SystemLanguageSupport.languageDisplayName(identifier), systemImage: "checkmark")
-            } else {
-              Text(SystemLanguageSupport.languageDisplayName(identifier))
-            }
-          }
-        }
-      } label: {
-        Label("Language", systemImage: "globe")
+        Label("Chat Settings", systemImage: "slider.horizontal.3")
       }
       Divider()
       Button {
@@ -4033,14 +3964,14 @@ private struct ConversationModelSettingsView: View {
           Section {
             HStack {
               Button {
-                saveProviderModelAsDefault()
+                saveChatSettingsAsDefault()
               } label: {
                 Label(
-                  providerModelDefaultButtonTitle,
-                  systemImage: isCurrentProviderModelDefault ? "checkmark.circle" : "star"
+                  chatSettingsDefaultButtonTitle,
+                  systemImage: isCurrentChatUsingDefaults ? "checkmark.circle" : "star"
                 )
               }
-              .disabled(!canSaveProviderModelAsDefault)
+              .disabled(!canSaveChatSettingsAsDefault)
 
               if !isCurrentChatUsingDefaults {
                 Spacer()
@@ -4054,7 +3985,7 @@ private struct ConversationModelSettingsView: View {
             }
             .buttonStyle(.borderless)
           } footer: {
-            Text(providerModelDefaultFooterText)
+            Text(chatSettingsDefaultFooterText)
           }
 
           Section("Provider") {
@@ -4094,6 +4025,25 @@ private struct ConversationModelSettingsView: View {
 
           Section {
             ReasoningLevelControl(level: reasoningBinding)
+          }
+
+          Section("System Prompt") {
+            Picker("Prompt", selection: systemPromptBinding) {
+              ForEach(store.settings.systemPrompts) { prompt in
+                Text(prompt.displayName).tag(prompt.id)
+              }
+            }
+            .pickerStyle(.menu)
+          }
+
+          Section("Language") {
+            Picker("Language", selection: languageBinding) {
+              Text("Defaults").tag("")
+              ForEach(languageOptions, id: \.self) { identifier in
+                Text(SystemLanguageSupport.languageDisplayName(identifier)).tag(identifier)
+              }
+            }
+            .pickerStyle(.menu)
           }
 
           Section {
@@ -4237,9 +4187,9 @@ private struct ConversationModelSettingsView: View {
     return OpenAICompatibleProvider.selectedEndpoint(for: conversation, settings: store.settings)
   }
 
-  private var canSaveProviderModelAsDefault: Bool {
+  private var canSaveChatSettingsAsDefault: Bool {
     guard let conversation = store.currentConversation else { return false }
-    if isCurrentProviderModelDefault { return false }
+    if isCurrentChatUsingDefaults { return false }
     switch conversation.provider {
     case .apple:
       return store.appleIntelligenceIsAvailable
@@ -4292,18 +4242,21 @@ private struct ConversationModelSettingsView: View {
       && conversation.endpointID == defaults.endpointID
       && normalizedModel(conversation.modelID) == normalizedModel(defaultModel)
       && conversation.reasoningLevel == store.settings.defaultReasoningLevel
+      && effectiveSystemPromptID(for: conversation)
+        == store.effectiveSystemPromptID(forFolderID: conversation.folderID)
+      && conversation.effectiveLanguageOverrideIdentifier == nil
       && conversation.showThinking == store.settings.showThinkingByDefault
       && conversation.usesStreaming == store.settings.streamByDefault
       && memoryMatches
   }
 
-  private var providerModelDefaultButtonTitle: String {
-    isCurrentProviderModelDefault ? "Using app defaults" : "Use as default"
+  private var chatSettingsDefaultButtonTitle: String {
+    isCurrentChatUsingDefaults ? "Using app defaults" : "Use as default"
   }
 
-  private var providerModelDefaultFooterText: String {
-    if isCurrentProviderModelDefault {
-      return "These provider, model, and reasoning settings already match the app defaults."
+  private var chatSettingsDefaultFooterText: String {
+    if isCurrentChatUsingDefaults {
+      return "These chat settings already match the app defaults."
     }
     guard let conversation = store.currentConversation else { return "" }
     if conversation.provider == .openAICompatible && store.settings.airplaneModeEnabled {
@@ -4316,12 +4269,12 @@ private struct ConversationModelSettingsView: View {
       return "Download an MLX model before using MLX as the default."
     }
     if didSaveDefaults {
-      return "Future chats will use this provider, model, and reasoning level."
+      return "Future chats will use these settings."
     }
-    return "Make these provider, model, and reasoning settings the default for new chats."
+    return "Make these chat settings the default for new chats."
   }
 
-  private func saveProviderModelAsDefault() {
+  private func saveChatSettingsAsDefault() {
     guard let conversation = store.currentConversation else { return }
     switch conversation.provider {
     case .apple:
@@ -4351,6 +4304,18 @@ private struct ConversationModelSettingsView: View {
       }
     }
     store.settings.defaultReasoningLevel = conversation.reasoningLevel
+    store.settings.defaultSystemPromptID = effectiveSystemPromptID(for: conversation)
+    if let identifier = conversation.effectiveLanguageOverrideIdentifier {
+      store.settings.conversation.speechRecognitionLanguageIdentifier = identifier
+      store.settings.recordRecentChatLanguage(identifier)
+    }
+    store.settings.streamByDefault = conversation.usesStreaming
+    store.settings.showThinkingByDefault = conversation.showThinking
+    if conversation.enabledTools.contains(.memory) {
+      store.settings.defaultEnabledTools.insert(.memory)
+    } else {
+      store.settings.defaultEnabledTools.remove(.memory)
+    }
     store.saveSettings()
     didSaveDefaults = true
   }
@@ -4368,6 +4333,8 @@ private struct ConversationModelSettingsView: View {
       conversation.endpointID = defaults.endpointID
       conversation.modelID = defaultModel
       conversation.reasoningLevel = store.settings.defaultReasoningLevel
+      conversation.systemPromptID = store.effectiveSystemPromptID(forFolderID: source.folderID)
+      conversation.languageOverrideIdentifier = nil
       conversation.showThinking = store.settings.showThinkingByDefault
       conversation.usesStreaming = store.settings.streamByDefault
       if store.settings.defaultEnabledTools.contains(.memory) {
@@ -4389,6 +4356,10 @@ private struct ConversationModelSettingsView: View {
   private func effectiveMLXModel(_ conversation: Conversation) -> String {
     let model = normalizedModel(conversation.modelID)
     return model.isEmpty ? normalizedModel(store.settings.localMLXModelID) : model
+  }
+
+  private func effectiveSystemPromptID(for conversation: Conversation) -> UUID {
+    conversation.systemPromptID ?? store.effectiveSystemPromptID(forFolderID: conversation.folderID)
   }
 
   private func normalizedModel(_ model: String) -> String {
@@ -4529,6 +4500,7 @@ private struct ConversationModelSettingsView: View {
         store.updateCurrentConversationSettings { conversation in
           conversation.usesStreaming = usesStreaming
         }
+        didSaveDefaults = false
       }
     )
   }
@@ -4540,6 +4512,41 @@ private struct ConversationModelSettingsView: View {
         store.updateCurrentConversationSettings { conversation in
           conversation.showThinking = showThinking
         }
+        didSaveDefaults = false
+      }
+    )
+  }
+
+  private var systemPromptBinding: Binding<UUID> {
+    Binding(
+      get: {
+        guard let conversation = store.currentConversation else {
+          return store.settings.defaultSystemPromptID
+        }
+        return effectiveSystemPromptID(for: conversation)
+      },
+      set: { promptID in
+        guard store.settings.systemPrompts.contains(where: { $0.id == promptID }) else { return }
+        store.updateCurrentConversationSettings { conversation in
+          conversation.systemPromptID = promptID
+        }
+        didSaveDefaults = false
+      }
+    )
+  }
+
+  private var languageOptions: [String] {
+    SystemLanguageSupport.chatLanguageIdentifiers(
+      including: store.currentConversation?.effectiveLanguageOverrideIdentifier
+    )
+  }
+
+  private var languageBinding: Binding<String> {
+    Binding(
+      get: { store.currentConversation?.effectiveLanguageOverrideIdentifier ?? "" },
+      set: { identifier in
+        store.setCurrentConversationLanguageOverride(identifier.isEmpty ? nil : identifier)
+        didSaveDefaults = false
       }
     )
   }
@@ -4555,6 +4562,7 @@ private struct ConversationModelSettingsView: View {
             conversation.enabledTools.remove(.memory)
           }
         }
+        didSaveDefaults = false
       }
     )
   }
