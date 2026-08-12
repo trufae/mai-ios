@@ -260,9 +260,17 @@ final class PersistenceStore: @unchecked Sendable {
     var needsRepair = false
     let conversations = index.ids.compactMap { id -> Conversation? in
       let url = Self.conversationFileURL(for: id, in: storage.conversationsDirectoryURL)
-      guard let data = try? Data(contentsOf: url),
-        let conversation = try? decoder.decode(Conversation.self, from: data)
-      else {
+      guard let data = try? Data(contentsOf: url) else {
+        needsRepair = true
+        return nil
+      }
+      guard let conversation = try? decoder.decode(Conversation.self, from: data) else {
+        // Quarantine files we fail to decode instead of leaving them for the
+        // orphan sweep in persistConversations to delete: a decode bug must
+        // never destroy user data.
+        let quarantineURL = url.appendingPathExtension("corrupt")
+        try? fileManager.removeItem(at: quarantineURL)
+        try? fileManager.moveItem(at: url, to: quarantineURL)
         needsRepair = true
         return nil
       }
