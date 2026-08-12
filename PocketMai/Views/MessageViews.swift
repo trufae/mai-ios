@@ -123,6 +123,7 @@ struct MessageBubble: View {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var conversationCreatedAt: Date? = nil
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
@@ -147,6 +148,7 @@ struct MessageBubble: View {
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
+      conversationCreatedAt: conversationCreatedAt,
       showThinking: showThinking,
       isWaitingForResponse: isWaitingForResponse,
       onStreamingTextChange: onStreamingTextChange
@@ -175,6 +177,7 @@ private struct StreamingMessageBubble: View {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var conversationCreatedAt: Date? = nil
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
@@ -200,6 +203,7 @@ private struct StreamingMessageBubble: View {
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
+      conversationCreatedAt: conversationCreatedAt,
       showThinking: showThinking,
       isWaitingForResponse: isWaitingForResponse,
       colorScheme: colorScheme
@@ -232,6 +236,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var conversationCreatedAt: Date? = nil
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var colorScheme: ColorScheme
@@ -260,6 +265,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.renderImages == rhs.renderImages
       && lhs.searchHighlight == rhs.searchHighlight
+      && lhs.conversationCreatedAt == rhs.conversationCreatedAt
       && lhs.showThinking == rhs.showThinking
       && lhs.isWaitingForResponse == rhs.isWaitingForResponse
       && lhs.colorScheme == rhs.colorScheme
@@ -492,6 +498,13 @@ private struct MessageBubbleContent: View, Equatable {
 
   @ViewBuilder
   private func messageContextMenu(visibleText: String) -> some View {
+    if let conversationCreatedAt {
+      Text(ConversationDatePresentation.startedText(conversationCreatedAt))
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Divider()
+    }
+
     if let onBeginSelection {
       Button(action: onBeginSelection) {
         Label("Select...", systemImage: "checkmark.circle")

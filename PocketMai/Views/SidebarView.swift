@@ -216,38 +216,17 @@ struct SidebarView: View {
           .foregroundStyle(.secondary)
           .padding(.vertical, 12)
       }
-      ForEach(visibleConversations) { conversation in
-        let isSelected = store.selectedConversationID == conversation.id
-        let isMultiSelected = selectedIDs.contains(conversation.id)
-        ConversationRow(
-          conversation: conversation,
-          isSelected: isSelected,
-          isResponding: store.isResponding(in: conversation.id),
-          isSelectionMode: isSelectionMode,
-          isMultiSelected: isMultiSelected
-        ) {
-          if isSelectionMode {
-            toggleSelection(of: conversation.id)
-          } else {
-            onSelectConversation(conversation.id)
-          }
+      if !pinnedConversations.isEmpty {
+        SidebarConversationGroupHeader(title: "Pinned")
+        ForEach(pinnedConversations) { conversation in
+          conversationRow(conversation)
         }
-        .modifier(
-          ConversationSummaryActionsModifier(
-            store: store,
-            conversation: conversation,
-            isCurrent: isSelected,
-            isEnabled: !isSelectionMode,
-            exportCoordinator: exportCoordinator,
-            onSelectForBatch: {
-              withAnimation {
-                isSelectionMode = true
-                selectedIDs = [conversation.id]
-              }
-            },
-            onAfterClone: onDismiss)
-        )
-        .listRowBackground(SidebarRowBackground(isSelected: isSelected && !isSelectionMode))
+      }
+      ForEach(updatedConversationGroups) { group in
+        SidebarConversationGroupHeader(title: group.title)
+        ForEach(group.conversations) { conversation in
+          conversationRow(conversation)
+        }
       }
     }
     .listStyle(.sidebar)
@@ -255,6 +234,62 @@ struct SidebarView: View {
       Color.clear.frame(height: 32)
     }
     .scrollIndicators(.hidden)
+  }
+
+  private var pinnedConversations: [ConversationSummary] {
+    visibleConversations.filter(\.isPinned)
+  }
+
+  private var updatedConversationGroups: [SidebarConversationGroup] {
+    var groups: [SidebarConversationGroup] = []
+    for conversation in visibleConversations where !conversation.isPinned {
+      let title = ConversationDatePresentation.sidebarGroupTitle(for: conversation.updatedAt)
+      if groups.last?.title == title {
+        groups[groups.count - 1].conversations.append(conversation)
+      } else {
+        groups.append(
+          SidebarConversationGroup(
+            id: title,
+            title: title,
+            conversations: [conversation]))
+      }
+    }
+    return groups
+  }
+
+  @ViewBuilder
+  private func conversationRow(_ conversation: ConversationSummary) -> some View {
+    let isSelected = store.selectedConversationID == conversation.id
+    let isMultiSelected = selectedIDs.contains(conversation.id)
+    ConversationRow(
+      conversation: conversation,
+      isSelected: isSelected,
+      isResponding: store.isResponding(in: conversation.id),
+      isSelectionMode: isSelectionMode,
+      isMultiSelected: isMultiSelected
+    ) {
+      if isSelectionMode {
+        toggleSelection(of: conversation.id)
+      } else {
+        onSelectConversation(conversation.id)
+      }
+    }
+    .modifier(
+      ConversationSummaryActionsModifier(
+        store: store,
+        conversation: conversation,
+        isCurrent: isSelected,
+        isEnabled: !isSelectionMode,
+        exportCoordinator: exportCoordinator,
+        onSelectForBatch: {
+          withAnimation {
+            isSelectionMode = true
+            selectedIDs = [conversation.id]
+          }
+        },
+        onAfterClone: onDismiss)
+    )
+    .listRowBackground(SidebarRowBackground(isSelected: isSelected && !isSelectionMode))
   }
 
   private var sidebarEdgeFades: some View {
@@ -592,6 +627,42 @@ struct PendingConversationRename: Identifiable {
   let id: UUID
 }
 
+private struct SidebarConversationGroup: Identifiable {
+  let id: String
+  let title: String
+  var conversations: [ConversationSummary]
+}
+
+private struct SidebarConversationGroupHeader: View {
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Rectangle()
+        .fill(Color.secondary.opacity(0.18))
+        .frame(height: 1 / UIScreen.main.scale)
+      Text(title)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .textCase(nil)
+        .lineLimit(1)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 3)
+        .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
+      Rectangle()
+        .fill(Color.secondary.opacity(0.18))
+        .frame(height: 1 / UIScreen.main.scale)
+    }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .listRowInsets(EdgeInsets())
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+      .accessibilityAddTraits(.isHeader)
+  }
+}
+
 struct ConversationSummaryActionsModifier: ViewModifier {
   let store: AppStore
   let conversation: ConversationSummary
@@ -633,6 +704,14 @@ struct ConversationSummaryActionsModifier: ViewModifier {
 
   @ViewBuilder
   private var contextMenuItems: some View {
+    Text(
+      "\(ConversationDatePresentation.startedText(conversation.createdAt)) · Updated \(ConversationDatePresentation.timestamp(conversation.updatedAt))"
+    )
+      .font(.system(size: 9))
+      .foregroundStyle(.secondary)
+      .lineLimit(1)
+    Divider()
+
     if let onSelectForBatch {
       Button {
         onSelectForBatch()

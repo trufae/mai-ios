@@ -3,6 +3,24 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private struct ConversationTimelineHeader: View {
+  let startedAt: Date
+  let updatedAt: Date
+
+  var body: some View {
+    VStack(spacing: 2) {
+      Text("Started \(ConversationDatePresentation.timestamp(startedAt))")
+      Text("Updated \(ConversationDatePresentation.timestamp(updatedAt))")
+    }
+    .font(.caption2)
+    .foregroundStyle(.secondary)
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+  }
+}
+
 struct ChatView: View {
   struct RenderInvalidationKey: Equatable {
     var selectedConversationID: UUID?
@@ -518,6 +536,15 @@ struct ChatView: View {
           // A single response can be several viewports tall and changes height while streaming.
           // LazyVStack can retain a stale row estimate and scroll past the rendered content.
           VStack(spacing: 14) {
+            if let startedAt = conversation?.createdAt
+              ?? store.selectedConversationSummary?.createdAt
+            {
+              ConversationTimelineHeader(
+                startedAt: startedAt,
+                updatedAt: conversation?.updatedAt
+                  ?? store.selectedConversationSummary?.updatedAt
+                  ?? startedAt)
+            }
             if isPreviewingConversation && renderedMessages.isEmpty {
               compactLoadingState
             } else if !isPreviewingConversation && currentConversationIsEmpty
@@ -560,6 +587,8 @@ struct ChatView: View {
                     onRestartFresh: { messagePendingRestartFresh = message },
                     onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
                     onSpeakFromHere: { speakFromHere(message) },
+                    conversationCreatedAt: conversation?.createdAt
+                      ?? store.selectedConversationSummary?.createdAt,
                     showThinking: store.effectiveShowThinking(for: store.currentConversation),
                     isWaitingForResponse: isWaitingForResponse(message),
                     onStreamingTextChange: { _ in
@@ -595,6 +624,8 @@ struct ChatView: View {
                   renderMarkdown: store.settings.renderMarkdownInChat,
                   renderImages: store.settings.renderMarkdownImagesInChat,
                   onDelete: {},
+                  conversationCreatedAt: conversation?.createdAt
+                    ?? store.selectedConversationSummary?.createdAt,
                   showThinking: store.effectiveShowThinking(for: store.currentConversation),
                   isWaitingForResponse: false
                 )
