@@ -461,10 +461,7 @@ struct SettingsView: View {
       }
     }
     .pickerStyle(.menu)
-    Text("Cancels a model response if it runs longer than this.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
-    Picker("Conversation Context", selection: settingsBinding(\.contextWindowMode)) {
+    Picker("Chat Context", selection: settingsBinding(\.contextWindowMode)) {
       ForEach(ContextWindowMode.allCases) { mode in
         Text(mode.displayName).tag(mode)
       }
@@ -482,11 +479,6 @@ struct SettingsView: View {
       }
     }
     .pickerStyle(.menu)
-    Text(
-      "Caps the token sliding window for MLX Local. Larger values retain more conversation history but use more GPU memory. Reducing this is the first fix for out-of-memory crashes."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
     Toggle("Auto-Compact MLX Context", isOn: settingsBinding(\.mlxAutoCompact))
     Picker("Image Attachments", selection: settingsBinding(\.attachmentImageSize)) {
       ForEach(AttachmentImageSize.allCases) { size in
@@ -561,6 +553,9 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var openAPIServerContent: some View {
+    Text("Ollama and OpenAI-compatible clients can connect to this port while serving is enabled.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
     Toggle("Serve", isOn: openAPIServerServingBinding)
 
     LabeledContent("Port") {
@@ -572,9 +567,6 @@ struct SettingsView: View {
       .keyboardType(.numberPad)
       .multilineTextAlignment(.trailing)
     }
-    Text("Ollama and OpenAI-compatible clients can connect to this port while serving is enabled.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
 
     Picker("Source", selection: settingsBinding(\.openAPIServer.conversationScope)) {
       ForEach(OpenAPIServerConversationScope.allCases) { scope in
@@ -587,23 +579,12 @@ struct SettingsView: View {
       .foregroundStyle(.secondary)
 
     Toggle(
-      "Allow caller overrides",
+      "Allow model overrides",
       isOn: settingsBinding(\.openAPIServer.allowClientOverrides))
-    Text(
-      "Off keeps clients bound to the selected app model. On lets callers pass a model name for the selected provider."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
 
     Toggle(
       "Run PocketMai tools",
       isOn: settingsBinding(\.openAPIServer.allowToolExecution))
-    Text(
-      "Off serves only the provider and model. On lets served requests use the selected tool configuration and returns tool run details when tools are called."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-
     if let port = store.openAPIServerState.port {
       let configuredPort = store.settings.openAPIServer.port
       let statusText =
@@ -1132,6 +1113,11 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var promptContent: some View {
+    Text(
+      "System prompts modify the nature of the personality and responses behaviour of the assistant."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
     NavigationLink {
       CompactPromptDetailView()
     } label: {
@@ -1154,15 +1140,13 @@ struct SettingsView: View {
     } label: {
       Label("Add Prompt", systemImage: "plus")
     }
-    Text(
-      "Compact Prompt is used when summarizing a chat. System prompts are sent to the model at the start of each chat."
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
   private var userPromptContent: some View {
+    Text(
+      "User prompts can be used when prefixing the message with '/'"
+    )
     ForEach(store.settings.userPrompts) { prompt in
       NavigationLink {
         UserPromptDetailView(prompt: prompt)
@@ -1178,9 +1162,6 @@ struct SettingsView: View {
     } label: {
       Label("Add User Prompt", systemImage: "plus")
     }
-    Text("User prompts are prepended to user messages submitted with /name text.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
   }
 
   private var compactPromptRow: some View {
@@ -1290,9 +1271,6 @@ struct SettingsView: View {
     ForEach(BuiltInToolID.allCases.filter(\.isCallableTool)) { tool in
       toolRow(tool)
     }
-    Text("Tap the checkbox to enable. Tap the row to expand options where available.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
@@ -1462,11 +1440,12 @@ struct SettingsView: View {
       .font(.caption)
       .foregroundStyle(.secondary)
     case .webxdc:
+      Text(
+        "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Safe defaults keep apps offline and deny device resources; changing runtime options applies to newly opened app sessions. Manage apps from the grid button in the Settings toolbar."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
       VStack(alignment: .leading, spacing: 6) {
-        Text("WebXDC Runtime")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.secondary)
-          .padding(.bottom, 2)
         webXDCToggle("Internet and WebSockets", \.toolSettings.webxdcAllowInternet)
         webXDCToggle("Chat bridge", \.toolSettings.webxdcChatInteractionEnabled)
         webXDCToggle("GPS location", \.toolSettings.webxdcAllowGPSLocation)
@@ -1491,11 +1470,6 @@ struct SettingsView: View {
         .buttonStyle(.borderless)
         .padding(.top, 6)
       }
-      Text(
-        "Lets the assistant create, edit, and roll back webxdc mini apps (HTML/CSS/JS) stored on this device. Every change makes a numbered revision. Safe defaults keep apps offline and deny device resources; changing runtime options applies to newly opened app sessions. Manage apps from the grid button in the Settings toolbar."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
     case .alarms:
       Text(
         "Lets the assistant schedule, list, and cancel real alarms on this device, such as 'in 5 minutes' or at a specific time or weekday. Disabled by default; each call asks for confirmation, requires the AlarmKit permission, and needs iOS 26.1 or later."
