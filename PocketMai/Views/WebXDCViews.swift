@@ -344,7 +344,7 @@ extension WebXDCRunningSession: WKNavigationDelegate {
   func webView(
     _ webView: WKWebView,
     decidePolicyFor navigationAction: WKNavigationAction,
-    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
   ) {
     guard let url = navigationAction.request.url else {
       decisionHandler(.cancel)
