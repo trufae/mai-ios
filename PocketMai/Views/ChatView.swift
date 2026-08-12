@@ -126,7 +126,7 @@ struct ChatView: View {
 
   private var chatViewWithSheetsAndToolbar: some View {
     chatViewWithToolbar
-      .alert("Change Title", isPresented: $showingRenameAlert) {
+      .alert("Rename", isPresented: $showingRenameAlert) {
         TextField("Chat title", text: $renameDraft)
           .onSubmit {
             renameCurrentConversation()
@@ -279,7 +279,7 @@ struct ChatView: View {
       Button {
         beginRename()
       } label: {
-        Label("Change Title...", systemImage: "pencil")
+        Label("Rename...", systemImage: "pencil")
       }
       Button {
         beginChatSearch()
@@ -287,23 +287,22 @@ struct ChatView: View {
         Label("Search...", systemImage: "magnifyingglass")
       }
       .disabled(currentConversationIsEmpty || liveVoiceSession.isActive)
+      Button {
+        showingCompactSheet = true
+      } label: {
+        Label("Compact...", systemImage: "rectangle.compress.vertical")
+      }
+      .disabled(!canCompactCurrentChat)
+      ConversationExportMenu(
+        conversationID: store.currentConversation?.id,
+        coordinator: exportCoordinator,
+        title: "Export...")
       Divider()
       Button {
         showingProviderModelSheet = true
       } label: {
         Label("Chat Settings", systemImage: "slider.horizontal.3")
       }
-      Divider()
-      Button {
-        showingCompactSheet = true
-      } label: {
-        Label("Compact Chat", systemImage: "rectangle.compress.vertical")
-      }
-      .disabled(!canCompactCurrentChat)
-      Divider()
-      ConversationExportMenu(
-        conversationID: store.currentConversation?.id,
-        coordinator: exportCoordinator)
     } label: {
       VStack(spacing: 1) {
         Text(

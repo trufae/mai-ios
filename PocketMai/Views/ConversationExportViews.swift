@@ -116,6 +116,17 @@ struct ConversationExportMenu: View {
 
   let conversationID: UUID?
   @ObservedObject var coordinator: ConversationExportCoordinator
+  let title: String
+
+  init(
+    conversationID: UUID?,
+    coordinator: ConversationExportCoordinator,
+    title: String = "Export"
+  ) {
+    self.conversationID = conversationID
+    self.coordinator = coordinator
+    self.title = title
+  }
 
   var body: some View {
     Menu {
@@ -130,7 +141,7 @@ struct ConversationExportMenu: View {
         }
       }
     } label: {
-      Label("Export", systemImage: "square.and.arrow.up")
+      Label(title, systemImage: "square.and.arrow.up")
     }
     .disabled(conversationID == nil || coordinator.isExporting)
   }

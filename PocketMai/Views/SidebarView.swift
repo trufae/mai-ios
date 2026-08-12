@@ -611,7 +611,7 @@ struct ConversationSummaryActionsModifier: ViewModifier {
         .contextMenu {
           contextMenuItems
         }
-        .alert("Change Title", isPresented: renameAlertBinding) {
+        .alert("Rename", isPresented: renameAlertBinding) {
           TextField("Chat title", text: $renameDraft)
             .onSubmit {
               saveRename()
@@ -644,7 +644,7 @@ struct ConversationSummaryActionsModifier: ViewModifier {
     Button {
       beginRename(conversation)
     } label: {
-      Label("Change Title...", systemImage: "pencil")
+      Label("Rename...", systemImage: "pencil")
     }
 
     Button {
