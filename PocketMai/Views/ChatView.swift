@@ -3,15 +3,12 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-private struct ConversationTimelineHeader: View {
-  let startedAt: Date
-  let updatedAt: Date
+private struct ConversationTimelineTimestamp: View {
+  let label: String
+  let date: Date
 
   var body: some View {
-    VStack(spacing: 2) {
-      Text("Chat Started \(ConversationDatePresentation.timestamp(startedAt))")
-      Text("Last Updated \(ConversationDatePresentation.timestamp(updatedAt))")
-    }
+    Text("\(label) \(ConversationDatePresentation.timestamp(date))")
     .font(.caption2)
     .foregroundStyle(.secondary)
     .multilineTextAlignment(.center)
@@ -540,11 +537,7 @@ struct ChatView: View {
               let startedAt = conversation?.createdAt
               ?? store.selectedConversationSummary?.createdAt
             {
-              ConversationTimelineHeader(
-                startedAt: startedAt,
-                updatedAt: conversation?.updatedAt
-                  ?? store.selectedConversationSummary?.updatedAt
-                  ?? startedAt)
+              ConversationTimelineTimestamp(label: "Chat Started", date: startedAt)
             }
             if isPreviewingConversation && renderedMessages.isEmpty {
               compactLoadingState
@@ -632,6 +625,12 @@ struct ChatView: View {
                 )
                 .id(preview.id)
               }
+            }
+            if !renderedMessages.isEmpty,
+              let updatedAt = conversation?.updatedAt
+              ?? store.selectedConversationSummary?.updatedAt
+            {
+              ConversationTimelineTimestamp(label: "Last Updated", date: updatedAt)
             }
             Color.clear
               .frame(height: 1)
