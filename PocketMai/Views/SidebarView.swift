@@ -680,7 +680,11 @@ struct ConversationSummaryActionsModifier: ViewModifier {
     if isEnabled {
       content
         .contextMenu {
-          contextMenuItems
+          Section {
+            contextMenuItems
+          } header: {
+            Text(contextMenuMetadata)
+          }
         }
         .alert("Rename", isPresented: renameAlertBinding) {
           TextField("Chat title", text: $renameDraft)
@@ -704,14 +708,6 @@ struct ConversationSummaryActionsModifier: ViewModifier {
 
   @ViewBuilder
   private var contextMenuItems: some View {
-    Text(
-      "\(ConversationDatePresentation.startedText(conversation.createdAt)) · Updated \(ConversationDatePresentation.timestamp(conversation.updatedAt))"
-    )
-      .font(.system(size: 9))
-      .foregroundStyle(.secondary)
-      .lineLimit(1)
-    Divider()
-
     if let onSelectForBatch {
       Button {
         onSelectForBatch()
@@ -783,6 +779,10 @@ struct ConversationSummaryActionsModifier: ViewModifier {
     } label: {
       Label("Delete...", systemImage: "trash")
     }
+  }
+
+  private var contextMenuMetadata: String {
+    "\(ConversationDatePresentation.startedText(conversation.createdAt)) · Updated \(ConversationDatePresentation.timestamp(conversation.updatedAt))"
   }
 
   private func beginRename(_ conversation: ConversationSummary) {

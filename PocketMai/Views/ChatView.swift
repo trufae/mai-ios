@@ -9,8 +9,8 @@ private struct ConversationTimelineHeader: View {
 
   var body: some View {
     VStack(spacing: 2) {
-      Text("Started \(ConversationDatePresentation.timestamp(startedAt))")
-      Text("Updated \(ConversationDatePresentation.timestamp(updatedAt))")
+      Text("Chat Started \(ConversationDatePresentation.timestamp(startedAt))")
+      Text("Last Updated \(ConversationDatePresentation.timestamp(updatedAt))")
     }
     .font(.caption2)
     .foregroundStyle(.secondary)
@@ -536,7 +536,8 @@ struct ChatView: View {
           // A single response can be several viewports tall and changes height while streaming.
           // LazyVStack can retain a stale row estimate and scroll past the rendered content.
           VStack(spacing: 14) {
-            if let startedAt = conversation?.createdAt
+            if !renderedMessages.isEmpty,
+              let startedAt = conversation?.createdAt
               ?? store.selectedConversationSummary?.createdAt
             {
               ConversationTimelineHeader(

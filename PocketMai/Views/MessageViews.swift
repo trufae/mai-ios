@@ -500,7 +500,7 @@ private struct MessageBubbleContent: View, Equatable {
   private func messageContextMenu(visibleText: String) -> some View {
     if let conversationCreatedAt {
       Text(ConversationDatePresentation.startedText(conversationCreatedAt))
-        .font(.caption2)
+        .font(.system(size: 8))
         .foregroundStyle(.secondary)
       Divider()
     }
