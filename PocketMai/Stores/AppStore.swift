@@ -1654,14 +1654,6 @@ final class AppStore: ObservableObject {
     openAPIServerState.isActive
   }
 
-  func toggleOpenAPIServer() {
-    if isOpenAPIServerActive {
-      stopOpenAPIServer()
-    } else {
-      startOpenAPIServer()
-    }
-  }
-
   func startOpenAPIServer() {
     let port = OpenAPIServerSettings.clampedPort(settings.openAPIServer.port)
     if settings.openAPIServer.port != port {

@@ -561,6 +561,8 @@ struct SettingsView: View {
 
   @ViewBuilder
   private var openAPIServerContent: some View {
+    Toggle("Serve", isOn: openAPIServerServingBinding)
+
     LabeledContent("Port") {
       TextField(
         "\(OpenAPIServerSettings.defaultPort)",
@@ -1951,6 +1953,19 @@ struct SettingsView: View {
       set: { value in
         store.settings.openAPIServer.port = OpenAPIServerSettings.clampedPort(value)
         store.saveSettings()
+      }
+    )
+  }
+
+  private var openAPIServerServingBinding: Binding<Bool> {
+    Binding(
+      get: { store.isOpenAPIServerActive },
+      set: { isServing in
+        if isServing {
+          store.startOpenAPIServer()
+        } else {
+          store.stopOpenAPIServer()
+        }
       }
     )
   }
