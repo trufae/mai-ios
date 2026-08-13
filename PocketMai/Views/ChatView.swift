@@ -27,6 +27,12 @@ struct ChatView: View {
     var renderMarkdownImagesInChat: Bool
   }
 
+  private struct ConversationActivitySnapshot: Equatable {
+    var conversationID: UUID?
+    var updatedAt: Date?
+    var isResponding: Bool
+  }
+
   @ObservedObject var storeObservation: AppStoreViewObservation
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
@@ -46,6 +52,7 @@ struct ChatView: View {
   @State private var chatSearch = ChatSearchState()
   @State private var messageFontPinchSession = MessageFontPinchSession()
   @State private var keyboardOverlap: CGFloat = 0
+  @State private var lastUpdatedVisibleConversationID: UUID?
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -62,6 +69,13 @@ struct ChatView: View {
       .onChange(of: store.selectedConversationID) { _, _ in
         cancelMessageSelection()
         withAnimation(.snappy) { chatSearch.cancel() }
+      }
+      .onChange(of: conversationActivitySnapshot) { old, new in
+        if old.conversationID != new.conversationID {
+          lastUpdatedVisibleConversationID = new.isResponding ? nil : new.conversationID
+        } else if old.updatedAt != new.updatedAt || (!old.isResponding && new.isResponding) {
+          lastUpdatedVisibleConversationID = nil
+        }
       }
       .onChange(of: currentMessageIDs) { _, _ in
         pruneSelectedMessages()
@@ -627,6 +641,7 @@ struct ChatView: View {
               }
             }
             if !renderedMessages.isEmpty,
+              lastUpdatedVisibleConversationID == store.selectedConversationID,
               let updatedAt = conversation?.updatedAt
               ?? store.selectedConversationSummary?.updatedAt
             {
@@ -780,6 +795,18 @@ struct ChatView: View {
 
   private var currentMessageIDs: [UUID] {
     store.currentConversation?.messages.map(\.id) ?? []
+  }
+
+  private var conversationActivitySnapshot: ConversationActivitySnapshot {
+    let conversationID = store.selectedConversationID
+    let updatedAt =
+      store.currentConversation?.id == conversationID
+      ? store.currentConversation?.updatedAt
+      : store.selectedConversationSummary?.updatedAt
+    return ConversationActivitySnapshot(
+      conversationID: conversationID,
+      updatedAt: updatedAt,
+      isResponding: conversationID.map(store.isResponding(in:)) ?? false)
   }
 
   private func beginChatSearch() {
