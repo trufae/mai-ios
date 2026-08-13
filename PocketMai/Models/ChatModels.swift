@@ -972,16 +972,6 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
-/// Decodes a message when possible and drops it otherwise, so one unreadable
-/// message (e.g. written by a newer build) cannot fail a whole conversation.
-private struct SalvagedChatMessage: Decodable {
-  let message: ChatMessage?
-
-  init(from decoder: Decoder) {
-    message = try? ChatMessage(from: decoder)
-  }
-}
-
 /// The fields that can change a bubble's rendered output. Image payloads are deliberately absent:
 /// attachment identity and metadata select the async image cache without comparing base64 strings.
 struct ChatMessageRenderKey: Equatable, Sendable {
@@ -1359,22 +1349,18 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(UUID.self, forKey: .id)
-    title = (try? container.decode(String.self, forKey: .title)) ?? "New chat"
-    messages =
-      ((try? container.decode([SalvagedChatMessage].self, forKey: .messages)) ?? [])
-      .compactMap(\.message)
-    createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
-    updatedAt = (try? container.decode(Date.self, forKey: .updatedAt)) ?? createdAt
-    provider = (try? container.decode(ProviderKind.self, forKey: .provider)) ?? .mlx
-    modelID =
-      (try? container.decode(String.self, forKey: .modelID))
-      ?? AppSettings.localMLXDefaultModelID
-    endpointID = try? container.decodeIfPresent(UUID.self, forKey: .endpointID)
-    systemPromptID = try? container.decodeIfPresent(UUID.self, forKey: .systemPromptID)
+    title = try container.decode(String.self, forKey: .title)
+    messages = try container.decode([ChatMessage].self, forKey: .messages)
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    provider = try container.decode(ProviderKind.self, forKey: .provider)
+    modelID = try container.decode(String.self, forKey: .modelID)
+    endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)
+    systemPromptID = try container.decodeIfPresent(UUID.self, forKey: .systemPromptID)
     toolsEnabled = (try? container.decode(Bool.self, forKey: .toolsEnabled)) ?? true
     enabledTools = BuiltInToolID.knownTools(
       from: try? container.decode([String].self, forKey: .enabledTools))
-    usesStreaming = (try? container.decode(Bool.self, forKey: .usesStreaming)) ?? true
+    usesStreaming = try container.decode(Bool.self, forKey: .usesStreaming)
     isPinned = (try? container.decode(Bool.self, forKey: .isPinned)) ?? false
     isUnread = (try? container.decode(Bool.self, forKey: .isUnread)) ?? false
     enabledMCPServers =
