@@ -1568,7 +1568,7 @@ struct SettingsView: View {
     } label: {
       Label("Add MCP Server", systemImage: "plus")
     }
-    Text("HTTP and HTTPS MCP endpoints are accepted; transport is detected automatically.")
+    Text("Streamable HTTP MCP endpoints are supported. Legacy /sse endpoints are rejected.")
       .font(.caption)
       .foregroundStyle(.secondary)
   }
@@ -4322,7 +4322,9 @@ private struct MCPServerDetailView: View {
       } header: {
         Text("Endpoint")
       } footer: {
-        Text("HTTP and HTTPS URLs are accepted. The transport is detected when connecting.")
+        Text(
+          "Enter a Streamable HTTP endpoint, usually ending in /mcp. Legacy /sse URLs are not supported."
+        )
       }
 
       Section {
@@ -4500,7 +4502,7 @@ private struct MCPServerDetailView: View {
     let resources = currentResources
     switch status {
     case .unknown:
-      Text("Transport will be detected when this server is refreshed or saved.")
+      Text("The Streamable HTTP connection will be checked when this server is refreshed or saved.")
     case .checking:
       Text("Connecting…")
     case .available:
