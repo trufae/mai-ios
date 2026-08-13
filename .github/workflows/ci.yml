@@ -53,3 +53,6 @@ jobs:
             VALID_ARCHS=arm64 \
             EXCLUDED_ARCHS=x86_64 \
             build
+
+      - name: Run conversation compatibility tests
+        run: make test

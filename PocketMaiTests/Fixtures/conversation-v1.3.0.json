@@ -1,0 +1,26 @@
+{
+  "id": "13000000-0000-4300-8300-000000000000",
+  "title": "PocketMai 1.3.0 conversation",
+  "messages": [
+    {
+      "id": "13000000-0000-4300-8300-000000000001",
+      "role": "user",
+      "text": "This message has an old voice recording.",
+      "createdAt": "2025-03-10T09:30:00Z",
+      "voiceRecordingFilename": "recording-1.3.m4a"
+    }
+  ],
+  "createdAt": "2025-03-10T09:30:00Z",
+  "updatedAt": "2025-03-10T09:30:02Z",
+  "provider": "apple",
+  "modelID": "apple-default",
+  "enabledTools": ["language", "calculator", "textToSpeech"],
+  "usesStreaming": true,
+  "isPinned": false,
+  "enabledMCPServers": ["13000000-0000-4300-8300-000000000010"],
+  "enabledMCPTools": ["legacy.mcp/search"],
+  "disabledMCPTools": ["legacy.mcp/delete"],
+  "reasoningLevel": "medium",
+  "showThinking": false,
+  "isArchived": false
+}

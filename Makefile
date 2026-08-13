@@ -2,18 +2,37 @@ PROJECT = PocketMai.xcodeproj
 SCHEME = PocketMai
 CONFIG ?= Debug
 DESTINATION ?= generic/platform=iOS Simulator
+TEST_DESTINATION ?=
 DERIVED_DATA ?= build/DerivedData
 DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
 XCODE_DERIVED_DATA ?= $(HOME)/Library/Developer/Xcode/DerivedData
 
-.PHONY: all build run fmt clean check-shared-tooling aitest-build
+.PHONY: all build test list run fmt clean check-shared-tooling aitest-build
 
 all: build
 
 build:
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination '$(DESTINATION)' -derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO build
+
+test:
+	@set -e; \
+	destination='$(TEST_DESTINATION)'; \
+	if [ -z "$$destination" ]; then \
+		simulator_id="$$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries[] | select(.key | contains("SimRuntime.iOS-")) | . as $$runtime | .value[] | select(.isAvailable == true and (.name | startswith("iPhone"))) | {runtime: ($$runtime.key | split("iOS-")[1] | split("-") | map(tonumber)), udid: .udid}] | sort_by(.runtime) | last | .udid // empty')"; \
+		if [ -z "$$simulator_id" ]; then \
+			echo "No available iPhone simulator found" >&2; \
+			exit 1; \
+		fi; \
+		xcrun simctl boot "$$simulator_id" 2>/dev/null || true; \
+		xcrun simctl bootstatus "$$simulator_id" -b; \
+		destination="platform=iOS Simulator,id=$$simulator_id"; \
+	fi; \
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination "$$destination" -derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO test
+
+list:
+	xcrun devicectl list devices
 
 # Installs and foreground-launches the latest signed Xcode device build on the
 # first connected iOS device. Pass DEVICE=<UDID> or APP_BUNDLE=<path> to

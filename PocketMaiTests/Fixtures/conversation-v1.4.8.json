@@ -1,0 +1,30 @@
+{
+  "id": "14888888-8888-4488-8488-888888888888",
+  "title": "PocketMai 1.4.8 folder conversation",
+  "messages": [
+    {
+      "id": "14888888-8888-4488-8488-888888888801",
+      "role": "assistant",
+      "text": "Internal tool transcript that remains as context.",
+      "displayText": "Visible assistant answer from 1.4.8.",
+      "createdAt": "2025-04-18T16:20:00Z",
+      "attachments": []
+    }
+  ],
+  "createdAt": "2025-04-18T16:19:00Z",
+  "updatedAt": "2025-04-18T16:20:00Z",
+  "provider": "mlx",
+  "modelID": "mlx-community/legacy-model",
+  "toolsEnabled": true,
+  "enabledTools": ["calendar", "memory", "webSearch"],
+  "usesStreaming": true,
+  "isPinned": false,
+  "enabledMCPServers": [],
+  "enabledMCPTools": [],
+  "disabledMCPTools": [],
+  "reasoningLevel": "minimal",
+  "showThinking": false,
+  "folderID": "historical-folder",
+  "isArchived": false,
+  "languageOverrideIdentifier": "es"
+}

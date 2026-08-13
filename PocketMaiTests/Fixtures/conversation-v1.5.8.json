@@ -1,0 +1,28 @@
+{
+  "id": "15888888-8888-4588-8588-888888888888",
+  "title": "PocketMai 1.5.8 conversation",
+  "messages": [
+    {
+      "id": "15888888-8888-4588-8588-888888888801",
+      "role": "tool",
+      "text": "Historical calendar tool result.",
+      "displayText": "Calendar result",
+      "createdAt": "2025-05-18T08:00:00Z"
+    }
+  ],
+  "createdAt": "2025-05-18T08:00:00Z",
+  "updatedAt": "2025-05-18T08:00:05Z",
+  "provider": "mlx",
+  "modelID": "mlx-community/model-1.5.8",
+  "toolsEnabled": true,
+  "enabledTools": ["calendar", "datetime", "todo"],
+  "usesStreaming": false,
+  "isPinned": true,
+  "enabledMCPServers": [],
+  "enabledMCPTools": [],
+  "disabledMCPTools": [],
+  "reasoningLevel": "disabled",
+  "showThinking": false,
+  "folderID": "default",
+  "isArchived": false
+}

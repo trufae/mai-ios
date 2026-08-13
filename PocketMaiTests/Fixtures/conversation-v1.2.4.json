@@ -1,0 +1,30 @@
+{
+  "id": "12222222-2222-4222-8222-222222222222",
+  "title": "PocketMai 1.2.4 conversation",
+  "messages": [
+    {
+      "id": "12222222-2222-4222-8222-222222222201",
+      "role": "system",
+      "text": "A system message from 1.2.4.",
+      "createdAt": "2025-02-24T12:00:00Z"
+    },
+    {
+      "id": "12222222-2222-4222-8222-222222222202",
+      "role": "user",
+      "text": "Preserve the second format boundary.",
+      "createdAt": "2025-02-24T12:00:01Z"
+    }
+  ],
+  "createdAt": "2025-02-24T12:00:00Z",
+  "updatedAt": "2025-02-24T12:00:01Z",
+  "provider": "apple",
+  "modelID": "apple-default",
+  "enabledTools": ["datetime", "weather", "files", "memory"],
+  "usesStreaming": false,
+  "isPinned": false,
+  "disabledMCPTools": [],
+  "reasoningLevel": "automatic",
+  "showThinking": true,
+  "lastContextSignature": "context-signature-1.2.4",
+  "isArchived": false
+}

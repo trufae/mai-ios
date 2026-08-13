@@ -1,0 +1,40 @@
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "title": "PocketMai 1.1 conversation",
+  "messages": [
+    {
+      "id": "11111111-1111-4111-8111-111111111101",
+      "role": "user",
+      "text": "Keep this original 1.1 message.",
+      "createdAt": "2025-01-11T10:00:00Z"
+    },
+    {
+      "id": "11111111-1111-4111-8111-111111111102",
+      "role": "assistant",
+      "text": "This reply must survive migration.",
+      "createdAt": "2025-01-11T10:00:01Z"
+    }
+  ],
+  "createdAt": "2025-01-11T10:00:00Z",
+  "updatedAt": "2025-01-11T10:00:01Z",
+  "isIncognito": false,
+  "provider": "openAICompatible",
+  "modelID": "legacy-model-1.1",
+  "endpointID": "11111111-1111-4111-8111-111111111120",
+  "enabledTools": [
+    "datetime",
+    "location",
+    "weather",
+    "webSearch",
+    "todo",
+    "textToSpeech",
+    "files",
+    "memory"
+  ],
+  "usesStreaming": true,
+  "isPinned": true,
+  "disabledMCPTools": ["legacy.server/tool"],
+  "reasoningLevel": "high",
+  "lastToolContextSignature": "legacy-context-signature",
+  "isArchived": true
+}

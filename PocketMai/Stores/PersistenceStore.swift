@@ -78,6 +78,8 @@ final class PersistenceStore: @unchecked Sendable {
   private let fileManager: FileManager
   private let localBaseURL: URL
   private let iCloudFallbackBaseURL: URL
+  private let preparesLaunchStorage: Bool
+  private let discoversICloudStorage: Bool
   private let preparationLock = NSLock()
   private let quarantineLock = NSLock()
   private let writeQueue = DispatchQueue(
@@ -90,18 +92,23 @@ final class PersistenceStore: @unchecked Sendable {
   private var pendingDrafts: DispatchWorkItem?
   private var persistedConversationsByID: [UUID: Conversation] = [:]
 
-  init(fileManager: FileManager = .default) {
+  init(fileManager: FileManager = .default, localBaseURL: URL? = nil) {
     self.fileManager = fileManager
-    localBaseURL = PocketMaiDirectories.appDataURL
-    iCloudFallbackBaseURL = PocketMaiDirectories.appDataURL
+    let resolvedLocalBaseURL = localBaseURL ?? PocketMaiDirectories.appDataURL
+    self.localBaseURL = resolvedLocalBaseURL
+    iCloudFallbackBaseURL = resolvedLocalBaseURL
       .appendingPathComponent("iCloud-conversations", isDirectory: true)
+    preparesLaunchStorage = localBaseURL == nil
+    discoversICloudStorage = localBaseURL == nil
   }
 
   private func prepareForAccess() {
     preparationLock.lock()
     defer { preparationLock.unlock() }
     guard !didPrepareStorage else { return }
-    PocketMaiDirectories.prepareLaunchStorage(fileManager: fileManager)
+    if preparesLaunchStorage {
+      PocketMaiDirectories.prepareLaunchStorage(fileManager: fileManager)
+    }
     try? fileManager.createDirectory(at: localBaseURL, withIntermediateDirectories: true)
     didPrepareStorage = true
   }
@@ -121,7 +128,8 @@ final class PersistenceStore: @unchecked Sendable {
   }
 
   private func resolvedICloudBaseURL() -> URL? {
-    fileManager.url(forUbiquityContainerIdentifier: nil)?
+    guard discoversICloudStorage else { return nil }
+    return fileManager.url(forUbiquityContainerIdentifier: nil)?
       .appendingPathComponent("Documents", isDirectory: true)
       .appendingPathComponent("PocketMai", isDirectory: true)
       .appendingPathComponent("SharedConversations", isDirectory: true)

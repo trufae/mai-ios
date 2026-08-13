@@ -15,8 +15,19 @@
 		A10000000000000000000006 /* BeautifulMermaid in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000016 /* BeautifulMermaid */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		B00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000004 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000009;
+			remoteInfo = PocketMai;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		A00000000000000000000007 /* PocketMai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PocketMai.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00000000000000000000002 /* PocketMaiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PocketMaiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -43,6 +54,11 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		B00000000000000000000003 /* PocketMaiTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PocketMaiTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +75,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B00000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -67,6 +90,7 @@
 			children = (
 				A0000000000000000000000B /* PocketMai */,
 				A0000000000000000000000D /* Shared */,
+				B00000000000000000000003 /* PocketMaiTests */,
 				A00000000000000000000011 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -75,6 +99,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000007 /* PocketMai.app */,
+				B00000000000000000000002 /* PocketMaiTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -111,6 +136,29 @@
 			productReference = A00000000000000000000007 /* PocketMai.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B00000000000000000000005 /* PocketMaiTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B0000000000000000000000B /* Build configuration list for PBXNativeTarget "PocketMaiTests" */;
+			buildPhases = (
+				B00000000000000000000006 /* Sources */,
+				B00000000000000000000004 /* Frameworks */,
+				B00000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B00000000000000000000003 /* PocketMaiTests */,
+			);
+			name = PocketMaiTests;
+			packageProductDependencies = (
+			);
+			productName = PocketMaiTests;
+			productReference = B00000000000000000000002 /* PocketMaiTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -128,6 +176,10 @@
 								enabled = 1;
 							};
 						};
+					};
+					B00000000000000000000005 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = A00000000000000000000009;
 					};
 				};
 			};
@@ -153,12 +205,20 @@
 			projectRoot = "";
 			targets = (
 				A00000000000000000000009 /* PocketMai */,
+				B00000000000000000000005 /* PocketMaiTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A00000000000000000000014 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00000000000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -175,7 +235,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B00000000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B00000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A00000000000000000000009 /* PocketMai */;
+			targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A0000000000000000000001A /* Debug */ = {
@@ -345,6 +420,40 @@
 			};
 			name = Release;
 		};
+		B00000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.trufae.mai.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketMai.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PocketMai";
+			};
+			name = Debug;
+		};
+		B0000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.trufae.mai.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketMai.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PocketMai";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -362,6 +471,15 @@
 			buildConfigurations = (
 				A0000000000000000000001A /* Debug */,
 				A0000000000000000000001B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B0000000000000000000000B /* Build configuration list for PBXNativeTarget "PocketMaiTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000009 /* Debug */,
+				B0000000000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

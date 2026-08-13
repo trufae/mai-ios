@@ -1,0 +1,46 @@
+{
+  "id": "16222222-2222-4622-8622-222222222222",
+  "title": "PocketMai 1.6.2 conversation",
+  "messages": [
+    {
+      "id": "16222222-2222-4622-8622-222222222201",
+      "role": "error",
+      "text": "Even error messages are user data.",
+      "displayText": "A recoverable historical error.",
+      "createdAt": "2025-06-22T18:45:00Z",
+      "voiceRecordingFilename": "voice-1.6.2.m4a",
+      "attachments": []
+    }
+  ],
+  "createdAt": "2025-06-22T18:44:00Z",
+  "updatedAt": "2025-06-22T18:45:00Z",
+  "provider": "openAICompatible",
+  "modelID": "model-1.6.2",
+  "endpointID": "16222222-2222-4622-8622-222222222220",
+  "toolsEnabled": true,
+  "enabledTools": [
+    "datetime",
+    "language",
+    "location",
+    "weather",
+    "webSearch",
+    "todo",
+    "calculator",
+    "textToSpeech",
+    "files",
+    "calendar",
+    "memory"
+  ],
+  "usesStreaming": true,
+  "isPinned": false,
+  "isUnread": true,
+  "enabledMCPServers": ["16222222-2222-4622-8622-222222222230"],
+  "enabledMCPTools": ["server/tool"],
+  "disabledMCPTools": ["server/disabled-tool"],
+  "reasoningLevel": "xhigh",
+  "showThinking": true,
+  "lastContextSignature": "context-signature-1.6.2",
+  "folderID": "archived",
+  "isArchived": true,
+  "languageOverrideIdentifier": "en-GB"
+}
