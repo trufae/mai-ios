@@ -3020,6 +3020,7 @@ final class AppStore: ObservableObject {
     mcpTools[server.id] = nil
     mcpResources[server.id] = nil
     do {
+      let server = try await authorizedMCPServer(server)
       let catalog = try await MCPHTTPClient.fetchCatalog(
         server: server,
         timeout: settings.mcpRequestTimeoutInterval)
@@ -3039,6 +3040,30 @@ final class AppStore: ObservableObject {
       mcpStatuses[server.id] = .failed(error.localizedDescription)
       await MCPHTTPClient.resetSession(for: server.id)
     }
+  }
+
+  func authorizedMCPServer(_ server: MCPServer) async throws -> MCPServer {
+    let current = settings.mcpServers.first(where: { $0.id == server.id }) ?? server
+    let authentication = current.authentication
+    guard authentication.oauthAccessTokenNeedsRefresh,
+      !authentication.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return current
+    }
+
+    let result = try await MCPOAuthService.refresh(server: current)
+    var refreshed = current
+    refreshed.authentication.oauthAccessToken = result.accessToken
+    refreshed.authentication.oauthRefreshToken =
+      result.refreshToken ?? authentication.oauthRefreshToken
+    refreshed.authentication.oauthAccessTokenExpiresAt = result.expiresAt
+    refreshed.authentication.oauthClientID = result.clientID
+    if let index = settings.mcpServers.firstIndex(where: { $0.id == current.id }) {
+      settings.mcpServers[index] = refreshed
+      saveSettings()
+    }
+    await MCPHTTPClient.resetSession(for: current.id)
+    return refreshed
   }
 
   func refreshEnabledMCPServers(

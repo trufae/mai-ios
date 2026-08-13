@@ -2791,6 +2791,8 @@ struct SettingsToastModifier: ViewModifier {
           Label(message, systemImage: "exclamationmark.triangle.fill")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.red, in: Capsule())
@@ -4274,8 +4276,9 @@ private struct MCPServerDetailView: View {
   @State private var draftProtocolVersion: String?
   @State private var draftServerName: String?
   @State private var draftStatusBaseURL: String
+  @State private var draftStatusAuthentication: MCPAuthentication
   @State private var toastMessage: String?
-  @State private var isSaving = false
+  @State private var isAuthorizing = false
   @FocusState private var isNameFocused: Bool
   @FocusState private var isEndpointFocused: Bool
   private let isNew: Bool
@@ -4291,6 +4294,7 @@ private struct MCPServerDetailView: View {
     self._draftTransport = State(initialValue: server.wrappedValue.transport)
     self._draftStatusBaseURL = State(
       initialValue: MCPServerNameResolution.savedBaseURL(for: server.wrappedValue))
+    self._draftStatusAuthentication = State(initialValue: server.wrappedValue.authentication)
     self.isNew = isNew
     self.onSave = onSave
   }
@@ -4327,9 +4331,16 @@ private struct MCPServerDetailView: View {
         )
       }
 
+      authenticationSection
+
       Section {
         Button {
           if let message = MCPServerNameResolution.endpointValidationMessage(for: server) {
+            showToast(message)
+            return
+          }
+          if let message = authenticationValidationMessage {
+            setDraftConnectionFailure(message)
             showToast(message)
             return
           }
@@ -4346,7 +4357,7 @@ private struct MCPServerDetailView: View {
           }
         }
         .disabled(
-          isChecking || isSaving
+          isChecking
             || MCPServerNameResolution.endpointValidationMessage(for: server) != nil)
         if let transport = currentTransport {
           LabeledContent("Transport", value: transport.displayName)
@@ -4411,13 +4422,8 @@ private struct MCPServerDetailView: View {
         Button {
           saveServerAndDismiss()
         } label: {
-          if isSaving {
-            ProgressView()
-          } else {
-            Text("Save")
-          }
+          Text("Save")
         }
-        .disabled(isSaving)
       }
     }
     .settingsToast($toastMessage)
@@ -4430,6 +4436,173 @@ private struct MCPServerDetailView: View {
       if hasUnsavedConnectionChanges {
         Task { await MCPHTTPClient.resetSession(for: server.id) }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var authenticationSection: some View {
+    Section {
+      Picker("Authentication", selection: authenticationMethodBinding) {
+        ForEach(MCPAuthenticationMethod.allCases) { method in
+          Text(method.displayName).tag(method)
+        }
+      }
+      .pickerStyle(.menu)
+
+      switch server.authentication.method {
+      case .none:
+        Text("No authorization header will be sent.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      case .bearer:
+        SecureField("Bearer token or API key", text: $server.authentication.bearerToken)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+      case .oauth:
+        oauthAuthenticationControls
+      }
+    } header: {
+      Text("Authentication")
+    } footer: {
+      Text(
+        "Bearer tokens are sent in the Authorization header. OAuth settings are discovered automatically from the MCP endpoint."
+      )
+    }
+  }
+
+  @ViewBuilder
+  private var oauthAuthenticationControls: some View {
+    let signedIn = !server.authentication.oauthAccessToken
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let expired = server.authentication.oauthAccessTokenExpired
+    HStack(spacing: 8) {
+      Image(
+        systemName: signedIn && !expired
+          ? "checkmark.seal.fill"
+          : (signedIn ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.questionmark")
+      )
+      .foregroundStyle(signedIn && !expired ? Color.green : (signedIn ? Color.orange : .secondary))
+      Text(!signedIn ? "Not signed in" : (expired ? "Signed in (token expired)" : "Signed in"))
+        .font(.subheadline)
+    }
+    Button {
+      isNameFocused = false
+      isEndpointFocused = false
+      Task { await signInToMCP() }
+    } label: {
+      if isAuthorizing {
+        HStack(spacing: 6) {
+          ProgressView()
+          Text("Authorizing…")
+        }
+      } else {
+        Label(
+          signedIn ? "Sign In Again" : "Sign In with OAuth",
+          systemImage: "person.crop.circle.badge.checkmark")
+      }
+    }
+    .disabled(isAuthorizing || !server.hasValidEndpointURL)
+    if signedIn {
+      Button(role: .destructive) {
+        signOutOfMCP()
+      } label: {
+        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+      }
+      .disabled(isAuthorizing)
+    }
+  }
+
+  private var authenticationMethodBinding: Binding<MCPAuthenticationMethod> {
+    Binding(
+      get: { server.authentication.method },
+      set: { method in
+        guard method != server.authentication.method else { return }
+        server.authentication.method = method
+        clearDraftConnectionState()
+        Task { await MCPHTTPClient.resetSession(for: server.id) }
+      })
+  }
+
+  @MainActor
+  private func signInToMCP() async {
+    guard !isAuthorizing else { return }
+    isAuthorizing = true
+    defer { isAuthorizing = false }
+    do {
+      let result = try await MCPOAuthService.signIn(server: normalizedServerForSaving)
+      applyOAuthResult(result)
+      persistMCPAuthentication()
+      await MCPHTTPClient.resetSession(for: server.id)
+      clearDraftConnectionState()
+      showToast("MCP OAuth authorization succeeded.")
+      refreshTools(normalizedServerForSaving)
+    } catch let error as MCPOAuthError {
+      if case .userCancelled = error { return }
+      setDraftConnectionFailure(error.localizedDescription)
+      showToast(error.shortDescription)
+    } catch {
+      setDraftConnectionFailure(error.localizedDescription)
+      showToast("OAuth sign-in failed.")
+    }
+  }
+
+  private func applyOAuthResult(_ result: MCPOAuthResult) {
+    server.authentication.oauthAccessToken = result.accessToken
+    if let refreshToken = result.refreshToken {
+      server.authentication.oauthRefreshToken = refreshToken
+    }
+    server.authentication.oauthAccessTokenExpiresAt = result.expiresAt
+    server.authentication.oauthClientID = result.clientID
+  }
+
+  private func signOutOfMCP() {
+    server.authentication.oauthAccessToken = ""
+    server.authentication.oauthRefreshToken = ""
+    server.authentication.oauthAccessTokenExpiresAt = nil
+    persistMCPAuthentication()
+    Task { await MCPHTTPClient.resetSession(for: server.id) }
+    clearDraftConnectionState()
+    showToast("Signed out from MCP OAuth.")
+  }
+
+  private func persistMCPAuthentication() {
+    guard let index = store.settings.mcpServers.firstIndex(where: { $0.id == server.id }) else {
+      return
+    }
+    store.settings.mcpServers[index].authentication = server.authentication
+    savedServer.authentication = server.authentication
+    store.saveSettings()
+  }
+
+  private func clearDraftConnectionState() {
+    draftStatus = .unknown
+    draftTools = []
+    draftResources = []
+    draftTransport = nil
+    draftProtocolVersion = nil
+    draftServerName = nil
+    draftStatusBaseURL = MCPServerNameResolution.savedBaseURL(for: server)
+    draftStatusAuthentication = server.authentication
+  }
+
+  private func setDraftConnectionFailure(_ message: String) {
+    draftStatusBaseURL = MCPServerNameResolution.savedBaseURL(for: server)
+    draftStatusAuthentication = server.authentication
+    draftStatus = .failed(message)
+  }
+
+  private var authenticationValidationMessage: String? {
+    switch server.authentication.method {
+    case .none:
+      return nil
+    case .bearer:
+      return server.authentication.accessToken == nil ? "Enter a Bearer token first." : nil
+    case .oauth:
+      let refreshToken = server.authentication.oauthRefreshToken
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      return server.authentication.accessToken == nil && refreshToken.isEmpty
+        ? "Sign in with OAuth first."
+        : nil
     }
   }
 
@@ -4449,13 +4622,21 @@ private struct MCPServerDetailView: View {
   private var hasUnsavedConnectionChanges: Bool {
     MCPServerNameResolution.savedBaseURL(for: server)
       != MCPServerNameResolution.savedBaseURL(for: savedServer)
+      || server.authentication != savedServer.authentication
   }
 
   private var draftStateMatchesCurrentEndpoint: Bool {
     draftStatusBaseURL == MCPServerNameResolution.savedBaseURL(for: server)
+      && draftStatusAuthentication == server.authentication
   }
 
   private var currentStatus: EndpointConnectionState {
+    if draftStateMatchesCurrentEndpoint, case .failed = draftStatus {
+      return draftStatus
+    }
+    if let message = authenticationValidationMessage {
+      return .failed(message)
+    }
     if hasUnsavedConnectionChanges {
       return draftStateMatchesCurrentEndpoint ? draftStatus : .unknown
     }
@@ -4515,7 +4696,9 @@ private struct MCPServerDetailView: View {
         )
       }
     case .failed(let message):
-      Text(message).foregroundStyle(.red)
+      Text(message)
+        .foregroundStyle(.red)
+        .textSelection(.enabled)
     }
   }
 
@@ -4526,6 +4709,7 @@ private struct MCPServerDetailView: View {
     }
 
     draftStatusBaseURL = snapshot.baseURL
+    draftStatusAuthentication = snapshot.authentication
     draftStatus = .checking
     draftTools = []
     draftResources = []
@@ -4566,7 +4750,6 @@ private struct MCPServerDetailView: View {
   }
 
   private func saveServerAndDismiss() {
-    guard !isSaving else { return }
     if let message = MCPServerNameResolution.validationMessage(
       for: server,
       in: store.settings.mcpServers)
@@ -4576,11 +4759,6 @@ private struct MCPServerDetailView: View {
     }
 
     var snapshot = normalizedServerForSaving
-    if shouldProbeBeforeSave(snapshot) {
-      probeAndSave(snapshot)
-      return
-    }
-
     snapshot.name = MCPServerNameResolution.resolvedName(
       for: snapshot,
       serverInfoName: draftServerName,
@@ -4588,77 +4766,10 @@ private struct MCPServerDetailView: View {
     finalizeSave(snapshot)
   }
 
-  private func shouldProbeBeforeSave(_ snapshot: MCPServer) -> Bool {
-    guard snapshot.hasValidEndpointURL, !store.settings.airplaneModeEnabled else {
-      return false
-    }
-    if snapshot.transport != nil, hasDraftConnectionState(for: snapshot) {
-      return false
-    }
-    let connectionChanged =
-      snapshot.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
-    return isNew || connectionChanged || snapshot.transport == nil
-  }
-
-  private func probeAndSave(_ snapshot: MCPServer) {
-    isSaving = true
-    draftStatusBaseURL = snapshot.baseURL
-    draftStatus = .checking
-    draftTools = []
-    draftResources = []
-    draftTransport = snapshot.transport
-    draftProtocolVersion = nil
-    draftServerName = nil
-    let timeout = store.settings.mcpRequestTimeoutInterval
-
-    Task {
-      do {
-        let catalog = try await MCPHTTPClient.fetchCatalog(
-          server: snapshot,
-          timeout: timeout)
-        await MainActor.run {
-          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
-            isSaving = false
-            return
-          }
-          draftTools = catalog.tools
-          draftResources = catalog.resources
-          draftTransport = catalog.transport
-          draftProtocolVersion = catalog.protocolVersion
-          draftServerName = catalog.serverName
-          draftStatus = .available
-
-          var probed = snapshot
-          probed.transport = catalog.transport ?? snapshot.transport
-          probed.name = MCPServerNameResolution.resolvedName(
-            for: probed,
-            serverInfoName: catalog.serverName,
-            in: store.settings.mcpServers)
-          finalizeSave(probed)
-          isSaving = false
-        }
-      } catch {
-        await MainActor.run {
-          guard MCPServerNameResolution.savedBaseURL(for: server) == snapshot.baseURL else {
-            isSaving = false
-            return
-          }
-          draftTools = []
-          draftResources = []
-          draftTransport = nil
-          draftProtocolVersion = nil
-          draftServerName = nil
-          draftStatus = .failed(error.localizedDescription)
-          isSaving = false
-          showToast(error.localizedDescription)
-        }
-      }
-    }
-  }
-
   private func finalizeSave(_ normalized: MCPServer) {
     let connectionChanged =
       normalized.baseURL != MCPServerNameResolution.savedBaseURL(for: savedServer)
+      || normalized.authentication != savedServer.authentication
     server = normalized
     savedServer = normalized
     onSave?(normalized)
@@ -4670,7 +4781,9 @@ private struct MCPServerDetailView: View {
   }
 
   private func hasDraftConnectionState(for server: MCPServer) -> Bool {
-    guard draftStatusBaseURL == server.baseURL else {
+    guard draftStatusBaseURL == server.baseURL,
+      draftStatusAuthentication == server.authentication
+    else {
       return false
     }
     switch draftStatus {

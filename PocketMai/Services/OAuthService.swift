@@ -420,7 +420,7 @@ private struct TokenErrorResponse: Decodable {
 }
 
 @MainActor
-private final class AuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
+final class AuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
   private let windowScene: UIWindowScene
 
   init(windowScene: UIWindowScene) {

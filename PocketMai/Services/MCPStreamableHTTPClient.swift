@@ -273,7 +273,11 @@ enum MCPHTTPClient {
       throw MCPLegacySSETransportError()
     }
     let baseURL = try normalizedBaseURL(for: server).absoluteString
-    if let cached = await sessions.session(for: server.id, baseURL: baseURL) {
+    if let cached = await sessions.session(
+      for: server.id,
+      baseURL: baseURL,
+      authorizationHeader: authorizationHeader(for: server))
+    {
       return cached.handshake
     }
 
@@ -307,7 +311,11 @@ enum MCPHTTPClient {
       sessionID: response.sessionID,
       negotiatedProtocolVersion: metadata.protocolVersion,
       timeout: timeout)
-    await sessions.set(handshake, for: server.id, baseURL: baseURL)
+    await sessions.set(
+      handshake,
+      for: server.id,
+      baseURL: baseURL,
+      authorizationHeader: authorizationHeader(for: server))
     return handshake
   }
 
@@ -351,6 +359,7 @@ enum MCPHTTPClient {
     request.setValue(
       negotiatedProtocolVersion ?? protocolVersion,
       forHTTPHeaderField: protocolVersionHeader)
+    applyAuthorization(for: server, to: &request)
     if let sessionID, !sessionID.isEmpty {
       request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
     }
@@ -388,7 +397,8 @@ enum MCPHTTPClient {
       throw MCPHTTPError(
         statusCode: http.statusCode,
         body: snippet,
-        hadSessionID: sessionID != nil)
+        hadSessionID: sessionID != nil,
+        hadAuthorization: request.value(forHTTPHeaderField: "Authorization") != nil)
     }
 
     if http.statusCode == 202 {
@@ -566,6 +576,7 @@ enum MCPHTTPClient {
     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
     request.setValue(eventID, forHTTPHeaderField: "Last-Event-ID")
     request.setValue(protocolVersion, forHTTPHeaderField: protocolVersionHeader)
+    applyAuthorization(for: server, to: &request)
     if let sessionID, !sessionID.isEmpty {
       request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
     }
@@ -578,7 +589,8 @@ enum MCPHTTPClient {
       throw MCPHTTPError(
         statusCode: response.statusCode,
         body: snippet,
-        hadSessionID: sessionID != nil)
+        hadSessionID: sessionID != nil,
+        hadAuthorization: request.value(forHTTPHeaderField: "Authorization") != nil)
     }
     guard contentType(from: response) == "text/event-stream" else {
       let data = try await collect(bytes)
@@ -623,6 +635,7 @@ enum MCPHTTPClient {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
     request.setValue(protocolVersion, forHTTPHeaderField: protocolVersionHeader)
+    applyAuthorization(for: server, to: &request)
     if let sessionID, !sessionID.isEmpty {
       request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
     }
@@ -635,7 +648,8 @@ enum MCPHTTPClient {
       throw MCPHTTPError(
         statusCode: http.statusCode,
         body: snippet,
-        hadSessionID: sessionID != nil)
+        hadSessionID: sessionID != nil,
+        hadAuthorization: request.value(forHTTPHeaderField: "Authorization") != nil)
     }
   }
 
@@ -679,6 +693,7 @@ enum MCPHTTPClient {
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+    applyAuthorization(for: server, to: &request)
     request.timeoutInterval = min(timeout, 3)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = min(timeout, 3)
@@ -719,6 +734,9 @@ enum MCPHTTPClient {
       session.handshake.protocolVersion ?? protocolVersion,
       forHTTPHeaderField: protocolVersionHeader)
     request.setValue(sessionID, forHTTPHeaderField: sessionIDHeader)
+    if let authorizationHeader = session.authorizationHeader {
+      request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+    }
     request.timeoutInterval = 3
     _ = try? await URLSession.shared.data(for: request)
   }
@@ -731,6 +749,16 @@ enum MCPHTTPClient {
       throw ChatProviderError.invalidEndpoint(server.baseURL)
     }
     return url
+  }
+
+  private static func authorizationHeader(for server: MCPServer) -> String? {
+    server.authentication.accessToken.map { "Bearer \($0)" }
+  }
+
+  private static func applyAuthorization(for server: MCPServer, to request: inout URLRequest) {
+    if let value = authorizationHeader(for: server) {
+      request.setValue(value, forHTTPHeaderField: "Authorization")
+    }
   }
 
   private static var initializeParams: [String: AnyCodable] {
@@ -998,15 +1026,30 @@ private struct JSONRPCClientResponse: Encodable {
 private actor MCPSessionStore {
   private var sessions: [UUID: MCPSession] = [:]
 
-  func session(for serverID: UUID, baseURL: String) -> MCPSession? {
-    guard let session = sessions[serverID], session.baseURL == baseURL else {
+  func session(
+    for serverID: UUID,
+    baseURL: String,
+    authorizationHeader: String?
+  ) -> MCPSession? {
+    guard let session = sessions[serverID],
+      session.baseURL == baseURL,
+      session.authorizationHeader == authorizationHeader
+    else {
       return nil
     }
     return session
   }
 
-  func set(_ handshake: MCPHandshake, for serverID: UUID, baseURL: String) {
-    sessions[serverID] = MCPSession(handshake: handshake, baseURL: baseURL)
+  func set(
+    _ handshake: MCPHandshake,
+    for serverID: UUID,
+    baseURL: String,
+    authorizationHeader: String?
+  ) {
+    sessions[serverID] = MCPSession(
+      handshake: handshake,
+      baseURL: baseURL,
+      authorizationHeader: authorizationHeader)
   }
 
   @discardableResult
@@ -1026,6 +1069,7 @@ private actor MCPSessionStore {
 private struct MCPSession: Sendable {
   var handshake: MCPHandshake
   var baseURL: String
+  var authorizationHeader: String?
 }
 
 private struct MCPHandshake: Sendable {
@@ -1044,6 +1088,7 @@ private struct MCPHTTPError: LocalizedError {
   var statusCode: Int
   var body: String
   var hadSessionID: Bool
+  var hadAuthorization: Bool
 
   var isInvalidSessionID: Bool {
     statusCode == 404 && hadSessionID
@@ -1056,7 +1101,26 @@ private struct MCPHTTPError: LocalizedError {
 
   var errorDescription: String? {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if statusCode == 401 {
+      let detail = problemDetail ?? trimmed
+      let guidance =
+        hadAuthorization
+        ? "The supplied credential was rejected."
+        : "Select Bearer Token or OAuth in this MCP server's Authentication settings."
+      return detail.isEmpty
+        ? "MCP authorization required. \(guidance)"
+        : "MCP authorization required: \(detail) \(guidance)"
+    }
     return trimmed.isEmpty ? "MCP HTTP \(statusCode)." : "MCP HTTP \(statusCode): \(trimmed)"
+  }
+
+  private var problemDetail: String? {
+    guard let data = body.data(using: .utf8),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return nil
+    }
+    return (object["detail"] as? String) ?? (object["title"] as? String)
   }
 }
 

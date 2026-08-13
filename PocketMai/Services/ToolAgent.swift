@@ -470,6 +470,7 @@ enum ToolAgentRegistry {
         return "Error: tool '\(call.name)' is disabled for this conversation."
       }
       do {
+        let server = try await store.authorizedMCPServer(server)
         return try await MCPHTTPClient.callTool(
           server: server,
           name: call.name,
@@ -551,6 +552,7 @@ enum MCPResourceTool {
       return "Error: no enabled MCP server can read resource '\(trimmedURI)'.\(suffix)"
     }
     do {
+      let server = try await store.authorizedMCPServer(server)
       return try await MCPHTTPClient.readResource(
         server: server,
         uri: trimmedURI,

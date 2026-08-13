@@ -2341,26 +2341,95 @@ enum MCPTransport: String, Codable, Equatable, Identifiable, Sendable {
   }
 }
 
+enum MCPAuthenticationMethod: String, Codable, CaseIterable, Identifiable, Sendable {
+  case none
+  case bearer
+  case oauth
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .none: "None"
+    case .bearer: "Bearer Token"
+    case .oauth: "OAuth"
+    }
+  }
+}
+
+struct MCPAuthentication: Codable, Equatable, Sendable {
+  var method: MCPAuthenticationMethod = .none
+  var bearerToken = ""
+  var oauthAccessToken = ""
+  var oauthRefreshToken = ""
+  var oauthAccessTokenExpiresAt: Date?
+  var oauthClientID = ""
+
+  enum CodingKeys: String, CodingKey {
+    case method, bearerToken, oauthAccessToken, oauthRefreshToken, oauthAccessTokenExpiresAt
+    case oauthClientID
+  }
+
+  init() {}
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    method = (try? container.decode(MCPAuthenticationMethod.self, forKey: .method)) ?? .none
+    bearerToken = (try? container.decode(String.self, forKey: .bearerToken)) ?? ""
+    oauthAccessToken = (try? container.decode(String.self, forKey: .oauthAccessToken)) ?? ""
+    oauthRefreshToken = (try? container.decode(String.self, forKey: .oauthRefreshToken)) ?? ""
+    oauthAccessTokenExpiresAt = try? container.decode(Date.self, forKey: .oauthAccessTokenExpiresAt)
+    oauthClientID = (try? container.decode(String.self, forKey: .oauthClientID)) ?? ""
+  }
+
+  var accessToken: String? {
+    let value: String
+    switch method {
+    case .none: return nil
+    case .bearer: value = bearerToken
+    case .oauth: value = oauthAccessToken
+    }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  var oauthAccessTokenExpired: Bool {
+    guard method == .oauth, let oauthAccessTokenExpiresAt else { return false }
+    return oauthAccessTokenExpiresAt <= Date()
+  }
+
+  var oauthAccessTokenNeedsRefresh: Bool {
+    guard method == .oauth else { return false }
+    let token = oauthAccessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    if token.isEmpty { return true }
+    guard let oauthAccessTokenExpiresAt else { return false }
+    return oauthAccessTokenExpiresAt <= Date().addingTimeInterval(60)
+  }
+}
+
 struct MCPServer: Identifiable, Codable, Equatable, Sendable {
   var id: UUID
   var name: String
   var baseURL: String
   var isEnabled: Bool
   var transport: MCPTransport?
+  var authentication: MCPAuthentication
 
   init(
     id: UUID = UUID(), name: String = "MCP Server", baseURL: String = "https://",
-    isEnabled: Bool = true, transport: MCPTransport? = nil
+    isEnabled: Bool = true, transport: MCPTransport? = nil,
+    authentication: MCPAuthentication = MCPAuthentication()
   ) {
     self.id = id
     self.name = name
     self.baseURL = baseURL
     self.isEnabled = isEnabled
     self.transport = transport
+    self.authentication = authentication
   }
 
   enum CodingKeys: String, CodingKey {
-    case id, name, baseURL, isEnabled, transport
+    case id, name, baseURL, isEnabled, transport, authentication
   }
 
   init(from decoder: Decoder) throws {
@@ -2370,6 +2439,8 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
     baseURL = (try? c.decode(String.self, forKey: .baseURL)) ?? "https://"
     isEnabled = (try? c.decode(Bool.self, forKey: .isEnabled)) ?? true
     transport = try? c.decode(MCPTransport.self, forKey: .transport)
+    authentication =
+      (try? c.decode(MCPAuthentication.self, forKey: .authentication)) ?? MCPAuthentication()
   }
 
   var isHTTPS: Bool {
