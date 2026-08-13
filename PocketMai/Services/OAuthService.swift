@@ -52,6 +52,9 @@ struct OAuthTokens: Sendable {
 
 @MainActor
 enum OAuthService {
+  private static var activeAuthorizationSession: ASWebAuthenticationSession?
+  private static var activeAuthorizationPresenter: AuthPresenter?
+
   /// Run the full PKCE authorization-code flow for the given endpoint configuration.
   /// Returns the freshly issued tokens on success.
   static func signIn(endpoint: OpenAIEndpoint) async throws -> OAuthTokens {
@@ -149,10 +152,10 @@ enum OAuthService {
     return try await withCheckedThrowingContinuation { continuation in
       let session = ASWebAuthenticationSession(
         url: url,
-        callbackURLScheme: callbackScheme
-      ) { [presenter] callback, error in
-        // Retain presenter for the lifetime of the session.
-        _ = presenter
+        callback: .customScheme(callbackScheme)
+      ) { callback, error in
+        activeAuthorizationSession = nil
+        activeAuthorizationPresenter = nil
         if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
           continuation.resume(throwing: OAuthError.userCancelled)
           return
@@ -169,7 +172,11 @@ enum OAuthService {
       }
       session.prefersEphemeralWebBrowserSession = false
       session.presentationContextProvider = presenter
+      activeAuthorizationSession = session
+      activeAuthorizationPresenter = presenter
       if !session.start() {
+        activeAuthorizationSession = nil
+        activeAuthorizationPresenter = nil
         continuation.resume(throwing: OAuthError.invalidAuthorizationURL)
       }
     }

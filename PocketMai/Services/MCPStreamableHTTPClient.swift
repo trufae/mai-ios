@@ -2,6 +2,7 @@ import Foundation
 
 enum MCPHTTPClient {
   private static let protocolVersion = "2025-11-25"
+  private static let supportedProtocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26"]
   private static let protocolVersionHeader = "MCP-Protocol-Version"
   private static let sessionIDHeader = "Mcp-Session-Id"
   private static let sessions = MCPSessionStore()
@@ -281,35 +282,54 @@ enum MCPHTTPClient {
       return cached.handshake
     }
 
-    let response: MCPHTTPResponse
-    do {
-      response = try await sendRaw(
-        server: server,
-        method: "initialize",
-        params: initializeParams,
-        sessionID: nil,
-        negotiatedProtocolVersion: nil,
-        timeout: timeout)
-    } catch let error as MCPHTTPError where error.isPossibleLegacySSEEndpoint {
-      if await endpointUsesLegacySSE(server: server, timeout: timeout) {
+    var initialized: (response: MCPHTTPResponse, requestedVersion: String)?
+    var lastError: Error?
+    for requestedVersion in supportedProtocolVersions {
+      do {
+        let response = try await sendRaw(
+          server: server,
+          method: "initialize",
+          params: initializeParams(protocolVersion: requestedVersion),
+          sessionID: nil,
+          negotiatedProtocolVersion: requestedVersion,
+          timeout: timeout)
+        if let raw = jsonObject(from: response.data), let error = responseError(from: raw) {
+          if error.isUnsupportedProtocolVersion {
+            lastError = error
+            continue
+          }
+          throw error
+        }
+        initialized = (response, requestedVersion)
+        break
+      } catch let error as MCPHTTPError where error.isUnsupportedProtocolVersion {
+        lastError = error
+      } catch {
+        lastError = error
+        break
+      }
+    }
+    guard let initialized else {
+      if let error = lastError as? MCPHTTPError, error.isPossibleLegacySSEEndpoint,
+        await endpointUsesLegacySSE(server: server, timeout: timeout)
+      {
         throw MCPLegacySSETransportError()
       }
-      throw error
-    }
-    if let raw = jsonObject(from: response.data), let error = responseError(from: raw) {
-      throw error
+      throw lastError ?? MCPStreamableHTTPError.missingResponse
     }
 
+    let response = initialized.response
     let metadata = initializeMetadata(from: response.data)
+    let negotiatedProtocolVersion = metadata.protocolVersion ?? initialized.requestedVersion
     let handshake = MCPHandshake(
       sessionID: response.sessionID,
       transport: .streamableHTTP,
-      protocolVersion: metadata.protocolVersion,
+      protocolVersion: negotiatedProtocolVersion,
       serverName: metadata.serverName)
     try await sendInitializedNotification(
       server: server,
       sessionID: response.sessionID,
-      negotiatedProtocolVersion: metadata.protocolVersion,
+      negotiatedProtocolVersion: negotiatedProtocolVersion,
       timeout: timeout)
     await sessions.set(
       handshake,
@@ -761,7 +781,7 @@ enum MCPHTTPClient {
     }
   }
 
-  private static var initializeParams: [String: AnyCodable] {
+  private static func initializeParams(protocolVersion: String) -> [String: AnyCodable] {
     [
       "protocolVersion": AnyCodable(protocolVersion),
       "capabilities": AnyCodable([String: AnyCodable]()),
@@ -1099,6 +1119,13 @@ private struct MCPHTTPError: LocalizedError {
     [400, 404, 405].contains(statusCode)
   }
 
+  var isUnsupportedProtocolVersion: Bool {
+    statusCode == 400
+      && (body.localizedCaseInsensitiveContains("unsupported_mcp_protocol")
+        || body.localizedCaseInsensitiveContains("unsupported protocol")
+        || body.localizedCaseInsensitiveContains("protocol version"))
+  }
+
   var errorDescription: String? {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
     if statusCode == 401 {
@@ -1176,6 +1203,11 @@ private struct MCPResponseError: LocalizedError {
 
   var isMethodNotFound: Bool {
     code == -32601
+  }
+
+  var isUnsupportedProtocolVersion: Bool {
+    message.localizedCaseInsensitiveContains("unsupported protocol")
+      || message.localizedCaseInsensitiveContains("protocol version")
   }
 
   var errorDescription: String? {

@@ -78,6 +78,8 @@ enum MCPOAuthError: LocalizedError {
 @MainActor
 enum MCPOAuthService {
   private static let redirectURI = "pocketmai://oauth/mcp"
+  private static var activeAuthorizationSession: ASWebAuthenticationSession?
+  private static var activeAuthorizationPresenter: AuthPresenter?
 
   static func signIn(server: MCPServer) async throws -> MCPOAuthResult {
     let configuration = try await discover(server: server)
@@ -389,9 +391,10 @@ enum MCPOAuthService {
     return try await withCheckedThrowingContinuation { continuation in
       let session = ASWebAuthenticationSession(
         url: url,
-        callbackURLScheme: "pocketmai"
-      ) { [presenter] callback, error in
-        _ = presenter
+        callback: .customScheme("pocketmai")
+      ) { callback, error in
+        activeAuthorizationSession = nil
+        activeAuthorizationPresenter = nil
         if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
           continuation.resume(throwing: MCPOAuthError.userCancelled)
         } else if let error {
@@ -406,7 +409,11 @@ enum MCPOAuthService {
       }
       session.presentationContextProvider = presenter
       session.prefersEphemeralWebBrowserSession = false
+      activeAuthorizationSession = session
+      activeAuthorizationPresenter = presenter
       if !session.start() {
+        activeAuthorizationSession = nil
+        activeAuthorizationPresenter = nil
         continuation.resume(throwing: MCPOAuthError.authorizationFailed("Could not open sign-in."))
       }
     }
