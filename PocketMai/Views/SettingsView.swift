@@ -2781,21 +2781,41 @@ struct ConversationImportConfirmationView: View {
   }
 }
 
+enum SettingsToastStyle {
+  case error
+  case success
+
+  var systemImage: String {
+    switch self {
+    case .error: "exclamationmark.triangle.fill"
+    case .success: "checkmark.circle.fill"
+    }
+  }
+
+  var backgroundColor: Color {
+    switch self {
+    case .error: .red
+    case .success: .green
+    }
+  }
+}
+
 struct SettingsToastModifier: ViewModifier {
   @Binding var message: String?
+  let style: SettingsToastStyle
 
   func body(content: Content) -> some View {
     content
       .overlay(alignment: .top) {
         if let message {
-          Label(message, systemImage: "exclamationmark.triangle.fill")
+          Label(message, systemImage: style.systemImage)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.red, in: Capsule())
+            .background(style.backgroundColor, in: Capsule())
             .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
             .padding(.top, 12)
             .padding(.horizontal, 16)
@@ -2817,8 +2837,11 @@ struct SettingsToastModifier: ViewModifier {
 }
 
 extension View {
-  func settingsToast(_ message: Binding<String?>) -> some View {
-    modifier(SettingsToastModifier(message: message))
+  func settingsToast(
+    _ message: Binding<String?>,
+    style: SettingsToastStyle = .error
+  ) -> some View {
+    modifier(SettingsToastModifier(message: message, style: style))
   }
 }
 
@@ -4278,6 +4301,7 @@ private struct MCPServerDetailView: View {
   @State private var draftStatusBaseURL: String
   @State private var draftStatusAuthentication: MCPAuthentication
   @State private var toastMessage: String?
+  @State private var toastStyle: SettingsToastStyle = .error
   @State private var isAuthorizing = false
   @FocusState private var isNameFocused: Bool
   @FocusState private var isEndpointFocused: Bool
@@ -4426,7 +4450,7 @@ private struct MCPServerDetailView: View {
         }
       }
     }
-    .settingsToast($toastMessage)
+    .settingsToast($toastMessage, style: toastStyle)
     .onAppear {
       if isNew {
         isEndpointFocused = true
@@ -4534,7 +4558,7 @@ private struct MCPServerDetailView: View {
       persistMCPAuthentication()
       await MCPHTTPClient.resetSession(for: server.id)
       clearDraftConnectionState()
-      showToast("MCP OAuth authorization succeeded.")
+      showToast("MCP OAuth authorization succeeded.", style: .success)
       refreshTools(normalizedServerForSaving)
     } catch let error as MCPOAuthError {
       if case .userCancelled = error { return }
@@ -4813,8 +4837,9 @@ private struct MCPServerDetailView: View {
     }
   }
 
-  private func showToast(_ message: String) {
+  private func showToast(_ message: String, style: SettingsToastStyle = .error) {
     withAnimation(.snappy) {
+      toastStyle = style
       toastMessage = message
     }
   }
