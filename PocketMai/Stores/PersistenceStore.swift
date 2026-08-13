@@ -50,6 +50,16 @@ private struct ConversationStorageURLs {
   }
 }
 
+struct CorruptedConversationRecoveryResult: Sendable {
+  let recoveredConversations: [Conversation]
+  let remainingCount: Int
+}
+
+struct CorruptedConversationExportResult: Sendable {
+  let url: URL?
+  let errorMessage: String?
+}
+
 final class PersistenceStore: @unchecked Sendable {
   private let fileManager: FileManager
   private let localBaseURL: URL
@@ -173,6 +183,61 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  func corruptedConversationCount() -> Int {
+    prepareForAccess()
+    let locations = corruptedConversationStorageLocations()
+    return writeQueue.sync {
+      corruptedConversationFileURLs(in: locations).count
+    }
+  }
+
+  func exportCorruptedConversationsArchive() -> CorruptedConversationExportResult {
+    prepareForAccess()
+    let locations = corruptedConversationStorageLocations()
+    return writeQueue.sync {
+      let files = corruptedConversationFileURLs(in: locations)
+      guard !files.isEmpty else {
+        return CorruptedConversationExportResult(
+          url: nil, errorMessage: "There are no corrupted chats to export.")
+      }
+
+      var entries: [(path: String, data: Data)] = []
+      for file in files {
+        guard let data = try? Data(contentsOf: file.url) else { continue }
+        entries.append(("\(file.location.archiveDirectory)/\(file.url.lastPathComponent)", data))
+      }
+      guard !entries.isEmpty else {
+        return CorruptedConversationExportResult(
+          url: nil, errorMessage: "Could not read the corrupted chat files.")
+      }
+
+      do {
+        let filename = "PocketMai-corrupted-chats-\(Int(Date().timeIntervalSince1970))"
+        let url = try ConversationExportFiles.url(filename: filename, fileExtension: "zip")
+        try MiniZip.write(entries: entries, to: url)
+        return CorruptedConversationExportResult(url: url, errorMessage: nil)
+      } catch {
+        return CorruptedConversationExportResult(
+          url: nil,
+          errorMessage: "Could not create the recovery archive: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  func recoverCorruptedConversations() -> CorruptedConversationRecoveryResult {
+    prepareForAccess()
+    let locations = corruptedConversationStorageLocations()
+    return writeQueue.sync {
+      var recovered: [Conversation] = []
+      for location in locations {
+        recovered.append(contentsOf: recoverCorruptedConversations(in: location.storage))
+      }
+      return CorruptedConversationRecoveryResult(
+        recoveredConversations: recovered,
+        remainingCount: corruptedConversationFileURLs(in: locations).count)
+    }
+  }
+
   private func loadConversations(from storage: ConversationStorageURLs) -> [Conversation] {
     if let conversations = loadIndexedConversations(from: storage) {
       return conversations
@@ -247,6 +312,137 @@ final class PersistenceStore: @unchecked Sendable {
     let url = Self.conversationFileURL(for: id, in: storage.conversationsDirectoryURL)
     guard let data = try? Data(contentsOf: url) else { return nil }
     return try? makeDecoder().decode(Conversation.self, from: data)
+  }
+
+  private struct CorruptedConversationStorage {
+    let archiveDirectory: String
+    let storage: ConversationStorageURLs
+  }
+
+  private struct CorruptedConversationFile {
+    let url: URL
+    let location: CorruptedConversationStorage
+  }
+
+  private func corruptedConversationStorageLocations() -> [CorruptedConversationStorage] {
+    let local = localStorageURLs
+    let iCloud = iCloudStorageURLs(migrateFallback: false)
+    let fallback = ConversationStorageURLs(baseURL: iCloudFallbackBaseURL)
+    let candidates = [
+      CorruptedConversationStorage(archiveDirectory: "on-device", storage: local),
+      CorruptedConversationStorage(archiveDirectory: "icloud", storage: iCloud),
+      CorruptedConversationStorage(archiveDirectory: "icloud-fallback", storage: fallback),
+    ]
+    var seen = Set<URL>()
+    return candidates.filter { seen.insert($0.storage.baseURL.standardizedFileURL).inserted }
+  }
+
+  private func corruptedConversationFileURLs(
+    in locations: [CorruptedConversationStorage]
+  ) -> [CorruptedConversationFile] {
+    locations.flatMap { location in
+      corruptedConversationFileURLs(in: location.storage).map {
+        CorruptedConversationFile(url: $0, location: location)
+      }
+    }
+  }
+
+  private func corruptedConversationFileURLs(in storage: ConversationStorageURLs) -> [URL] {
+    ((try? fileManager.contentsOfDirectory(
+      at: storage.conversationsDirectoryURL,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles])) ?? [])
+      .filter {
+        $0.pathExtension == "corrupt" && $0.deletingPathExtension().pathExtension == "json"
+      }
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+  }
+
+  private func recoverCorruptedConversations(in storage: ConversationStorageURLs) -> [Conversation]
+  {
+    let decoder = makeDecoder()
+    var moved: [(source: URL, destination: URL, conversation: Conversation)] = []
+
+    for source in corruptedConversationFileURLs(in: storage) {
+      guard let data = try? Data(contentsOf: source),
+        let conversation = try? decoder.decode(Conversation.self, from: data)
+      else {
+        continue
+      }
+      let destination = Self.conversationFileURL(
+        for: conversation.id, in: storage.conversationsDirectoryURL)
+      guard !fileManager.fileExists(atPath: destination.path) else { continue }
+      do {
+        try fileManager.moveItem(at: source, to: destination)
+        moved.append((source, destination, conversation))
+      } catch {
+        continue
+      }
+    }
+
+    guard !moved.isEmpty else { return [] }
+    let conversations = moved.map(\.conversation)
+    guard restoreRecoveredConversationsToIndex(conversations, in: storage) else {
+      for entry in moved.reversed() {
+        try? fileManager.moveItem(at: entry.destination, to: entry.source)
+      }
+      return []
+    }
+    return conversations
+  }
+
+  private func restoreRecoveredConversationsToIndex(
+    _ recovered: [Conversation], in storage: ConversationStorageURLs
+  ) -> Bool {
+    guard let data = try? Data(contentsOf: storage.conversationsIndexURL),
+      let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
+    else {
+      let conversations = Self.mergedConversations(
+        loadLegacyConversations(from: storage)
+          + loadUnindexedConversations(from: storage)
+          + recovered)
+      return Self.persistConversations(
+        conversations,
+        ids: conversations.map(\.id),
+        summaries: conversations.map(ConversationSummary.init),
+        storage: storage,
+        writeIndex: true)
+    }
+
+    var ids: [UUID] = []
+    for id in index.ids where !ids.contains(id) {
+      ids.append(id)
+    }
+    var summaries: [UUID: ConversationSummary] = [:]
+    for summary in index.summaries ?? [] {
+      summaries[summary.id] = summary
+    }
+    for id in ids where summaries[id] == nil {
+      guard let conversation = loadConversation(id: id, from: storage) else { return false }
+      summaries[id] = ConversationSummary(conversation: conversation)
+    }
+    for conversation in recovered {
+      if !ids.contains(conversation.id) {
+        ids.append(conversation.id)
+      }
+      summaries[conversation.id] = ConversationSummary(conversation: conversation)
+    }
+    return Self.persistConversationIndex(
+      ids: ids,
+      summaries: ids.compactMap { summaries[$0] },
+      storage: storage)
+  }
+
+  private func loadUnindexedConversations(from storage: ConversationStorageURLs) -> [Conversation] {
+    ((try? fileManager.contentsOfDirectory(
+      at: storage.conversationsDirectoryURL,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles])) ?? [])
+      .filter { $0.pathExtension == "json" }
+      .compactMap { url in
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? makeDecoder().decode(Conversation.self, from: data)
+      }
   }
 
   private func loadIndexedConversations(from storage: ConversationStorageURLs) -> [Conversation]? {

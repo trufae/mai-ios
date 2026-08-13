@@ -5,7 +5,8 @@ DESTINATION ?= generic/platform=iOS Simulator
 DERIVED_DATA ?= build/DerivedData
 DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
-APP_BUNDLE = $(DERIVED_DATA)/Build/Products/$(CONFIG)-iphoneos/$(SCHEME).app
+APP_BUNDLE ?=
+XCODE_DERIVED_DATA ?= $(HOME)/Library/Developer/Xcode/DerivedData
 
 .PHONY: all build run fmt clean check-shared-tooling aitest-build
 
@@ -14,11 +15,13 @@ all: build
 build:
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination '$(DESTINATION)' -derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO build
 
-# Builds, installs, and foreground-launches on the first connected iOS device.
-# Pass DEVICE=<UDID> to choose a particular device.
+# Installs and foreground-launches the latest signed Xcode device build on the
+# first connected iOS device. Pass DEVICE=<UDID> or APP_BUNDLE=<path> to
+# choose a device or app bundle.
 run:
 	@set -e; \
 	device='$(DEVICE)'; \
+	app_bundle='$(APP_BUNDLE)'; \
 	if [ -z "$$device" ]; then \
 		devices_json="$$(mktemp -t pocketmai-devices.XXXXXX)"; \
 		trap 'rm -f "$$devices_json"' EXIT; \
@@ -29,8 +32,17 @@ run:
 		echo "No connected iOS device found. Pass DEVICE=<UDID> to select one." >&2; \
 		exit 1; \
 	fi; \
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination "platform=iOS,id=$$device" -derivedDataPath $(DERIVED_DATA) -allowProvisioningUpdates build; \
-	xcrun devicectl device install app --device "$$device" "$(APP_BUNDLE)"; \
+	if [ -z "$$app_bundle" ]; then \
+		for candidate in "$(XCODE_DERIVED_DATA)"/$(SCHEME)-*/Build/Products/$(CONFIG)-iphoneos/$(SCHEME).app; do \
+			[ -d "$$candidate" ] || continue; \
+			if [ -z "$$app_bundle" ] || [ "$$candidate" -nt "$$app_bundle" ]; then app_bundle="$$candidate"; fi; \
+		done; \
+	fi; \
+	if [ -z "$$app_bundle" ] || [ ! -d "$$app_bundle" ]; then \
+		echo "No signed $(CONFIG) device build found. Build the app in Xcode first, or pass APP_BUNDLE=<path>." >&2; \
+		exit 1; \
+	fi; \
+	xcrun devicectl device install app --device "$$device" "$$app_bundle"; \
 	xcrun devicectl device process launch --terminate-existing --device "$$device" "$(BUNDLE_ID)"
 
 fmt:

@@ -310,6 +310,9 @@ struct SettingsView: View {
   @State private var draftEndpoint: OpenAIEndpoint?
   @State private var draftMCPServer: MCPServer?
   @State private var toastMessage: String?
+  @State private var corruptedConversationCount = 0
+  @State private var showingCorruptedConversationActions = false
+  @State private var corruptedConversationArchive: ExportedFile?
 
   var body: some View {
     NavigationStack(path: $navigationPath) {
@@ -426,6 +429,29 @@ struct SettingsView: View {
         }
       }
       .settingsToast($toastMessage)
+      .task {
+        await refreshCorruptedConversationCount()
+      }
+      .confirmationDialog(
+        "Corrupted Chats",
+        isPresented: $showingCorruptedConversationActions,
+        titleVisibility: .visible
+      ) {
+        Button("Export Raw Files") {
+          Task { await exportCorruptedConversations() }
+        }
+        Button("Try Recovery") {
+          Task { await recoverCorruptedConversations() }
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(
+          "\(corruptedConversationCount) \(corruptedConversationCount == 1 ? "chat is" : "chats are") quarantined because they could not be decoded. Export saves the original files; recovery retries the current decoder."
+        )
+      }
+      .sheet(item: $corruptedConversationArchive) { archive in
+        ActivityShareSheet(activityItems: [archive.url])
+      }
       .sheet(isPresented: $showingAppsPanel) {
         WebXDCAppsPanel()
           .environmentObject(store)
@@ -1647,6 +1673,18 @@ struct SettingsView: View {
         Label("Export...", systemImage: "square.and.arrow.up")
       }
 
+      if corruptedConversationCount > 0 {
+        Button {
+          showingCorruptedConversationActions = true
+        } label: {
+          Label(
+            "Recover \(corruptedConversationCount) Corrupted \(corruptedConversationCount == 1 ? "Chat" : "Chats")",
+            systemImage: "exclamationmark.arrow.trianglehead.counterclockwise.rotate.90"
+          )
+          .foregroundStyle(Color.orange)
+        }
+      }
+
       NavigationLink {
         SettingsDestroyView { dismiss() }
           .environmentObject(store)
@@ -1665,6 +1703,30 @@ struct SettingsView: View {
 
   private var hasConversationContent: Bool {
     store.conversationSummaries.contains(where: \.hasMessages)
+  }
+
+  private func refreshCorruptedConversationCount() async {
+    corruptedConversationCount = await store.corruptedConversationCount()
+  }
+
+  private func exportCorruptedConversations() async {
+    let result = await store.exportCorruptedConversationsArchive()
+    if let url = result.url {
+      corruptedConversationArchive = ExportedFile(url: url)
+    } else {
+      toastMessage = result.errorMessage ?? "Could not export corrupted chats."
+    }
+  }
+
+  private func recoverCorruptedConversations() async {
+    let result = await store.recoverCorruptedConversations()
+    corruptedConversationCount = result.remainingCount
+    if result.recoveredConversations.isEmpty {
+      toastMessage = "No corrupted chats could be recovered."
+    } else {
+      let count = result.recoveredConversations.count
+      toastMessage = "Recovered \(count) \(count == 1 ? "chat" : "chats")."
+    }
   }
 
   private var settingsDeletionConfirmationBinding: Binding<Bool> {

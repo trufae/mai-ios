@@ -24,10 +24,16 @@ versions.
 
 ```sh
 make build               # builds for the iOS Simulator without code signing
+make run                 # installs and launches Xcode's latest signed device build
 make fmt                 # swift-format the sources
 ```
 
-Open `PocketMai.xcodeproj` in Xcode to run on a device or simulator.
+`make run` selects the first connected iOS device and uses the latest signed
+`Debug` device app in Xcode's Derived Data. Use `make run DEVICE=<UDID>` to
+select a specific device, or `make run APP_BUNDLE=<path>` to select an app
+bundle. Build in Xcode first after source changes; this preserves Xcode's
+private-key access for code signing. Open `PocketMai.xcodeproj` when you need
+debugger attachment or to run in the Simulator.
 
 ## Layout
 

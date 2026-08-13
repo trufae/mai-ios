@@ -2765,6 +2765,29 @@ final class AppStore: ObservableObject {
       content: export(conversation: conversation, format: .debug, debugContext: context))
   }
 
+  func corruptedConversationCount() async -> Int {
+    let persistence = self.persistence
+    return await Task.detached(priority: .utility) {
+      persistence.corruptedConversationCount()
+    }.value
+  }
+
+  func exportCorruptedConversationsArchive() async -> CorruptedConversationExportResult {
+    let persistence = self.persistence
+    return await Task.detached(priority: .utility) {
+      persistence.exportCorruptedConversationsArchive()
+    }.value
+  }
+
+  func recoverCorruptedConversations() async -> CorruptedConversationRecoveryResult {
+    let persistence = self.persistence
+    let result = await Task.detached(priority: .userInitiated) {
+      persistence.recoverCorruptedConversations()
+    }.value
+    mergeRecoveredConversations(result.recoveredConversations)
+    return result
+  }
+
   private func writeConversationExport(
     conversation: Conversation,
     format: ConversationExportFormat,
@@ -3293,6 +3316,26 @@ final class AppStore: ObservableObject {
       pendingConversationSave = false
       saveConversations()
     }
+  }
+
+  private func mergeRecoveredConversations(_ recovered: [Conversation]) {
+    guard !recovered.isEmpty else { return }
+    var byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+    for conversation in recovered {
+      guard let existing = byID[conversation.id] else {
+        byID[conversation.id] = conversation
+        continue
+      }
+      if existing.updatedAt < conversation.updatedAt
+        || (existing.updatedAt == conversation.updatedAt
+          && existing.createdAt < conversation.createdAt)
+      {
+        byID[conversation.id] = conversation
+      }
+    }
+    conversations = Self.sortedConversations(Array(byID.values))
+    rebuildConversationIndexes()
+    rebuildSummariesFromConversations()
   }
 
   private func rebuildSummariesFromConversations() {
