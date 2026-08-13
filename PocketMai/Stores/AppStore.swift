@@ -1181,6 +1181,7 @@ final class AppStore: ObservableObject {
     refreshRecentConversationSummaries()
     setSelectedConversationID(nil)
     selectedConversationIDs.removeAll()
+    persistence.deleteConversationFiles(ids: removedIDs)
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
     newConversation()
@@ -1356,6 +1357,7 @@ final class AppStore: ObservableObject {
         createInitialConversationIfNeeded()
       }
     }
+    persistence.deleteConversationFiles(ids: ids)
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
   }
@@ -2769,6 +2771,20 @@ final class AppStore: ObservableObject {
     let persistence = self.persistence
     return await Task.detached(priority: .utility) {
       persistence.corruptedConversationCount()
+    }.value
+  }
+
+  func corruptedConversationDocuments() async -> [CorruptedConversationDocument] {
+    let persistence = self.persistence
+    return await Task.detached(priority: .utility) {
+      persistence.corruptedConversationDocuments()
+    }.value
+  }
+
+  func deleteCorruptedConversation(id: String) async -> CorruptedConversationDeletionResult {
+    let persistence = self.persistence
+    return await Task.detached(priority: .userInitiated) {
+      persistence.deleteCorruptedConversation(id: id)
     }.value
   }
 
