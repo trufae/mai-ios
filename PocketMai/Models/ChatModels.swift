@@ -2742,7 +2742,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
-  static let currentStockPromptsVersion = 1
+  static let currentStockPromptsVersion = 2
   static let recentChatLanguageLimit = 3
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
@@ -2769,7 +2769,22 @@ struct AppSettings: Codable, Equatable, Sendable {
       Return a concise synthesis that directly answers the goal, cites or links the sources used, distinguishes facts from inference, and calls out remaining uncertainty. If no research goal follows these instructions, ask for one.
       """
   )
-  static let defaultUserPrompts = [goalUserPrompt]
+  static let newAppUserPrompt = UserPrompt(
+    id: UUID(uuidString: "22F931EA-0A3F-4F56-A2CA-E385CF5B633E")!,
+    name: "newapp",
+    text: """
+      Build the webxdc app described below. Everything goes in one index.html (inline CSS/JS, no external resources, no network). Include <script src="webxdc.js"></script> in the head — the host provides it, never write that file. Use webxdc_list to check for an existing app to update, then webxdc_create (or reuse), then webxdc_write index.html. Keep the UI simple and mobile-friendly.
+
+      API contract — get this exactly right:
+      - Send: data MUST be wrapped in a payload key: webxdc.sendUpdate({ payload: { action: "roll" } }, "descr"). WRONG: sendUpdate({ action: "roll" }, ...) — the host receives null.
+      - Receive: data arrives under update.payload, already parsed. Top-level reads like update.result are always undefined.
+      - The listener also receives the app's OWN updates — check the payload shape before rendering.
+      - Register the listener at startup; queued updates are replayed then.
+
+      If the app talks to you (the LLM host): when it sends an update you are notified in chat with its payload; reply with the webxdc_send_update tool, payload as a JSON object matching what the listener expects. Design a tiny request/response protocol (e.g. app sends {payload:{action:"generate"}}, you reply {"result":"..."}) and state it in a comment at the top of the script so future turns follow it.
+      """
+  )
+  static let defaultUserPrompts = [goalUserPrompt, newAppUserPrompt]
   static let defaultCompactPrompt = """
     Compact the transcript below into durable context for continuing the same chat.
 
