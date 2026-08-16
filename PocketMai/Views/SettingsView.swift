@@ -2512,9 +2512,6 @@ private enum EndpointNameResolution {
     if let message = nameValidationMessage(for: endpoint, in: endpoints) {
       return message
     }
-    if let message = apiKeyValidationMessage(for: endpoint) {
-      return message
-    }
     return nil
   }
 
@@ -2538,10 +2535,7 @@ private enum EndpointNameResolution {
   }
 
   static func connectionValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
-    if let message = baseURLValidationMessage(for: endpoint) {
-      return message
-    }
-    return apiKeyValidationMessage(for: endpoint)
+    baseURLValidationMessage(for: endpoint)
   }
 
   private static func baseURLValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
@@ -2560,27 +2554,12 @@ private enum EndpointNameResolution {
     return nil
   }
 
-  private static func apiKeyValidationMessage(for endpoint: OpenAIEndpoint) -> String? {
-    guard requiresAPIKey(for: endpoint) else { return nil }
-    let apiKey = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard apiKey.isEmpty else { return nil }
-    let name = savedName(for: endpoint) ?? "this provider"
-    return "Specify an API key for \(name)."
-  }
-
   private static func providerName(for endpoint: OpenAIEndpoint) -> String? {
     let baseURL = endpoint.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
     if let preset = providerPreset(forBaseURL: baseURL) {
       return preset.name
     }
     return nil
-  }
-
-  private static func requiresAPIKey(for endpoint: OpenAIEndpoint) -> Bool {
-    guard endpoint.authMethod == .apiKey else { return false }
-    guard let preset = providerPreset(forBaseURL: endpoint.baseURL) else { return false }
-    return preset.name != "Ollama"
-      && !OllamaNetworkScanner.isLikelyLocalOllamaBaseURL(endpoint.baseURL)
   }
 
   static func providerPreset(forBaseURL baseURL: String) -> EndpointProviderPreset? {
@@ -3009,7 +2988,7 @@ private struct EndpointDetailView: View {
 
     switch effectiveAuthMethod {
     case .apiKey:
-      SecureField("API Key", text: $endpoint.apiKey)
+      SecureField("API Key (Optional)", text: $endpoint.apiKey)
       if let apiKeyOnlyProvider {
         apiKeyOnlyGuidance(for: apiKeyOnlyProvider)
       }
