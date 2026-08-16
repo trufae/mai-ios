@@ -37,6 +37,10 @@ enum AssistantToolLoop {
     let result: String
   }
 
+  private struct SkippedModelResponse: Error {
+    let partialText: String
+  }
+
   private struct State {
     var assistantText = ""
     var nativeContinuationMessages: [OpenAIMessage] = []
@@ -190,12 +194,44 @@ enum AssistantToolLoop {
         state: state,
         assistantID: activeAssistantID,
         store: store)
-      let response = try await requestModelResponse(
-        conversation: conversation,
-        requestState: requestState,
-        state: state,
-        assistantID: activeAssistantID,
-        store: store)
+      let response: String
+      do {
+        response = try await requestModelResponse(
+          conversation: conversation,
+          requestState: requestState,
+          state: state,
+          assistantID: activeAssistantID,
+          store: store)
+      } catch let skipped as SkippedModelResponse {
+        state.clearProvisionalText()
+        let partial = skipped.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skippedTurn =
+          partial.isEmpty
+          ? "[model response skipped by user after timeout]"
+          : "\(partial)\n\n[model response skipped by user after timeout]"
+        store.setAssistantMessage(
+          id: activeAssistantID,
+          text: state.append(skippedTurn),
+          role: .assistant)
+        store.saveConversations()
+        if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+          in: conversationID)
+        {
+          activeAssistantID = nextAssistantID
+          state = State()
+          store.clearToolCallingDebugIterations(
+            conversationID: conversationID,
+            assistantMessageID: activeAssistantID)
+          continue
+        }
+        if !requestState.definitions.isEmpty {
+          state.nativeContinuationMessages.removeAll()
+          continue
+        }
+        store.assistantResponseCompleted()
+        didFinish = true
+        return
+      }
 
       let outcome = try await outcome(
         response: response,
@@ -395,7 +431,8 @@ enum AssistantToolLoop {
         requestState: requestState,
         state: state,
         assistantID: assistantID,
-        settings: settings)
+        settings: settings,
+        store: store)
 
       let outcome = try await isolatedOutcome(
         response: response,
@@ -490,15 +527,28 @@ enum AssistantToolLoop {
       toolPrompt: tailToolPrompt,
       toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
-    let response = try await ChatProviderRouter.complete(request: request) {
-      [weak store] streamed in
-      let turnText =
+    var latestStreamedResponse = ""
+    let response: String
+    do {
+      response = try await ChatProviderRouter.complete(
+        request: request,
+        timeoutHandler: timeoutHandler(store: store)
+      ) { [weak store] streamed in
+        latestStreamedResponse = streamed
+        let turnText =
+          requestState.definitions.isEmpty
+          ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
+        store?.receiveStreamingAssistantText(
+          state.displayText(appending: turnText),
+          for: assistantID,
+          vibrate: request.conversation.usesStreaming)
+      }
+    } catch is LongRunningOperationSkipped {
+      let partial =
         requestState.definitions.isEmpty
-        ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
-      store?.receiveStreamingAssistantText(
-        state.displayText(appending: turnText),
-        for: assistantID,
-        vibrate: request.conversation.usesStreaming)
+        ? AppStore.strippedSpuriousToolCallText(latestStreamedResponse)
+        : latestStreamedResponse
+      throw SkippedModelResponse(partialText: partial)
     }
     try Task.checkCancellation()
     return requestState.definitions.isEmpty
@@ -511,7 +561,8 @@ enum AssistantToolLoop {
     requestState: RequestState,
     state: State,
     assistantID: UUID,
-    settings: AppSettings
+    settings: AppSettings,
+    store: AppStore
   ) async throws -> String {
     let tailToolPrompt: String = {
       guard requestState.usesTextProtocol else { return "" }
@@ -530,11 +581,35 @@ enum AssistantToolLoop {
       toolPrompt: tailToolPrompt,
       toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
     )
-    let response = try await ChatProviderRouter.complete(request: request) { _ in }
+    var latestStreamedResponse = ""
+    let response: String
+    do {
+      response = try await ChatProviderRouter.complete(
+        request: request,
+        timeoutHandler: timeoutHandler(store: store)
+      ) { streamed in
+        latestStreamedResponse = streamed
+      }
+    } catch is LongRunningOperationSkipped {
+      let partial =
+        requestState.definitions.isEmpty
+        ? AppStore.strippedSpuriousToolCallText(latestStreamedResponse)
+        : latestStreamedResponse
+      return partial.isEmpty
+        ? "[model response skipped by user after timeout]"
+        : "\(partial)\n\n[model response skipped by user after timeout]"
+    }
     try Task.checkCancellation()
     return requestState.definitions.isEmpty
       ? AppStore.strippedSpuriousToolCallText(response)
       : response
+  }
+
+  private static func timeoutHandler(store: AppStore) -> LongRunningOperationTimeoutHandler {
+    { [weak store] context in
+      guard let store else { return .interrupt }
+      return await store.requestLongRunningOperationDecision(context)
+    }
   }
 
   private static func outcome(
@@ -718,6 +793,7 @@ enum AssistantToolLoop {
         call,
         parseDefinitions: parseDefinitions,
         mode: mode,
+        assistantID: assistantID,
         conversationID: conversationID,
         store: store)
       let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
@@ -727,6 +803,15 @@ enum AssistantToolLoop {
       results.append(result)
       completedRuns.append((toolCallFingerprint(result.call), result.result))
       executedCount += 1
+      publishToolRunProgress(
+        transcriptText: transcriptText,
+        appendedRunBlocks: appendedRunBlocks,
+        pendingCalls: Array(calls.dropFirst(executedCount)),
+        remainingToolCalls: max(0, remainingToolCalls - executedCount),
+        parseDefinitions: parseDefinitions,
+        assistantID: assistantID,
+        baselineText: baselineText,
+        store: store)
     }
 
     let text = ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
@@ -768,6 +853,34 @@ enum AssistantToolLoop {
       text: combinedAssistantText(baseline: baselineText, turnText: text),
       role: .assistant,
       touch: false)
+    store.saveConversations()
+  }
+
+  private static func publishToolRunProgress(
+    transcriptText: String,
+    appendedRunBlocks: [String],
+    pendingCalls: [ParsedToolCall],
+    remainingToolCalls: Int,
+    parseDefinitions: [ToolDefinition],
+    assistantID: UUID,
+    baselineText: String,
+    store: AppStore
+  ) {
+    let pendingText = pendingToolRunText(
+      response: transcriptText,
+      calls: pendingCalls,
+      remainingToolCalls: remainingToolCalls,
+      parseDefinitions: parseDefinitions)
+    let turnText = ([pendingText] + appendedRunBlocks)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+    store.setAssistantMessage(
+      id: assistantID,
+      text: combinedAssistantText(baseline: baselineText, turnText: turnText),
+      role: .assistant,
+      touch: false)
+    store.saveConversations()
   }
 
   private static func pendingToolRunText(
@@ -868,6 +981,7 @@ enum AssistantToolLoop {
     _ call: ParsedToolCall,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
+    assistantID: UUID,
     conversationID: UUID,
     store: AppStore
   ) async throws -> CallResult {
@@ -928,11 +1042,31 @@ enum AssistantToolLoop {
       return CallResult(call: executableCall, result: validationError)
     }
 
-    let result = await ToolAgentRegistry.execute(
-      call: executableCall,
+    let timeout = store.settings.mcpRequestTimeoutInterval
+    let context = LongRunningOperationContext(
+      kind: .toolCall,
       conversationID: conversationID,
-      store: store)
-    return CallResult(call: executableCall, result: result)
+      assistantMessageID: assistantID,
+      operationName: executableCall.name,
+      conversationTitle: store.conversation(withID: conversationID)?.displayTitle,
+      timeoutInterval: timeout)
+    do {
+      let result = try await InteractiveOperationTimeout.run(
+        seconds: timeout,
+        context: context,
+        onTimeout: timeoutHandler(store: store)
+      ) {
+        await ToolAgentRegistry.execute(
+          call: executableCall,
+          conversationID: conversationID,
+          store: store)
+      }
+      return CallResult(call: executableCall, result: result)
+    } catch is LongRunningOperationSkipped {
+      return CallResult(
+        call: executableCall,
+        result: "Error: tool call skipped by user after timeout.")
+    }
   }
 
   private static func runToolCall(
@@ -1004,11 +1138,31 @@ enum AssistantToolLoop {
       return CallResult(call: executableCall, result: validationError)
     }
 
-    let result = await ToolAgentRegistry.execute(
-      call: executableCall,
-      conversation: conversation,
-      store: store)
-    return CallResult(call: executableCall, result: result)
+    let timeout = settings.mcpRequestTimeoutInterval
+    let context = LongRunningOperationContext(
+      kind: .toolCall,
+      conversationID: conversation.id,
+      assistantMessageID: nil,
+      operationName: executableCall.name,
+      conversationTitle: conversation.displayTitle,
+      timeoutInterval: timeout)
+    do {
+      let result = try await InteractiveOperationTimeout.run(
+        seconds: timeout,
+        context: context,
+        onTimeout: timeoutHandler(store: store)
+      ) {
+        await ToolAgentRegistry.execute(
+          call: executableCall,
+          conversation: conversation,
+          store: store)
+      }
+      return CallResult(call: executableCall, result: result)
+    } catch is LongRunningOperationSkipped {
+      return CallResult(
+        call: executableCall,
+        result: "Error: tool call skipped by user after timeout.")
+    }
   }
 
   private static func makeRequestState(

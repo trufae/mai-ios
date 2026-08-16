@@ -19,14 +19,17 @@ enum AssistantTurnRunner {
         baseContext: context,
         store: store)
     } catch is CancellationError {
-      store.markAssistantStopped(id: assistantID)
+      store.markLatestAssistantStopped(in: conversationID, fallbackID: assistantID)
     } catch {
       let nsError = error as NSError
       if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-        store.markAssistantStopped(id: assistantID)
+        store.markLatestAssistantStopped(in: conversationID, fallbackID: assistantID)
       } else {
         let text = error.localizedDescription
-        store.setAssistantMessage(id: assistantID, text: text, role: .error)
+        store.markLatestAssistantFailed(
+          in: conversationID,
+          fallbackID: assistantID,
+          message: text)
         store.errorMessage = text
       }
     }

@@ -90,6 +90,24 @@ struct ContentView: View {
         .environmentObject(store)
         .interactiveDismissDisabled()
     }
+    .alert(
+      store.activeLongRunningOperationTimeoutRequest?.context.promptTitle
+        ?? "Operation is still running",
+      isPresented: longRunningOperationTimeoutBinding,
+      presenting: store.activeLongRunningOperationTimeoutRequest
+    ) { request in
+      Button("Continue") {
+        store.continueLongRunningOperation(id: request.id)
+      }
+      Button("Skip") {
+        store.skipLongRunningOperation(id: request.id)
+      }
+      Button("Interrupt", role: .destructive) {
+        store.interruptLongRunningOperation(id: request.id)
+      }
+    } message: { request in
+      Text(request.context.promptMessage)
+    }
     .alert("Error", isPresented: errorBinding) {
       Button("OK") { store.errorMessage = nil }
     } message: {
@@ -98,7 +116,8 @@ struct ContentView: View {
     .background(ChatScreenshotServiceInstaller(service: screenshotService))
     .background {
       HistoryPanelPanBridge(
-        isEnabled: !showingSettings && store.activeToolCallApprovalRequest == nil,
+        isEnabled: !showingSettings && store.activeToolCallApprovalRequest == nil
+          && store.activeLongRunningOperationTimeoutRequest == nil,
         isOpen: showingHistory,
         onChanged: { offset in
           if offset > 0 {
@@ -193,6 +212,12 @@ struct ContentView: View {
       get: { store.activeToolCallApprovalRequest },
       set: { _ in }
     )
+  }
+
+  private var longRunningOperationTimeoutBinding: Binding<Bool> {
+    Binding(
+      get: { store.activeLongRunningOperationTimeoutRequest != nil },
+      set: { _ in })
   }
 
   private var errorBinding: Binding<Bool> {

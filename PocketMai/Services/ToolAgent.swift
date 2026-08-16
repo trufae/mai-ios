@@ -475,7 +475,7 @@ enum ToolAgentRegistry {
           server: server,
           name: call.name,
           arguments: call.argumentValues,
-          timeout: store.settings.mcpRequestTimeoutInterval)
+          timeout: InteractiveOperationTimeout.extendedTransportTimeoutInterval)
       } catch {
         if MCPHTTPClient.isAvailabilityFailure(error) {
           store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)
@@ -556,7 +556,7 @@ enum MCPResourceTool {
       return try await MCPHTTPClient.readResource(
         server: server,
         uri: trimmedURI,
-        timeout: store.settings.mcpRequestTimeoutInterval)
+        timeout: InteractiveOperationTimeout.extendedTransportTimeoutInterval)
     } catch {
       if MCPHTTPClient.isAvailabilityFailure(error) {
         store.markMCPUnavailable(serverID: server.id, message: error.localizedDescription)

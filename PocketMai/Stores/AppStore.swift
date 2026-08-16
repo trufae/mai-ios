@@ -140,6 +140,27 @@ struct ToolCallApprovalRequest: Identifiable {
   }
 }
 
+struct LongRunningOperationTimeoutRequest: Identifiable {
+  let id: UUID
+  let context: LongRunningOperationContext
+
+  private let continuation: CheckedContinuation<LongRunningOperationDecision, Never>
+
+  init(
+    id: UUID,
+    context: LongRunningOperationContext,
+    continuation: CheckedContinuation<LongRunningOperationDecision, Never>
+  ) {
+    self.id = id
+    self.context = context
+    self.continuation = continuation
+  }
+
+  func resume(returning decision: LongRunningOperationDecision) {
+    continuation.resume(returning: decision)
+  }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
   private static let openAPIServerSystemPromptID = UUID(
@@ -164,6 +185,7 @@ final class AppStore: ObservableObject {
   private var responseTaskTokens: [UUID: UUID] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
   private var cancelledToolCallApprovalIDs: Set<UUID> = []
+  private var cancelledLongRunningOperationTimeoutIDs: Set<UUID> = []
   private var toolCallingDebugIterations: [UUID: [ConversationDebugToolIteration]] = [:]
 
   var isResponding: Bool { !respondingConversationIDs.isEmpty }
@@ -275,6 +297,8 @@ final class AppStore: ObservableObject {
   @Published var mcpTools: [UUID: [MCPToolDescriptor]] = [:]
   @Published var mcpResources: [UUID: [MCPResourceDescriptor]] = [:]
   @Published private(set) var toolCallApprovalRequests: [ToolCallApprovalRequest] = []
+  @Published private(set) var longRunningOperationTimeoutRequests:
+    [LongRunningOperationTimeoutRequest] = []
   @Published private(set) var draftStorageRevision = 0
   /// Cached Apple Intelligence availability message; nil means available.
   /// Refreshed on app launch and on scene activation, not per-render.
@@ -2410,7 +2434,8 @@ final class AppStore: ObservableObject {
   }
 
   private func handleResponseBackgroundTaskExpired(for conversationID: UUID) {
-    responseTasks[conversationID]?.cancel()
+    // Expiration only ends the extra background execution allowance. Cancelling
+    // here used to discard an otherwise resumable in-progress assistant turn.
     endResponseBackgroundTask(for: conversationID)
   }
 
@@ -2431,6 +2456,12 @@ final class AppStore: ObservableObject {
     }
   }
 
+  private func checkpointStreamingAssistantMessage(id: UUID) {
+    guard let text = streamingTextStore.currentText(for: id) else { return }
+    setAssistantMessage(id: id, text: text, role: .assistant, touch: false)
+    saveConversations()
+  }
+
   func markAssistantStopped(id: UUID) {
     let current = currentTextOfMessage(id: id)
     let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2440,6 +2471,32 @@ final class AppStore: ObservableObject {
       setAssistantMessage(
         id: id, text: "\(current)\n\n[stopped]", role: .assistant)
     }
+  }
+
+  func markLatestAssistantStopped(in conversationID: UUID, fallbackID: UUID) {
+    markAssistantStopped(id: latestAssistantMessageID(in: conversationID) ?? fallbackID)
+  }
+
+  func markLatestAssistantFailed(
+    in conversationID: UUID,
+    fallbackID: UUID,
+    message: String
+  ) {
+    let id = latestAssistantMessageID(in: conversationID) ?? fallbackID
+    let current = currentTextOfMessage(id: id)
+    let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      setAssistantMessage(id: id, text: message, role: .error)
+    } else {
+      setAssistantMessage(
+        id: id,
+        text: "\(current)\n\n[operation failed: \(message)]",
+        role: .assistant)
+    }
+  }
+
+  private func latestAssistantMessageID(in conversationID: UUID) -> UUID? {
+    conversation(withID: conversationID)?.messages.last(where: { $0.role == .assistant })?.id
   }
 
   /// Single entry point for streamed assistant tokens. Refreshes the live
@@ -2925,6 +2982,67 @@ final class AppStore: ObservableObject {
       return
     }
     persistence.saveSettings(settings)
+  }
+
+  var activeLongRunningOperationTimeoutRequest: LongRunningOperationTimeoutRequest? {
+    longRunningOperationTimeoutRequests.first
+  }
+
+  func requestLongRunningOperationDecision(
+    _ context: LongRunningOperationContext
+  ) async -> LongRunningOperationDecision {
+    if let assistantMessageID = context.assistantMessageID {
+      checkpointStreamingAssistantMessage(id: assistantMessageID)
+    }
+    let requestID = UUID()
+    return await withTaskCancellationHandler(
+      operation: {
+        await withCheckedContinuation { continuation in
+          if cancelledLongRunningOperationTimeoutIDs.remove(requestID) != nil {
+            continuation.resume(returning: .interrupt)
+            return
+          }
+          longRunningOperationTimeoutRequests.append(
+            LongRunningOperationTimeoutRequest(
+              id: requestID,
+              context: context,
+              continuation: continuation))
+        }
+      },
+      onCancel: {
+        Task { @MainActor [weak self] in
+          guard let self else { return }
+          if !self.resolveLongRunningOperationTimeout(id: requestID, decision: .interrupt) {
+            self.cancelledLongRunningOperationTimeoutIDs.insert(requestID)
+          }
+        }
+      })
+  }
+
+  func continueLongRunningOperation(id: UUID) {
+    _ = resolveLongRunningOperationTimeout(id: id, decision: .continue)
+  }
+
+  func skipLongRunningOperation(id: UUID) {
+    _ = resolveLongRunningOperationTimeout(id: id, decision: .skip)
+  }
+
+  func interruptLongRunningOperation(id: UUID) {
+    _ = resolveLongRunningOperationTimeout(id: id, decision: .interrupt)
+  }
+
+  @discardableResult
+  private func resolveLongRunningOperationTimeout(
+    id: UUID,
+    decision: LongRunningOperationDecision
+  ) -> Bool {
+    guard let index = longRunningOperationTimeoutRequests.firstIndex(where: { $0.id == id })
+    else {
+      return false
+    }
+    let request = longRunningOperationTimeoutRequests.remove(at: index)
+    request.resume(returning: decision)
+    return true
   }
 
   var activeToolCallApprovalRequest: ToolCallApprovalRequest? {
@@ -4770,6 +4888,7 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$settings)
       observe(store.$errorMessage)
       observe(store.$toolCallApprovalRequests)
+      observe(store.$longRunningOperationTimeoutRequests)
     case .chat:
       observe(store.$activeConversation)
       observe(store.$conversationSummaries)

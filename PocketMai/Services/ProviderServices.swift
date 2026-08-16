@@ -1,6 +1,135 @@
 import Foundation
 import FoundationModels
 
+enum LongRunningOperationDecision: Sendable {
+  case interrupt
+  case `continue`
+  case skip
+}
+
+enum LongRunningOperationKind: Sendable {
+  case modelResponse
+  case toolCall
+}
+
+struct LongRunningOperationContext: Sendable {
+  let kind: LongRunningOperationKind
+  let conversationID: UUID?
+  let assistantMessageID: UUID?
+  let operationName: String
+  let conversationTitle: String?
+  let timeoutInterval: TimeInterval
+
+  var promptTitle: String {
+    switch kind {
+    case .modelResponse:
+      "Model response is still running"
+    case .toolCall:
+      "Tool call is still running"
+    }
+  }
+
+  var promptMessage: String {
+    let timeout = Self.formattedDuration(timeoutInterval)
+    let conversation = conversationTitle.map { " in ‘\($0)’" } ?? ""
+    return
+      "\(operationName) has exceeded the \(timeout) timeout\(conversation). Continue keeps it running and resets the timer. Skip cancels only this step. Interrupt stops the whole response. Progress already produced is kept."
+  }
+
+  private static func formattedDuration(_ seconds: TimeInterval) -> String {
+    let total = Int(seconds.rounded())
+    if total >= 60, total.isMultiple(of: 60) {
+      return "\(total / 60) minute\(total == 60 ? "" : "s")"
+    }
+    return "\(total) second\(total == 1 ? "" : "s")"
+  }
+}
+
+struct LongRunningOperationSkipped: Error, Sendable {}
+
+typealias LongRunningOperationTimeoutHandler =
+  @MainActor @Sendable (LongRunningOperationContext) async -> LongRunningOperationDecision
+
+enum InteractiveOperationTimeout {
+  /// The user-facing timer is responsible for long-running live operations. The
+  /// transport deadline only remains as a final safeguard against abandoned tasks.
+  static let extendedTransportTimeoutInterval: TimeInterval = 7 * 24 * 60 * 60
+
+  private enum Event<T: Sendable>: @unchecked Sendable {
+    case result(Result<T, Error>)
+    case timeout(UUID)
+  }
+
+  static func run<T: Sendable>(
+    seconds: TimeInterval,
+    context: LongRunningOperationContext,
+    onTimeout: @escaping LongRunningOperationTimeoutHandler,
+    operation: @escaping @Sendable () async throws -> T
+  ) async throws -> T {
+    let (events, continuation) = AsyncStream<Event<T>>.makeStream()
+    let operationTask = Task {
+      do {
+        continuation.yield(.result(.success(try await operation())))
+      } catch {
+        continuation.yield(.result(.failure(error)))
+      }
+    }
+    var timerGeneration = UUID()
+    var timerTask = makeTimer(
+      seconds: seconds,
+      generation: timerGeneration,
+      continuation: continuation)
+
+    defer {
+      timerTask.cancel()
+      operationTask.cancel()
+      continuation.finish()
+    }
+
+    for await event in events {
+      try Task.checkCancellation()
+      switch event {
+      case .result(let result):
+        return try result.get()
+      case .timeout(let generation):
+        guard generation == timerGeneration else { continue }
+        switch await onTimeout(context) {
+        case .interrupt:
+          throw CancellationError()
+        case .skip:
+          throw LongRunningOperationSkipped()
+        case .continue:
+          timerTask.cancel()
+          timerGeneration = UUID()
+          timerTask = makeTimer(
+            seconds: seconds,
+            generation: timerGeneration,
+            continuation: continuation)
+        }
+      }
+    }
+
+    try Task.checkCancellation()
+    throw ChatProviderError.emptyResponse
+  }
+
+  private static func makeTimer<T: Sendable>(
+    seconds: TimeInterval,
+    generation: UUID,
+    continuation: AsyncStream<Event<T>>.Continuation
+  ) -> Task<Void, Never> {
+    Task {
+      do {
+        try await Task.sleep(for: .seconds(seconds))
+        guard !Task.isCancelled else { return }
+        continuation.yield(.timeout(generation))
+      } catch {
+        // Resetting the timeout and finishing the operation both cancel this timer.
+      }
+    }
+  }
+}
+
 struct ChatCompletionRequest: Sendable {
   var conversation: Conversation
   var settings: AppSettings
@@ -12,6 +141,15 @@ struct ChatCompletionRequest: Sendable {
   var toolPrompt: String = ""
   var toolPromptInContext: Bool = false
   var messageLimitOverride: Int? = nil
+  var usesInteractiveTimeoutPrompt = false
+
+  var transportTimeoutInterval: TimeInterval {
+    usesInteractiveTimeoutPrompt
+      ? max(
+        settings.llmRequestTimeoutInterval,
+        InteractiveOperationTimeout.extendedTransportTimeoutInterval)
+      : settings.llmRequestTimeoutInterval
+  }
 }
 
 enum ChatProviderError: LocalizedError {
@@ -72,13 +210,31 @@ enum ChatProviderRouter {
 
   static func complete(
     request: ChatCompletionRequest,
+    timeoutHandler: LongRunningOperationTimeoutHandler? = nil,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
     var current = request
+    current.usesInteractiveTimeoutPrompt = timeoutHandler != nil
     var attempts = 0
     while true {
       do {
         let attemptRequest = current
+        if let timeoutHandler {
+          let context = LongRunningOperationContext(
+            kind: .modelResponse,
+            conversationID: attemptRequest.conversation.id,
+            assistantMessageID: attemptRequest.assistantMessageID,
+            operationName: attemptRequest.conversation.provider.displayName,
+            conversationTitle: attemptRequest.conversation.displayTitle,
+            timeoutInterval: attemptRequest.settings.llmRequestTimeoutInterval)
+          return try await InteractiveOperationTimeout.run(
+            seconds: attemptRequest.settings.llmRequestTimeoutInterval,
+            context: context,
+            onTimeout: timeoutHandler
+          ) {
+            try await dispatch(request: attemptRequest, onUpdate: onUpdate)
+          }
+        }
         return try await withTimeout(seconds: attemptRequest.settings.llmRequestTimeoutInterval) {
           try await dispatch(request: attemptRequest, onUpdate: onUpdate)
         }
@@ -1781,7 +1937,7 @@ enum OpenAICompatibleProvider {
         method: "POST",
         contentType: "application/json",
         body: body)
-      urlRequest.timeoutInterval = request.settings.llmRequestTimeoutInterval
+      urlRequest.timeoutInterval = request.transportTimeoutInterval
 
       if request.conversation.usesStreaming {
         return try await stream(request: urlRequest, onUpdate: onUpdate)
