@@ -163,6 +163,7 @@ enum AssistantToolLoop {
     baseContext: String,
     store: AppStore
   ) async throws {
+    var activeAssistantID = assistantID
     var state = State()
     var didFinish = false
     let maxToolCalls = maxToolCallsPerTurn(store: store)
@@ -170,7 +171,7 @@ enum AssistantToolLoop {
 
     store.clearToolCallingDebugIterations(
       conversationID: conversationID,
-      assistantMessageID: assistantID)
+      assistantMessageID: activeAssistantID)
 
     if let conversation = store.conversation(withID: conversationID) {
       await store.refreshEnabledMCPServers(for: conversation)
@@ -187,20 +188,20 @@ enum AssistantToolLoop {
         conversation: conversation,
         requestState: requestState,
         state: state,
-        assistantID: assistantID,
+        assistantID: activeAssistantID,
         store: store)
       let response = try await requestModelResponse(
         conversation: conversation,
         requestState: requestState,
         state: state,
-        assistantID: assistantID,
+        assistantID: activeAssistantID,
         store: store)
 
       let outcome = try await outcome(
         response: response,
         requestState: requestState,
         conversationID: conversationID,
-        assistantID: assistantID,
+        assistantID: activeAssistantID,
         store: store,
         completedToolRuns: state.completedToolRuns,
         baselineText: state.displayText,
@@ -217,16 +218,16 @@ enum AssistantToolLoop {
             promptMessages: promptMessages,
             requestState: requestState,
             conversation: conversation,
-            assistantID: assistantID,
+            assistantID: activeAssistantID,
             roundIndex: state.debugRoundIndex,
             store: store)
           state.setProvisionalText(provisionalDisplayText(from: turnText))
           let canonicalText = state.append(
             missingPostToolActionFeedback(mode: requestState.activeMode))
-          store.setAssistantMessage(id: assistantID, text: canonicalText, role: .assistant)
+          store.setAssistantMessage(id: activeAssistantID, text: canonicalText, role: .assistant)
           if !state.provisionalText.isEmpty {
             store.setAssistantMessage(
-              id: assistantID,
+              id: activeAssistantID,
               text: state.displayText,
               role: .assistant,
               touch: false,
@@ -234,10 +235,32 @@ enum AssistantToolLoop {
           }
           store.saveConversations()
           state.nativeContinuationMessages.removeAll()
+          if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+            in: conversationID)
+          {
+            activeAssistantID = nextAssistantID
+            state = State()
+            store.clearToolCallingDebugIterations(
+              conversationID: conversationID,
+              assistantMessageID: activeAssistantID)
+          }
           continue
         }
         state.clearProvisionalText()
-        store.setAssistantMessage(id: assistantID, text: state.append(turnText), role: .assistant)
+        store.setAssistantMessage(
+          id: activeAssistantID,
+          text: state.append(turnText),
+          role: .assistant)
+        if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+          in: conversationID)
+        {
+          activeAssistantID = nextAssistantID
+          state = State()
+          store.clearToolCallingDebugIterations(
+            conversationID: conversationID,
+            assistantMessageID: activeAssistantID)
+          continue
+        }
         store.assistantResponseCompleted()
         didFinish = true
         return
@@ -250,15 +273,15 @@ enum AssistantToolLoop {
           promptMessages: promptMessages,
           requestState: requestState,
           conversation: conversation,
-          assistantID: assistantID,
+          assistantID: activeAssistantID,
           roundIndex: state.debugRoundIndex,
           store: store)
         state.setProvisionalText(provisionalText)
         let canonicalText = state.append(feedback)
-        store.setAssistantMessage(id: assistantID, text: canonicalText, role: .assistant)
+        store.setAssistantMessage(id: activeAssistantID, text: canonicalText, role: .assistant)
         if !state.provisionalText.isEmpty {
           store.setAssistantMessage(
-            id: assistantID,
+            id: activeAssistantID,
             text: state.displayText,
             role: .assistant,
             touch: false,
@@ -266,6 +289,15 @@ enum AssistantToolLoop {
         }
         store.saveConversations()
         state.nativeContinuationMessages.removeAll()
+        if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+          in: conversationID)
+        {
+          activeAssistantID = nextAssistantID
+          state = State()
+          store.clearToolCallingDebugIterations(
+            conversationID: conversationID,
+            assistantMessageID: activeAssistantID)
+        }
       case .toolRun(let output):
         state.debugRoundIndex += 1
         appendDebugIteration(
@@ -274,16 +306,16 @@ enum AssistantToolLoop {
           promptMessages: promptMessages,
           requestState: requestState,
           conversation: conversation,
-          assistantID: assistantID,
+          assistantID: activeAssistantID,
           roundIndex: state.debugRoundIndex,
           store: store,
           parsedCalls: output.parsedCalls,
           results: output.results)
         store.setAssistantMessage(
-          id: assistantID, text: state.append(output.text), role: .assistant)
+          id: activeAssistantID, text: state.append(output.text), role: .assistant)
         if !state.provisionalText.isEmpty {
           store.setAssistantMessage(
-            id: assistantID,
+            id: activeAssistantID,
             text: state.displayText,
             role: .assistant,
             touch: false,
@@ -298,6 +330,15 @@ enum AssistantToolLoop {
           output.nativeMessages,
           conversation: conversation,
           requestState: requestState)
+        if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+          in: conversationID)
+        {
+          activeAssistantID = nextAssistantID
+          state = State()
+          store.clearToolCallingDebugIterations(
+            conversationID: conversationID,
+            assistantMessageID: activeAssistantID)
+        }
       }
     }
 
@@ -308,9 +349,18 @@ enum AssistantToolLoop {
         state.displayText.isEmpty
         ? suffix.trimmingCharacters(in: .whitespacesAndNewlines) : state.displayText + suffix
       store.setAssistantMessage(
-        id: assistantID,
+        id: activeAssistantID,
         text: text,
         role: .assistant)
+      if let nextAssistantID = store.injectQueuedUserMessagesAndAppendAssistant(
+        in: conversationID)
+      {
+        try await run(
+          conversationID: conversationID,
+          assistantID: nextAssistantID,
+          baseContext: baseContext,
+          store: store)
+      }
     }
   }
 
@@ -655,6 +705,10 @@ enum AssistantToolLoop {
 
     for call in calls {
       try Task.checkCancellation()
+      // Feedback queued after this provider response takes precedence over
+      // tool calls that have not started yet. Already-running tools finish,
+      // then the loop injects the feedback before asking the model again.
+      guard !store.hasQueuedUserMessages(in: conversationID) else { break }
       replaceFirstOccurrence(of: call.rawBlock, in: &assistantContent, with: "")
       guard executedCount < remainingToolCalls else {
         replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
@@ -848,6 +902,11 @@ enum AssistantToolLoop {
     try Task.checkCancellation()
     guard shouldExecute else {
       return CallResult(call: approvedCall, result: "Error: tool call cancelled by user.")
+    }
+    if store.hasQueuedUserMessages(in: conversationID) {
+      return CallResult(
+        call: approvedCall,
+        result: "Error: tool call skipped because the user queued new instructions.")
     }
 
     let executionDefinitions = currentVisibleDefinitions(

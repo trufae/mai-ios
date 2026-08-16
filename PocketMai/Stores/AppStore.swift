@@ -158,6 +158,7 @@ final class AppStore: ObservableObject {
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
   @Published var respondingConversationIDs: Set<UUID> = []
+  @Published private(set) var queuedUserMessagesByConversationID: [UUID: [QueuedChatMessage]] = [:]
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
   private var responseTaskTokens: [UUID: UUID] = [:]
@@ -173,6 +174,86 @@ final class AppStore: ObservableObject {
 
   func cancelResponse(in conversationID: UUID) {
     responseTasks[conversationID]?.cancel()
+  }
+
+  func queuedUserMessages(in conversationID: UUID?) -> [QueuedChatMessage] {
+    guard let conversationID else { return [] }
+    return queuedUserMessagesByConversationID[conversationID] ?? []
+  }
+
+  func hasQueuedUserMessages(in conversationID: UUID) -> Bool {
+    queuedUserMessagesByConversationID[conversationID]?.isEmpty == false
+  }
+
+  @discardableResult
+  func enqueueUserMessage(
+    prompt rawPrompt: String,
+    attachments: [ChatAttachment] = [],
+    in conversationID: UUID
+  ) -> Bool {
+    guard respondingConversationIDs.contains(conversationID),
+      indexedConversationIndex(for: conversationID) != nil
+    else {
+      return false
+    }
+    let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !prompt.isEmpty || !attachments.isEmpty else { return false }
+    queuedUserMessagesByConversationID[conversationID, default: []].append(
+      QueuedChatMessage(text: prompt, attachments: attachments))
+    return true
+  }
+
+  func removeQueuedUserMessage(id: UUID, from conversationID: UUID) {
+    guard var queued = queuedUserMessagesByConversationID[conversationID] else { return }
+    queued.removeAll { $0.id == id }
+    if queued.isEmpty {
+      queuedUserMessagesByConversationID[conversationID] = nil
+    } else {
+      queuedUserMessagesByConversationID[conversationID] = queued
+    }
+  }
+
+  func takeQueuedUserMessageForEditing(
+    id: UUID,
+    from conversationID: UUID
+  ) -> QueuedChatMessage? {
+    guard var queued = queuedUserMessagesByConversationID[conversationID],
+      let index = queued.firstIndex(where: { $0.id == id })
+    else {
+      return nil
+    }
+    let message = queued.remove(at: index)
+    if queued.isEmpty {
+      queuedUserMessagesByConversationID[conversationID] = nil
+    } else {
+      queuedUserMessagesByConversationID[conversationID] = queued
+    }
+    return message
+  }
+
+  /// Moves every pending user turn into conversation history and appends the
+  /// assistant placeholder that will receive the loop's next provider response.
+  func injectQueuedUserMessagesAndAppendAssistant(in conversationID: UUID) -> UUID? {
+    guard let queued = queuedUserMessagesByConversationID[conversationID], !queued.isEmpty,
+      let index = indexedConversationIndex(for: conversationID)
+    else {
+      return nil
+    }
+    queuedUserMessagesByConversationID[conversationID] = nil
+    conversations[index].messages.append(
+      contentsOf: queued.map {
+        ChatMessage(
+          role: .user,
+          text: $0.text,
+          createdAt: $0.createdAt,
+          attachments: $0.attachments)
+      })
+    let assistantMessage = ChatMessage(role: .assistant, text: "")
+    conversations[index].messages.append(assistantMessage)
+    conversations[index].updatedAt = Date()
+    upsertSummary(for: conversations[index])
+    saveConversations()
+    return assistantMessage.id
   }
 
   private func abandonResponse(in conversationID: UUID) {
@@ -1168,6 +1249,7 @@ final class AppStore: ObservableObject {
       respondingConversationIDs.remove(id)
     }
     conversationDrafts.removeAll()
+    queuedUserMessagesByConversationID.removeAll()
     if !hasLoadedPersistedDrafts {
       deletedDraftIDsBeforeLoad.formUnion(removedIDs)
       dirtyDraftIDsBeforeLoad.subtract(removedIDs)
@@ -1196,6 +1278,7 @@ final class AppStore: ObservableObject {
     responseTaskTokens.removeAll()
     endAllResponseBackgroundTasks()
     respondingConversationIDs.removeAll()
+    queuedUserMessagesByConversationID.removeAll()
     conversationDrafts.removeAll()
     streamingTextStore.removeAll()
     settings = .defaults
@@ -1333,6 +1416,7 @@ final class AppStore: ObservableObject {
     }
     for id in ids {
       abandonResponse(in: id)
+      queuedUserMessagesByConversationID[id] = nil
       conversationDrafts.removeValue(forKey: id)
       if !hasLoadedPersistedDrafts {
         deletedDraftIDsBeforeLoad.insert(id)
@@ -3489,6 +3573,7 @@ final class AppStore: ObservableObject {
     responseTaskTokens[removedID] = nil
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
+    queuedUserMessagesByConversationID[removedID] = nil
     if conversationDrafts.removeValue(forKey: removedID) != nil {
       if !hasLoadedPersistedDrafts {
         deletedDraftIDsBeforeLoad.insert(removedID)
@@ -4692,6 +4777,7 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$selectedConversationID)
       observe(store.$settings)
       observe(store.$respondingConversationIDs)
+      observe(store.$queuedUserMessagesByConversationID)
       observe(store.$isCompacting)
       observe(store.$endpointStatuses)
       observe(store.$endpointModels)

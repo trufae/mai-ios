@@ -972,6 +972,15 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+/// A user turn waiting for the active assistant loop to reach a safe interruption point.
+/// Queued turns are runtime state, not conversation history, until the loop consumes them.
+struct QueuedChatMessage: Identifiable, Equatable, Sendable {
+  var id: UUID = UUID()
+  var text: String
+  var createdAt: Date = Date()
+  var attachments: [ChatAttachment] = []
+}
+
 /// The fields that can change a bubble's rendered output. Image payloads are deliberately absent:
 /// attachment identity and metadata select the async image cache without comparing base64 strings.
 struct ChatMessageRenderKey: Equatable, Sendable {

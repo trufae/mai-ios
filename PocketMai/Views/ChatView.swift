@@ -53,6 +53,7 @@ struct ChatView: View {
   @State private var messageFontPinchSession = MessageFontPinchSession()
   @State private var keyboardOverlap: CGFloat = 0
   @State private var lastUpdatedVisibleConversationID: UUID?
+  @State private var queuedMessagePendingEdit: QueuedChatMessage?
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -639,6 +640,16 @@ struct ChatView: View {
                 )
                 .id(preview.id)
               }
+              if !isPreviewingConversation {
+                ForEach(currentQueuedUserMessages) { message in
+                  QueuedMessageBubble(
+                    message: message,
+                    onEdit: { editQueuedMessage(message) },
+                    onCancel: { cancelQueuedMessage(message) }
+                  )
+                  .id(message.id)
+                }
+              }
             }
             if !renderedMessages.isEmpty,
               lastUpdatedVisibleConversationID == store.selectedConversationID,
@@ -726,6 +737,10 @@ struct ChatView: View {
           guard !messageFontPinchSession.isActive, !userScrolledAfterLastMessage else { return }
           scrollToBottom(proxy, animated: false)
         }
+        .onChange(of: currentQueuedUserMessageIDs) { _, _ in
+          guard !messageFontPinchSession.isActive, !userScrolledAfterLastMessage else { return }
+          scrollToBottomAfterLayout(proxy, animated: true)
+        }
         .onChange(of: pendingScrollToMessageID) { _, target in
           guard !messageFontPinchSession.isActive, let target else { return }
           withAnimation(.snappy) {
@@ -795,6 +810,34 @@ struct ChatView: View {
 
   private var currentMessageIDs: [UUID] {
     store.currentConversation?.messages.map(\.id) ?? []
+  }
+
+  private var currentQueuedUserMessages: [QueuedChatMessage] {
+    store.queuedUserMessages(in: store.currentConversation?.id)
+  }
+
+  private var currentQueuedUserMessageIDs: [UUID] {
+    currentQueuedUserMessages.map(\.id)
+  }
+
+  private func cancelQueuedMessage(_ message: QueuedChatMessage) {
+    guard let conversationID = store.currentConversation?.id else { return }
+    withAnimation(.snappy) {
+      store.removeQueuedUserMessage(id: message.id, from: conversationID)
+    }
+  }
+
+  private func editQueuedMessage(_ message: QueuedChatMessage) {
+    guard let conversationID = store.currentConversation?.id,
+      let message = store.takeQueuedUserMessageForEditing(
+        id: message.id,
+        from: conversationID)
+    else {
+      return
+    }
+    withAnimation(.snappy) {
+      queuedMessagePendingEdit = message
+    }
   }
 
   private var conversationActivitySnapshot: ConversationActivitySnapshot {
@@ -1360,8 +1403,68 @@ struct ChatView: View {
       placeholder: composerPlaceholder,
       conversationID: store.currentConversation?.id,
       isResponding: currentChatIsResponding,
+      queuedMessagePendingEdit: $queuedMessagePendingEdit,
       liveVoiceSession: liveVoiceSession
     )
+  }
+}
+
+private struct QueuedMessageBubble: View {
+  let message: QueuedChatMessage
+  let onEdit: () -> Void
+  let onCancel: () -> Void
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      Spacer(minLength: 44)
+      HStack(alignment: .top, spacing: 8) {
+        Button(action: onEdit) {
+          VStack(alignment: .leading, spacing: 6) {
+            if !message.text.isEmpty {
+              Text(message.text)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !message.attachments.isEmpty {
+              Label(
+                message.attachments.map(\.displayName).joined(separator: ", "),
+                systemImage: "paperclip"
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(2)
+            }
+            Label("Queued — tap to edit", systemImage: "clock.badge.checkmark")
+              .font(.caption2.weight(.medium))
+              .foregroundStyle(.secondary)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit queued message")
+
+        Button(action: onCancel) {
+          Image(systemName: "xmark.circle.fill")
+            .font(.title3)
+            .foregroundStyle(.secondary)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Cancel queued message")
+      }
+      .padding(.leading, 12)
+      .padding(.trailing, 8)
+      .padding(.vertical, 10)
+      .background(Color.accentColor.opacity(0.12))
+      .overlay {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(Color.accentColor.opacity(0.35), style: StrokeStyle(dash: [5, 3]))
+      }
+      .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .transition(.move(edge: .bottom).combined(with: .opacity))
   }
 }
 
@@ -1793,6 +1896,7 @@ private struct ChatComposer: View {
   let placeholder: String
   let conversationID: UUID?
   let isResponding: Bool
+  @Binding var queuedMessagePendingEdit: QueuedChatMessage?
   @ObservedObject var liveVoiceSession: LiveVoiceSession
   @FocusState private var composerFocused: Bool
   @State private var showingToolMenu = false
@@ -1811,9 +1915,16 @@ private struct ChatComposer: View {
   @State private var promptAutocompleteSuppressedCommand: String?
   @State private var draftPersistenceTask: Task<Void, Never>?
 
+  private var hasDraftText: Bool {
+    !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   private var canSubmitDraft: Bool {
-    !isResponding
-      && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    !isResponding && hasDraftText
+  }
+
+  private var canQueueDraft: Bool {
+    isResponding && hasDraftText
   }
 
   private var shouldShowPromptAutocomplete: Bool {
@@ -1900,6 +2011,10 @@ private struct ChatComposer: View {
     .padding(.vertical, 8)
     .onAppear {
       draftText = store.draftText(for: conversationID)
+      if let message = queuedMessagePendingEdit {
+        restoreQueuedMessageToComposer(message)
+        queuedMessagePendingEdit = nil
+      }
     }
     .onChange(of: store.draftStorageRevision) { _, _ in
       let storedDraft = store.draftText(for: conversationID)
@@ -1913,6 +2028,11 @@ private struct ChatComposer: View {
       }
       persistDraftTextNow(draftText, for: oldID)
       draftText = store.draftText(for: newID)
+    }
+    .onChange(of: queuedMessagePendingEdit) { _, message in
+      guard let message else { return }
+      restoreQueuedMessageToComposer(message)
+      queuedMessagePendingEdit = nil
     }
     .onDisappear {
       persistDraftTextNow()
@@ -1998,7 +2118,7 @@ private struct ChatComposer: View {
       HStack(alignment: .bottom, spacing: 10) {
         toolMenu
 
-        TextField(placeholder, text: draftBinding, axis: .vertical)
+        TextField(isResponding ? "Queue a message..." : placeholder, text: draftBinding, axis: .vertical)
           .textFieldStyle(.plain)
           .lineLimit(1...3)
           .padding(.vertical, 5)
@@ -2023,7 +2143,11 @@ private struct ChatComposer: View {
 
         Button {
           if let id = conversationID, isResponding {
-            store.cancelResponse(in: id)
+            if canQueueDraft {
+              queueDraft(in: id)
+            } else {
+              store.cancelResponse(in: id)
+            }
           } else if canSubmitDraft {
             submitDraft()
           } else {
@@ -2078,7 +2202,7 @@ private struct ChatComposer: View {
 
   private var trailingActionSystemImage: String {
     if isResponding {
-      return "stop.fill"
+      return canQueueDraft ? "plus.bubble.fill" : "stop.fill"
     }
     if canSubmitDraft {
       return "arrow.up"
@@ -2087,12 +2211,15 @@ private struct ChatComposer: View {
   }
 
   private var trailingActionColor: Color {
-    isResponding ? .red : .accentColor
+    if isResponding {
+      return canQueueDraft ? .orange : .red
+    }
+    return .accentColor
   }
 
   private var trailingActionHelp: String {
     if isResponding {
-      return "Stop response"
+      return canQueueDraft ? "Queue message" : "Stop response"
     }
     if canSubmitDraft {
       return "Send message"
@@ -2304,6 +2431,10 @@ private struct ChatComposer: View {
   }
 
   private func submitDraft() {
+    if isResponding, let conversationID, canQueueDraft {
+      queueDraft(in: conversationID)
+      return
+    }
     guard canSubmitDraft else { return }
     let submitted = draftText
     let submittedAttachments = pendingAttachments
@@ -2321,6 +2452,48 @@ private struct ChatComposer: View {
         persistDraftTextNow(submitted, for: submittedConversationID)
       }
     }
+  }
+
+  private func queueDraft(in conversationID: UUID) {
+    guard canQueueDraft else { return }
+    let submitted = draftText
+    let submittedAttachments = pendingAttachments
+    draftText = ""
+    pendingAttachments = []
+    persistDraftTextNow("", for: conversationID)
+    guard
+      !store.enqueueUserMessage(
+        prompt: submitted,
+        attachments: submittedAttachments,
+        in: conversationID)
+    else {
+      return
+    }
+
+    // The provider may have completed between the button rendering and this
+    // tap. In that race, submit it as the next ordinary turn instead.
+    Task {
+      let sent = await store.send(
+        prompt: submitted,
+        attachments: submittedAttachments)
+      if !sent {
+        draftText = submitted
+        pendingAttachments = submittedAttachments
+        persistDraftTextNow(submitted, for: conversationID)
+      }
+    }
+  }
+
+  private func restoreQueuedMessageToComposer(_ message: QueuedChatMessage) {
+    let current = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if current.isEmpty {
+      draftText = message.text
+    } else if !message.text.isEmpty {
+      draftText = "\(message.text)\n\(current)"
+    }
+    pendingAttachments = message.attachments + pendingAttachments
+    persistDraftTextNow()
+    composerFocused = true
   }
 
   private var promptAutocompletePopover: some View {
