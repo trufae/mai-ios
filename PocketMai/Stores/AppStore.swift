@@ -3880,6 +3880,13 @@ final class AppStore: ObservableObject {
     streamingTextStore.clear(id: id)
   }
 
+  func attachGenerationStats(_ stats: GenerationStats, toMessage id: UUID) {
+    guard let location = messageLocation(for: id) else { return }
+    var conversation = conversations[location.conversationIndex]
+    conversation.messages[location.messageIndex].stats = stats
+    conversations[location.conversationIndex] = conversation
+  }
+
   private func enqueueStreamingText(_ text: String, for id: UUID) {
     guard messageLocation(for: id) != nil else {
       streamingTextStore.clear(id: id)

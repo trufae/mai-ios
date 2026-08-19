@@ -551,6 +551,9 @@ enum AssistantToolLoop {
       throw SkippedModelResponse(partialText: partial)
     }
     try Task.checkCancellation()
+    if let stats = UsageStatsStore.shared.pendingStats(for: assistantID) {
+      store.attachGenerationStats(stats, toMessage: assistantID)
+    }
     return requestState.definitions.isEmpty
       ? AppStore.strippedSpuriousToolCallText(response)
       : response

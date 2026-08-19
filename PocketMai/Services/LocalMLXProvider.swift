@@ -181,7 +181,9 @@ actor LocalMLXProvider {
         maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
     )
 
+    let requestStart = Date()
     var output = ""
+    var completionInfo: GenerateCompletionInfo?
     for await generation in stream {
       try Task.checkCancellation()
       switch generation {
@@ -190,8 +192,8 @@ actor LocalMLXProvider {
         if request.conversation.usesStreaming {
           await onUpdate(output)
         }
-      case .info:
-        break
+      case .info(let info):
+        completionInfo = info
       case .toolCall(let toolCall):
         let block = Self.toolCallTextBlock(toolCall)
         if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -208,6 +210,26 @@ actor LocalMLXProvider {
     if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       throw ChatProviderError.emptyResponse
     }
+    let stats: GenerationStats
+    if let info = completionInfo {
+      stats = GenerationStats(
+        providerLabel: "MLX",
+        modelID: modelID,
+        inputTokens: info.promptTokenCount,
+        outputTokens: info.generationTokenCount,
+        promptSeconds: info.promptTime,
+        generationSeconds: info.generateTime)
+    } else {
+      stats = GenerationStats(
+        providerLabel: "MLX",
+        modelID: modelID,
+        inputTokens: promptTokenCount,
+        outputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: output.count),
+        promptSeconds: 0,
+        generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
+        tokensEstimated: true)
+    }
+    await UsageStatsStore.record(stats, assistantMessageID: request.assistantMessageID)
     await onUpdate(output)
     return output
   }

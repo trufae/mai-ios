@@ -920,6 +920,49 @@ struct ChatAttachment: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+/// Metrics for one or more model calls behind an assistant message. Token counts
+/// come from provider usage payloads (OpenAI-compatible `usage`, MLX completion
+/// info); `tokensEstimated` marks backends that only expose text, where counts
+/// are derived from character length (~4 chars/token).
+struct GenerationStats: Codable, Equatable, Sendable {
+  var providerLabel: String
+  var modelID: String
+  var inputTokens: Int = 0
+  var outputTokens: Int = 0
+  var cachedTokens: Int = 0
+  /// Prompt processing (MLX) or time to first streamed token (network providers).
+  var promptSeconds: TimeInterval = 0
+  var generationSeconds: TimeInterval = 0
+  var tokensEstimated: Bool = false
+  var callCount: Int = 1
+
+  var tokensPerSecond: Double? {
+    guard outputTokens > 0, generationSeconds > 0 else { return nil }
+    return Double(outputTokens) / generationSeconds
+  }
+
+  var promptTokensPerSecond: Double? {
+    guard inputTokens > 0, promptSeconds > 0, !tokensEstimated else { return nil }
+    return Double(inputTokens) / promptSeconds
+  }
+
+  mutating func merge(_ other: GenerationStats) {
+    providerLabel = other.providerLabel
+    modelID = other.modelID
+    inputTokens += other.inputTokens
+    outputTokens += other.outputTokens
+    cachedTokens += other.cachedTokens
+    promptSeconds += other.promptSeconds
+    generationSeconds += other.generationSeconds
+    tokensEstimated = tokensEstimated || other.tokensEstimated
+    callCount += other.callCount
+  }
+
+  static func estimatedTokenCount(forCharacterCount count: Int) -> Int {
+    count <= 0 ? 0 : max(1, count / 4)
+  }
+}
+
 struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var id: UUID = UUID()
   var role: ChatRole
@@ -928,9 +971,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var createdAt: Date = Date()
   var voiceRecordingFilename: String? = nil
   var attachments: [ChatAttachment] = []
+  var stats: GenerationStats? = nil
 
   enum CodingKeys: String, CodingKey {
-    case id, role, text, displayText, createdAt, voiceRecordingFilename, attachments
+    case id, role, text, displayText, createdAt, voiceRecordingFilename, attachments, stats
   }
 
   init(
@@ -940,7 +984,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     displayText: String? = nil,
     createdAt: Date = Date(),
     voiceRecordingFilename: String? = nil,
-    attachments: [ChatAttachment] = []
+    attachments: [ChatAttachment] = [],
+    stats: GenerationStats? = nil
   ) {
     self.id = id
     self.role = role
@@ -949,6 +994,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     self.createdAt = createdAt
     self.voiceRecordingFilename = voiceRecordingFilename
     self.attachments = attachments
+    self.stats = stats
   }
 
   var presentationText: String {
@@ -969,6 +1015,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     createdAt = try c.decode(Date.self, forKey: .createdAt)
     voiceRecordingFilename = try? c.decode(String.self, forKey: .voiceRecordingFilename)
     attachments = (try? c.decode([ChatAttachment].self, forKey: .attachments)) ?? []
+    stats = try? c.decode(GenerationStats.self, forKey: .stats)
   }
 }
 
@@ -1013,6 +1060,7 @@ struct ChatMessageRenderKey: Equatable, Sendable {
   let createdAt: Date
   let voiceRecordingFilename: String?
   let attachments: [Attachment]
+  let stats: GenerationStats?
 
   init(_ message: ChatMessage) {
     id = message.id
@@ -1022,6 +1070,7 @@ struct ChatMessageRenderKey: Equatable, Sendable {
     createdAt = message.createdAt
     voiceRecordingFilename = message.voiceRecordingFilename
     attachments = message.attachments.map(Attachment.init)
+    stats = message.stats
   }
 }
 

@@ -1650,6 +1650,11 @@ struct SettingsView: View {
         }
       }
       NavigationLink {
+        UsageStatsView()
+      } label: {
+        Label("Statistics", systemImage: "chart.bar")
+      }
+      NavigationLink {
         LicensesView()
       } label: {
         Label("Licenses", systemImage: "doc.text")

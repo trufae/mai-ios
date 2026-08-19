@@ -496,10 +496,34 @@ private struct MessageBubbleContent: View, Equatable {
       isStreaming: isStreaming)
   }
 
+  private var generationStatsText: String? {
+    guard let stats = message.stats else { return nil }
+    var parts: [String] = []
+    if let tps = stats.tokensPerSecond {
+      parts.append(String(format: "%.1f tok/s", tps))
+    }
+    let approx = stats.tokensEstimated ? "~" : ""
+    parts.append("\(approx)\(stats.inputTokens) in")
+    if stats.cachedTokens > 0 {
+      parts.append("\(stats.cachedTokens) cached")
+    }
+    parts.append("\(approx)\(stats.outputTokens) out")
+    if stats.callCount > 1 {
+      parts.append("\(stats.callCount) calls")
+    }
+    return parts.joined(separator: " · ")
+  }
+
   @ViewBuilder
   private func messageContextMenu(visibleText: String) -> some View {
     if let conversationCreatedAt {
       Text(ConversationDatePresentation.startedText(conversationCreatedAt))
+        .font(.system(size: 8))
+        .foregroundStyle(.secondary)
+      Divider()
+    }
+    if let statsText = generationStatsText {
+      Text(statsText)
         .font(.system(size: 8))
         .foregroundStyle(.secondary)
       Divider()

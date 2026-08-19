@@ -1014,28 +1014,57 @@ enum AppleFoundationProvider {
       messageLimitOverride: request.messageLimitOverride
     )
     let options = GenerationOptions(maximumResponseTokens: 1_200)
+    let requestStart = Date()
 
     if request.conversation.usesStreaming {
       var latest = ""
       var lastEmit = Date(timeIntervalSince1970: 0)
+      var firstPartialAt: Date?
       let throttleInterval: TimeInterval = 0.04
       let stream = session.streamResponse(to: prompt, options: options)
       for try await partial in stream {
         latest = partial.content
         let now = Date()
+        if firstPartialAt == nil { firstPartialAt = now }
         if now.timeIntervalSince(lastEmit) >= throttleInterval {
           lastEmit = now
           await MainActor.run { onUpdate(latest) }
         }
       }
+      // Time from the first partial so model warm-up never counts as generation.
+      await recordEstimatedUsage(
+        request: request, promptCharacterCount: prompt.count,
+        outputCharacterCount: latest.count, requestStart: firstPartialAt ?? requestStart)
       await MainActor.run { onUpdate(latest) }
       return latest
     }
 
     let response = try await session.respond(to: prompt, options: options)
     let content = response.content
+    await recordEstimatedUsage(
+      request: request, promptCharacterCount: prompt.count,
+      outputCharacterCount: content.count, requestStart: requestStart)
     await MainActor.run { onUpdate(content) }
     return content
+  }
+
+  /// Foundation Models expose no token counts, so both sides are estimated
+  /// from character length and flagged as such.
+  private static func recordEstimatedUsage(
+    request: ChatCompletionRequest,
+    promptCharacterCount: Int,
+    outputCharacterCount: Int,
+    requestStart: Date
+  ) async {
+    let stats = GenerationStats(
+      providerLabel: "Apple Intelligence",
+      modelID: "on-device",
+      inputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: promptCharacterCount),
+      outputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      promptSeconds: 0,
+      generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
+      tokensEstimated: true)
+    await UsageStatsStore.record(stats, assistantMessageID: request.assistantMessageID)
   }
 
   @available(iOS 26.0, *)
@@ -1248,9 +1277,19 @@ private struct OpenAIChatRequest: Encodable {
   var tools: [OpenAITool]?
   var reasoningLevel: ReasoningLevel
   var endpoint: OpenAIEndpoint
+  var includeStreamUsage: Bool = false
 
   enum CodingKeys: String, CodingKey {
     case model, messages, stream, tools
+    case streamOptions = "stream_options"
+  }
+
+  private struct StreamOptions: Encodable {
+    var includeUsage: Bool
+
+    enum CodingKeys: String, CodingKey {
+      case includeUsage = "include_usage"
+    }
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1258,6 +1297,9 @@ private struct OpenAIChatRequest: Encodable {
     try container.encode(model, forKey: .model)
     try container.encode(messages, forKey: .messages)
     try container.encode(stream, forKey: .stream)
+    if stream && includeStreamUsage {
+      try container.encode(StreamOptions(includeUsage: true), forKey: .streamOptions)
+    }
     try container.encodeIfPresent(tools, forKey: .tools)
 
     let payload = ReasoningCompatibility.payload(
@@ -1643,6 +1685,26 @@ struct DynamicCodingKey: CodingKey {
   }
 }
 
+private struct OpenAIUsage: Decodable {
+  struct PromptTokensDetails: Decodable {
+    var cachedTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+      case cachedTokens = "cached_tokens"
+    }
+  }
+
+  var promptTokens: Int?
+  var completionTokens: Int?
+  var promptTokensDetails: PromptTokensDetails?
+
+  enum CodingKeys: String, CodingKey {
+    case promptTokens = "prompt_tokens"
+    case completionTokens = "completion_tokens"
+    case promptTokensDetails = "prompt_tokens_details"
+  }
+}
+
 private struct OpenAIChatResponse: Decodable {
   struct Choice: Decodable {
     var message: OpenAIChoicePayload?
@@ -1651,9 +1713,11 @@ private struct OpenAIChatResponse: Decodable {
 
   var choices: [Choice]
   var outputText: String?
+  var usage: OpenAIUsage?
 
   enum CodingKeys: String, CodingKey {
     case choices
+    case usage
     case outputText = "output_text"
   }
 }
@@ -1701,6 +1765,18 @@ private struct OpenAIStreamChunk: Decodable {
   }
 
   var choices: [Choice]
+  var usage: OpenAIUsage?
+
+  enum CodingKeys: String, CodingKey {
+    case choices, usage
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    // The final usage-only chunk from some providers omits `choices` entirely.
+    choices = (try? c.decode([Choice].self, forKey: .choices)) ?? []
+    usage = try? c.decode(OpenAIUsage.self, forKey: .usage)
+  }
 }
 
 struct DeltaToolCall: Decodable, Sendable {
@@ -1907,7 +1983,7 @@ enum OpenAICompatibleProvider {
     let model =
       request.conversation.modelID.isEmpty ? endpoint.defaultModel : request.conversation.modelID
 
-    func send() async throws -> String {
+    func send(includeStreamUsage: Bool) async throws -> String {
       let messages = PromptComposer.openAIMessages(
         conversation: request.conversation,
         settings: request.settings,
@@ -1928,7 +2004,8 @@ enum OpenAICompatibleProvider {
           stream: request.conversation.usesStreaming,
           tools: request.nativeTools,
           reasoningLevel: request.conversation.reasoningLevel,
-          endpoint: endpoint
+          endpoint: endpoint,
+          includeStreamUsage: includeStreamUsage
         )
       )
       var urlRequest = try endpointRequest(
@@ -1939,13 +2016,37 @@ enum OpenAICompatibleProvider {
         body: body)
       urlRequest.timeoutInterval = request.transportTimeoutInterval
 
+      let usageContext = UsageRecordingContext(
+        providerLabel: endpoint.name,
+        modelID: model,
+        assistantMessageID: request.assistantMessageID,
+        fallbackInputTokenEstimate: GenerationStats.estimatedTokenCount(
+          forCharacterCount: body.count))
+
       if request.conversation.usesStreaming {
-        return try await stream(request: urlRequest, onUpdate: onUpdate)
+        return try await stream(
+          request: urlRequest, usageContext: usageContext, onUpdate: onUpdate)
       }
-      return try await completeOnce(request: urlRequest, onUpdate: onUpdate)
+      return try await completeOnce(
+        request: urlRequest, usageContext: usageContext, onUpdate: onUpdate)
     }
 
-    return try await send()
+    do {
+      return try await send(includeStreamUsage: request.conversation.usesStreaming)
+    } catch let error as ChatProviderError {
+      // A few OpenAI-compatible servers reject unknown `stream_options`; retry without it.
+      guard request.conversation.usesStreaming, mentionsStreamOptions(error) else { throw error }
+      return try await send(includeStreamUsage: false)
+    }
+  }
+
+  private static func mentionsStreamOptions(_ error: ChatProviderError) -> Bool {
+    switch error {
+    case .providerRequestFailed(let message), .providerHTTPError(_, let message):
+      return message.lowercased().contains("stream_options")
+    default:
+      return false
+    }
   }
 
   static func selectedEndpoint(for conversation: Conversation, settings: AppSettings)
@@ -2058,24 +2159,77 @@ enum OpenAICompatibleProvider {
     return try await URLSession.shared.data(for: request, delegate: delegate)
   }
 
+  private struct UsageRecordingContext: Sendable {
+    var providerLabel: String
+    var modelID: String
+    var assistantMessageID: UUID
+    var fallbackInputTokenEstimate: Int
+  }
+
+  private static func recordUsage(
+    context: UsageRecordingContext,
+    usage: OpenAIUsage?,
+    outputCharacterCount: Int,
+    requestStart: Date,
+    firstTokenAt: Date?
+  ) async {
+    let end = Date()
+    let promptSeconds: TimeInterval
+    let generationSeconds: TimeInterval
+    if let firstTokenAt {
+      // Speed is measured from the first received token so cold starts
+      // (server-side model loading, prompt processing) never pollute tok/s.
+      promptSeconds = max(0, firstTokenAt.timeIntervalSince(requestStart))
+      generationSeconds = max(0, end.timeIntervalSince(firstTokenAt))
+    } else {
+      // Non-streaming responses expose no first-token signal; full wall time
+      // is the only honest denominator available.
+      promptSeconds = 0
+      generationSeconds = max(0, end.timeIntervalSince(requestStart))
+    }
+    let stats = GenerationStats(
+      providerLabel: context.providerLabel,
+      modelID: context.modelID,
+      inputTokens: usage?.promptTokens ?? context.fallbackInputTokenEstimate,
+      outputTokens: usage?.completionTokens
+        ?? GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      cachedTokens: usage?.promptTokensDetails?.cachedTokens ?? 0,
+      promptSeconds: promptSeconds,
+      generationSeconds: generationSeconds,
+      tokensEstimated: usage?.completionTokens == nil)
+    await UsageStatsStore.record(stats, assistantMessageID: context.assistantMessageID)
+  }
+
   private static func completeOnce(
     request: URLRequest,
+    usageContext: UsageRecordingContext,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
+    let requestStart = Date()
     let (data, response) = try await data(for: request)
     try validateHTTPResponse(response, data: data)
     let content = (try? decodeChatResponseText(from: data)) ?? ""
     guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw emptyResponseError(rawData: data)
     }
+    await recordUsage(
+      context: usageContext,
+      usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
+      outputCharacterCount: content.count,
+      requestStart: requestStart,
+      firstTokenAt: nil)
     await MainActor.run { onUpdate(content) }
     return content
   }
 
   private static func stream(
     request: URLRequest,
+    usageContext: UsageRecordingContext,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
+    let requestStart = Date()
+    var firstTokenAt: Date?
+    var latestUsage: OpenAIUsage?
     let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: delegate)
     let statusCode = (response as? HTTPURLResponse)?.statusCode
@@ -2118,13 +2272,18 @@ enum OpenAICompatibleProvider {
         rawLines.append(line)
         continue
       }
+      if let usage = chunk.usage {
+        latestUsage = usage
+      }
       if let delta = streamDeltaText(from: chunk), !delta.isEmpty {
         accumulated += delta
         dirty = true
+        if firstTokenAt == nil { firstTokenAt = Date() }
       }
       if let reasoningDelta = streamReasoningText(from: chunk), !reasoningDelta.isEmpty {
         reasoning += reasoningDelta
         dirty = true
+        if firstTokenAt == nil { firstTokenAt = Date() }
       }
       if let deltas = chunk.choices.first?.delta?.toolCalls {
         for tc in deltas {
@@ -2175,6 +2334,12 @@ enum OpenAICompatibleProvider {
       let fallback = try? decodeChatResponseText(from: data),
       !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
+      await recordUsage(
+        context: usageContext,
+        usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
+        outputCharacterCount: fallback.count,
+        requestStart: requestStart,
+        firstTokenAt: nil)
       await MainActor.run { onUpdate(fallback) }
       return fallback
     }
@@ -2183,6 +2348,12 @@ enum OpenAICompatibleProvider {
       let trace = streamTrace.suffix(40).joined(separator: "\n")
       throw emptyResponseError(streamTrace: trace, rawBody: rawBody)
     }
+    await recordUsage(
+      context: usageContext,
+      usage: latestUsage,
+      outputCharacterCount: accumulated.count + reasoning.count,
+      requestStart: requestStart,
+      firstTokenAt: firstTokenAt)
     return content
   }
 
