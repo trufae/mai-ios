@@ -99,6 +99,11 @@ final class UsageStatsStore: ObservableObject {
     persistTotals()
   }
 
+  func remove(id: String) {
+    totals.removeAll { $0.id == id }
+    persistTotals()
+  }
+
   private func persistTotals() {
     guard let data = try? JSONEncoder().encode(totals) else { return }
     UserDefaults.standard.set(data, forKey: Self.defaultsKey)

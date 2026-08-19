@@ -7,6 +7,7 @@ struct UsageStatsView: View {
   @ObservedObject private var stats = UsageStatsStore.shared
   @State private var selectedID: String?
   @State private var confirmingReset = false
+  @State private var detailEntry: UsageStatsStore.ModelTotals?
 
   private static let chartHeight: CGFloat = 120
 
@@ -71,6 +72,24 @@ struct UsageStatsView: View {
         stats.reset()
         selectedID = nil
       }
+    }
+    .confirmationDialog(
+      detailEntry.map(sectionTitle(for:)) ?? "",
+      isPresented: Binding(
+        get: { detailEntry != nil },
+        set: { if !$0 { detailEntry = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: detailEntry
+    ) { entry in
+      Button("Delete Statistics", role: .destructive) {
+        stats.remove(id: entry.id)
+        if selectedID == entry.id {
+          selectedID = nil
+        }
+      }
+    } message: { entry in
+      Text(fullDetailText(for: entry))
     }
   }
 
@@ -141,6 +160,43 @@ struct UsageStatsView: View {
         selectedID = entry.id
       }
     }
+    .onLongPressGesture {
+      detailEntry = entry
+    }
+  }
+
+  private func fullDetailText(for entry: UsageStatsStore.ModelTotals) -> String {
+    let approx = entry.estimatedCallCount > 0 ? "~" : ""
+    var lines = [
+      "Input tokens: \(approx)\(entry.inputTokens.formatted())",
+      "Output tokens: \(approx)\(entry.outputTokens.formatted())",
+    ]
+    if entry.cachedTokens > 0 {
+      lines.append("Cached tokens: \(entry.cachedTokens.formatted())")
+    }
+    lines.append("Requests: \(entry.callCount)")
+    if entry.estimatedCallCount > 0 {
+      lines.append("Estimated counts: \(entry.estimatedCallCount) req")
+    }
+    if let average = entry.averageTokensPerSecond {
+      lines.append("Average speed: \(speedText(average))")
+    }
+    if let last = entry.lastTokensPerSecond {
+      lines.append("Last speed: \(speedText(last))")
+    }
+    if let promptSpeed = entry.averagePromptTokensPerSecond {
+      lines.append("Prompt speed: \(speedText(promptSpeed))")
+    }
+    if entry.generationSeconds > 0 {
+      lines.append(
+        "Generation time: \(Duration.seconds(entry.generationSeconds).formatted(.units(allowed: [.hours, .minutes, .seconds])))"
+      )
+    }
+    if entry.lastUsedAt > .distantPast {
+      lines.append(
+        "Last used: \(entry.lastUsedAt.formatted(date: .abbreviated, time: .shortened))")
+    }
+    return lines.joined(separator: "\n")
   }
 
   private func detailText(for entry: UsageStatsStore.ModelTotals, approx: String) -> String {
