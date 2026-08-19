@@ -2202,7 +2202,7 @@ private struct ChatComposer: View {
 
   private var trailingActionSystemImage: String {
     if isResponding {
-      return canQueueDraft ? "plus.bubble.fill" : "stop.fill"
+      return canQueueDraft ? "arrow.up.to.line" : "stop.fill"
     }
     if canSubmitDraft {
       return "arrow.up"
