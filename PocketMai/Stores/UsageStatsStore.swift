@@ -3,10 +3,10 @@ import Foundation
 /// Accumulates token usage and generation speed per provider/model across the
 /// whole app. Providers report every completed model call (chat turns, tool-loop
 /// rounds, title generation), so totals reflect real consumption. Running totals
-/// persist in UserDefaults; average speed is total output tokens divided by total
-/// generation seconds, so long responses weigh more and the value converges over
-/// time. Per-message stats are kept briefly so the tool loop can stamp them onto
-/// the assistant message before it is persisted.
+/// persist in UserDefaults; average speed is visible output tokens divided by
+/// total generation seconds, so hidden reasoning does not inflate it. Per-message
+/// stats are kept briefly so the tool loop can stamp them onto the assistant
+/// message before it is persisted.
 @MainActor
 final class UsageStatsStore: ObservableObject {
   static let shared = UsageStatsStore()
@@ -29,24 +29,25 @@ final class UsageStatsStore: ObservableObject {
     var generationSeconds: TimeInterval = 0
     var callCount: Int = 0
     var estimatedCallCount: Int = 0
-    var lastTokensPerSecond: Double? = nil
+    /// This was renamed so persisted values calculated with reasoning tokens are
+    /// not presented as the corrected visible-output speed.
+    var lastOutputTokensPerSecond: Double? = nil
     var lastUsedAt: Date = .distantPast
 
     var id: String { "\(providerLabel)|\(modelID)" }
 
+    var visibleOutputTokens: Int {
+      max(0, outputTokens - (reasoningTokens ?? 0))
+    }
+
     var averageTokensPerSecond: Double? {
-      guard outputTokens > 0, generationSeconds > 0 else { return nil }
-      return Double(outputTokens) / generationSeconds
+      guard visibleOutputTokens > 0, generationSeconds > 0 else { return nil }
+      return Double(visibleOutputTokens) / generationSeconds
     }
 
     var averagePromptTokensPerSecond: Double? {
       guard inputTokens > 0, promptSeconds > 0, estimatedCallCount == 0 else { return nil }
       return Double(inputTokens) / promptSeconds
-    }
-
-    var averageReasoningTokensPerSecond: Double? {
-      guard let reasoningTokens, reasoningTokens > 0, generationSeconds > 0 else { return nil }
-      return Double(reasoningTokens) / generationSeconds
     }
   }
 
@@ -91,7 +92,8 @@ final class UsageStatsStore: ObservableObject {
     if stats.tokensEstimated {
       entry.estimatedCallCount += stats.callCount
     }
-    entry.lastTokensPerSecond = stats.tokensPerSecond ?? entry.lastTokensPerSecond
+    entry.lastOutputTokensPerSecond =
+      stats.tokensPerSecond ?? entry.lastOutputTokensPerSecond
     entry.lastUsedAt = Date()
     if let index = totals.firstIndex(where: { $0.id == entry.id }) {
       totals[index] = entry

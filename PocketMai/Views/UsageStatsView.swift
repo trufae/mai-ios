@@ -98,7 +98,7 @@ struct UsageStatsView: View {
           speedChart
           totalTokensSummary
         } header: {
-          Text("Average Speed")
+          Text("Average Output Speed")
         }
       }
       if !allModelTotals.isEmpty {
@@ -176,7 +176,7 @@ struct UsageStatsView: View {
 
   private var speedChart: some View {
     let entries = chartTotals
-    let maxSpeed = entries.map(combinedSpeed(for:)).max() ?? 1
+    let maxSpeed = entries.compactMap(\.averageTokensPerSecond).max() ?? 1
     return VStack(spacing: 10) {
       HStack(alignment: .bottom, spacing: 6) {
         ForEach(entries) { entry in
@@ -214,52 +214,23 @@ struct UsageStatsView: View {
     isSelected: Bool
   ) -> some View {
     let outputSpeed = outputSpeed(for: entry)
-    let reasoningSpeed = reasoningSpeed(for: entry)
-    let combinedSpeed = reasoningSpeed + outputSpeed
-    let barHeight = max(6, Self.chartHeight * combinedSpeed / maxSpeed)
-    let reasoningHeight = barHeight * reasoningSpeed / combinedSpeed
+    let barHeight = max(6, Self.chartHeight * outputSpeed / maxSpeed)
     let opacity = isSelected ? 1.0 : 0.35
 
-    return ZStack(alignment: .top) {
-      Rectangle()
-        .fill(providerColor(for: entry.providerLabel).opacity(opacity))
-      if reasoningSpeed > 0 {
-        Rectangle()
-          .fill(providerColor(for: entry.providerLabel, isThinking: true).opacity(opacity))
-          .frame(height: reasoningHeight)
-          .frame(maxWidth: .infinity, alignment: .top)
-      }
-      if reasoningSpeed > 0 && outputSpeed > 0 {
-        Rectangle()
-          .fill(.white.opacity(isSelected ? 0.7 : 0.35))
-          .frame(height: 1)
-          .offset(y: reasoningHeight)
-      }
-    }
-    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
-    .frame(maxWidth: 48)
-    .frame(height: barHeight)
-    .frame(maxWidth: .infinity, maxHeight: Self.chartHeight, alignment: .bottom)
+    return Rectangle()
+      .fill(providerColor(for: entry.providerLabel).opacity(opacity))
+      .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+      .frame(maxWidth: 48)
+      .frame(height: barHeight)
+      .frame(maxWidth: .infinity, maxHeight: Self.chartHeight, alignment: .bottom)
   }
 
   private func outputSpeed(for entry: UsageStatsStore.ModelTotals) -> Double {
     entry.averageTokensPerSecond ?? 0
   }
 
-  private func combinedSpeed(for entry: UsageStatsStore.ModelTotals) -> Double {
-    reasoningSpeed(for: entry) + outputSpeed(for: entry)
-  }
-
-  private func reasoningSpeed(for entry: UsageStatsStore.ModelTotals) -> Double {
-    entry.averageReasoningTokensPerSecond ?? 0
-  }
-
   private func speedDescription(for entry: UsageStatsStore.ModelTotals) -> String {
-    var speeds = ["↓ \(speedText(outputSpeed(for: entry))) out"]
-    if reasoningSpeed(for: entry) > 0 {
-      speeds.insert("◈ \(speedText(reasoningSpeed(for: entry))) thinking", at: 1)
-    }
-    return speeds.joined(separator: " · ")
+    "↓ \(speedText(outputSpeed(for: entry))) output"
   }
 
   private var totalTokensSummary: some View {
@@ -392,13 +363,10 @@ struct UsageStatsView: View {
       lines.append("Estimated counts: \(entry.estimatedCallCount) req")
     }
     if let average = entry.averageTokensPerSecond {
-      lines.append("Average speed: \(speedText(average))")
+      lines.append("Average output speed: \(speedText(average))")
     }
-    if let last = entry.lastTokensPerSecond {
-      lines.append("Last speed: \(speedText(last))")
-    }
-    if let reasoningSpeed = entry.averageReasoningTokensPerSecond {
-      lines.append("Thinking speed: \(speedText(reasoningSpeed))")
+    if let last = entry.lastOutputTokensPerSecond {
+      lines.append("Last output speed: \(speedText(last))")
     }
     if let promptSpeed = entry.averagePromptTokensPerSecond {
       lines.append("Prompt processing speed: \(speedText(promptSpeed))")
@@ -472,9 +440,7 @@ struct UsageStatsView: View {
 
   /// A label-derived hue gives every provider a distinct, repeatable chart color.
   private func providerColor(
-    for providerLabel: String,
-    isInput: Bool = false,
-    isThinking: Bool = false
+    for providerLabel: String
   ) -> Color {
     var hash: UInt64 = 1_469_598_103_934_665_603
     for byte in providerLabel.utf8 {
@@ -484,8 +450,8 @@ struct UsageStatsView: View {
     let hue = Double(hash % 360) / 360
     return Color(
       hue: hue,
-      saturation: isInput ? 0.46 : (isThinking ? 0.78 : 0.68),
-      brightness: isInput ? 0.96 : (isThinking ? 0.70 : 0.88))
+      saturation: 0.68,
+      brightness: 0.88)
   }
 
   private struct ProviderTotals: Identifiable {

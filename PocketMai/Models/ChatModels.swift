@@ -930,6 +930,7 @@ struct GenerationStats: Codable, Equatable, Sendable {
   var inputTokens: Int = 0
   /// Estimated tokens in the user-authored message(s) for this turn only.
   var userInputTokens: Int? = nil
+  /// Provider completion total, including hidden reasoning when reported that way.
   var outputTokens: Int = 0
   /// Estimated tokens in response text actually received, excluding hidden reasoning.
   var receivedTextTokens: Int? = nil
@@ -944,9 +945,15 @@ struct GenerationStats: Codable, Equatable, Sendable {
   var tokensEstimated: Bool = false
   var callCount: Int = 1
 
+  /// Completion tokens that correspond to the generated response text. Provider
+  /// completion totals include hidden reasoning tokens on reasoning models.
+  var visibleOutputTokens: Int {
+    max(0, outputTokens - (reasoningTokens ?? 0))
+  }
+
   var tokensPerSecond: Double? {
-    guard outputTokens > 0, generationSeconds > 0 else { return nil }
-    return Double(outputTokens) / generationSeconds
+    guard visibleOutputTokens > 0, generationSeconds > 0 else { return nil }
+    return Double(visibleOutputTokens) / generationSeconds
   }
 
   var promptTokensPerSecond: Double? {
