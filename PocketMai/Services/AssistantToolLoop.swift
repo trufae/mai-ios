@@ -514,11 +514,15 @@ enum AssistantToolLoop {
       guard requestState.usesTextProtocol else { return "" }
       return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
     }()
+    let userInputTokens = state.toolCallCount == 0 && state.repairTurnCount == 0
+      ? userInputTokenEstimate(in: conversation, before: assistantID)
+      : nil
     let request = ChatCompletionRequest(
       conversation: conversation,
       settings: store.settings,
       context: requestState.context,
       assistantMessageID: assistantID,
+      userInputTokens: userInputTokens,
       nativeTools: requestState.nativeTools,
       nativeContinuationMessages: state.nativeContinuation(
         conversation: conversation,
@@ -613,6 +617,25 @@ enum AssistantToolLoop {
       guard let store else { return .interrupt }
       return await store.requestLongRunningOperationDecision(context)
     }
+  }
+
+  /// Counts only the user messages that started this assistant turn, excluding
+  /// prior context, tool output, and the generated system prompt.
+  private static func userInputTokenEstimate(in conversation: Conversation, before assistantID: UUID)
+    -> Int?
+  {
+    guard let assistantIndex = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
+      return nil
+    }
+    let turnMessages = conversation.messages[..<assistantIndex]
+      .reversed()
+      .prefix { $0.role != .assistant }
+      .filter { $0.role == .user }
+    let characters = turnMessages.reduce(0) { total, message in
+      total + MessageContentFilter.promptSafeText(from: message.text).count
+    }
+    guard characters > 0 else { return nil }
+    return GenerationStats.estimatedTokenCount(forCharacterCount: characters)
   }
 
   private static func outcome(

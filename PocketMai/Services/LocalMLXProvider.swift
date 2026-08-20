@@ -216,7 +216,9 @@ actor LocalMLXProvider {
         providerLabel: "MLX",
         modelID: modelID,
         inputTokens: info.promptTokenCount,
+        userInputTokens: request.userInputTokens,
         outputTokens: info.generationTokenCount,
+        receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: output.count),
         promptSeconds: info.promptTime,
         generationSeconds: info.generateTime)
     } else {
@@ -224,7 +226,9 @@ actor LocalMLXProvider {
         providerLabel: "MLX",
         modelID: modelID,
         inputTokens: promptTokenCount,
+        userInputTokens: request.userInputTokens,
         outputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: output.count),
+        receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: output.count),
         promptSeconds: 0,
         generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
         tokensEstimated: true)

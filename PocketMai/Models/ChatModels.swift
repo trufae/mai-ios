@@ -928,7 +928,15 @@ struct GenerationStats: Codable, Equatable, Sendable {
   var providerLabel: String
   var modelID: String
   var inputTokens: Int = 0
+  /// Estimated tokens in the user-authored message(s) for this turn only.
+  var userInputTokens: Int? = nil
   var outputTokens: Int = 0
+  /// Estimated tokens in response text actually received, excluding hidden reasoning.
+  var receivedTextTokens: Int? = nil
+  /// Provider-reported hidden reasoning tokens, when the backend exposes them.
+  var reasoningTokens: Int? = nil
+  /// Number of image inputs actually sent to a vision-capable provider.
+  var imageInputs: Int? = nil
   var cachedTokens: Int = 0
   /// Prompt processing (MLX) or time to first streamed token (network providers).
   var promptSeconds: TimeInterval = 0
@@ -950,7 +958,19 @@ struct GenerationStats: Codable, Equatable, Sendable {
     providerLabel = other.providerLabel
     modelID = other.modelID
     inputTokens += other.inputTokens
+    if let userInputTokens = other.userInputTokens {
+      self.userInputTokens = (self.userInputTokens ?? 0) + userInputTokens
+    }
     outputTokens += other.outputTokens
+    if let receivedTextTokens = other.receivedTextTokens {
+      self.receivedTextTokens = (self.receivedTextTokens ?? 0) + receivedTextTokens
+    }
+    if let reasoningTokens = other.reasoningTokens {
+      self.reasoningTokens = (self.reasoningTokens ?? 0) + reasoningTokens
+    }
+    if let imageInputs = other.imageInputs {
+      self.imageInputs = (self.imageInputs ?? 0) + imageInputs
+    }
     cachedTokens += other.cachedTokens
     promptSeconds += other.promptSeconds
     generationSeconds += other.generationSeconds

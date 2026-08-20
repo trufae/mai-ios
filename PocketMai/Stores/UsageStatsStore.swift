@@ -15,7 +15,15 @@ final class UsageStatsStore: ObservableObject {
     var providerLabel: String
     var modelID: String
     var inputTokens: Int = 0
+    /// Estimated tokens in user-authored messages, excluding resent context.
+    var userInputTokens: Int? = nil
     var outputTokens: Int = 0
+    /// Estimated tokens in response text received, excluding hidden reasoning.
+    var receivedTextTokens: Int? = nil
+    /// Provider-reported reasoning tokens. Nil means this provider has not exposed them.
+    var reasoningTokens: Int? = nil
+    /// Number of images actually included in vision-capable provider requests.
+    var imageInputs: Int? = nil
     var cachedTokens: Int = 0
     var promptSeconds: TimeInterval = 0
     var generationSeconds: TimeInterval = 0
@@ -34,6 +42,11 @@ final class UsageStatsStore: ObservableObject {
     var averagePromptTokensPerSecond: Double? {
       guard inputTokens > 0, promptSeconds > 0, estimatedCallCount == 0 else { return nil }
       return Double(inputTokens) / promptSeconds
+    }
+
+    var averageReasoningTokensPerSecond: Double? {
+      guard let reasoningTokens, reasoningTokens > 0, generationSeconds > 0 else { return nil }
+      return Double(reasoningTokens) / generationSeconds
     }
   }
 
@@ -58,7 +71,19 @@ final class UsageStatsStore: ObservableObject {
       totals.first { $0.providerLabel == stats.providerLabel && $0.modelID == stats.modelID }
       ?? ModelTotals(providerLabel: stats.providerLabel, modelID: stats.modelID)
     entry.inputTokens += stats.inputTokens
+    if let userInputTokens = stats.userInputTokens {
+      entry.userInputTokens = (entry.userInputTokens ?? 0) + userInputTokens
+    }
     entry.outputTokens += stats.outputTokens
+    if let receivedTextTokens = stats.receivedTextTokens {
+      entry.receivedTextTokens = (entry.receivedTextTokens ?? 0) + receivedTextTokens
+    }
+    if let reasoningTokens = stats.reasoningTokens {
+      entry.reasoningTokens = (entry.reasoningTokens ?? 0) + reasoningTokens
+    }
+    if let imageInputs = stats.imageInputs {
+      entry.imageInputs = (entry.imageInputs ?? 0) + imageInputs
+    }
     entry.cachedTokens += stats.cachedTokens
     entry.promptSeconds += stats.promptSeconds
     entry.generationSeconds += stats.generationSeconds

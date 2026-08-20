@@ -135,6 +135,8 @@ struct ChatCompletionRequest: Sendable {
   var settings: AppSettings
   var context: String
   var assistantMessageID: UUID
+  /// User-authored tokens for the initial request of this assistant turn.
+  var userInputTokens: Int? = nil
   var nativeTools: [OpenAITool]? = nil
   var nativeContinuationMessages: [OpenAIMessage] = []
   var hasToolCalling: Bool = false
@@ -1060,7 +1062,9 @@ enum AppleFoundationProvider {
       providerLabel: "Apple Intelligence",
       modelID: "on-device",
       inputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: promptCharacterCount),
+      userInputTokens: request.userInputTokens,
       outputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
       promptSeconds: 0,
       generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
       tokensEstimated: true)
@@ -1139,6 +1143,11 @@ enum OpenAIMessageContent: Encodable, Sendable {
   var containsImageInput: Bool {
     guard case .parts(let parts) = self else { return false }
     return parts.contains { $0.imageURL != nil }
+  }
+
+  var imageInputCount: Int {
+    guard case .parts(let parts) = self else { return 0 }
+    return parts.filter { $0.imageURL != nil }.count
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1248,6 +1257,10 @@ struct OpenAIMessage: Encodable, Sendable {
 
   var textContent: String {
     content?.textValue ?? ""
+  }
+
+  var imageInputCount: Int {
+    content?.imageInputCount ?? 0
   }
 
   mutating func appendText(_ text: String) {
@@ -1694,14 +1707,24 @@ private struct OpenAIUsage: Decodable {
     }
   }
 
+  struct CompletionTokensDetails: Decodable {
+    var reasoningTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+      case reasoningTokens = "reasoning_tokens"
+    }
+  }
+
   var promptTokens: Int?
   var completionTokens: Int?
   var promptTokensDetails: PromptTokensDetails?
+  var completionTokensDetails: CompletionTokensDetails?
 
   enum CodingKeys: String, CodingKey {
     case promptTokens = "prompt_tokens"
     case completionTokens = "completion_tokens"
     case promptTokensDetails = "prompt_tokens_details"
+    case completionTokensDetails = "completion_tokens_details"
   }
 }
 
@@ -2020,6 +2043,8 @@ enum OpenAICompatibleProvider {
         providerLabel: endpoint.name,
         modelID: model,
         assistantMessageID: request.assistantMessageID,
+        userInputTokens: request.userInputTokens,
+        imageInputCount: messages.reduce(0) { $0 + $1.imageInputCount },
         fallbackInputTokenEstimate: GenerationStats.estimatedTokenCount(
           forCharacterCount: body.count))
 
@@ -2163,6 +2188,8 @@ enum OpenAICompatibleProvider {
     var providerLabel: String
     var modelID: String
     var assistantMessageID: UUID
+    var userInputTokens: Int?
+    var imageInputCount: Int
     var fallbackInputTokenEstimate: Int
   }
 
@@ -2191,8 +2218,12 @@ enum OpenAICompatibleProvider {
       providerLabel: context.providerLabel,
       modelID: context.modelID,
       inputTokens: usage?.promptTokens ?? context.fallbackInputTokenEstimate,
+      userInputTokens: context.userInputTokens,
       outputTokens: usage?.completionTokens
         ?? GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      reasoningTokens: usage?.completionTokensDetails?.reasoningTokens,
+      imageInputs: context.imageInputCount,
       cachedTokens: usage?.promptTokensDetails?.cachedTokens ?? 0,
       promptSeconds: promptSeconds,
       generationSeconds: generationSeconds,
@@ -2351,7 +2382,7 @@ enum OpenAICompatibleProvider {
     await recordUsage(
       context: usageContext,
       usage: latestUsage,
-      outputCharacterCount: accumulated.count + reasoning.count,
+      outputCharacterCount: accumulated.count,
       requestStart: requestStart,
       firstTokenAt: firstTokenAt)
     return content
