@@ -181,6 +181,18 @@ final class AppStore: ObservableObject {
   @Published var respondingConversationIDs: Set<UUID> = []
   @Published private(set) var queuedUserMessagesByConversationID: [UUID: [QueuedChatMessage]] = [:]
 
+  /// Remembers the last successful MCP catalog / endpoint model fetch so repeated
+  /// automatic refreshes (every chat turn, conversation switches, view appears)
+  /// reuse a warm connection instead of re-hitting the network. Keyed by the
+  /// server/endpoint id; invalidated when the connection signature changes.
+  private struct RemoteFetchCacheEntry {
+    let signature: String
+    let fetchedAt: Date
+  }
+  private var mcpCatalogCache: [UUID: RemoteFetchCacheEntry] = [:]
+  private var endpointModelCache: [UUID: RemoteFetchCacheEntry] = [:]
+  private static let remoteFetchCacheTTL: TimeInterval = 300
+
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
   private var responseTaskTokens: [UUID: UUID] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
@@ -746,6 +758,7 @@ final class AppStore: ObservableObject {
 
     await loadStartupConversationIfNeeded()
     guard generation == dataGeneration else { return }
+    warmEnabledMCPServersInBackground(for: selectedConversationID)
 
     let loadedDrafts = await draftsTask.value
     guard generation == dataGeneration else { return }
@@ -982,6 +995,9 @@ final class AppStore: ObservableObject {
     selectConversationFolder(conversations[index].folderID)
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
+    }
+    if previousID != id {
+      warmEnabledMCPServersInBackground(for: id)
     }
   }
 
@@ -3183,6 +3199,7 @@ final class AppStore: ObservableObject {
     endpointStatuses[id] = .unknown
     endpointModels[id] = nil
     endpointVoices[id] = nil
+    endpointModelCache[id] = nil
   }
 
   func refreshAppleIntelligenceAvailabilityInBackground() {
@@ -3207,15 +3224,20 @@ final class AppStore: ObservableObject {
     mcpStatuses[id] = .unknown
     mcpTools[id] = nil
     mcpResources[id] = nil
+    mcpCatalogCache[id] = nil
     Task { await MCPHTTPClient.resetSession(for: id) }
   }
 
-  func refreshMCP(_ server: MCPServer) async {
+  func refreshMCP(_ server: MCPServer, force: Bool = false) async {
     guard !settings.airplaneModeEnabled else {
       mcpTools[server.id] = nil
       mcpResources[server.id] = nil
       mcpStatuses[server.id] = .failed("Airplane mode is enabled.")
+      mcpCatalogCache[server.id] = nil
       await MCPHTTPClient.resetSession(for: server.id)
+      return
+    }
+    if !force, isMCPCatalogCacheValid(for: server) {
       return
     }
     mcpStatuses[server.id] = .checking
@@ -3236,12 +3258,32 @@ final class AppStore: ObservableObject {
       }
       seedEnabledMCPToolsIfNeeded(serverID: server.id, tools: catalog.tools)
       mcpStatuses[server.id] = .available
+      mcpCatalogCache[server.id] = RemoteFetchCacheEntry(
+        signature: mcpConnectionSignature(for: server.id) ?? server.connectionSignature,
+        fetchedAt: Date())
     } catch {
       mcpTools[server.id] = nil
       mcpResources[server.id] = nil
       mcpStatuses[server.id] = .failed(error.localizedDescription)
+      mcpCatalogCache[server.id] = nil
       await MCPHTTPClient.resetSession(for: server.id)
     }
+  }
+
+  private func mcpConnectionSignature(for id: UUID) -> String? {
+    settings.mcpServers.first(where: { $0.id == id })?.connectionSignature
+  }
+
+  private func isMCPCatalogCacheValid(for server: MCPServer) -> Bool {
+    guard case .available = (mcpStatuses[server.id] ?? .unknown),
+      mcpTools[server.id] != nil,
+      let entry = mcpCatalogCache[server.id],
+      entry.signature == (mcpConnectionSignature(for: server.id) ?? server.connectionSignature),
+      Date().timeIntervalSince(entry.fetchedAt) < Self.remoteFetchCacheTTL
+    else {
+      return false
+    }
+    return true
   }
 
   func authorizedMCPServer(_ server: MCPServer) async throws -> MCPServer {
@@ -3266,6 +3308,24 @@ final class AppStore: ObservableObject {
     }
     await MCPHTTPClient.resetSession(for: current.id)
     return refreshed
+  }
+
+  /// Connects the MCP servers a conversation will use, off the critical path, so
+  /// the catalog is warm (and cached) before the user sends the first message.
+  /// Cheap to call repeatedly — already-connected servers hit the cache.
+  func warmEnabledMCPServersInBackground(for conversationID: UUID?) {
+    guard !settings.airplaneModeEnabled,
+      let conversationID,
+      let conversation = conversation(withID: conversationID),
+      conversation.toolsEnabled,
+      settings.mcpServers.contains(where: {
+        $0.isEnabled && $0.hasValidEndpointURL
+          && conversation.enabledMCPServers.contains($0.id)
+      })
+    else {
+      return
+    }
+    Task { await refreshEnabledMCPServers(for: conversation) }
   }
 
   func refreshEnabledMCPServers(
@@ -3296,6 +3356,7 @@ final class AppStore: ObservableObject {
     mcpTools[serverID] = nil
     mcpResources[serverID] = nil
     mcpStatuses[serverID] = .failed(message)
+    mcpCatalogCache[serverID] = nil
     Task { await MCPHTTPClient.resetSession(for: serverID) }
   }
 
@@ -3329,11 +3390,15 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func refreshEndpoint(_ endpoint: OpenAIEndpoint) async {
+  func refreshEndpoint(_ endpoint: OpenAIEndpoint, force: Bool = false) async {
     guard !settings.airplaneModeEnabled else {
       endpointStatuses[endpoint.id] = .failed("Airplane mode is enabled.")
       endpointModels[endpoint.id] = nil
       endpointVoices[endpoint.id] = nil
+      endpointModelCache[endpoint.id] = nil
+      return
+    }
+    if !force, isEndpointModelCacheValid(for: endpoint) {
       return
     }
     endpointStatuses[endpoint.id] = .checking
@@ -3348,6 +3413,9 @@ final class AppStore: ObservableObject {
       endpointModels[endpoint.id] = models
       endpointVoices[endpoint.id] = voices
       endpointStatuses[endpoint.id] = .available
+      endpointModelCache[endpoint.id] = RemoteFetchCacheEntry(
+        signature: endpointConnectionSignature(for: endpoint.id) ?? endpoint.connectionSignature,
+        fetchedAt: Date())
       if let firstModel = models.first,
         let index = settings.openAIEndpoints.firstIndex(where: { $0.id == endpoint.id }),
         settings.openAIEndpoints[index].defaultModel
@@ -3360,7 +3428,25 @@ final class AppStore: ObservableObject {
       endpointModels[endpoint.id] = nil
       endpointVoices[endpoint.id] = nil
       endpointStatuses[endpoint.id] = .failed(endpointRefreshErrorMessage(results))
+      endpointModelCache[endpoint.id] = nil
     }
+  }
+
+  private func endpointConnectionSignature(for id: UUID) -> String? {
+    settings.openAIEndpoints.first(where: { $0.id == id })?.connectionSignature
+  }
+
+  private func isEndpointModelCacheValid(for endpoint: OpenAIEndpoint) -> Bool {
+    guard case .available = (endpointStatuses[endpoint.id] ?? .unknown),
+      endpointModels[endpoint.id] != nil,
+      let entry = endpointModelCache[endpoint.id],
+      entry.signature
+        == (endpointConnectionSignature(for: endpoint.id) ?? endpoint.connectionSignature),
+      Date().timeIntervalSince(entry.fetchedAt) < Self.remoteFetchCacheTTL
+    else {
+      return false
+    }
+    return true
   }
 
   func refreshConfiguredEndpointsInBackground() {

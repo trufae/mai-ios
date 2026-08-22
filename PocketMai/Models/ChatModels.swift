@@ -1692,6 +1692,20 @@ struct OpenAIEndpoint: Identifiable, Codable, Equatable, Sendable {
     try c.encode(oauthTokenURL, forKey: .oauthTokenURL)
   }
 
+  /// Identifies the fields that affect model/voice discovery, so a cached fetch
+  /// can be reused until the URL or credentials actually change.
+  var connectionSignature: String {
+    [
+      baseURL,
+      apiKey,
+      authMethod.rawValue,
+      oauthClientID,
+      oauthRefreshToken,
+      oauthTokenURL,
+      oauthIssuer,
+    ].joined(separator: "\u{1}")
+  }
+
   static let openAIAuthDefaults = OAuthPresetDefaults(
     issuer: "https://auth.openai.com",
     clientID: "",
@@ -2548,6 +2562,18 @@ struct MCPServer: Identifiable, Codable, Equatable, Sendable {
       return false
     }
     return true
+  }
+
+  /// Identifies the fields that affect catalog fetching, so a cached connection
+  /// can be reused until the URL, transport, or credentials actually change.
+  var connectionSignature: String {
+    [
+      baseURL,
+      transport?.rawValue ?? "",
+      authentication.method.rawValue,
+      authentication.bearerToken,
+      authentication.oauthAccessToken,
+    ].joined(separator: "\u{1}")
   }
 }
 

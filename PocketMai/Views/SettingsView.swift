@@ -2521,7 +2521,7 @@ private struct RoleVoiceSettingsView: View {
   private func refreshSelectedVoiceEndpoint() {
     guard !store.settings.airplaneModeEnabled else { return }
     guard let endpoint = selectedOpenAIEndpoint else { return }
-    Task { await store.refreshEndpoint(endpoint) }
+    Task { await store.refreshEndpoint(endpoint, force: true) }
   }
 }
 
@@ -2924,7 +2924,7 @@ private struct EndpointDetailView: View {
             return
           }
           let snapshot = endpoint
-          Task { await store.refreshEndpoint(snapshot) }
+          Task { await store.refreshEndpoint(snapshot, force: true) }
         } label: {
           if isChecking {
             HStack {
@@ -4738,7 +4738,7 @@ private struct MCPServerDetailView: View {
 
   private func refreshTools(_ snapshot: MCPServer) {
     guard hasUnsavedConnectionChanges else {
-      Task { await store.refreshMCP(snapshot) }
+      Task { await store.refreshMCP(snapshot, force: true) }
       return
     }
 

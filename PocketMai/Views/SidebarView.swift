@@ -1394,7 +1394,7 @@ private struct ConversationFolderDefaultsView: View {
         endpointStatusLabel(store.endpointStatuses[endpoint.id] ?? .unknown)
         Spacer()
         Button {
-          Task { await store.refreshEndpoint(endpoint) }
+          Task { await store.refreshEndpoint(endpoint, force: true) }
         } label: {
           Label("Refresh Models", systemImage: "arrow.clockwise")
         }

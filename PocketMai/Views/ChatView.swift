@@ -3969,7 +3969,7 @@ private struct ToolPickerPopover: View {
 
         Button {
           if itemCount == 0 {
-            Task { await store.refreshMCP(server) }
+            Task { await store.refreshMCP(server, force: true) }
           } else {
             withAnimation(.snappy) {
               if expanded {
@@ -4386,7 +4386,7 @@ private struct ConversationModelSettingsView: View {
         endpointStatusLabel(store.endpointStatuses[endpoint.id] ?? .unknown)
         Spacer()
         Button {
-          Task { await store.refreshEndpoint(endpoint) }
+          Task { await store.refreshEndpoint(endpoint, force: true) }
         } label: {
           Label("Refresh Models", systemImage: "arrow.clockwise")
         }
