@@ -298,7 +298,8 @@ private struct SettingsLazyDisclosureGroup<Label: View, Content: View>: View {
 }
 
 struct SettingsView: View {
-  @EnvironmentObject private var store: AppStore
+  let store: AppStore
+  @ObservedObject var storeObservation: AppStoreViewObservation
   @Environment(\.dismiss) private var dismiss
   @State private var showingToolFileImporter = false
   @State private var showingAppsPanel = false
@@ -328,7 +329,7 @@ struct SettingsView: View {
         switch route {
         case .endpoint(let id):
           if let index = store.settings.openAIEndpoints.firstIndex(where: { $0.id == id }) {
-            EndpointDetailView(endpoint: $store.settings.openAIEndpoints[index])
+            EndpointDetailView(endpoint: persistedEndpointBinding(at: index))
           } else if draftEndpoint?.id == id {
             EndpointDetailView(endpoint: draftEndpointBinding(for: id)) { endpoint in
               if let index = store.settings.openAIEndpoints.firstIndex(where: {
@@ -343,7 +344,7 @@ struct SettingsView: View {
           }
         case .mcpServer(let id):
           if let index = store.settings.mcpServers.firstIndex(where: { $0.id == id }) {
-            MCPServerDetailView(server: $store.settings.mcpServers[index])
+            MCPServerDetailView(server: persistedMCPServerBinding(at: index))
           } else if draftMCPServer?.id == id {
             MCPServerDetailView(server: draftMCPServerBinding(for: id), isNew: true) { server in
               if let index = store.settings.mcpServers.firstIndex(where: { $0.id == server.id }) {
@@ -1407,7 +1408,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.borderless)
       }
-      ForEach($store.settings.toolSettings.todos) { $todo in
+      ForEach(todosBinding) { $todo in
         HStack(spacing: 10) {
           Button {
             todo.isDone.toggle()
@@ -1938,6 +1939,31 @@ struct SettingsView: View {
         store.settings[keyPath: keyPath] = value
         store.saveSettings()
       }
+    )
+  }
+
+  // Manual bindings replace `$store.settings...` projections, which are
+  // unavailable now that `store` is a plain reference (observation is scoped via
+  // `storeObservation`). Persistence stays with the detail views / row actions,
+  // matching the previous projection-binding semantics.
+  private func persistedEndpointBinding(at index: Int) -> Binding<OpenAIEndpoint> {
+    Binding(
+      get: { store.settings.openAIEndpoints[index] },
+      set: { store.settings.openAIEndpoints[index] = $0 }
+    )
+  }
+
+  private func persistedMCPServerBinding(at index: Int) -> Binding<MCPServer> {
+    Binding(
+      get: { store.settings.mcpServers[index] },
+      set: { store.settings.mcpServers[index] = $0 }
+    )
+  }
+
+  private var todosBinding: Binding<[TodoItem]> {
+    Binding(
+      get: { store.settings.toolSettings.todos },
+      set: { store.settings.toolSettings.todos = $0 }
     )
   }
 

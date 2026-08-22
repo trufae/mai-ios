@@ -46,6 +46,8 @@ struct ChatView: View {
   @State private var selectedMessageIDs: Set<UUID> = []
   @State private var renameDraft = ""
   @State private var userScrolledAfterLastMessage = false
+  @State private var lastStreamingScrollAt: Date?
+  @State private var streamingScrollTask: Task<Void, Never>?
   @State private var pendingScrollToMessageID: UUID?
   @State private var showingWebXDCRunnerFromBar = false
   @State private var showingWebXDCStopConfirmation = false
@@ -601,10 +603,7 @@ struct ChatView: View {
                     showThinking: store.effectiveShowThinking(for: store.currentConversation),
                     isWaitingForResponse: isWaitingForResponse(message),
                     onStreamingTextChange: { _ in
-                      guard !messageFontPinchSession.isActive,
-                        !userScrolledAfterLastMessage
-                      else { return }
-                      scrollToBottomAfterLayout(proxy, animated: false)
+                      scheduleStreamingScroll(proxy)
                     }
                   )
                 }
@@ -714,6 +713,9 @@ struct ChatView: View {
         .onChange(of: store.selectedConversationID) { _, _ in
           messageFontPinchSession.resetMetrics()
           userScrolledAfterLastMessage = false
+          streamingScrollTask?.cancel()
+          streamingScrollTask = nil
+          lastStreamingScrollAt = nil
           scrollToBottomAfterLayout(proxy, animated: false)
         }
         .onChange(of: lastMessageSnapshot) { old, new in
@@ -900,6 +902,36 @@ struct ChatView: View {
       guard !userScrolledAfterLastMessage else { return }
       scrollToBottom(proxy, animated: animated)
     }
+  }
+
+  // Streamed text lands ~8×/sec (StreamingTextStore's 0.12s throttle). Scrolling
+  // the whole message list on every snapshot forces a full layout pass each time
+  // and competes with the composer / any presented UI for the main thread. Cap
+  // the auto-scroll cadence and coalesce bursts into a single trailing scroll.
+  private static let streamingScrollInterval: TimeInterval = 0.35
+
+  private func scheduleStreamingScroll(_ proxy: ScrollViewProxy) {
+    guard !messageFontPinchSession.isActive, !userScrolledAfterLastMessage else { return }
+    let now = Date()
+    if let last = lastStreamingScrollAt,
+      now.timeIntervalSince(last) < Self.streamingScrollInterval
+    {
+      guard streamingScrollTask == nil else { return }
+      let delay = Self.streamingScrollInterval - now.timeIntervalSince(last)
+      streamingScrollTask = Task { @MainActor in
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        streamingScrollTask = nil
+        guard !Task.isCancelled,
+          !messageFontPinchSession.isActive,
+          !userScrolledAfterLastMessage
+        else { return }
+        lastStreamingScrollAt = Date()
+        scrollToBottom(proxy, animated: false)
+      }
+      return
+    }
+    lastStreamingScrollAt = now
+    scrollToBottom(proxy, animated: false)
   }
 
   private func beginMessageSelection(with id: UUID) {

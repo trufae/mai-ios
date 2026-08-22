@@ -8,6 +8,7 @@ struct ContentView: View {
   @StateObject private var contentStoreObservation = AppStoreViewObservation(scope: .content)
   @StateObject private var chatStoreObservation = AppStoreViewObservation(scope: .chat)
   @StateObject private var sidebarStoreObservation = AppStoreViewObservation(scope: .sidebar)
+  @StateObject private var settingsStoreObservation = AppStoreViewObservation(scope: .settings)
   @State private var showingSettings = false
   @State private var showingHistory = false
   @State private var isHistoryPanelMounted = false
@@ -82,8 +83,14 @@ struct ContentView: View {
     }
     .ignoresSafeArea()
     .sheet(isPresented: $showingSettings) {
-      SettingsView()
+      SettingsView(store: store, storeObservation: settingsStoreObservation)
         .environmentObject(store)
+    }
+    .onChange(of: showingSettings) { _, isShowing in
+      // The chat view keeps rendering behind the sheet; pausing streamed-text
+      // publications while Settings is open stops the message list from doing
+      // main-thread layout/scroll work ~8×/sec and starving the Settings UI.
+      store.streamingTextStore.setPublishingSuspended(isShowing)
     }
     .sheet(item: toolCallApprovalBinding) { request in
       ToolCallApprovalView(request: request)
@@ -133,6 +140,7 @@ struct ContentView: View {
     .onAppear {
       contentStoreObservation.connect(to: store)
       chatStoreObservation.connect(to: store)
+      settingsStoreObservation.connect(to: store)
       screenshotService.store = store
     }
     .onChange(of: scenePhase) { _, phase in

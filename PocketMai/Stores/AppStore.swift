@@ -4870,6 +4870,7 @@ final class AppStoreViewObservation: ObservableObject {
     case content
     case chat
     case sidebar
+    case settings
   }
 
   @Published private(set) var revision = 0
@@ -4926,6 +4927,24 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$localMLXModelIDs)
       observe(store.$appleAvailabilityReport)
       observe(store.$appleAvailabilityMessage)
+    case .settings:
+      // The Settings form reads endpoint/MCP/model state and settings, but must
+      // not be invalidated by high-churn chat state (active conversation,
+      // streaming, queued messages, scroll/render bookkeeping).
+      observe(store.$settings)
+      observe(store.$errorMessage)
+      observe(store.$isUpdatingMemory)
+      observe(store.$conversationSummaries)
+      observe(store.$endpointStatuses)
+      observe(store.$endpointModels)
+      observe(store.$endpointVoices)
+      observe(store.$localMLXModelIDs)
+      observe(store.$mcpStatuses)
+      observe(store.$mcpTools)
+      observe(store.$mcpResources)
+      observe(store.$appleAvailabilityReport)
+      observe(store.$appleAvailabilityMessage)
+      observe(store.$openAPIServerState)
     }
   }
 
