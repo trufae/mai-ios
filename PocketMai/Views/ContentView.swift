@@ -142,11 +142,13 @@ struct ContentView: View {
       chatStoreObservation.connect(to: store)
       settingsStoreObservation.connect(to: store)
       screenshotService.store = store
+      store.drainPendingSharedLaunchCommand()
     }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active {
         store.refreshAppleIntelligenceAvailabilityInBackground()
         store.refreshLocalMLXModelsInBackground()
+        store.drainPendingSharedLaunchCommand()
       }
     }
     .tint(store.settings.appearance.tintColor)

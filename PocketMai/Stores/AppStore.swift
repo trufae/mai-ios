@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 import UIKit
+import WidgetKit
 
 enum EndpointConnectionState: Equatable, Sendable {
   case unknown
@@ -317,6 +318,12 @@ final class AppStore: ObservableObject {
   @Published var appleAvailabilityReport: AppleFoundationAvailabilityReport
   @Published var appleAvailabilityMessage: String?
   @Published var openAPIServerState: OpenAPIServerRuntimeState = .stopped
+
+  /// A launch request from a widget tap or App Intent (Action Button / Siri),
+  /// consumed by the chat UI. Cleared once handled.
+  @Published var pendingLaunchAction: LaunchCommand?
+  /// Bumped to ask the composer to take keyboard focus (e.g. after a widget tap).
+  @Published private(set) var composerFocusRequestID = 0
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
@@ -3880,6 +3887,61 @@ final class AppStore: ObservableObject {
     guard force || publicationKey != activeConversationPublicationKey else { return }
     activeConversationPublicationKey = publicationKey
     activeConversation = conversation
+    publishWidgetSelection()
+  }
+
+  // MARK: - Widget / launch bridging
+
+  /// Applies a launch request that arrived via a deep link (widget) or an App
+  /// Intent (Action Button / Siri). The chat UI observes `pendingLaunchAction`.
+  func handleLaunchCommand(_ command: LaunchCommand) {
+    pendingLaunchAction = command
+  }
+
+  /// Drains any launch command an App Intent left in the shared App Group while
+  /// the app was backgrounded or not running.
+  func drainPendingSharedLaunchCommand() {
+    if let command = SharedAppState.takePendingLaunchCommand() {
+      pendingLaunchAction = command
+    }
+  }
+
+  func requestComposerFocus() {
+    composerFocusRequestID &+= 1
+  }
+
+  /// Mirrors the current provider/model into the shared App Group and asks the
+  /// widgets to reload so home/lock-screen widgets follow the app's selection.
+  func publishWidgetSelection() {
+    let labels = widgetProviderModelLabels()
+    guard labels.provider != SharedAppState.providerLabel
+      || labels.model != SharedAppState.modelLabel
+    else {
+      return
+    }
+    SharedAppState.providerLabel = labels.provider
+    SharedAppState.modelLabel = labels.model
+    WidgetCenter.shared.reloadAllTimelines()
+  }
+
+  private func widgetProviderModelLabels() -> (provider: String, model: String) {
+    guard let conversation = activeConversation ?? currentConversation else {
+      return ("PocketMai", "")
+    }
+    let provider: String
+    switch conversation.provider {
+    case .apple:
+      provider = appleIntelligenceIsAvailable ? "Apple Intelligence" : "MLX Local"
+    case .mlx:
+      provider = "MLX Local"
+    case .openAICompatible:
+      let endpoint = conversation.endpointID.flatMap { id in
+        settings.openAIEndpoints.first(where: { $0.id == id })
+      }
+      provider = endpoint?.displayName ?? "OpenAI Compatible"
+    }
+    let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (provider, model)
   }
 
   /// Avoid a scan on ordinary message mutations. A fallback is needed briefly while an array
@@ -5002,6 +5064,8 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$appleAvailabilityReport)
       observe(store.$appleAvailabilityMessage)
       observe(store.$openAPIServerState)
+      observe(store.$pendingLaunchAction)
+      observe(store.$composerFocusRequestID)
     case .sidebar:
       observe(store.$conversationSummaries)
       observe(store.$selectedConversationID)

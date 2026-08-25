@@ -13,6 +13,7 @@
 		A10000000000000000000004 /* MLXLMHFAPI in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000014 /* MLXLMHFAPI */; };
 		A10000000000000000000005 /* MLXLMTokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000015 /* MLXLMTokenizers */; };
 		A10000000000000000000006 /* BeautifulMermaid in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000016 /* BeautifulMermaid */; };
+		C0000000000000000000000E /* PocketMaiWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002 /* PocketMaiWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -23,11 +24,33 @@
 			remoteGlobalIDString = A00000000000000000000009;
 			remoteInfo = PocketMai;
 		};
+		C0000000000000000000000D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000004 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C00000000000000000000001;
+			remoteInfo = PocketMaiWidgetsExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C0000000000000000000000B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				C0000000000000000000000E /* PocketMaiWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000007 /* PocketMai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PocketMai.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000002 /* PocketMaiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PocketMaiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C00000000000000000000002 /* PocketMaiWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PocketMaiWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -37,6 +60,14 @@
 				Info.plist,
 			);
 			target = A00000000000000000000009 /* PocketMai */;
+		};
+		C00000000000000000000010 /* Exceptions for "PocketMaiWidgets" folder in "PocketMaiWidgetsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				PocketMaiWidgets.entitlements,
+			);
+			target = C00000000000000000000001 /* PocketMaiWidgetsExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -57,6 +88,19 @@
 		B00000000000000000000003 /* PocketMaiTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PocketMaiTests;
+			sourceTree = "<group>";
+		};
+		C00000000000000000000009 /* PocketMaiWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C00000000000000000000010 /* Exceptions for "PocketMaiWidgets" folder in "PocketMaiWidgetsExtension" target */,
+			);
+			path = PocketMaiWidgets;
+			sourceTree = "<group>";
+		};
+		C0000000000000000000000A /* SharedWidgetKit */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SharedWidgetKit;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -82,6 +126,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C00000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -90,6 +141,8 @@
 			children = (
 				A0000000000000000000000B /* PocketMai */,
 				A0000000000000000000000D /* Shared */,
+				C0000000000000000000000A /* SharedWidgetKit */,
+				C00000000000000000000009 /* PocketMaiWidgets */,
 				B00000000000000000000003 /* PocketMaiTests */,
 				A00000000000000000000011 /* Products */,
 			);
@@ -100,6 +153,7 @@
 			children = (
 				A00000000000000000000007 /* PocketMai.app */,
 				B00000000000000000000002 /* PocketMaiTests.xctest */,
+				C00000000000000000000002 /* PocketMaiWidgetsExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -114,14 +168,17 @@
 				A00000000000000000000013 /* Sources */,
 				A0000000000000000000000E /* Frameworks */,
 				A00000000000000000000014 /* Resources */,
+				C0000000000000000000000B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C0000000000000000000000C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A0000000000000000000000B /* PocketMai */,
 				A0000000000000000000000D /* Shared */,
+				C0000000000000000000000A /* SharedWidgetKit */,
 			);
 			name = PocketMai;
 			packageProductDependencies = (
@@ -159,6 +216,29 @@
 			productReference = B00000000000000000000002 /* PocketMaiTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		C00000000000000000000001 /* PocketMaiWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C00000000000000000000006 /* Build configuration list for PBXNativeTarget "PocketMaiWidgetsExtension" */;
+			buildPhases = (
+				C00000000000000000000003 /* Sources */,
+				C00000000000000000000004 /* Frameworks */,
+				C00000000000000000000005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C00000000000000000000009 /* PocketMaiWidgets */,
+				C0000000000000000000000A /* SharedWidgetKit */,
+			);
+			name = PocketMaiWidgetsExtension;
+			packageProductDependencies = (
+			);
+			productName = PocketMaiWidgetsExtension;
+			productReference = C00000000000000000000002 /* PocketMaiWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -180,6 +260,9 @@
 					B00000000000000000000005 = {
 						CreatedOnToolsVersion = 26.4.1;
 						TestTargetID = A00000000000000000000009;
+					};
+					C00000000000000000000001 = {
+						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
 			};
@@ -206,6 +289,7 @@
 			targets = (
 				A00000000000000000000009 /* PocketMai */,
 				B00000000000000000000005 /* PocketMaiTests */,
+				C00000000000000000000001 /* PocketMaiWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -219,6 +303,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		B00000000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C00000000000000000000005 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -242,6 +333,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C00000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -249,6 +347,11 @@
 			isa = PBXTargetDependency;
 			target = A00000000000000000000009 /* PocketMai */;
 			targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		C0000000000000000000000C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C00000000000000000000001 /* PocketMaiWidgetsExtension */;
+			targetProxy = C0000000000000000000000D /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -454,6 +557,60 @@
 			};
 			name = Release;
 		};
+		C00000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PocketMaiWidgets/PocketMaiWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 26;
+				DEVELOPMENT_TEAM = J5PTVY8BHH;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PocketMaiWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.6.6;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.trufae.mai.PocketMaiWidgetsExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C00000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PocketMaiWidgets/PocketMaiWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 26;
+				DEVELOPMENT_TEAM = J5PTVY8BHH;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PocketMaiWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.6.6;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.trufae.mai.PocketMaiWidgetsExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -480,6 +637,15 @@
 			buildConfigurations = (
 				B00000000000000000000009 /* Debug */,
 				B0000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C00000000000000000000006 /* Build configuration list for PBXNativeTarget "PocketMaiWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000007 /* Debug */,
+				C00000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

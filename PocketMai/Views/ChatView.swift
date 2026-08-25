@@ -69,6 +69,19 @@ struct ChatView: View {
 
   private var chatViewWithAlerts: some View {
     chatViewWithSheetsAndToolbar
+      .onChange(of: store.pendingLaunchAction) { _, action in
+        guard let action else { return }
+        store.pendingLaunchAction = nil
+        Task { await applyLaunchAction(action) }
+      }
+      .onAppear {
+        // Catch a command that was already queued during a cold launch, before
+        // onChange started observing.
+        if let action = store.pendingLaunchAction {
+          store.pendingLaunchAction = nil
+          Task { await applyLaunchAction(action) }
+        }
+      }
       .onChange(of: store.selectedConversationID) { _, _ in
         cancelMessageSelection()
         withAnimation(.snappy) { chatSearch.cancel() }
@@ -884,6 +897,29 @@ struct ChatView: View {
   private func isWaitingForResponse(_ message: ChatMessage) -> Bool {
     guard currentChatIsResponding, message.role == .assistant else { return false }
     return store.currentConversation?.messages.last?.id == message.id
+  }
+
+  // Applies a launch request from a widget tap or App Intent (Action Button /
+  // Siri). Prompts with text are sent immediately; an empty prompt just opens a
+  // fresh, focused composer; voice opens straight into a conversation.
+  private func applyLaunchAction(_ action: LaunchCommand) async {
+    switch action {
+    case .newPrompt(let text):
+      if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        _ = await store.send(prompt: text)
+      } else {
+        if store.currentConversation == nil {
+          store.newConversation()
+        }
+        store.requestComposerFocus()
+      }
+    case .voice:
+      if store.currentConversation == nil {
+        store.newConversation()
+      }
+      guard !liveVoiceSession.isActive else { return }
+      liveVoiceSession.start(store: store, ttsPlayer: ttsPlayer)
+    }
   }
 
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -2053,6 +2089,10 @@ private struct ChatComposer: View {
       if draftText.isEmpty, !storedDraft.isEmpty {
         draftText = storedDraft
       }
+    }
+    .onChange(of: store.composerFocusRequestID) { _, _ in
+      guard !liveVoiceSession.isActive else { return }
+      composerFocused = true
     }
     .onChange(of: conversationID) { oldID, newID in
       if oldID != newID, liveVoiceSession.isActive {

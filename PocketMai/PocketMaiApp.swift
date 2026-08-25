@@ -12,6 +12,11 @@ struct PocketMaiApp: App {
   var body: some Scene {
     WindowGroup {
       PocketMaiRootView(store: store, ttsPlayer: ttsPlayer)
+        .onOpenURL { url in
+          if let command = PocketMaiDeepLink.command(from: url) {
+            store.handleLaunchCommand(command)
+          }
+        }
     }
   }
 }
