@@ -920,6 +920,31 @@ struct ChatAttachment: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+/// Wall-clock observations collected while one streamed provider call is read.
+/// Chunk timestamps are recorded so the timing resolver can tell a genuinely
+/// paced stream apart from a whole response delivered in one network burst.
+struct StreamTimingObservation: Sendable {
+  var requestStart: Date
+  var firstTokenAt: Date? = nil
+  var lastTokenAt: Date? = nil
+  var tokenChunkCount: Int = 0
+
+  mutating func noteTokenChunk(at date: Date = Date()) {
+    if firstTokenAt == nil { firstTokenAt = date }
+    lastTokenAt = date
+    tokenChunkCount += 1
+  }
+}
+
+/// Timing split derived from a `StreamTimingObservation` once a call finishes.
+struct ResolvedGenerationTiming: Equatable, Sendable {
+  var promptSeconds: TimeInterval
+  var generationSeconds: TimeInterval
+  /// Seconds from sending the request until the first streamed token arrived.
+  /// Nil when the response was not streamed.
+  var firstTokenSeconds: TimeInterval?
+}
+
 /// Metrics for one or more model calls behind an assistant message. Token counts
 /// come from provider usage payloads (OpenAI-compatible `usage`, MLX completion
 /// info); `tokensEstimated` marks backends that only expose text, where counts
@@ -940,8 +965,12 @@ struct GenerationStats: Codable, Equatable, Sendable {
   var imageInputs: Int? = nil
   var cachedTokens: Int = 0
   /// Prompt processing (MLX) or time to first streamed token (network providers).
+  /// Zero when the response arrived as one burst and the split is unknowable.
   var promptSeconds: TimeInterval = 0
   var generationSeconds: TimeInterval = 0
+  /// Seconds until the provider emitted the first token of the response. Nil for
+  /// non-streaming calls, where no first-token signal exists.
+  var firstTokenSeconds: TimeInterval? = nil
   var tokensEstimated: Bool = false
   var callCount: Int = 1
 
@@ -959,6 +988,44 @@ struct GenerationStats: Codable, Equatable, Sendable {
   var promptTokensPerSecond: Double? {
     guard inputTokens > 0, promptSeconds > 0, !tokensEstimated else { return nil }
     return Double(inputTokens) / promptSeconds
+  }
+
+  /// A stream whose first→last token window is shorter than this never showed
+  /// the client any real generation pacing, so the window cannot be a divisor.
+  static let minimumStreamedGenerationSeconds: TimeInterval = 0.2
+  /// Below this many observed chunks the whole response arrived in a burst or
+  /// two, so first→last chunk timing says nothing about generation speed.
+  static let minimumStreamedTokenChunks = 3
+
+  /// Splits one call's wall time into prompt wait and generation time. Speed is
+  /// measured over the first→last received token window, so cold starts and the
+  /// trailing usage/[DONE] wait never pollute tok/s. When the body arrived as a
+  /// burst (buffered delivery is common on localhost endpoints) that window is
+  /// near zero and dividing by it explodes tok/s, so total wall time — an
+  /// honest lower bound — is used instead, matching non-streaming calls.
+  static func resolveTiming(
+    _ observation: StreamTimingObservation,
+    end: Date
+  ) -> ResolvedGenerationTiming {
+    let totalSeconds = max(0, end.timeIntervalSince(observation.requestStart))
+    guard let firstTokenAt = observation.firstTokenAt else {
+      return ResolvedGenerationTiming(
+        promptSeconds: 0, generationSeconds: totalSeconds, firstTokenSeconds: nil)
+    }
+    let firstTokenSeconds = max(0, firstTokenAt.timeIntervalSince(observation.requestStart))
+    let lastTokenAt = observation.lastTokenAt ?? end
+    let streamedSeconds = max(0, lastTokenAt.timeIntervalSince(firstTokenAt))
+    guard
+      streamedSeconds >= minimumStreamedGenerationSeconds,
+      observation.tokenChunkCount >= minimumStreamedTokenChunks
+    else {
+      return ResolvedGenerationTiming(
+        promptSeconds: 0, generationSeconds: totalSeconds, firstTokenSeconds: firstTokenSeconds)
+    }
+    return ResolvedGenerationTiming(
+      promptSeconds: firstTokenSeconds,
+      generationSeconds: streamedSeconds,
+      firstTokenSeconds: firstTokenSeconds)
   }
 
   mutating func merge(_ other: GenerationStats) {
@@ -981,6 +1048,8 @@ struct GenerationStats: Codable, Equatable, Sendable {
     cachedTokens += other.cachedTokens
     promptSeconds += other.promptSeconds
     generationSeconds += other.generationSeconds
+    // The first round's latency is the one the user felt waiting for output.
+    firstTokenSeconds = firstTokenSeconds ?? other.firstTokenSeconds
     tokensEstimated = tokensEstimated || other.tokensEstimated
     callCount += other.callCount
   }

@@ -32,6 +32,12 @@ final class UsageStatsStore: ObservableObject {
     /// This was renamed so persisted values calculated with reasoning tokens are
     /// not presented as the corrected visible-output speed.
     var lastOutputTokensPerSecond: Double? = nil
+    /// Most recent time-to-first-token. Optional so totals persisted before the
+    /// field existed still decode.
+    var lastFirstTokenSeconds: TimeInterval? = nil
+    /// Sum and count of observed first-token latencies, for the average.
+    var firstTokenSecondsTotal: TimeInterval? = nil
+    var firstTokenSampleCount: Int? = nil
     var lastUsedAt: Date = .distantPast
 
     var id: String { "\(providerLabel)|\(modelID)" }
@@ -48,6 +54,12 @@ final class UsageStatsStore: ObservableObject {
     var averagePromptTokensPerSecond: Double? {
       guard inputTokens > 0, promptSeconds > 0, estimatedCallCount == 0 else { return nil }
       return Double(inputTokens) / promptSeconds
+    }
+
+    var averageFirstTokenSeconds: TimeInterval? {
+      guard let total = firstTokenSecondsTotal, let count = firstTokenSampleCount, count > 0
+      else { return nil }
+      return total / Double(count)
     }
   }
 
@@ -94,6 +106,11 @@ final class UsageStatsStore: ObservableObject {
     }
     entry.lastOutputTokensPerSecond =
       stats.tokensPerSecond ?? entry.lastOutputTokensPerSecond
+    if let firstTokenSeconds = stats.firstTokenSeconds {
+      entry.lastFirstTokenSeconds = firstTokenSeconds
+      entry.firstTokenSecondsTotal = (entry.firstTokenSecondsTotal ?? 0) + firstTokenSeconds
+      entry.firstTokenSampleCount = (entry.firstTokenSampleCount ?? 0) + 1
+    }
     entry.lastUsedAt = Date()
     if let index = totals.firstIndex(where: { $0.id == entry.id }) {
       totals[index] = entry

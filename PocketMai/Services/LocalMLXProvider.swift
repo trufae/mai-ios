@@ -220,7 +220,10 @@ actor LocalMLXProvider {
         outputTokens: info.generationTokenCount,
         receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: output.count),
         promptSeconds: info.promptTime,
-        generationSeconds: info.generateTime)
+        generationSeconds: info.generateTime,
+        // Prompt evaluation is what stands between the request and the first
+        // token for on-device generation.
+        firstTokenSeconds: info.promptTime)
     } else {
       stats = GenerationStats(
         providerLabel: "MLX",

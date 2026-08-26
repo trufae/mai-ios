@@ -502,6 +502,10 @@ private struct MessageBubbleContent: View, Equatable {
     if let tps = stats.tokensPerSecond {
       parts.append(String(format: "%.1f tok/s", tps))
     }
+    if let firstToken = stats.firstTokenSeconds {
+      parts.append(
+        String(format: firstToken >= 10 ? "first tok %.1fs" : "first tok %.2fs", firstToken))
+    }
     let approx = stats.tokensEstimated ? "~" : ""
     parts.append("\(approx)\(stats.inputTokens) in")
     if stats.cachedTokens > 0 {
