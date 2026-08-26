@@ -1036,7 +1036,8 @@ enum AppleFoundationProvider {
       // Time from the first partial so model warm-up never counts as generation.
       await recordEstimatedUsage(
         request: request, promptCharacterCount: prompt.count,
-        outputCharacterCount: latest.count, requestStart: firstPartialAt ?? requestStart)
+        outputCharacterCount: latest.count, requestStart: firstPartialAt ?? requestStart,
+        firstTokenSeconds: firstPartialAt.map { max(0, $0.timeIntervalSince(requestStart)) })
       await MainActor.run { onUpdate(latest) }
       return latest
     }
@@ -1056,7 +1057,8 @@ enum AppleFoundationProvider {
     request: ChatCompletionRequest,
     promptCharacterCount: Int,
     outputCharacterCount: Int,
-    requestStart: Date
+    requestStart: Date,
+    firstTokenSeconds: TimeInterval? = nil
   ) async {
     let stats = GenerationStats(
       providerLabel: "Apple Intelligence",
@@ -1067,6 +1069,7 @@ enum AppleFoundationProvider {
       receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
       promptSeconds: 0,
       generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
+      firstTokenSeconds: firstTokenSeconds,
       tokensEstimated: true)
     await UsageStatsStore.record(stats, assistantMessageID: request.assistantMessageID)
   }
@@ -2197,23 +2200,12 @@ enum OpenAICompatibleProvider {
     context: UsageRecordingContext,
     usage: OpenAIUsage?,
     outputCharacterCount: Int,
-    requestStart: Date,
-    firstTokenAt: Date?
+    timing: StreamTimingObservation
   ) async {
-    let end = Date()
-    let promptSeconds: TimeInterval
-    let generationSeconds: TimeInterval
-    if let firstTokenAt {
-      // Speed is measured from the first received token so cold starts
-      // (server-side model loading, prompt processing) never pollute tok/s.
-      promptSeconds = max(0, firstTokenAt.timeIntervalSince(requestStart))
-      generationSeconds = max(0, end.timeIntervalSince(firstTokenAt))
-    } else {
-      // Non-streaming responses expose no first-token signal; full wall time
-      // is the only honest denominator available.
-      promptSeconds = 0
-      generationSeconds = max(0, end.timeIntervalSince(requestStart))
-    }
+    // The resolver measures speed over the first→last token window and falls
+    // back to total wall time when the stream arrived as one burst, so a local
+    // endpoint that delivers everything at once cannot produce absurd tok/s.
+    let resolved = GenerationStats.resolveTiming(timing, end: Date())
     let stats = GenerationStats(
       providerLabel: context.providerLabel,
       modelID: context.modelID,
@@ -2225,8 +2217,9 @@ enum OpenAICompatibleProvider {
       reasoningTokens: usage?.completionTokensDetails?.reasoningTokens,
       imageInputs: context.imageInputCount,
       cachedTokens: usage?.promptTokensDetails?.cachedTokens ?? 0,
-      promptSeconds: promptSeconds,
-      generationSeconds: generationSeconds,
+      promptSeconds: resolved.promptSeconds,
+      generationSeconds: resolved.generationSeconds,
+      firstTokenSeconds: resolved.firstTokenSeconds,
       tokensEstimated: usage?.completionTokens == nil)
     await UsageStatsStore.record(stats, assistantMessageID: context.assistantMessageID)
   }
@@ -2247,8 +2240,7 @@ enum OpenAICompatibleProvider {
       context: usageContext,
       usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
       outputCharacterCount: content.count,
-      requestStart: requestStart,
-      firstTokenAt: nil)
+      timing: StreamTimingObservation(requestStart: requestStart))
     await MainActor.run { onUpdate(content) }
     return content
   }
@@ -2258,8 +2250,7 @@ enum OpenAICompatibleProvider {
     usageContext: UsageRecordingContext,
     onUpdate: @escaping @MainActor (String) -> Void
   ) async throws -> String {
-    let requestStart = Date()
-    var firstTokenAt: Date?
+    var timing = StreamTimingObservation(requestStart: Date())
     var latestUsage: OpenAIUsage?
     let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: delegate)
@@ -2309,14 +2300,16 @@ enum OpenAICompatibleProvider {
       if let delta = streamDeltaText(from: chunk), !delta.isEmpty {
         accumulated += delta
         dirty = true
-        if firstTokenAt == nil { firstTokenAt = Date() }
+        timing.noteTokenChunk()
       }
       if let reasoningDelta = streamReasoningText(from: chunk), !reasoningDelta.isEmpty {
         reasoning += reasoningDelta
         dirty = true
-        if firstTokenAt == nil { firstTokenAt = Date() }
+        timing.noteTokenChunk()
       }
-      if let deltas = chunk.choices.first?.delta?.toolCalls {
+      if let deltas = chunk.choices.first?.delta?.toolCalls, !deltas.isEmpty {
+        // Tool-call arguments stream token by token just like content does.
+        timing.noteTokenChunk()
         for tc in deltas {
           let idx = tc.index ?? 0
           var entry = toolCallAcc[idx] ?? (nil, nil, "")
@@ -2369,8 +2362,7 @@ enum OpenAICompatibleProvider {
         context: usageContext,
         usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
         outputCharacterCount: fallback.count,
-        requestStart: requestStart,
-        firstTokenAt: nil)
+        timing: StreamTimingObservation(requestStart: timing.requestStart))
       await MainActor.run { onUpdate(fallback) }
       return fallback
     }
@@ -2383,8 +2375,7 @@ enum OpenAICompatibleProvider {
       context: usageContext,
       usage: latestUsage,
       outputCharacterCount: accumulated.count,
-      requestStart: requestStart,
-      firstTokenAt: firstTokenAt)
+      timing: timing)
     return content
   }
 

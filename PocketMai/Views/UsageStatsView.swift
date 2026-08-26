@@ -371,6 +371,12 @@ struct UsageStatsView: View {
     if let promptSpeed = entry.averagePromptTokensPerSecond {
       lines.append("Prompt processing speed: \(speedText(promptSpeed))")
     }
+    if let lastFirstToken = entry.lastFirstTokenSeconds {
+      lines.append("Last time to first token: \(secondsText(lastFirstToken))")
+    }
+    if let averageFirstToken = entry.averageFirstTokenSeconds {
+      lines.append("Average time to first token: \(secondsText(averageFirstToken))")
+    }
     if entry.generationSeconds > 0 {
       lines.append(
         "Generation time: \(Duration.seconds(entry.generationSeconds).formatted(.units(allowed: [.hours, .minutes, .seconds])))"
@@ -404,6 +410,9 @@ struct UsageStatsView: View {
     if let promptSpeed = entry.averagePromptTokensPerSecond {
       parts.append("prompt \(speedText(promptSpeed))")
     }
+    if let averageFirstToken = entry.averageFirstTokenSeconds {
+      parts.append("first tok \(secondsText(averageFirstToken))")
+    }
     return parts.joined(separator: " · ")
   }
 
@@ -436,6 +445,10 @@ struct UsageStatsView: View {
 
   private func speedText(_ tokensPerSecond: Double) -> String {
     String(format: "%.1f tok/s", tokensPerSecond)
+  }
+
+  private func secondsText(_ seconds: TimeInterval) -> String {
+    String(format: seconds >= 10 ? "%.1fs" : "%.2fs", seconds)
   }
 
   /// A label-derived hue gives every provider a distinct, repeatable chart color.
