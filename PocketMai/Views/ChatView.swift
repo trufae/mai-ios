@@ -2128,6 +2128,12 @@ private struct ChatComposer: View {
     ) { result in
       importTextAttachment(result)
     }
+    .fileImporter(
+      isPresented: $showingWorkingFolderImporter,
+      allowedContentTypes: [.folder]
+    ) { result in
+      importWorkingFolder(result)
+    }
     .photosPicker(
       isPresented: $showingImagePicker,
       selection: $selectedPhotoItems,
@@ -2641,12 +2647,6 @@ private struct ChatComposer: View {
         .environmentObject(store)
         .presentationCompactAdaptation(.popover)
     }
-    .fileImporter(
-      isPresented: $showingWorkingFolderImporter,
-      allowedContentTypes: [.folder]
-    ) { result in
-      importWorkingFolder(result)
-    }
     .help("Tools")
   }
 
@@ -2674,8 +2674,7 @@ private struct ChatComposer: View {
       .padding(.vertical, 9)
 
       Button {
-        showingToolMenu = false
-        showingWorkingFolderImporter = true
+        openWorkingFolderImporter()
       } label: {
         toolMenuRowLabel(
           "Working Folder...",
@@ -2785,6 +2784,16 @@ private struct ChatComposer: View {
     guard toolsEnabled else { return }
     showingToolMenu = false
     showingToolPicker = true
+  }
+
+  private func openWorkingFolderImporter() {
+    showingWorkingFolderImporter = false
+    showingToolMenu = false
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(350))
+      guard !showingToolMenu else { return }
+      showingWorkingFolderImporter = true
+    }
   }
 
   private var workingFolderMenuText: String? {

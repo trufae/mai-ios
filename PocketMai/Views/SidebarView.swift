@@ -372,6 +372,7 @@ struct SidebarView: View {
         isActive: store.selectedConversationFolderID != ConversationFolder.defaultID,
         compact: compact)
     }
+    .menuOrder(.fixed)
     .buttonStyle(.plain)
     .accessibilityLabel("Conversation folder")
     FloatingSearchField(
