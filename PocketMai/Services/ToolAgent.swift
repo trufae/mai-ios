@@ -50,6 +50,10 @@ enum BuiltInToolCatalog {
       toolNames: [
         FileWorkspaceTool.listName,
         FileWorkspaceTool.readName,
+        FileWorkspaceTool.readDocumentName,
+        FileWorkspaceTool.readIndexName,
+        FileWorkspaceTool.readRangeName,
+        FileWorkspaceTool.replaceRangeName,
         FileWorkspaceTool.writeName,
         FileWorkspaceTool.renameName,
         FileWorkspaceTool.deleteName,
@@ -142,9 +146,11 @@ enum BuiltInToolCatalog {
       return await WeatherTool.run(
         arguments: call.argumentValues,
         settings: store.settings.toolSettings, locationService: { store.locationService })
-    case FileWorkspaceTool.listName, FileWorkspaceTool.readName, FileWorkspaceTool.writeName,
-      FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
-      return executeFileWorkspaceTool(
+    case FileWorkspaceTool.listName, FileWorkspaceTool.readName,
+      FileWorkspaceTool.readDocumentName, FileWorkspaceTool.readIndexName,
+      FileWorkspaceTool.readRangeName, FileWorkspaceTool.replaceRangeName,
+      FileWorkspaceTool.writeName, FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
+      return await executeFileWorkspaceTool(
         name: call.name,
         arguments: call.argumentValues,
         conversation: conversation,
@@ -178,9 +184,19 @@ enum BuiltInToolCatalog {
     arguments: [String: AgentToolArgumentValue],
     conversation: Conversation,
     store: AppStore
-  ) -> String {
+  ) async -> String {
     guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
       return "Error: Files tools are disabled in Files settings."
+    }
+    let advancedToolNames = [
+      FileWorkspaceTool.readIndexName,
+      FileWorkspaceTool.readRangeName,
+      FileWorkspaceTool.replaceRangeName,
+    ]
+    if advancedToolNames.contains(name),
+      !store.settings.toolSettings.filesAdvancedToolsEnabled
+    {
+      return "Error: advanced file tools are disabled in Files settings."
     }
     let context: FileWorkspaceContext
     do {
@@ -201,6 +217,22 @@ enum BuiltInToolCatalog {
       return FileWorkspaceService.list(arguments: arguments, in: context)
     case FileWorkspaceTool.readName:
       return FileWorkspaceService.read(arguments: arguments, in: context)
+    case FileWorkspaceTool.readDocumentName:
+      // Document conversion (PDF text extraction, OCR) can be slow, so it
+      // runs off the main actor.
+      return await Task.detached {
+        FileWorkspaceService.readDocument(arguments: arguments, in: context)
+      }.value
+    case FileWorkspaceTool.readIndexName:
+      return await Task.detached {
+        FileWorkspaceService.readIndex(arguments: arguments, in: context)
+      }.value
+    case FileWorkspaceTool.readRangeName:
+      return await Task.detached {
+        FileWorkspaceService.readRange(arguments: arguments, in: context)
+      }.value
+    case FileWorkspaceTool.replaceRangeName:
+      return FileWorkspaceService.replaceRange(arguments: arguments, in: context)
     case FileWorkspaceTool.writeName:
       return FileWorkspaceService.write(arguments: arguments, in: context)
     case FileWorkspaceTool.renameName:
@@ -236,7 +268,8 @@ enum BuiltInToolCatalog {
     case .files:
       guard settings.toolSettings.filesWorkspaceAccessEnabled else { return [] }
       return FileWorkspaceTool.definitions(
-        workspaceName: FileWorkspaceTool.workspaceName(for: conversation, settings: settings))
+        workspaceName: FileWorkspaceTool.workspaceName(for: conversation, settings: settings),
+        includeAdvancedTools: settings.toolSettings.filesAdvancedToolsEnabled)
     case .calendar:
       return CalendarTool.definitions(settings: settings.toolSettings)
     case .clipboard:
@@ -784,6 +817,10 @@ enum ToolProxy {
 enum FileWorkspaceTool {
   static let listName = "files_list"
   static let readName = "files_read"
+  static let readDocumentName = "files_read_document"
+  static let readIndexName = "files_read_index"
+  static let readRangeName = "files_read_range"
+  static let replaceRangeName = "files_replace_range"
   static let writeName = "files_write"
   static let renameName = "files_rename"
   static let deleteName = "files_delete"
@@ -818,8 +855,11 @@ enum FileWorkspaceTool {
     )
   }
 
-  static func definitions(workspaceName name: String) -> [ToolDefinition] {
-    [
+  static func definitions(
+    workspaceName name: String,
+    includeAdvancedTools: Bool
+  ) -> [ToolDefinition] {
+    var definitions = [
       ToolDefinition(
         name: listName,
         description: "List a folder inside the working folder '\(name)'.",
@@ -845,6 +885,25 @@ enum FileWorkspaceTool {
           ToolParameterDef(
             name: "offset", type: "number",
             description: "Byte offset to continue reading a large file. Default: 0.",
+            required: false),
+        ]
+      ),
+      ToolDefinition(
+        name: readDocumentName,
+        description:
+          "Read a document from the working folder '\(name)' as text: Word (.docx) and PDF files are converted to Markdown, JSON files to an indented outline, anything else is read as UTF-8 text.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File path inside \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "max_bytes", type: "number",
+            description: "Maximum bytes to return. Default: 120000.",
+            required: false),
+          ToolParameterDef(
+            name: "offset", type: "number",
+            description: "Byte offset into the converted text to continue reading. Default: 0.",
             required: false),
         ]
       ),
@@ -898,6 +957,69 @@ enum FileWorkspaceTool {
           ToolParameterDef(
             name: "recursive", type: "boolean",
             description: "Delete non-empty folders. Default: false.",
+            required: false),
+        ]
+      ),
+    ]
+    if includeAdvancedTools {
+      definitions.append(contentsOf: advancedDefinitions(workspaceName: name))
+    }
+    return definitions
+  }
+
+  private static func advancedDefinitions(workspaceName name: String) -> [ToolDefinition] {
+    [
+      ToolDefinition(
+        name: readIndexName,
+        description:
+          "List an index of a file in the working folder '\(name)' with 1-based line numbers: function and type names for source code, headings for Markdown and converted documents (.docx, .pdf), keys for JSON.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File path inside \(name).",
+            required: true)
+        ]
+      ),
+      ToolDefinition(
+        name: readRangeName,
+        description:
+          "Read a numbered range of lines from a file in the working folder '\(name)'. Word, PDF, and JSON files are converted like files_read_document, so line numbers match files_read_index.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File path inside \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "start_line", type: "number",
+            description: "First line to read, 1-based. Default: 1.",
+            required: false),
+          ToolParameterDef(
+            name: "end_line", type: "number",
+            description: "Last line to read, inclusive. Default: start_line + 199.",
+            required: false),
+        ]
+      ),
+      ToolDefinition(
+        name: replaceRangeName,
+        description:
+          "Replace a 1-based inclusive line range of a UTF-8 text file in the working folder '\(name)'. Use end_line = start_line - 1 to insert before start_line; empty content deletes the range. Not available for converted documents (.docx, .pdf, .json).",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File path inside \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "start_line", type: "number",
+            description: "First line to replace, 1-based.",
+            required: true),
+          ToolParameterDef(
+            name: "end_line", type: "number",
+            description: "Last line to replace, inclusive. Default: start_line.",
+            required: false),
+          ToolParameterDef(
+            name: "content", type: "string",
+            description:
+              "New text for the range; may contain multiple lines. Omit to delete the range.",
             required: false),
         ]
       ),

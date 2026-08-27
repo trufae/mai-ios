@@ -4402,6 +4402,7 @@ final class AppStore: ObservableObject {
       webSearchFetchingEnabled: toolSettings.webSearchFetchingEnabled,
       calendarEventCreationEnabled: toolSettings.calendarEventCreationEnabled,
       filesWorkspaceAccessEnabled: toolSettings.filesWorkspaceAccessEnabled,
+      filesAdvancedToolsEnabled: toolSettings.filesAdvancedToolsEnabled,
       configuredToolFilesCount: toolSettings.files.count,
       todoCount: toolSettings.todos.count)
   }
