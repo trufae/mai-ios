@@ -1205,22 +1205,42 @@ struct ConversationPreviewMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+/// A user-picked working folder outside the app sandbox, kept reachable across
+/// launches through a security-scoped bookmark.
+struct WorkingFolderReference: Codable, Equatable, Sendable {
+  var bookmarkData: Data
+  var displayName: String
+
+  init(bookmarkData: Data, displayName: String) {
+    self.bookmarkData = bookmarkData
+    self.displayName = Self.normalizedDisplayName(displayName)
+  }
+
+  static func normalizedDisplayName(_ name: String) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Working Folder" : trimmed
+  }
+}
+
 struct ConversationFolderDefaults: Codable, Equatable, Sendable {
   var systemPromptID: UUID?
   var provider: ProviderKind?
   var endpointID: UUID?
   var modelID: String
+  var workingFolder: WorkingFolderReference?
 
   init(
     systemPromptID: UUID? = nil,
     provider: ProviderKind? = nil,
     endpointID: UUID? = nil,
-    modelID: String = ""
+    modelID: String = "",
+    workingFolder: WorkingFolderReference? = nil
   ) {
     self.systemPromptID = systemPromptID
     self.provider = provider
     self.endpointID = endpointID
     self.modelID = modelID
+    self.workingFolder = workingFolder
   }
 
   var usesAppDefaults: Bool {
@@ -1228,6 +1248,7 @@ struct ConversationFolderDefaults: Codable, Equatable, Sendable {
       && provider == nil
       && endpointID == nil
       && modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && workingFolder == nil
   }
 }
 
@@ -1469,6 +1490,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var lastContextSignature: String? = nil
   var folderID: String = ConversationFolder.defaultID
   var languageOverrideIdentifier: String? = nil
+  var workingFolder: WorkingFolderReference? = nil
 
   var isArchived: Bool {
     get { folderID == ConversationFolder.archivedID }
@@ -1502,6 +1524,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case folderID
     case isArchived
     case languageOverrideIdentifier
+    case workingFolder
   }
 
   init(from decoder: Decoder) throws {
@@ -1540,6 +1563,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     let decodedLanguageOverride =
       (try? container.decodeIfPresent(String.self, forKey: .languageOverrideIdentifier)) ?? nil
     languageOverrideIdentifier = Self.normalizedLanguageOverride(decodedLanguageOverride)
+    workingFolder =
+      (try? container.decodeIfPresent(WorkingFolderReference.self, forKey: .workingFolder)) ?? nil
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1569,6 +1594,7 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encodeIfPresent(
       Self.normalizedLanguageOverride(languageOverrideIdentifier),
       forKey: .languageOverrideIdentifier)
+    try container.encodeIfPresent(workingFolder, forKey: .workingFolder)
   }
 
   var displayTitle: String {

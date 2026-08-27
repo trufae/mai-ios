@@ -74,15 +74,15 @@ enum BuiltInToolCatalog {
   ]
 
   static func definitions(
-    for enabledTools: Set<BuiltInToolID>,
+    for conversation: Conversation,
     settings: AppSettings
   ) -> [ToolDefinition] {
     entries.flatMap { entry -> [ToolDefinition] in
-      guard enabledTools.contains(entry.id), entry.id.isCallableTool else { return [] }
+      guard conversation.enabledTools.contains(entry.id), entry.id.isCallableTool else { return [] }
       guard !(settings.airplaneModeEnabled && entry.id.isDisabledInAirplaneMode) else {
         return []
       }
-      return definitions(for: entry.id, settings: settings)
+      return definitions(for: entry.id, conversation: conversation, settings: settings)
     }
   }
 
@@ -148,7 +148,7 @@ enum BuiltInToolCatalog {
         name: call.name,
         arguments: call.argumentValues,
         conversation: conversation,
-        settings: store.settings)
+        store: store)
     case CalendarTool.readName:
       return await CalendarTool.readEvents(arguments: call.argumentValues)
     case CalendarTool.createName:
@@ -177,23 +177,43 @@ enum BuiltInToolCatalog {
     name: String,
     arguments: [String: AgentToolArgumentValue],
     conversation: Conversation,
-    settings: AppSettings
+    store: AppStore
   ) -> String {
-    guard fileWorkspaceToolsEnabled(conversation: conversation, settings: settings) else {
-      return "Error: FilesData tools are disabled in Files settings."
+    guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
+      return "Error: Files tools are disabled in Files settings."
+    }
+    let context: FileWorkspaceContext
+    do {
+      let resolved = try FileWorkspaceTool.context(for: conversation, settings: store.settings)
+      if let refreshed = resolved.refreshedBookmarkData {
+        store.refreshWorkingFolderBookmark(
+          conversationID: conversation.id, bookmarkData: refreshed)
+      }
+      context = resolved.context
+    } catch {
+      let workspaceName = FileWorkspaceTool.workspaceName(
+        for: conversation, settings: store.settings)
+      return
+        "Error: working folder '\(workspaceName)' is no longer accessible. Select it again from the chat's + menu."
     }
     switch name {
-    case FileWorkspaceTool.listName: return FileWorkspaceService.list(arguments: arguments)
-    case FileWorkspaceTool.readName: return FileWorkspaceService.read(arguments: arguments)
-    case FileWorkspaceTool.writeName: return FileWorkspaceService.write(arguments: arguments)
-    case FileWorkspaceTool.renameName: return FileWorkspaceService.rename(arguments: arguments)
-    case FileWorkspaceTool.deleteName: return FileWorkspaceService.delete(arguments: arguments)
-    default: return "Error: Unknown FilesData tool."
+    case FileWorkspaceTool.listName:
+      return FileWorkspaceService.list(arguments: arguments, in: context)
+    case FileWorkspaceTool.readName:
+      return FileWorkspaceService.read(arguments: arguments, in: context)
+    case FileWorkspaceTool.writeName:
+      return FileWorkspaceService.write(arguments: arguments, in: context)
+    case FileWorkspaceTool.renameName:
+      return FileWorkspaceService.rename(arguments: arguments, in: context)
+    case FileWorkspaceTool.deleteName:
+      return FileWorkspaceService.delete(arguments: arguments, in: context)
+    default: return "Error: Unknown Files tool."
     }
   }
 
   private static func definitions(
     for id: BuiltInToolID,
+    conversation: Conversation,
     settings: AppSettings
   ) -> [ToolDefinition] {
     switch id {
@@ -215,7 +235,8 @@ enum BuiltInToolCatalog {
       return TextToSpeechTool.definitions
     case .files:
       guard settings.toolSettings.filesWorkspaceAccessEnabled else { return [] }
-      return FileWorkspaceTool.definitions
+      return FileWorkspaceTool.definitions(
+        workspaceName: FileWorkspaceTool.workspaceName(for: conversation, settings: settings))
     case .calendar:
       return CalendarTool.definitions(settings: settings.toolSettings)
     case .clipboard:
@@ -271,7 +292,7 @@ enum ToolAgentRegistry {
   ) -> [ToolDefinition] {
     guard conversation.toolsEnabled else { return [] }
     var defs = BuiltInToolCatalog.definitions(
-      for: conversation.enabledTools,
+      for: conversation,
       settings: settings)
     var enabledResourceServers: [(server: MCPServer, resources: [MCPResourceDescriptor])] = []
     for server in settings.mcpServers
@@ -767,81 +788,121 @@ enum FileWorkspaceTool {
   static let renameName = "files_rename"
   static let deleteName = "files_delete"
 
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: listName,
-      description: "List a FilesData folder.",
-      parameters: [
-        ToolParameterDef(
-          name: "path", type: "string",
-          description: "Folder path inside FilesData. Omit for the root folder.",
-          required: false)
-      ]
-    ),
-    ToolDefinition(
-      name: readName,
-      description: "Read a UTF-8 text file from FilesData.",
-      parameters: [
-        ToolParameterDef(
-          name: "path", type: "string",
-          description: "File path inside FilesData.",
-          required: true)
-      ]
-    ),
-    ToolDefinition(
-      name: writeName,
-      description:
-        "Write or append text to a FilesData file, or create a FilesData folder.",
-      parameters: [
-        ToolParameterDef(
-          name: "path", type: "string",
-          description: "File or folder path in FilesData.",
-          required: true),
-        ToolParameterDef(
-          name: "content", type: "string",
-          description: "Text to write. Required unless create_directory is true.",
-          required: false),
-        ToolParameterDef(
-          name: "append", type: "boolean",
-          description: "Append instead of replacing. Default: false.",
-          required: false),
-        ToolParameterDef(
-          name: "create_directory", type: "boolean",
-          description: "Create a folder instead of writing a file. Default: false.",
-          required: false),
-      ]
-    ),
-    ToolDefinition(
-      name: renameName,
-      description:
-        "Rename or move a FilesData file.",
-      parameters: [
-        ToolParameterDef(
-          name: "path", type: "string",
-          description: "Current file path in FilesData.",
-          required: true),
-        ToolParameterDef(
-          name: "new_path", type: "string",
-          description: "New file path in FilesData.",
-          required: true),
-      ]
-    ),
-    ToolDefinition(
-      name: deleteName,
-      description:
-        "Delete a FilesData file or folder.",
-      parameters: [
-        ToolParameterDef(
-          name: "path", type: "string",
-          description: "File or folder path in FilesData.",
-          required: true),
-        ToolParameterDef(
-          name: "recursive", type: "boolean",
-          description: "Delete non-empty folders. Default: false.",
-          required: false),
-      ]
-    ),
-  ]
+  /// The working folder the Files tools operate in for this conversation:
+  /// the chat's own selection, else the chat folder's default, else nil for
+  /// the built-in FilesData workspace.
+  static func workingFolderReference(
+    for conversation: Conversation,
+    settings: AppSettings
+  ) -> WorkingFolderReference? {
+    conversation.workingFolder
+      ?? settings.conversationFolderDefaults[conversation.folderID]?.workingFolder
+  }
+
+  static func workspaceName(for conversation: Conversation, settings: AppSettings) -> String {
+    workingFolderReference(for: conversation, settings: settings)?.displayName
+      ?? FileWorkspaceService.defaultWorkspaceName
+  }
+
+  static func context(
+    for conversation: Conversation,
+    settings: AppSettings
+  ) throws -> (context: FileWorkspaceContext, refreshedBookmarkData: Data?) {
+    guard let reference = workingFolderReference(for: conversation, settings: settings) else {
+      return (try FileWorkspaceContext.filesData(), nil)
+    }
+    let resolved = try WorkingFolderAccess.resolve(reference)
+    return (
+      FileWorkspaceContext.custom(rootURL: resolved.url, displayName: reference.displayName),
+      resolved.refreshedBookmarkData
+    )
+  }
+
+  static func definitions(workspaceName name: String) -> [ToolDefinition] {
+    [
+      ToolDefinition(
+        name: listName,
+        description: "List a folder inside the working folder '\(name)'.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "Folder path inside \(name). Omit for the root folder.",
+            required: false)
+        ]
+      ),
+      ToolDefinition(
+        name: readName,
+        description: "Read a UTF-8 text file from the working folder '\(name)'.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File path inside \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "max_bytes", type: "number",
+            description: "Maximum bytes to return. Default: 120000.",
+            required: false),
+          ToolParameterDef(
+            name: "offset", type: "number",
+            description: "Byte offset to continue reading a large file. Default: 0.",
+            required: false),
+        ]
+      ),
+      ToolDefinition(
+        name: writeName,
+        description:
+          "Write or append text to a file, or create a folder, in the working folder '\(name)'.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File or folder path in \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "content", type: "string",
+            description: "Text to write. Required unless create_directory is true.",
+            required: false),
+          ToolParameterDef(
+            name: "append", type: "boolean",
+            description: "Append instead of replacing. Default: false.",
+            required: false),
+          ToolParameterDef(
+            name: "create_directory", type: "boolean",
+            description: "Create a folder instead of writing a file. Default: false.",
+            required: false),
+        ]
+      ),
+      ToolDefinition(
+        name: renameName,
+        description:
+          "Rename or move a file or folder inside the working folder '\(name)'.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "Current path in \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "new_path", type: "string",
+            description: "New path in \(name).",
+            required: true),
+        ]
+      ),
+      ToolDefinition(
+        name: deleteName,
+        description:
+          "Delete a file or folder inside the working folder '\(name)'.",
+        parameters: [
+          ToolParameterDef(
+            name: "path", type: "string",
+            description: "File or folder path in \(name).",
+            required: true),
+          ToolParameterDef(
+            name: "recursive", type: "boolean",
+            description: "Delete non-empty folders. Default: false.",
+            required: false),
+        ]
+      ),
+    ]
+  }
 }
 
 @MainActor

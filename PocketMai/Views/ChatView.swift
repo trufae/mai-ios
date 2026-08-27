@@ -1970,6 +1970,7 @@ private struct ChatComposer: View {
   @State private var showingToolMenu = false
   @State private var showingToolPicker = false
   @State private var showingTextFileImporter = false
+  @State private var showingWorkingFolderImporter = false
   @State private var showingImagePicker = false
   @State private var showingCameraPicker = false
   @State private var showingWebXDCLauncher = false
@@ -2156,7 +2157,7 @@ private struct ChatComposer: View {
       }
     }
     .alert(
-      "Attachment failed",
+      "Import failed",
       isPresented: Binding(
         get: { attachmentError != nil },
         set: { if !$0 { attachmentError = nil } }),
@@ -2640,6 +2641,12 @@ private struct ChatComposer: View {
         .environmentObject(store)
         .presentationCompactAdaptation(.popover)
     }
+    .fileImporter(
+      isPresented: $showingWorkingFolderImporter,
+      allowedContentTypes: [.folder]
+    ) { result in
+      importWorkingFolder(result)
+    }
     .help("Tools")
   }
 
@@ -2665,6 +2672,31 @@ private struct ChatComposer: View {
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
       .padding(.vertical, 9)
+
+      Button {
+        showingToolMenu = false
+        showingWorkingFolderImporter = true
+      } label: {
+        toolMenuRowLabel(
+          "Working Folder...",
+          systemImage: "folder.badge.gearshape",
+          trailingText: workingFolderMenuText)
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+
+      if store.currentConversation?.workingFolder != nil {
+        Button {
+          showingToolMenu = false
+          store.setCurrentConversationWorkingFolder(nil)
+        } label: {
+          toolMenuRowLabel("Use Default Folder", systemImage: "arrow.uturn.backward")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+      }
 
       Divider()
 
@@ -2753,6 +2785,21 @@ private struct ChatComposer: View {
     guard toolsEnabled else { return }
     showingToolMenu = false
     showingToolPicker = true
+  }
+
+  private var workingFolderMenuText: String? {
+    guard let conversation = store.currentConversation else { return nil }
+    return store.workingFolderDisplayName(for: conversation)
+  }
+
+  private func importWorkingFolder(_ result: Result<URL, Error>) {
+    do {
+      let url = try result.get()
+      let reference = try WorkingFolderAccess.makeReference(from: url)
+      store.setCurrentConversationWorkingFolder(reference)
+    } catch {
+      attachmentError = error.localizedDescription
+    }
   }
 
   private var toolsEnabled: Bool {

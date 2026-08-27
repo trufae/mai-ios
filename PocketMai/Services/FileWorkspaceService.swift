@@ -196,12 +196,93 @@ enum PocketMaiDirectories {
   }
 }
 
+/// Where the Files tools operate: either the built-in FilesData workspace or a
+/// user-picked custom working folder reached through a security-scoped bookmark.
+struct FileWorkspaceContext: Sendable {
+  let rootURL: URL
+  let displayName: String
+  let hidesModelsFolder: Bool
+  let isSecurityScoped: Bool
+
+  init(rootURL: URL, displayName: String, hidesModelsFolder: Bool, isSecurityScoped: Bool) {
+    self.rootURL = rootURL.standardizedFileURL
+    self.displayName = displayName
+    self.hidesModelsFolder = hidesModelsFolder
+    self.isSecurityScoped = isSecurityScoped
+  }
+
+  static func filesData() throws -> FileWorkspaceContext {
+    FileWorkspaceContext(
+      rootURL: try PocketMaiDirectories.ensureFilesWorkspace(),
+      displayName: FileWorkspaceService.defaultWorkspaceName,
+      hidesModelsFolder: true,
+      isSecurityScoped: false)
+  }
+
+  static func custom(rootURL: URL, displayName: String) -> FileWorkspaceContext {
+    FileWorkspaceContext(
+      rootURL: rootURL,
+      displayName: WorkingFolderReference.normalizedDisplayName(displayName),
+      hidesModelsFolder: false,
+      isSecurityScoped: true)
+  }
+}
+
+/// Creates and resolves the security-scoped bookmarks behind custom working
+/// folders picked from Files or iCloud Drive.
+enum WorkingFolderAccess {
+  struct ResolvedFolder {
+    let url: URL
+    /// Non-nil when the stored bookmark was stale and could be re-created;
+    /// callers should persist it so the folder stays reachable.
+    let refreshedBookmarkData: Data?
+  }
+
+  static func makeReference(from pickedURL: URL) throws -> WorkingFolderReference {
+    try withAccess(to: pickedURL) {
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: pickedURL.path, isDirectory: &isDirectory),
+        isDirectory.boolValue
+      else {
+        throw NSError.fileWorkspace("The selected working folder is not a folder.")
+      }
+      let bookmarkData = try pickedURL.bookmarkData(
+        options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+      return WorkingFolderReference(
+        bookmarkData: bookmarkData,
+        displayName: pickedURL.lastPathComponent)
+    }
+  }
+
+  static func resolve(_ reference: WorkingFolderReference) throws -> ResolvedFolder {
+    var isStale = false
+    let url = try URL(
+      resolvingBookmarkData: reference.bookmarkData,
+      options: [],
+      relativeTo: nil,
+      bookmarkDataIsStale: &isStale)
+    guard isStale else { return ResolvedFolder(url: url, refreshedBookmarkData: nil) }
+    let refreshed = withAccess(to: url) {
+      try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+    return ResolvedFolder(url: url, refreshedBookmarkData: refreshed)
+  }
+
+  static func withAccess<T>(to url: URL, _ body: () throws -> T) rethrows -> T {
+    let didStart = url.startAccessingSecurityScopedResource()
+    defer {
+      if didStart { url.stopAccessingSecurityScopedResource() }
+    }
+    return try body()
+  }
+}
+
 enum FileWorkspaceService {
+  static let defaultWorkspaceName = "FilesData"
   private static let maxListEntries = 500
   private static let defaultReadLimit = 120_000
   private static let maxReadLimit = 500_000
   private static let maxWriteBytes = 1_000_000
-  private static let workspaceFolderName = "FilesData"
   private static let modelsFolderName = "Models"
   private static let listResourceKeys: [URLResourceKey] = [
     .contentModificationDateKey,
@@ -211,48 +292,56 @@ enum FileWorkspaceService {
     .isSymbolicLinkKey,
   ]
 
-  static func list(arguments: [String: AgentToolArgumentValue]) -> String {
-    do {
+  static func list(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
       if let path = optionalPathArgument(arguments) {
         let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !isWorkspaceRootPath(trimmedPath) {
-          let url = try validatedWorkspaceURL(path: trimmedPath, allowRoot: true)
-          return try listWorkspaceDirectory(at: url)
+        if !isWorkspaceRootPath(trimmedPath, context: context) {
+          let url = try validatedWorkspaceURL(path: trimmedPath, allowRoot: true, context: context)
+          return try listWorkspaceDirectory(at: url, context: context)
         }
       }
 
-      return try listWorkspaceDirectory(at: try workspaceRootURL())
-    } catch {
-      return "Error: \(error.localizedDescription)"
+      return try listWorkspaceDirectory(at: try validatedRoot(context), context: context)
     }
   }
 
-  private static func listWorkspaceDirectory(at url: URL) throws -> String {
-    let root = try workspaceRootURL()
+  private static func listWorkspaceDirectory(
+    at url: URL,
+    context: FileWorkspaceContext
+  ) throws -> String {
+    let root = try validatedRoot(context)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-      throw NSError.fileWorkspace("Folder '\(workspacePath(for: url))' does not exist.")
+      throw NSError.fileWorkspace(
+        "Folder '\(workspacePath(for: url, context: context))' does not exist.")
     }
     guard isDirectory.boolValue else {
-      throw NSError.fileWorkspace("'\(workspacePath(for: url))' is not a folder.")
+      throw NSError.fileWorkspace(
+        "'\(workspacePath(for: url, context: context))' is not a folder.")
     }
 
     let entries = try FileManager.default.contentsOfDirectory(
       at: url, includingPropertiesForKeys: listResourceKeys, options: [.skipsHiddenFiles]
     )
     .filter { entry in
-      url.standardizedFileURL.path != root.path || entry.lastPathComponent != modelsFolderName
+      !context.hidesModelsFolder
+        || url.standardizedFileURL.path != root.path
+        || entry.lastPathComponent != modelsFolderName
     }
     .sorted {
       $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
     }
 
-    var lines = ["\(workspacePath(for: url)) files:"]
+    var lines = ["\(workspacePath(for: url, context: context)) files:"]
     if entries.isEmpty {
       lines.append("(no files)")
     }
     for entry in entries.prefix(maxListEntries) {
-      lines.append(entryLine(for: entry, path: relativePath(for: entry)))
+      lines.append(entryLine(for: entry, path: relativePath(for: entry, context: context)))
     }
     if entries.count > maxListEntries {
       lines.append("Truncated: showing \(maxListEntries) of \(entries.count) entries.")
@@ -260,36 +349,42 @@ enum FileWorkspaceService {
     return lines.joined(separator: "\n")
   }
 
-  static func read(arguments: [String: AgentToolArgumentValue]) -> String {
-    do {
+  static func read(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
       let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
       guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return "Error: path is required."
       }
-      let url = try validatedFileURL(path: path)
+      let url = try validatedFileURL(path: path, context: context)
       let requestedLimit = arguments["max_bytes"]?.numberValue.map(Int.init) ?? defaultReadLimit
+      let requestedOffset = arguments["offset"]?.numberValue.map(Int.init) ?? 0
       return try readTextFile(
         at: url,
         displayPath: displayPath(path),
-        requestedLimit: requestedLimit)
-    } catch {
-      return "Error: \(error.localizedDescription)"
+        requestedLimit: requestedLimit,
+        requestedOffset: requestedOffset)
     }
   }
 
-  static func write(arguments: [String: AgentToolArgumentValue]) -> String {
-    do {
+  static func write(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
       let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
       guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return "Error: path is required."
       }
       let append = arguments["append"]?.boolValue ?? false
       let createDirectoryRequested = shouldCreateDirectory(arguments)
-      let url = try validatedFileURL(path: path)
-      let root = try workspaceRootURL()
+      let url = try validatedFileURL(path: path, context: context)
+      let root = try validatedRoot(context)
 
       if createDirectoryRequested {
-        return try createDirectory(at: url, path: path, root: root)
+        return try createDirectory(at: url, path: path, root: root, context: context)
       }
 
       guard let contentValue = arguments["content"] ?? arguments["text"] else {
@@ -310,7 +405,7 @@ enum FileWorkspaceService {
         return "Error: '\(displayPath(path))' is a directory."
       }
 
-      try ensureParentDirectory(for: url, root: root, createIfNeeded: true)
+      try ensureParentDirectory(for: url, root: root, createIfNeeded: true, context: context)
 
       if append, FileManager.default.fileExists(atPath: url.path) {
         let handle = try FileHandle(forWritingTo: url)
@@ -325,26 +420,27 @@ enum FileWorkspaceService {
 
       let action = append ? "Appended" : "Wrote"
       return "\(action) \(data.count) byte\(data.count == 1 ? "" : "s") to \(displayPath(path))"
-    } catch {
-      return "Error: \(error.localizedDescription)"
     }
   }
 
-  static func delete(arguments: [String: AgentToolArgumentValue]) -> String {
-    do {
+  static func delete(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
       let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
       guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return "Error: path is required."
       }
       let recursive = arguments["recursive"]?.boolValue ?? false
-      let url = try validatedFileURL(path: path)
-      let root = try workspaceRootURL()
+      let url = try validatedFileURL(path: path, context: context)
+      let root = try validatedRoot(context)
 
       var isDirectoryFlag: ObjCBool = false
       guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectoryFlag) else {
         return "Error: path '\(displayPath(path))' does not exist."
       }
-      try validateInsideWorkspace(url, root: root)
+      try validateInsideWorkspace(url, root: root, context: context)
 
       let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
       let isDirectory = values?.isDirectory == true && values?.isSymbolicLink != true
@@ -363,13 +459,14 @@ enum FileWorkspaceService {
 
       try FileManager.default.removeItem(at: url)
       return "Deleted file \(displayPath(path))"
-    } catch {
-      return "Error: \(error.localizedDescription)"
     }
   }
 
-  static func rename(arguments: [String: AgentToolArgumentValue]) -> String {
-    do {
+  static func rename(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
       let path =
         AgentTooling.firstNonEmpty(
           arguments["path"]?.stringValue,
@@ -391,26 +488,41 @@ enum FileWorkspaceService {
         return "Error: new_path is required."
       }
 
-      let url = try validatedFileURL(path: path)
-      let newURL = try validatedFileURL(path: newPath)
+      let url = try validatedFileURL(path: path, context: context)
+      let newURL = try validatedFileURL(path: newPath, context: context)
       if url.path == newURL.path {
-        return "File is already named \(displayPath(newPath))"
+        return "'\(displayPath(path))' is already named \(displayPath(newPath))"
       }
 
       var isDirectory: ObjCBool = false
       guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-        return "Error: file '\(displayPath(path))' does not exist."
+        return "Error: '\(displayPath(path))' does not exist."
       }
-      guard !isDirectory.boolValue else {
-        return "Error: '\(displayPath(path))' is a directory."
+      if isDirectory.boolValue {
+        let sourcePath = url.standardizedFileURL.path
+        let destinationPath = newURL.standardizedFileURL.path
+        guard !destinationPath.hasPrefix(sourcePath + "/") else {
+          return "Error: cannot move folder '\(displayPath(path))' inside itself."
+        }
       }
       guard !FileManager.default.fileExists(atPath: newURL.path) else {
-        return "Error: file '\(displayPath(newPath))' already exists."
+        return "Error: '\(displayPath(newPath))' already exists."
       }
-      try ensureParentDirectory(for: newURL, root: try workspaceRootURL(), createIfNeeded: false)
+      try ensureParentDirectory(
+        for: newURL, root: try validatedRoot(context), createIfNeeded: false, context: context)
 
       try FileManager.default.moveItem(at: url, to: newURL)
       return "Renamed \(displayPath(path)) to \(displayPath(newPath))"
+    }
+  }
+
+  private static func withWorkspaceAccess(
+    _ context: FileWorkspaceContext,
+    _ body: () throws -> String
+  ) -> String {
+    do {
+      guard context.isSecurityScoped else { return try body() }
+      return try WorkingFolderAccess.withAccess(to: context.rootURL, body)
     } catch {
       return "Error: \(error.localizedDescription)"
     }
@@ -435,7 +547,8 @@ enum FileWorkspaceService {
   private static func readTextFile(
     at url: URL,
     displayPath: String,
-    requestedLimit: Int
+    requestedLimit: Int,
+    requestedOffset: Int
   ) throws -> String {
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
@@ -449,29 +562,40 @@ enum FileWorkspaceService {
     if looksBinary(data) {
       return "Error: '\(displayPath)' appears to be binary; text files only."
     }
+    let offset = min(max(requestedOffset, 0), data.count)
     let limit = min(max(requestedLimit, 1), maxReadLimit)
-    let truncated = data.count > limit
-    var prefix = Data(data.prefix(limit))
-    var text: String?
-    while text == nil && !prefix.isEmpty {
-      text = String(data: prefix, encoding: .utf8)
-      if text == nil {
-        prefix.removeLast()
+    var chunk = Data(data.dropFirst(offset).prefix(limit))
+    var start = offset
+    if offset > 0 {
+      // A byte offset can land mid-character; skip UTF-8 continuation bytes.
+      while let first = chunk.first, first & 0b1100_0000 == 0b1000_0000 {
+        chunk.removeFirst()
+        start += 1
       }
     }
-    guard let text else {
+    var decoded = String(data: chunk, encoding: .utf8)
+    while decoded == nil, !chunk.isEmpty {
+      chunk.removeLast()
+      decoded = String(data: chunk, encoding: .utf8)
+    }
+    guard let text = decoded else {
       return "Error: '\(displayPath)' is not valid UTF-8 text."
     }
 
+    let consumedEnd = start + chunk.count
+    let truncated = consumedEnd < data.count
+    let rangeNote =
+      truncated || offset > 0 ? " (showing \(chunk.count) at offset \(start))" : ""
     var lines = [
       "File: \(displayPath)",
-      "Bytes: \(data.count)\(truncated ? " (truncated to \(prefix.count))" : "")",
+      "Bytes: \(data.count)\(rangeNote)",
       "",
       text,
     ]
     if truncated {
       lines.append("")
-      lines.append("Truncated to \(limit) bytes.")
+      lines.append(
+        "Truncated. Pass offset=\(consumedEnd) to files_read to continue.")
     }
     return lines.joined(separator: "\n")
   }
@@ -488,8 +612,13 @@ enum FileWorkspaceService {
       || arguments["create_directories"]?.boolValue == true
   }
 
-  private static func createDirectory(at url: URL, path: String, root: URL) throws -> String {
-    try ensureParentDirectory(for: url, root: root, createIfNeeded: true)
+  private static func createDirectory(
+    at url: URL,
+    path: String,
+    root: URL,
+    context: FileWorkspaceContext
+  ) throws -> String {
+    try ensureParentDirectory(for: url, root: root, createIfNeeded: true, context: context)
 
     var isDirectory: ObjCBool = false
     if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
@@ -500,15 +629,22 @@ enum FileWorkspaceService {
     }
 
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    try validateInsideWorkspace(url, root: root)
+    try validateInsideWorkspace(url, root: root, context: context)
     return "Created directory \(displayPath(path))"
   }
 
-  private static func validatedFileURL(path rawPath: String) throws -> URL {
-    try validatedWorkspaceURL(path: rawPath, allowRoot: false)
+  private static func validatedFileURL(
+    path rawPath: String,
+    context: FileWorkspaceContext
+  ) throws -> URL {
+    try validatedWorkspaceURL(path: rawPath, allowRoot: false, context: context)
   }
 
-  private static func validatedWorkspaceURL(path rawPath: String, allowRoot: Bool) throws -> URL {
+  private static func validatedWorkspaceURL(
+    path rawPath: String,
+    allowRoot: Bool,
+    context: FileWorkspaceContext
+  ) throws -> URL {
     let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
       throw NSError.fileWorkspace("Path is required.")
@@ -517,106 +653,118 @@ enum FileWorkspaceService {
       throw NSError.fileWorkspace("Path contains an invalid character.")
     }
     if trimmed.contains("\\") {
-      throw NSError.fileWorkspace("Use forward slashes inside FilesData paths.")
+      throw NSError.fileWorkspace("Use forward slashes inside \(context.displayName) paths.")
     }
 
-    let root = try workspaceRootURL()
+    let root = try validatedRoot(context)
     if (trimmed as NSString).isAbsolutePath {
       let url = URL(fileURLWithPath: trimmed, isDirectory: false).standardizedFileURL
-      try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
+      try validateInsideWorkspace(url, root: root, context: context, resolvingSymlinks: false)
       if !allowRoot && url.path == root.path {
-        throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
+        throw NSError.fileWorkspace(
+          "Path must name a file or folder inside \(context.displayName).")
       }
-      try validateWorkspacePathIsNotReserved(url, root: root)
+      try validateWorkspacePathIsNotReserved(url, root: root, context: context)
       if FileManager.default.fileExists(atPath: url.path) {
-        try validateInsideWorkspace(url, root: root)
+        try validateInsideWorkspace(url, root: root, context: context)
       }
       return url
     }
 
-    let components = try workspacePathComponents(trimmed, allowRoot: allowRoot)
+    let components = try workspacePathComponents(trimmed, allowRoot: allowRoot, context: context)
     var url = root
     for component in components {
       url.appendPathComponent(component)
     }
     url = url.standardizedFileURL
-    try validateInsideWorkspace(url, root: root, resolvingSymlinks: false)
+    try validateInsideWorkspace(url, root: root, context: context, resolvingSymlinks: false)
     if FileManager.default.fileExists(atPath: url.path) {
-      try validateInsideWorkspace(url, root: root)
+      try validateInsideWorkspace(url, root: root, context: context)
     }
     return url
   }
 
   private static func workspacePathComponents(
     _ rawPath: String,
-    allowRoot: Bool
+    allowRoot: Bool,
+    context: FileWorkspaceContext
   ) throws -> [String] {
     let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-    if isWorkspaceRootPath(trimmed) {
+    if isWorkspaceRootPath(trimmed, context: context) {
       if allowRoot { return [] }
-      throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
+      throw NSError.fileWorkspace(
+        "Path must name a file or folder inside \(context.displayName).")
     }
 
     var relativePath = trimmed
-    if relativePath.hasPrefix(workspaceFolderName + "/") {
-      relativePath.removeFirst(workspaceFolderName.count + 1)
+    if relativePath.hasPrefix(context.displayName + "/") {
+      relativePath.removeFirst(context.displayName.count + 1)
     }
-    if isWorkspaceRootPath(relativePath) {
+    if isWorkspaceRootPath(relativePath, context: context) {
       if allowRoot { return [] }
-      throw NSError.fileWorkspace("Path must name a file or folder inside FilesData.")
+      throw NSError.fileWorkspace(
+        "Path must name a file or folder inside \(context.displayName).")
     }
-    if isModelsPath(relativePath) {
-      throw NSError.fileWorkspace("Models is not available through FilesData tools.")
+    if context.hidesModelsFolder && isModelsPath(relativePath) {
+      throw NSError.fileWorkspace("Models is not available through \(context.displayName) tools.")
     }
 
     let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
       .map(String.init)
     guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-      throw NSError.fileWorkspace("FilesData path contains an invalid component.")
+      throw NSError.fileWorkspace("\(context.displayName) path contains an invalid component.")
     }
     return components
   }
 
-  private static func validateWorkspacePathIsNotReserved(_ url: URL, root: URL) throws {
+  private static func validateWorkspacePathIsNotReserved(
+    _ url: URL,
+    root: URL,
+    context: FileWorkspaceContext
+  ) throws {
+    guard context.hidesModelsFolder else { return }
     let rootPath = root.standardizedFileURL.path
     let path = url.standardizedFileURL.path
     guard path.hasPrefix(rootPath + "/") else { return }
     let relativePath = String(path.dropFirst(rootPath.count + 1))
     let firstComponent = relativePath.split(separator: "/", maxSplits: 1).first.map(String.init)
     if firstComponent == modelsFolderName {
-      throw NSError.fileWorkspace("Models is not available through FilesData tools.")
+      throw NSError.fileWorkspace("Models is not available through \(context.displayName) tools.")
     }
   }
 
-  private static func isWorkspaceRootPath(_ path: String) -> Bool {
-    path.isEmpty || path == "." || path == workspaceFolderName
+  private static func isWorkspaceRootPath(_ path: String, context: FileWorkspaceContext) -> Bool {
+    path.isEmpty || path == "." || path == context.displayName
   }
 
   private static func ensureParentDirectory(
     for url: URL,
     root: URL,
-    createIfNeeded: Bool
+    createIfNeeded: Bool,
+    context: FileWorkspaceContext
   ) throws {
     let parent = url.deletingLastPathComponent().standardizedFileURL
-    try validateInsideWorkspace(parent, root: root, resolvingSymlinks: false)
+    try validateInsideWorkspace(parent, root: root, context: context, resolvingSymlinks: false)
 
     var isDirectory: ObjCBool = false
     if FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory) {
       guard isDirectory.boolValue else {
-        throw NSError.fileWorkspace("Parent path '\(workspacePath(for: parent))' is not a folder.")
+        throw NSError.fileWorkspace(
+          "Parent path '\(workspacePath(for: parent, context: context))' is not a folder.")
       }
-      try validateInsideWorkspace(parent, root: root)
+      try validateInsideWorkspace(parent, root: root, context: context)
       return
     }
 
     guard createIfNeeded else {
-      throw NSError.fileWorkspace("Folder '\(workspacePath(for: parent))' does not exist.")
+      throw NSError.fileWorkspace(
+        "Folder '\(workspacePath(for: parent, context: context))' does not exist.")
     }
 
     let ancestor = existingAncestor(for: parent, root: root)
-    try validateInsideWorkspace(ancestor, root: root)
+    try validateInsideWorkspace(ancestor, root: root, context: context)
     try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-    try validateInsideWorkspace(parent, root: root)
+    try validateInsideWorkspace(parent, root: root, context: context)
   }
 
   private static func existingAncestor(for url: URL, root: URL) -> URL {
@@ -628,21 +776,28 @@ enum FileWorkspaceService {
     return current.path.hasPrefix(rootPath) ? current : root
   }
 
-  private static func workspaceRootURL() throws -> URL {
-    let root = try PocketMaiDirectories.ensureFilesWorkspace().standardizedFileURL
-    try validateInsideWorkspace(root, root: root, resolvingSymlinks: false)
+  private static func validatedRoot(_ context: FileWorkspaceContext) throws -> URL {
+    let root = context.rootURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      throw NSError.fileWorkspace(
+        "Working folder '\(context.displayName)' is not available. Select it again from the chat's + menu.")
+    }
     return root
   }
 
   private static func validateInsideWorkspace(
     _ url: URL,
     root: URL,
+    context: FileWorkspaceContext,
     resolvingSymlinks: Bool = true
   ) throws {
     try validateInsideDirectory(
       url,
       root: root,
-      message: "Path must be inside FilesData.",
+      message: "Path must be inside \(context.displayName).",
       resolvingSymlinks: resolvingSymlinks)
   }
 
@@ -683,21 +838,21 @@ enum FileWorkspaceService {
     return "- \(path) \(type)\(size)\(modified)"
   }
 
-  private static func relativePath(for url: URL) -> String {
-    let rootPath = PocketMaiDirectories.filesWorkspaceURL.standardizedFileURL.path
+  private static func relativePath(for url: URL, context: FileWorkspaceContext) -> String {
+    let rootPath = context.rootURL.path
     let path = url.standardizedFileURL.path
     guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
     return String(path.dropFirst(rootPath.count + 1))
   }
 
-  private static func workspacePath(for url: URL) -> String {
-    let rootPath = PocketMaiDirectories.filesWorkspaceURL.standardizedFileURL.path
+  private static func workspacePath(for url: URL, context: FileWorkspaceContext) -> String {
+    let rootPath = context.rootURL.path
     let path = url.standardizedFileURL.path
     if path == rootPath {
-      return workspaceFolderName
+      return context.displayName
     }
     guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
-    return "\(workspaceFolderName)/\(String(path.dropFirst(rootPath.count + 1)))"
+    return "\(context.displayName)/\(String(path.dropFirst(rootPath.count + 1)))"
   }
 
   private static func displayPath(_ path: String) -> String {
