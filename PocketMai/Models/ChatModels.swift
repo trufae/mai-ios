@@ -57,6 +57,7 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
 enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
   case markdown
   case epub
+  case docx
   case audio
   case json
   case debug
@@ -69,6 +70,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     case .json: "JSON"
     case .debug: "Debug"
     case .epub: "EPUB"
+    case .docx: "Word"
     case .audio: "Audio"
     }
   }
@@ -79,6 +81,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     case .json: "curlybraces"
     case .debug: "ladybug"
     case .epub: "book"
+    case .docx: "doc.text"
     case .audio: "waveform"
     }
   }
@@ -88,6 +91,7 @@ enum ConversationExportFormat: String, CaseIterable, Identifiable, Sendable {
     case .markdown: "md"
     case .json, .debug: "json"
     case .epub: "epub"
+    case .docx: "docx"
     case .audio: "m4a"
     }
   }

@@ -121,7 +121,7 @@ enum EPUBExporter {
     let xhtml: String
   }
 
-  private struct ImageResource {
+  struct ImageResource {
     let id: String
     let href: String
     let mediaType: String
@@ -130,11 +130,12 @@ enum EPUBExporter {
     let height: Int?
   }
 
-  private struct ImageResourceCatalog {
+  struct ImageResourceCatalog {
     private(set) var resources: [ImageResource] = []
     private var attachmentHrefsByID: [UUID: String] = [:]
     private var attachmentResourcesByID: [UUID: ImageResource] = [:]
     private var remoteHrefsBySource: [String: String] = [:]
+    private var remoteResourcesBySource: [String: ImageResource] = [:]
     private var mermaidResourcesBySource: [String: ImageResource] = [:]
     private var nextImageIndex = 1
     private let imageSize: AttachmentImageSize
@@ -208,6 +209,7 @@ enum EPUBExporter {
         url: url)
       resources.append(resource)
       remoteHrefsBySource[normalizedSource] = resource.href
+      remoteResourcesBySource[normalizedSource] = resource
     }
 
     mutating func addMermaidDiagram(source: String) async {
@@ -263,6 +265,10 @@ enum EPUBExporter {
 
     func href(forMarkdownImageSource source: String) -> String? {
       remoteHrefsBySource[source.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    func resource(forMarkdownImageSource source: String) -> ImageResource? {
+      remoteResourcesBySource[source.trimmingCharacters(in: .whitespacesAndNewlines)]
     }
 
     func resource(forMermaidDiagram source: String) -> ImageResource? {
@@ -524,7 +530,7 @@ enum EPUBExporter {
     }
   }
 
-  private struct MessageContent {
+  struct MessageContent {
     let visibleText: String
     let reasoningSections: [String]
 
@@ -600,7 +606,7 @@ enum EPUBExporter {
     return chapters
   }
 
-  private static func messageContent(for message: ChatMessage, includeThinking: Bool)
+  static func messageContent(for message: ChatMessage, includeThinking: Bool)
     -> MessageContent
   {
     let rendered = MessageContentFilter.render(message.presentationText)
@@ -611,7 +617,7 @@ enum EPUBExporter {
     return MessageContent(visibleText: rendered.visibleText, reasoningSections: reasoningSections)
   }
 
-  private static func buildImageResourceCatalog(
+  static func buildImageResourceCatalog(
     conversation: Conversation,
     includeThinking: Bool,
     imageSize: AttachmentImageSize
@@ -931,7 +937,7 @@ enum EPUBExporter {
 
   // MARK: - Inline rendering
 
-  private struct MarkdownImageToken {
+  struct MarkdownImageToken {
     let altText: String
     let source: String
     let end: Int
@@ -959,7 +965,7 @@ enum EPUBExporter {
     return sources
   }
 
-  private static func markdownImageToken(in chars: [Character], at index: Int)
+  static func markdownImageToken(in chars: [Character], at index: Int)
     -> MarkdownImageToken?
   {
     guard index + 1 < chars.count,
@@ -1512,7 +1518,7 @@ enum EPUBExporter {
     """
 }
 
-private struct StoredZipArchive {
+struct StoredZipArchive {
   private struct Entry {
     var path: String
     var data: Data
