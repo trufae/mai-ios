@@ -2857,34 +2857,52 @@ final class AppStore: ObservableObject {
     }
   }
 
+  func exportConversationDOCX(
+    _ conversation: Conversation,
+    imageSize: AttachmentImageSize = .full
+  ) async -> URL? {
+    do {
+      let data = try await DOCXExporter.makeDOCX(
+        conversation: conversation,
+        includeThinking: effectiveShowThinking(for: conversation),
+        imageSize: imageSize)
+      let url = try ConversationExportFiles.url(for: conversation, format: .docx)
+      try data.write(to: url, options: .atomic)
+      return url
+    } catch {
+      errorMessage = "Could not export Word document: \(error.localizedDescription)"
+      return nil
+    }
+  }
+
   func exportCurrentConversationFile(
     format: ConversationExportFormat,
-    epubImageSize: AttachmentImageSize = .full
+    imageSize: AttachmentImageSize = .full
   ) async -> URL? {
     guard let conversation = currentConversation else { return nil }
     return await exportConversationFile(
       conversation,
       format: format,
-      epubImageSize: epubImageSize)
+      imageSize: imageSize)
   }
 
   func exportConversationFile(
     id: UUID,
     format: ConversationExportFormat,
-    epubImageSize: AttachmentImageSize = .full
+    imageSize: AttachmentImageSize = .full
   ) async -> URL? {
     await ensureConversationLoaded(id)
     guard let conversation = conversation(withID: id) else { return nil }
     return await exportConversationFile(
       conversation,
       format: format,
-      epubImageSize: epubImageSize)
+      imageSize: imageSize)
   }
 
   func exportConversationFile(
     _ conversation: Conversation,
     format: ConversationExportFormat,
-    epubImageSize: AttachmentImageSize = .full
+    imageSize: AttachmentImageSize = .full
   ) async -> URL?
   {
     switch format {
@@ -2894,7 +2912,9 @@ final class AppStore: ObservableObject {
         format: format,
         content: export(conversation: conversation, format: format))
     case .epub:
-      return await exportConversationEPUB(conversation, imageSize: epubImageSize)
+      return await exportConversationEPUB(conversation, imageSize: imageSize)
+    case .docx:
+      return await exportConversationDOCX(conversation, imageSize: imageSize)
     case .audio:
       return nil
     }
@@ -4173,7 +4193,7 @@ final class AppStore: ObservableObject {
         return "{}"
       }
       return json
-    case .epub, .audio:
+    case .epub, .docx, .audio:
       return ""
     }
   }

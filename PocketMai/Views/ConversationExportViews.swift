@@ -6,15 +6,16 @@ struct ExportedFile: Identifiable {
   let url: URL
 }
 
-struct PendingEPUBExportImageSizeSelection: Identifiable {
+struct PendingExportImageSizeSelection: Identifiable {
   let id = UUID()
+  let format: ConversationExportFormat
   let conversationID: UUID
 }
 
 @MainActor
 final class ConversationExportCoordinator: ObservableObject {
   @Published var exportShareFile: ExportedFile?
-  @Published var pendingEPUBImageSizeSelection: PendingEPUBExportImageSizeSelection?
+  @Published var pendingImageSizeSelection: PendingExportImageSizeSelection?
   @Published var showingAudioExport = false
   @Published var audioExportError: String?
 
@@ -28,30 +29,31 @@ final class ConversationExportCoordinator: ObservableObject {
     format: ConversationExportFormat,
     conversationID: UUID,
     store: AppStore,
-    epubImageSize: AttachmentImageSize = .full
+    imageSize: AttachmentImageSize = .full
   ) async {
     guard
       let url = await exportFileURL(
         for: format,
         conversationID: conversationID,
         store: store,
-        epubImageSize: epubImageSize)
+        imageSize: imageSize)
     else {
       return
     }
     exportShareFile = ExportedFile(url: url)
   }
 
-  func shareEPUB(conversationID: UUID, store: AppStore) {
+  func shareDocument(format: ConversationExportFormat, conversationID: UUID, store: AppStore) {
     Task { @MainActor in
       guard let conversation = await store.conversationForExport(id: conversationID) else {
         return
       }
       guard Self.containsImageAttachments(conversation) else {
-        await share(format: .epub, conversationID: conversationID, store: store, epubImageSize: .full)
+        await share(format: format, conversationID: conversationID, store: store, imageSize: .full)
         return
       }
-      pendingEPUBImageSizeSelection = PendingEPUBExportImageSizeSelection(
+      pendingImageSizeSelection = PendingExportImageSizeSelection(
+        format: format,
         conversationID: conversationID)
     }
   }
@@ -60,7 +62,7 @@ final class ConversationExportCoordinator: ObservableObject {
     for format: ConversationExportFormat,
     conversationID: UUID,
     store: AppStore,
-    epubImageSize: AttachmentImageSize
+    imageSize: AttachmentImageSize
   ) async -> URL? {
     switch format {
     case .audio:
@@ -72,11 +74,11 @@ final class ConversationExportCoordinator: ObservableObject {
       return await store.exportConversationDebugJSONFile(id: conversationID)
     case .markdown, .json:
       return await store.exportConversationFile(id: conversationID, format: format)
-    case .epub:
+    case .epub, .docx:
       return await store.exportConversationFile(
         id: conversationID,
         format: format,
-        epubImageSize: epubImageSize)
+        imageSize: imageSize)
     }
   }
 
@@ -132,8 +134,8 @@ struct ConversationExportMenu: View {
     Menu {
       ConversationExportMenuItems(isExporting: coordinator.isExporting) { format in
         guard let conversationID else { return }
-        if format == .epub {
-          coordinator.shareEPUB(conversationID: conversationID, store: store)
+        if format == .epub || format == .docx {
+          coordinator.shareDocument(format: format, conversationID: conversationID, store: store)
           return
         }
         Task {
@@ -198,23 +200,23 @@ struct ConversationExportPresentations: ViewModifier {
         Text(message)
       }
       .imageSizeConfirmationDialog(
-        isPresented: epubImageSizeSelectionPresentedBinding,
-        presenting: coordinator.pendingEPUBImageSizeSelection,
-        message: { _ in
-          "Choose the maximum image size for this EPUB."
+        isPresented: imageSizeSelectionPresentedBinding,
+        presenting: coordinator.pendingImageSizeSelection,
+        message: { pending in
+          "Choose the maximum image size for this \(pending.format.displayName) export."
         },
         onSelect: { pending, size in
-          coordinator.pendingEPUBImageSizeSelection = nil
+          coordinator.pendingImageSizeSelection = nil
           Task {
             await coordinator.share(
-              format: .epub,
+              format: pending.format,
               conversationID: pending.conversationID,
               store: store,
-              epubImageSize: size)
+              imageSize: size)
           }
         },
         onCancel: {
-          coordinator.pendingEPUBImageSizeSelection = nil
+          coordinator.pendingImageSizeSelection = nil
         })
   }
 
@@ -244,12 +246,12 @@ struct ConversationExportPresentations: ViewModifier {
     }
   }
 
-  private var epubImageSizeSelectionPresentedBinding: Binding<Bool> {
+  private var imageSizeSelectionPresentedBinding: Binding<Bool> {
     Binding {
-      coordinator.pendingEPUBImageSizeSelection != nil
+      coordinator.pendingImageSizeSelection != nil
     } set: { isPresented in
       if !isPresented {
-        coordinator.pendingEPUBImageSizeSelection = nil
+        coordinator.pendingImageSizeSelection = nil
       }
     }
   }
@@ -326,7 +328,7 @@ struct ActivityShareSheet: UIViewControllerRepresentable {
 
 private extension ConversationExportFormat {
   static var shareMenuFormats: [ConversationExportFormat] {
-    [.markdown, .epub, .audio]
+    [.markdown, .epub, .docx, .audio]
   }
 
   static var dataMenuFormats: [ConversationExportFormat] {
@@ -337,6 +339,7 @@ private extension ConversationExportFormat {
     switch self {
     case .markdown: "Markdown (.md)"
     case .epub: "EPUB (.epub)"
+    case .docx: "Word (.docx)"
     case .audio: "Audio (.m4a)"
     case .json: "JSON Archive"
     case .debug: "Debug JSON"
