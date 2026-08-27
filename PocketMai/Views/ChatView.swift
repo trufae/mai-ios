@@ -1980,6 +1980,8 @@ private struct ChatComposer: View {
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
+  @State private var pendingPDFImport: PendingPDFImport?
+  @State private var isConvertingPDF = false
   @State private var attachmentError: String?
   @State private var promptAutocompleteSuppressedCommand: String?
   @State private var draftPersistenceTask: Task<Void, Never>?
@@ -2187,10 +2189,34 @@ private struct ChatComposer: View {
       onCancel: {
         pendingImageSizePrompt = nil
       })
+    .confirmationDialog(
+      "Import PDF",
+      isPresented: Binding(
+        get: { pendingPDFImport != nil },
+        set: { if !$0 { pendingPDFImport = nil } }),
+      titleVisibility: .visible,
+      presenting: pendingPDFImport
+    ) { pending in
+      Button("Text as Markdown") { convertPDFToMarkdown(pending) }
+      Button("One Image per Page") { convertPDFToImages(pending) }
+      Button("Cancel", role: .cancel) { pendingPDFImport = nil }
+    } message: { pending in
+      Text("How should \(pending.name).pdf be attached?")
+    }
   }
 
   private var textControls: some View {
     VStack(alignment: .leading, spacing: 6) {
+      if isConvertingPDF {
+        HStack(spacing: 6) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Converting PDF...")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 34)
+      }
       if !pendingAttachments.isEmpty {
         pendingAttachmentStrip
       }
@@ -2703,7 +2729,7 @@ private struct ChatComposer: View {
         showingToolMenu = false
         showingTextFileImporter = true
       } label: {
-        toolMenuRowLabel("Attach Text File", systemImage: "doc.text")
+        toolMenuRowLabel("Attach Document", systemImage: "doc.text")
       }
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
@@ -2853,6 +2879,7 @@ private struct ChatComposer: View {
     {
       types.append(word)
     }
+    types.append(.pdf)
     return types
   }
 
@@ -2877,6 +2904,19 @@ private struct ChatComposer: View {
           filename: url.deletingPathExtension().lastPathComponent + ".md",
           text: markdown,
           mimeType: "text/markdown")
+      case "pdf":
+        // A PDF can be worth reading either way, so the choice is the user's:
+        // its text as Markdown, or a picture of every page.
+        let pending = PendingPDFImport(
+          name: url.deletingPathExtension().lastPathComponent,
+          data: try PDFImporter.data(at: url),
+          canAttachImages: canAttachImage)
+        guard pending.canAttachImages else {
+          convertPDFToMarkdown(pending)
+          return
+        }
+        pendingPDFImport = pending
+        return
       case "txt", "md", "markdown":
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
         guard data.count <= Self.textAttachmentByteLimit else {
@@ -2892,7 +2932,7 @@ private struct ChatComposer: View {
           text: text,
           mimeType: ext == "txt" ? "text/plain" : "text/markdown")
       default:
-        attachmentError = "Choose a .txt, .md, or .docx file."
+        attachmentError = "Choose a .txt, .md, .docx, or .pdf file."
         return
       }
       pendingAttachments.append(attachment)
@@ -2900,6 +2940,81 @@ private struct ChatComposer: View {
     } catch {
       attachmentError = error.localizedDescription
     }
+  }
+
+  /// Converts the PDF's text off the main thread: a scanned document has to be
+  /// run through OCR, which takes a moment.
+  private func convertPDFToMarkdown(_ pending: PendingPDFImport) {
+    pendingPDFImport = nil
+    isConvertingPDF = true
+    let data = pending.data
+    let name = pending.name
+    Task {
+      let outcome = await Task.detached(priority: .userInitiated) {
+        PDFTextImportOutcome.convert(data)
+      }.value
+      isConvertingPDF = false
+      switch outcome {
+      case .markdown(let markdown):
+        guard markdown.utf8.count <= Self.textAttachmentByteLimit else {
+          attachmentError = "Text attachments are limited to 1.5 MB."
+          return
+        }
+        pendingAttachments.append(
+          .textFile(filename: name + ".md", text: markdown, mimeType: "text/markdown"))
+        composerFocused = true
+      case .failure(let message):
+        attachmentError = message
+      }
+    }
+  }
+
+  private func convertPDFToImages(_ pending: PendingPDFImport) {
+    pendingPDFImport = nil
+    isConvertingPDF = true
+    let data = pending.data
+    let name = pending.name
+    Task {
+      let outcome = await Task.detached(priority: .userInitiated) {
+        PDFPageImportOutcome.render(data)
+      }.value
+      isConvertingPDF = false
+      switch outcome {
+      case .pages(let pages, let truncated):
+        await appendPDFPageAttachments(pages, name: name, truncated: truncated)
+      case .failure(let message):
+        attachmentError = message
+      }
+    }
+  }
+
+  @MainActor
+  private func appendPDFPageAttachments(
+    _ pages: [Data], name: String, truncated: Bool
+  ) async {
+    var items: [PendingImageAttachmentImport.Item] = []
+    for (index, page) in pages.enumerated() {
+      guard let image = await AttachmentImageLoader.decodeImageData(page) else { continue }
+      items.append(
+        PendingImageAttachmentImport.Item(
+          filename: "\(name)-page-\(index + 1).jpg", image: image))
+    }
+    guard !items.isEmpty else {
+      attachmentError = "The PDF pages could not be rendered."
+      return
+    }
+
+    let note: String? =
+      truncated
+      ? "Only the first \(PDFImporter.maximumImagePages) pages were attached." : nil
+    let imageSize = store.settings.attachmentImageSize
+    guard imageSize != .prompt else {
+      pendingImageSizePrompt = PendingImageAttachmentImport(
+        items: items, failedCount: 0, note: note)
+      return
+    }
+    appendImageAttachments(items, size: imageSize)
+    if let note { attachmentError = note }
   }
 
   @MainActor
@@ -2982,6 +3097,8 @@ private struct ChatComposer: View {
     pendingImageSizePrompt = nil
     if pending.failedCount > 0 {
       attachmentError = imageImportFailureMessage(count: pending.failedCount)
+    } else if let note = pending.note {
+      attachmentError = note
     }
   }
 
@@ -3050,6 +3167,40 @@ private struct ChatComposer: View {
   }
 }
 
+private struct PendingPDFImport {
+  let name: String
+  let data: Data
+  let canAttachImages: Bool
+}
+
+/// The importers run off the main actor, so their results travel as values.
+private enum PDFTextImportOutcome: Sendable {
+  case markdown(String)
+  case failure(String)
+
+  static func convert(_ data: Data) -> PDFTextImportOutcome {
+    do {
+      return .markdown(try PDFImporter.markdown(from: data))
+    } catch {
+      return .failure(error.localizedDescription)
+    }
+  }
+}
+
+private enum PDFPageImportOutcome: Sendable {
+  case pages([Data], truncated: Bool)
+  case failure(String)
+
+  static func render(_ data: Data) -> PDFPageImportOutcome {
+    do {
+      let rendered = try PDFImporter.pageImages(from: data)
+      return .pages(rendered.images, truncated: rendered.truncated)
+    } catch {
+      return .failure(error.localizedDescription)
+    }
+  }
+}
+
 private struct PendingImageAttachmentImport {
   struct Item {
     let filename: String
@@ -3058,6 +3209,8 @@ private struct PendingImageAttachmentImport {
 
   let items: [Item]
   let failedCount: Int
+  /// Shown once the attachments land, e.g. when a long PDF was truncated.
+  var note: String?
 
   var imageSizePromptMessage: String {
     guard items.count != 1 else {

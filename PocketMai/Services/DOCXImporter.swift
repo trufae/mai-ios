@@ -368,7 +368,8 @@ private final class DocumentParser: NSObject, XMLParserDelegate {
   }
 
   private func endParagraph() {
-    let body = Self.trimmingTrailingWhitespace(Self.render(fragments: fragments))
+    let body = MarkdownImportFormatting.trimmingTrailingWhitespace(
+      Self.render(fragments: fragments))
     fragments = []
     guard !body.isEmpty else { return }
 
@@ -383,18 +384,18 @@ private final class DocumentParser: NSObject, XMLParserDelegate {
     if let numberID = listNumberID, numberID != "0" {
       let level = min(max(listLevel ?? 0, 0), 8)
       let marker = numbering.isOrdered(numberID: numberID, level: level) ? "1. " : "- "
-      text = Self.listItem(body, level: level, marker: marker)
+      text = MarkdownImportFormatting.listItem(body, level: level, marker: marker)
       isListItem = true
     } else if style == "listparagraph" {
       let level = min(max(listLevel ?? 0, 0), 8)
-      text = Self.listItem(body, level: level, marker: "- ")
+      text = MarkdownImportFormatting.listItem(body, level: level, marker: "- ")
       isListItem = true
     } else if let level = Self.headingLevel(for: style) {
       text = String(repeating: "#", count: level) + " " + body
     } else if let style, Self.isQuoteStyle(style) {
       text = "> " + body.replacingOccurrences(of: "\n", with: "\n> ")
     } else {
-      text = Self.escapingBlockStart(body)
+      text = MarkdownImportFormatting.escapingBlockStart(body)
     }
 
     blockStack[blockStack.count - 1].append(Block(text: text, isListItem: isListItem))
@@ -458,30 +459,13 @@ private final class DocumentParser: NSObject, XMLParserDelegate {
   }
 
   private static func decorate(_ text: String, style: RunStyle) -> String {
-    guard !text.isEmpty else { return "" }
-    let leading = String(text.prefix(while: { $0 == " " || $0 == "\t" }))
-    let remainder = text.dropFirst(leading.count)
-    let trailing = String(remainder.reversed().prefix(while: { $0 == " " || $0 == "\t" }).reversed())
-    let core = String(remainder.dropLast(trailing.count))
-    guard !core.isEmpty else { return text }
-
-    var rendered: String
-    if style.code {
-      let fence = core.contains("`") ? "``" : "`"
-      let padding = core.hasPrefix("`") || core.hasSuffix("`") ? " " : ""
-      rendered = fence + padding + core + padding + fence
-    } else {
-      rendered = escapingInline(core)
-      if style.bold { rendered = "**" + rendered + "**" }
-      if style.italic { rendered = "*" + rendered + "*" }
-      if style.strikethrough { rendered = "~~" + rendered + "~~" }
-    }
-
-    if let link = style.link, !link.isEmpty {
-      let needsBrackets = link.contains(" ") || link.contains("(") || link.contains(")")
-      rendered = "[" + rendered + "](" + (needsBrackets ? "<" + link + ">" : link) + ")"
-    }
-    return leading + rendered + trailing
+    MarkdownImportFormatting.decorate(
+      text,
+      bold: style.bold,
+      italic: style.italic,
+      code: style.code,
+      strikethrough: style.strikethrough,
+      link: style.link)
   }
 
   private static func render(table: TableState) -> String {
@@ -508,12 +492,6 @@ private final class DocumentParser: NSObject, XMLParserDelegate {
       .joined(separator: "<br>")
   }
 
-  private static func listItem(_ body: String, level: Int, marker: String) -> String {
-    let indent = String(repeating: "  ", count: level)
-    let continuation = "\n" + indent + String(repeating: " ", count: marker.count)
-    return indent + marker + body.replacingOccurrences(of: "\n", with: continuation)
-  }
-
   private static func isQuoteStyle(_ style: String) -> Bool {
     style == "quote" || style == "intensequote" || style == "blockquote"
       || style == "quotations" || style == "blocktext"
@@ -526,47 +504,5 @@ private final class DocumentParser: NSObject, XMLParserDelegate {
     guard style.hasPrefix("heading") else { return nil }
     guard let level = Int(style.dropFirst("heading".count)) else { return nil }
     return min(max(level, 1), 6)
-  }
-
-  private static let inlineEscapes: Set<Character> = ["\\", "`", "*", "[", "]"]
-
-  private static func escapingInline(_ text: String) -> String {
-    guard text.contains(where: { inlineEscapes.contains($0) }) else { return text }
-    var output = ""
-    output.reserveCapacity(text.count + 8)
-    for character in text {
-      if inlineEscapes.contains(character) { output.append("\\") }
-      output.append(character)
-    }
-    return output
-  }
-
-  /// Keeps a plain paragraph from accidentally becoming a heading, quote or list.
-  private static func escapingBlockStart(_ text: String) -> String {
-    guard let first = text.first else { return text }
-    if first == "#" || first == ">" || first == "|" {
-      return "\\" + text
-    }
-    if first == "-" || first == "+" {
-      return text.dropFirst().first == " " ? "\\" + text : text
-    }
-    if first.isNumber {
-      let digits = text.prefix(while: { $0.isNumber })
-      let rest = text.dropFirst(digits.count)
-      if let marker = rest.first, marker == "." || marker == ")",
-        rest.dropFirst().first == " "
-      {
-        return String(digits) + "\\" + String(rest)
-      }
-    }
-    return text
-  }
-
-  private static func trimmingTrailingWhitespace(_ text: String) -> String {
-    var result = text
-    while let last = result.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
-      result.removeLast()
-    }
-    return result
   }
 }

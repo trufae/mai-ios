@@ -14,6 +14,7 @@ This app is inspired in the [MAI](https://github.com/trufae/mai) which is a Go a
 - **Tools**: datetime, location, weather, web search, todo, text-to-speech, files, memory — invokable by the model via native tool-calling or a text-protocol fallback.
 - **MCP**: configure remote MCP servers and surface them to the model.
 - **Multiple system prompts**, persistent conversations, export to Markdown / plain text / JSON / ePUB / Word (docx).
+- **Attachments**: text, Markdown, Word (docx) and PDF files. Word and PDF are converted to Markdown on device (PDFs can also be attached as one image per page, and scanned pages are read with Vision OCR).
 
 ## Build
 
