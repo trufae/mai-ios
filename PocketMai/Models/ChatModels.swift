@@ -1222,6 +1222,16 @@ struct WorkingFolderReference: Codable, Equatable, Sendable {
   }
 }
 
+/// How a chat resolves the folder the Files tools work in.
+enum ConversationWorkingFolderMode: Equatable, Sendable {
+  /// The Files tools are off for the chat, so no working folder is reachable.
+  case disabled
+  /// The chat inherits its chat folder's default, else the built-in workspace.
+  case inherited
+  /// The chat picked its own folder.
+  case custom
+}
+
 struct ConversationFolderDefaults: Codable, Equatable, Sendable {
   var systemPromptID: UUID?
   var provider: ProviderKind?
