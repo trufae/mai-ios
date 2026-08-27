@@ -283,6 +283,10 @@ enum FileWorkspaceService {
   private static let defaultReadLimit = 120_000
   private static let maxReadLimit = 500_000
   private static let maxWriteBytes = 1_000_000
+  private static let maxIndexEntries = 400
+  private static let defaultRangeLineCount = 200
+  private static let maxRangeLineCount = 1_000
+  private static let maxEditableFileBytes = 10_000_000
   private static let modelsFolderName = "Models"
   private static let listResourceKeys: [URLResourceKey] = [
     .contentModificationDateKey,
@@ -366,6 +370,338 @@ enum FileWorkspaceService {
         displayPath: displayPath(path),
         requestedLimit: requestedLimit,
         requestedOffset: requestedOffset)
+    }
+  }
+
+  /// Reads a document file as text: Word and PDF files are converted to
+  /// Markdown, JSON files to an indented outline, and anything else is read as
+  /// plain UTF-8 text.
+  static func readDocument(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
+      let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      let url = try validatedFileURL(path: path, context: context)
+      let document = try loadDocument(at: url, displayPath: displayPath(path))
+      let requestedLimit = arguments["max_bytes"]?.numberValue.map(Int.init) ?? defaultReadLimit
+      let requestedOffset = arguments["offset"]?.numberValue.map(Int.init) ?? 0
+      let data = Data(document.text.utf8)
+      guard
+        let window = utf8Window(
+          in: data, requestedLimit: requestedLimit, requestedOffset: requestedOffset)
+      else {
+        return "Error: '\(displayPath(path))' is not valid UTF-8 text."
+      }
+      let suffix = document.conversionNote.map { " (\($0))" } ?? ""
+      return windowedFileReport(
+        header: "Document: \(displayPath(path))\(suffix)",
+        window: window,
+        totalBytes: data.count,
+        continuationTool: "files_read_document")
+    }
+  }
+
+  /// Lists an index of a file with 1-based line numbers: function and type
+  /// names for source code, headings for Markdown (including converted Word
+  /// and PDF documents), and container keys for JSON.
+  static func readIndex(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
+      let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      let url = try validatedFileURL(path: path, context: context)
+      let display = displayPath(path)
+      let document = try loadDocument(at: url, displayPath: display)
+
+      let entries: [DocumentIndexer.Entry]
+      if let sections = document.jsonSections {
+        entries = sections.map { section in
+          DocumentIndexer.Entry(
+            line: section.line,
+            title: String(repeating: "  ", count: section.depth) + section.title)
+        }
+      } else if document.conversionNote == nil,
+        let sourceEntries = DocumentIndexer.sourceIndex(
+          text: document.text, fileExtension: url.pathExtension)
+      {
+        entries = sourceEntries
+      } else {
+        entries = DocumentIndexer.markdownIndex(text: document.text)
+      }
+
+      let suffix = document.conversionNote.map { " (\($0))" } ?? ""
+      guard !entries.isEmpty else {
+        return
+          "No index entries found in \(display)\(suffix). The index lists function and type names in source files, headings in Markdown and converted documents, and keys in JSON files."
+      }
+      let noun = entries.count == 1 ? "entry" : "entries"
+      var lines = ["Index of \(display)\(suffix): \(entries.count) \(noun)"]
+      if document.conversionNote != nil {
+        lines.append(
+          "Line numbers refer to the converted text returned by files_read_document and files_read_range.")
+      }
+      for entry in entries.prefix(maxIndexEntries) {
+        lines.append("\(entry.line): \(entry.title)")
+      }
+      if entries.count > maxIndexEntries {
+        lines.append("Truncated: showing \(maxIndexEntries) of \(entries.count) entries.")
+      }
+      return lines.joined(separator: "\n")
+    }
+  }
+
+  /// Returns a numbered range of lines. Word, PDF, and JSON files are read
+  /// through the same conversion as files_read_document, so line numbers match
+  /// the files_read_index output.
+  static func readRange(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
+      let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      let url = try validatedFileURL(path: path, context: context)
+      let display = displayPath(path)
+      let document = try loadDocument(at: url, displayPath: display)
+      let lines = documentLines(document.text)
+
+      let start = arguments["start_line"]?.numberValue.map(Int.init) ?? 1
+      let requestedEnd =
+        arguments["end_line"]?.numberValue.map(Int.init)
+        ?? arguments["line_count"]?.numberValue.map { start + Int($0) - 1 }
+        ?? start + defaultRangeLineCount - 1
+      guard start >= 1 else { return "Error: start_line must be at least 1." }
+      guard !lines.isEmpty else { return "\(display) is empty." }
+      guard start <= lines.count else {
+        return "Error: start_line \(start) is past the end of \(display) (\(lines.count) lines)."
+      }
+      guard requestedEnd >= start else {
+        return "Error: end_line must be at least start_line."
+      }
+
+      var end = min(requestedEnd, lines.count)
+      var cappedByLineLimit = false
+      if end - start + 1 > maxRangeLineCount {
+        end = start + maxRangeLineCount - 1
+        cappedByLineLimit = true
+      }
+
+      let suffix = document.conversionNote.map { " (\($0))" } ?? ""
+      var output = ["File: \(display)\(suffix), lines \(start)-\(end) of \(lines.count)"]
+      var usedBytes = 0
+      var lastIncluded = start - 1
+      for lineNumber in start...end {
+        let rendered = "\(lineNumber): \(lines[lineNumber - 1])"
+        let renderedBytes = rendered.utf8.count + 1
+        if usedBytes + renderedBytes > maxReadLimit {
+          if lastIncluded < start {
+            // Even the first line exceeds the byte budget; return a clipped view.
+            output.append(String(rendered.prefix(maxReadLimit)))
+            output.append(
+              "Line \(lineNumber) is longer than \(maxReadLimit) bytes and was clipped; use files_read with offsets for the full line.")
+            lastIncluded = lineNumber
+          }
+          break
+        }
+        usedBytes += renderedBytes
+        output.append(rendered)
+        lastIncluded = lineNumber
+      }
+      if lastIncluded < end {
+        output.append("Truncated. Continue with start_line=\(lastIncluded + 1).")
+      } else if cappedByLineLimit {
+        output.append(
+          "Showing \(maxRangeLineCount) lines. Continue with start_line=\(lastIncluded + 1).")
+      }
+      return output.joined(separator: "\n")
+    }
+  }
+
+  /// Replaces an inclusive 1-based line range of a plain UTF-8 text file.
+  /// Passing end_line = start_line - 1 inserts before start_line without
+  /// removing anything; empty content deletes the range.
+  static func replaceRange(
+    arguments: [String: AgentToolArgumentValue],
+    in context: FileWorkspaceContext
+  ) -> String {
+    withWorkspaceAccess(context) {
+      let path = pathArgument(arguments, primary: "path", fallback: "file") ?? ""
+      guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "Error: path is required."
+      }
+      guard let start = arguments["start_line"]?.numberValue.map(Int.init) else {
+        return "Error: start_line is required."
+      }
+      let url = try validatedFileURL(path: path, context: context)
+      let display = displayPath(path)
+      guard case .plainText = WorkspaceDocumentKind(url: url) else {
+        return
+          "Error: files_replace_range edits plain UTF-8 text files only; '\(display)' is read through a converted view. Use files_read and files_write for raw edits."
+      }
+      let document = try loadDocument(at: url, displayPath: display)
+      let end = arguments["end_line"]?.numberValue.map(Int.init) ?? start
+      let replacement =
+        arguments["content"]?.stringValue ?? arguments["text"]?.stringValue ?? ""
+      guard replacement.utf8.count <= maxWriteBytes else {
+        return "Error: replacement content is limited to \(maxWriteBytes) bytes."
+      }
+
+      let edit = try replacingLineRange(
+        in: document.text, startLine: start, endLine: end, replacement: replacement)
+      let data = Data(edit.text.utf8)
+      guard data.count <= maxEditableFileBytes else {
+        return "Error: the edited file would exceed \(maxEditableFileBytes) bytes."
+      }
+      try data.write(to: url, options: [.atomic])
+
+      let inserted = "\(edit.insertedLineCount) line\(edit.insertedLineCount == 1 ? "" : "s")"
+      let rangeText = start == end ? "line \(start)" : "lines \(start)-\(end)"
+      if edit.removedLineCount == 0 {
+        return
+          "Inserted \(inserted) before line \(start) in \(display); now \(edit.totalLineCount) lines."
+      }
+      if edit.insertedLineCount == 0 {
+        return "Deleted \(rangeText) from \(display); now \(edit.totalLineCount) lines."
+      }
+      return
+        "Replaced \(rangeText) with \(inserted) in \(display); now \(edit.totalLineCount) lines."
+    }
+  }
+
+  struct LineRangeEdit: Equatable {
+    let text: String
+    let removedLineCount: Int
+    let insertedLineCount: Int
+    let totalLineCount: Int
+  }
+
+  /// Pure line-range replacement over `text`, 1-based and inclusive. Exposed
+  /// for testing; files_replace_range validates paths and sizes around it.
+  static func replacingLineRange(
+    in text: String,
+    startLine: Int,
+    endLine: Int,
+    replacement: String
+  ) throws -> LineRangeEdit {
+    guard startLine >= 1 else {
+      throw NSError.fileWorkspace("start_line must be at least 1.")
+    }
+    guard endLine >= startLine - 1 else {
+      throw NSError.fileWorkspace(
+        "end_line must be at least start_line - 1 (start_line - 1 inserts without removing).")
+    }
+    let lines = documentLines(text)
+    guard startLine <= lines.count + 1 else {
+      throw NSError.fileWorkspace(
+        "start_line \(startLine) is past the end of the file (\(lines.count) lines).")
+    }
+    guard endLine <= lines.count else {
+      throw NSError.fileWorkspace(
+        "end_line \(endLine) is past the end of the file (\(lines.count) lines).")
+    }
+
+    var replacementLines = replacement.components(separatedBy: "\n")
+    if replacementLines.last == "" { replacementLines.removeLast() }
+
+    var result = Array(lines[0..<(startLine - 1)])
+    result.append(contentsOf: replacementLines)
+    result.append(contentsOf: lines[endLine...])
+
+    var newText = result.joined(separator: "\n")
+    if text.hasSuffix("\n"), !newText.isEmpty { newText += "\n" }
+    return LineRangeEdit(
+      text: newText,
+      removedLineCount: endLine - startLine + 1,
+      insertedLineCount: replacementLines.count,
+      totalLineCount: result.count)
+  }
+
+  /// Content lines of a document: a trailing newline does not add an empty
+  /// final line.
+  private static func documentLines(_ text: String) -> [String] {
+    guard !text.isEmpty else { return [] }
+    var lines = text.components(separatedBy: "\n")
+    if lines.last == "" { lines.removeLast() }
+    return lines
+  }
+
+  private struct WorkspaceDocument {
+    let text: String
+    /// Human-readable conversion note, nil when the file was read verbatim.
+    let conversionNote: String?
+    /// Key outline when the file is JSON, aligned with the rendered text.
+    let jsonSections: [JSONDocumentImporter.Section]?
+  }
+
+  private enum WorkspaceDocumentKind {
+    case wordDocument
+    case pdfDocument
+    case jsonDocument
+    case plainText
+
+    init(url: URL) {
+      switch url.pathExtension.lowercased() {
+      case "docx": self = .wordDocument
+      case "pdf": self = .pdfDocument
+      case "json": self = .jsonDocument
+      default: self = .plainText
+      }
+    }
+  }
+
+  private static func loadDocument(
+    at url: URL,
+    displayPath: String
+  ) throws -> WorkspaceDocument {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      throw NSError.fileWorkspace("File '\(displayPath)' does not exist.")
+    }
+    guard !isDirectory.boolValue else {
+      throw NSError.fileWorkspace("'\(displayPath)' is a directory.")
+    }
+
+    switch WorkspaceDocumentKind(url: url) {
+    case .wordDocument:
+      return WorkspaceDocument(
+        text: try DOCXImporter.markdown(from: url),
+        conversionNote: "converted from Word to Markdown",
+        jsonSections: nil)
+    case .pdfDocument:
+      return WorkspaceDocument(
+        text: try PDFImporter.markdown(from: url),
+        conversionNote: "converted from PDF to Markdown",
+        jsonSections: nil)
+    case .jsonDocument:
+      let rendered = try JSONDocumentImporter.render(
+        data: try Data(contentsOf: url, options: [.mappedIfSafe]))
+      return WorkspaceDocument(
+        text: rendered.text,
+        conversionNote: "converted from JSON to an indented outline",
+        jsonSections: rendered.sections)
+    case .plainText:
+      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+      guard data.count <= maxEditableFileBytes else {
+        throw NSError.fileWorkspace(
+          "'\(displayPath)' is larger than \(maxEditableFileBytes) bytes; use files_read with offsets instead.")
+      }
+      if looksBinary(data) {
+        throw NSError.fileWorkspace("'\(displayPath)' appears to be binary; text files only.")
+      }
+      guard let text = String(data: data, encoding: .utf8) else {
+        throw NSError.fileWorkspace("'\(displayPath)' is not valid UTF-8 text.")
+      }
+      return WorkspaceDocument(text: text, conversionNote: nil, jsonSections: nil)
     }
   }
 
@@ -562,6 +898,30 @@ enum FileWorkspaceService {
     if looksBinary(data) {
       return "Error: '\(displayPath)' appears to be binary; text files only."
     }
+    guard
+      let window = utf8Window(
+        in: data, requestedLimit: requestedLimit, requestedOffset: requestedOffset)
+    else {
+      return "Error: '\(displayPath)' is not valid UTF-8 text."
+    }
+    return windowedFileReport(
+      header: "File: \(displayPath)",
+      window: window,
+      totalBytes: data.count,
+      continuationTool: "files_read")
+  }
+
+  private struct UTF8Window {
+    let text: String
+    let start: Int
+    let consumedEnd: Int
+  }
+
+  private static func utf8Window(
+    in data: Data,
+    requestedLimit: Int,
+    requestedOffset: Int
+  ) -> UTF8Window? {
     let offset = min(max(requestedOffset, 0), data.count)
     let limit = min(max(requestedLimit, 1), maxReadLimit)
     var chunk = Data(data.dropFirst(offset).prefix(limit))
@@ -578,24 +938,31 @@ enum FileWorkspaceService {
       chunk.removeLast()
       decoded = String(data: chunk, encoding: .utf8)
     }
-    guard let text = decoded else {
-      return "Error: '\(displayPath)' is not valid UTF-8 text."
-    }
+    guard let text = decoded else { return nil }
+    return UTF8Window(text: text, start: start, consumedEnd: start + chunk.count)
+  }
 
-    let consumedEnd = start + chunk.count
-    let truncated = consumedEnd < data.count
+  private static func windowedFileReport(
+    header: String,
+    window: UTF8Window,
+    totalBytes: Int,
+    continuationTool: String
+  ) -> String {
+    let truncated = window.consumedEnd < totalBytes
+    let shownBytes = window.consumedEnd - window.start
     let rangeNote =
-      truncated || offset > 0 ? " (showing \(chunk.count) at offset \(start))" : ""
+      truncated || window.start > 0
+      ? " (showing \(shownBytes) at offset \(window.start))" : ""
     var lines = [
-      "File: \(displayPath)",
-      "Bytes: \(data.count)\(rangeNote)",
+      header,
+      "Bytes: \(totalBytes)\(rangeNote)",
       "",
-      text,
+      window.text,
     ]
     if truncated {
       lines.append("")
       lines.append(
-        "Truncated. Pass offset=\(consumedEnd) to files_read to continue.")
+        "Truncated. Pass offset=\(window.consumedEnd) to \(continuationTool) to continue.")
     }
     return lines.joined(separator: "\n")
   }

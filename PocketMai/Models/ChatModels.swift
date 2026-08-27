@@ -1986,6 +1986,7 @@ struct ConversationDebugNativeToolSettings: Codable, Equatable, Sendable {
   var webSearchFetchingEnabled: Bool
   var calendarEventCreationEnabled: Bool
   var filesWorkspaceAccessEnabled: Bool
+  var filesAdvancedToolsEnabled: Bool
   var configuredToolFilesCount: Int
   var todoCount: Int
 }
@@ -2771,6 +2772,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var todos: [TodoItem] = []
   var files: [ToolFile] = []
   var filesWorkspaceAccessEnabled: Bool = false
+  var filesAdvancedToolsEnabled: Bool = false
   var webxdcAllowInternet: Bool = false
   var webxdcChatInteractionEnabled: Bool = true
   var webxdcAllowGPSLocation: Bool = false
@@ -2798,7 +2800,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case manualLocation, weatherLocation, webSearchProvider
     case webSearchSearXNGURL, webSearchSearXNGUsername, webSearchSearXNGPassword
     case webSearchFetchingEnabled, calendarEventCreationEnabled, todos, files
-    case filesWorkspaceAccessEnabled
+    case filesWorkspaceAccessEnabled, filesAdvancedToolsEnabled
     case webxdcAllowInternet, webxdcChatInteractionEnabled
     case webxdcAllowGPSLocation, webxdcAllowMotionSensors, webxdcAllowWASM
     case webxdcAllowWebGL, webxdcAllowCanvas2D, webxdcAllowAudioPlayback
@@ -2850,6 +2852,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     filesWorkspaceAccessEnabled =
       (try? c.decode(Bool.self, forKey: .filesWorkspaceAccessEnabled))
       ?? defaults.filesWorkspaceAccessEnabled
+    filesAdvancedToolsEnabled =
+      (try? c.decode(Bool.self, forKey: .filesAdvancedToolsEnabled))
+      ?? defaults.filesAdvancedToolsEnabled
     webxdcAllowInternet =
       (try? c.decode(Bool.self, forKey: .webxdcAllowInternet)) ?? defaults.webxdcAllowInternet
     webxdcChatInteractionEnabled =
@@ -2930,6 +2935,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(todos, forKey: .todos)
     try c.encode(files, forKey: .files)
     try c.encode(filesWorkspaceAccessEnabled, forKey: .filesWorkspaceAccessEnabled)
+    try c.encode(filesAdvancedToolsEnabled, forKey: .filesAdvancedToolsEnabled)
     try c.encode(webxdcAllowInternet, forKey: .webxdcAllowInternet)
     try c.encode(webxdcChatInteractionEnabled, forKey: .webxdcChatInteractionEnabled)
     try c.encode(webxdcAllowGPSLocation, forKey: .webxdcAllowGPSLocation)
@@ -3257,6 +3263,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     if storedSettingsVersion < Self.currentSettingsVersion {
       toolSettings.webSearchFetchingEnabled = false
       toolSettings.filesWorkspaceAccessEnabled = false
+      toolSettings.filesAdvancedToolsEnabled = false
       toolSettings.calendarEventCreationEnabled = false
     }
     mcpServers = (try? c.decode([MCPServer].self, forKey: .mcpServers)) ?? []
