@@ -2379,7 +2379,8 @@ final class AppStore: ObservableObject {
         text: prompt,
         displayText: displayText,
         voiceRecordingFilename: voiceRecordingFilename,
-        attachments: attachments)
+        attachments: attachments,
+        locationText: context.messageLocation)
       conversations[i].messages.append(userMessage)
       let presentationText = displayText ?? prompt
       let titleSource = MessageContentFilter.render(presentationText).visibleText
@@ -2395,6 +2396,7 @@ final class AppStore: ObservableObject {
         conversations[i].messages[lastIndex].displayText = displayText
         conversations[i].messages[lastIndex].voiceRecordingFilename = voiceRecordingFilename
         conversations[i].messages[lastIndex].attachments = attachments
+        conversations[i].messages[lastIndex].locationText = context.messageLocation
       }
     }
     conversations[i].lastContextSignature = context.signature
@@ -4434,10 +4436,13 @@ final class AppStore: ObservableObject {
   ) -> [ConversationDebugPromptMessage] {
     let limited = PromptComposer.contextMessages(
       from: conversation, settings: settings, limit: messageLimit)
+    let metadata = MessageMetadataAnnotation.annotations(for: conversation)
     var messages = [ConversationDebugPromptMessage(role: "system", content: systemPrompt)]
     messages.append(
       contentsOf: limited.flatMap { message in
-        PromptComposer.contextTranscriptEntries(from: message, settings: settings).map { entry in
+        PromptComposer.contextTranscriptEntries(
+          from: message, settings: settings, metadataPrefix: metadata[message.id]
+        ).map { entry in
           ConversationDebugPromptMessage(
             role: debugRole(displayName: entry.displayName),
             content: entry.content)

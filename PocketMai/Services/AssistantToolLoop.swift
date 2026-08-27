@@ -1442,9 +1442,12 @@ enum AssistantToolLoop {
       from: conversation,
       settings: store.settings,
       limit: store.settings.contextWindowMode.messageLimit)
+    let metadata = MessageMetadataAnnotation.annotations(for: conversation)
     messages.append(
       contentsOf: limited.flatMap { message in
-        PromptComposer.contextTranscriptEntries(from: message, settings: store.settings).map {
+        PromptComposer.contextTranscriptEntries(
+          from: message, settings: store.settings, metadataPrefix: metadata[message.id]
+        ).map {
           ConversationDebugPromptMessage(
             role: debugRole(displayName: $0.displayName),
             content: $0.content)

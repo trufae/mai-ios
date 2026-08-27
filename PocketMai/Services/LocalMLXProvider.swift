@@ -322,9 +322,12 @@ actor LocalMLXProvider {
     let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
     let limited = PromptComposer.contextMessages(
       from: conversation, settings: settings, limit: effectiveLimit)
+    let metadata = MessageMetadataAnnotation.annotations(for: conversation)
 
     for message in limited {
-      for entry in PromptComposer.contextTranscriptEntries(from: message, settings: settings) {
+      for entry in PromptComposer.contextTranscriptEntries(
+        from: message, settings: settings, metadataPrefix: metadata[message.id])
+      {
         switch entry.displayName {
         case ChatRole.system.displayName:
           messages.append(.system(entry.content))

@@ -18,6 +18,23 @@ private struct ConversationTimelineTimestamp: View {
   }
 }
 
+/// Marks a pause in the conversation, so a chat resumed hours or days later
+/// reads as a timeline instead of one continuous exchange.
+private struct ConversationTimelineGap: View {
+  let label: String
+
+  var body: some View {
+    Label(label, systemImage: "clock")
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      .labelStyle(.titleAndIcon)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 2)
+      .accessibilityElement(children: .combine)
+  }
+}
+
 struct ChatView: View {
   struct RenderInvalidationKey: Equatable {
     var selectedConversationID: UUID?
@@ -577,9 +594,14 @@ struct ChatView: View {
               emptyState(screenIsLandscape: screenIsLandscape(fallbackSize: scrollGeometry.size))
                 .containerRelativeFrame(.vertical)
             } else {
+              let messageGapLabels = ConversationDatePresentation.messageGapLabels(
+                for: renderedMessages)
               ForEach(renderedMessages) { message in
                 let match = chatSearch.currentMatch
                 let searchHighlight = match?.messageID == message.id ? match : nil
+                if let gapLabel = messageGapLabels[message.id] {
+                  ConversationTimelineGap(label: gapLabel)
+                }
                 MessageSelectionRow(
                   isSelectionMode: !isPreviewingConversation && isMessageSelectionMode,
                   isSelected: !isPreviewingConversation && selectedMessageIDs.contains(message.id)

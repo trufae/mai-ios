@@ -15,9 +15,12 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
   }
 
   func currentLocationText() async -> String {
-    guard let location = await requestLocation() else {
-      return "Location unavailable"
-    }
+    await currentLocationDescription() ?? "Location unavailable"
+  }
+
+  /// Resolved coordinates, or nil when the device could not provide a fix.
+  func currentLocationDescription() async -> String? {
+    guard let location = await requestLocation() else { return nil }
     let text = String(
       format: "Latitude %.4f, longitude %.4f", location.coordinate.latitude,
       location.coordinate.longitude)

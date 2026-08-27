@@ -1072,9 +1072,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   var voiceRecordingFilename: String? = nil
   var attachments: [ChatAttachment] = []
   var stats: GenerationStats? = nil
+  /// Where the user was when this turn was written, captured only while the
+  /// Location tool is enabled for the conversation.
+  var locationText: String? = nil
 
   enum CodingKeys: String, CodingKey {
     case id, role, text, displayText, createdAt, voiceRecordingFilename, attachments, stats
+    case locationText
   }
 
   init(
@@ -1085,7 +1089,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     createdAt: Date = Date(),
     voiceRecordingFilename: String? = nil,
     attachments: [ChatAttachment] = [],
-    stats: GenerationStats? = nil
+    stats: GenerationStats? = nil,
+    locationText: String? = nil
   ) {
     self.id = id
     self.role = role
@@ -1095,6 +1100,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     self.voiceRecordingFilename = voiceRecordingFilename
     self.attachments = attachments
     self.stats = stats
+    self.locationText = locationText
   }
 
   var presentationText: String {
@@ -1116,6 +1122,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     voiceRecordingFilename = try? c.decode(String.self, forKey: .voiceRecordingFilename)
     attachments = (try? c.decode([ChatAttachment].self, forKey: .attachments)) ?? []
     stats = try? c.decode(GenerationStats.self, forKey: .stats)
+    locationText = try? c.decode(String.self, forKey: .locationText)
   }
 }
 

@@ -563,6 +563,7 @@ enum PromptComposer {
     let includeImageAttachments = ProviderVisionSupport.openAICompatibleSupportsVision(
       model: model, endpoint: endpoint)
     let latestUserMessageID = limited.last(where: { $0.role == .user })?.id
+    let metadata = MessageMetadataAnnotation.annotations(for: conversation)
     messages.append(
       contentsOf: limited.flatMap { message -> [OpenAIMessage] in
         return openAIHistoryMessages(
@@ -570,7 +571,8 @@ enum PromptComposer {
           includeAssistantResponses: settings.includeAssistantResponsesInContext,
           echoReasoningContent: echoReasoningContent,
           includeImageAttachments: includeImageAttachments
-            && message.id == latestUserMessageID)
+            && message.id == latestUserMessageID,
+          metadataPrefix: metadata[message.id])
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
@@ -612,7 +614,8 @@ enum PromptComposer {
     from message: ChatMessage,
     includeAssistantResponses: Bool,
     echoReasoningContent: Bool,
-    includeImageAttachments: Bool = false
+    includeImageAttachments: Bool = false,
+    metadataPrefix: String? = nil
   ) -> [OpenAIMessage] {
     let content = promptText(from: message, includeImageFallbacks: !includeImageAttachments)
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -622,7 +625,8 @@ enum PromptComposer {
     case .user:
       return [
         openAIUserMessage(
-          content: content,
+          content: MessageMetadataAnnotation.annotated(
+            content: content, prefix: metadataPrefix),
           attachments: message.attachments,
           includeImageAttachments: includeImageAttachments)
       ]
@@ -778,8 +782,11 @@ enum PromptComposer {
     -> String
   {
     let limited = contextMessages(from: conversation, settings: settings, limit: limit)
+    let metadata = MessageMetadataAnnotation.annotations(for: conversation)
     let transcript = limited.flatMap { message -> [String] in
-      contextTranscriptEntries(from: message, settings: settings).map { entry in
+      contextTranscriptEntries(
+        from: message, settings: settings, metadataPrefix: metadata[message.id]
+      ).map { entry in
         "\(entry.displayName):\n\(entry.content)"
       }
     }
@@ -809,7 +816,8 @@ enum PromptComposer {
 
   static func contextTranscriptEntries(
     from message: ChatMessage,
-    settings: AppSettings
+    settings: AppSettings,
+    metadataPrefix: String? = nil
   ) -> [TranscriptEntry] {
     let content = promptText(
       from: message,
@@ -827,6 +835,13 @@ enum PromptComposer {
         includeReasoning: settings.includeReasoningContentInContext)
     case .error:
       return []
+    case .user:
+      return [
+        TranscriptEntry(
+          displayName: message.role.displayName,
+          content: MessageMetadataAnnotation.annotated(
+            content: content, prefix: metadataPrefix))
+      ]
     default:
       return [TranscriptEntry(displayName: message.role.displayName, content: content)]
     }

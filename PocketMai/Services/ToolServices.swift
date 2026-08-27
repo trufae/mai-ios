@@ -6,6 +6,9 @@ enum ContextBuilder {
     let text: String
     /// Equal signatures mean the configured context sources haven't changed.
     let signature: String
+    /// Location resolved while building this context, stamped onto the user
+    /// message so later turns keep the place the message was written from.
+    var messageLocation: String? = nil
   }
 
   @MainActor
@@ -17,6 +20,7 @@ enum ContextBuilder {
   ) async -> Output {
     var sections: [String] = []
     var signatureParts: [String] = []
+    var messageLocation: String? = nil
     guard conversation.toolsEnabled else {
       return Output(text: "", signature: "")
     }
@@ -35,9 +39,10 @@ enum ContextBuilder {
       )
     }
     if enabled.contains(.location) {
-      sections.append(
-        await LocationRenderer.render(
-          settings: settings.toolSettings, locationService: locationService))
+      let resolved = await LocationRenderer.currentLocationDescription(
+        settings: settings.toolSettings, locationService: locationService)
+      messageLocation = resolved
+      sections.append(LocationRenderer.render(locationDescription: resolved))
       signatureParts.append(
         "location:\(LocationRenderer.signature(settings: settings.toolSettings))")
     }
@@ -48,9 +53,13 @@ enum ContextBuilder {
         signatureParts.append("files:\(filesSignature(settings: settings.toolSettings))")
       }
     }
+    if let note = MessageMetadataAnnotation.contextNote(conversation: conversation) {
+      sections.append(note)
+    }
     return Output(
       text: sections.joined(separator: "\n\n"),
-      signature: signatureParts.joined(separator: "|"))
+      signature: signatureParts.joined(separator: "|"),
+      messageLocation: messageLocation)
   }
 
   private static func filesContext(settings: NativeToolSettings) -> String {
@@ -131,11 +140,29 @@ enum LocationRenderer {
     settings: NativeToolSettings,
     locationService: @MainActor () -> LocationService
   ) async -> String {
+    render(
+      locationDescription: await currentLocationDescription(
+        settings: settings, locationService: locationService))
+  }
+
+  /// The configured or measured location, or nil when there is none to report.
+  @MainActor
+  static func currentLocationDescription(
+    settings: NativeToolSettings,
+    locationService: @MainActor () -> LocationService
+  ) async -> String? {
     if settings.useGPSLocation {
-      return "Location tool:\n\(await locationService().currentLocationText())"
+      return await locationService().currentLocationDescription()
     }
     let manual = settings.manualLocation.trimmingCharacters(in: .whitespacesAndNewlines)
-    return manual.isEmpty ? "Location tool:\nNo location configured" : "Location tool:\n\(manual)"
+    return manual.isEmpty ? nil : manual
+  }
+
+  static func render(locationDescription: String?) -> String {
+    guard let locationDescription, !locationDescription.isEmpty else {
+      return "Location tool:\nNo location configured"
+    }
+    return "Location tool:\n\(locationDescription)"
   }
 
   static func signature(settings: NativeToolSettings) -> String {

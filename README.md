@@ -13,6 +13,7 @@ This app is inspired in the [MAI](https://github.com/trufae/mai) which is a Go a
 - **Providers**: Apple Intelligence (on-device) and any OpenAI-compatible API (OpenAI, Ollama, llama.cpp, vLLM, OpenRouter, ...).
 - **Tools**: datetime, location, weather, web search, todo, text-to-speech, files, memory — invokable by the model via native tool-calling or a text-protocol fallback.
 - **MCP**: configure remote MCP servers and surface them to the model.
+- **Conversation timeline**: long pauses show up as a separator between chat bubbles, and with the datetime/location tools enabled each user message reaches the model stamped with when it was sent, how long after the previous one, and where it was written from.
 - **Multiple system prompts**, persistent conversations, export to Markdown / plain text / JSON / ePUB / Word (docx).
 
 ## Build
