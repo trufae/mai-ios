@@ -4176,9 +4176,9 @@ final class AppStore: ObservableObject {
   ) -> String {
     switch format {
     case .markdown:
-      return conversation.messages.map { message in
-        "## \(message.role.displayName)\n\n\(message.presentationText)"
-      }.joined(separator: "\n\n")
+      return MarkdownExporter.makeMarkdown(
+        conversation: conversation,
+        includeThinking: effectiveShowThinking(for: conversation))
     case .json, .debug:
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
