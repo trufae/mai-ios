@@ -2125,18 +2125,6 @@ private struct ChatComposer: View {
         }
       }
     }
-    .fileImporter(
-      isPresented: $showingTextFileImporter,
-      allowedContentTypes: Self.textAttachmentTypes
-    ) { result in
-      importTextAttachment(result)
-    }
-    .fileImporter(
-      isPresented: $showingWorkingFolderImporter,
-      allowedContentTypes: [.folder]
-    ) { result in
-      importWorkingFolder(result)
-    }
     .photosPicker(
       isPresented: $showingImagePicker,
       selection: $selectedPhotoItems,
@@ -2721,8 +2709,7 @@ private struct ChatComposer: View {
       Divider()
 
       Button {
-        showingToolMenu = false
-        showingTextFileImporter = true
+        openTextFileImporter()
       } label: {
         toolMenuRowLabel("Attach Document", systemImage: "doc.text")
       }
@@ -2779,6 +2766,13 @@ private struct ChatComposer: View {
     .padding(8)
     .frame(minWidth: 240)
     .background(.regularMaterial)
+    .fileImporter(
+      isPresented: $showingTextFileImporter,
+      allowedContentTypes: Self.textAttachmentTypes
+    ) { result in
+      showingToolMenu = false
+      importTextAttachment(result)
+    }
   }
 
   /// The three ways a chat can resolve its working folder, shown as a popup
@@ -2817,6 +2811,13 @@ private struct ChatComposer: View {
     .padding(8)
     .frame(minWidth: 260)
     .background(.regularMaterial)
+    .fileImporter(
+      isPresented: $showingWorkingFolderImporter,
+      allowedContentTypes: [.folder]
+    ) { result in
+      showingWorkingFolderMenu = false
+      importWorkingFolder(result)
+    }
   }
 
   private func workingFolderMenuRow(
@@ -2876,14 +2877,12 @@ private struct ChatComposer: View {
     showingWorkingFolderMenu = true
   }
 
+  private func openTextFileImporter() {
+    showingTextFileImporter = true
+  }
+
   private func openWorkingFolderImporter() {
-    showingWorkingFolderImporter = false
-    showingWorkingFolderMenu = false
-    Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(350))
-      guard !showingWorkingFolderMenu else { return }
-      showingWorkingFolderImporter = true
-    }
+    showingWorkingFolderImporter = true
   }
 
   private var workingFolderMode: ConversationWorkingFolderMode {
