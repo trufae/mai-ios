@@ -441,12 +441,57 @@ final class AppStore: ObservableObject {
     } else {
       settings.conversationFolderDefaults[normalized] = folderDefaults
     }
+    if folderDefaults.workingFolder != nil, !settings.toolSettings.filesWorkspaceAccessEnabled {
+      settings.toolSettings.filesWorkspaceAccessEnabled = true
+    }
     saveSettings()
   }
 
   func clearConversationFolderDefaults(for folderID: String) {
     let normalized = normalizedExistingConversationFolderID(folderID)
     guard settings.conversationFolderDefaults.removeValue(forKey: normalized) != nil else { return }
+    saveSettings()
+  }
+
+  func workingFolderReference(for conversation: Conversation) -> WorkingFolderReference? {
+    FileWorkspaceTool.workingFolderReference(for: conversation, settings: settings)
+  }
+
+  func workingFolderDisplayName(for conversation: Conversation) -> String {
+    FileWorkspaceTool.workspaceName(for: conversation, settings: settings)
+  }
+
+  /// Sets or clears the current chat's custom working folder. Selecting a
+  /// folder also turns the Files tools on so the choice takes effect
+  /// immediately; the user can still opt out from the tool picker later.
+  func setCurrentConversationWorkingFolder(_ reference: WorkingFolderReference?) {
+    updateCurrentConversation { conversation in
+      conversation.workingFolder = reference
+      if reference != nil {
+        conversation.toolsEnabled = true
+        conversation.enabledTools.insert(.files)
+      }
+    }
+    if reference != nil, !settings.toolSettings.filesWorkspaceAccessEnabled {
+      settings.toolSettings.filesWorkspaceAccessEnabled = true
+      saveSettings()
+    }
+  }
+
+  /// Persists a re-created bookmark after the stored one went stale, wherever
+  /// the working folder reference came from (chat override or folder default).
+  func refreshWorkingFolderBookmark(conversationID: UUID, bookmarkData: Data) {
+    if let index = conversations.firstIndex(where: { $0.id == conversationID }),
+      conversations[index].workingFolder != nil
+    {
+      conversations[index].workingFolder?.bookmarkData = bookmarkData
+      saveConversations()
+      return
+    }
+    guard let conversation = conversation(withID: conversationID) else { return }
+    let folderID = Conversation.normalizedFolderID(conversation.folderID)
+    guard settings.conversationFolderDefaults[folderID]?.workingFolder != nil else { return }
+    settings.conversationFolderDefaults[folderID]?.workingFolder?.bookmarkData = bookmarkData
     saveSettings()
   }
 

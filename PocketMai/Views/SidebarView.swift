@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 extension View {
   @ViewBuilder
@@ -1162,6 +1163,8 @@ private struct ConversationFolderDefaultsView: View {
   @State private var draft = ConversationFolderDefaults()
   @State private var didLoad = false
   @State private var modelFilter = ""
+  @State private var showingWorkingFolderImporter = false
+  @State private var workingFolderError: String?
 
   var body: some View {
     NavigationStack {
@@ -1178,6 +1181,28 @@ private struct ConversationFolderDefaultsView: View {
         Section("Provider & Model") {
           providerMenu
           providerModelControls
+        }
+
+        Section {
+          LabeledContent("Folder", value: workingFolderTitle)
+          Button {
+            showingWorkingFolderImporter = true
+          } label: {
+            Label("Choose Folder...", systemImage: "folder.badge.gearshape")
+          }
+          if draft.workingFolder != nil {
+            Button {
+              draft.workingFolder = nil
+            } label: {
+              Label("Use App Default", systemImage: "arrow.uturn.backward")
+            }
+          }
+        } header: {
+          Text("Working Folder")
+        } footer: {
+          Text(
+            "Chats in \(folder.displayName) use this folder for the Files tools unless a chat picks its own working folder from the + menu."
+          )
         }
 
         Section {
@@ -1211,6 +1236,37 @@ private struct ConversationFolderDefaultsView: View {
     }
     .onChange(of: store.localMLXModelIDs) { _, _ in
       ensureDraftMLXModelSelectionIsAvailable()
+    }
+    .fileImporter(
+      isPresented: $showingWorkingFolderImporter,
+      allowedContentTypes: [.folder]
+    ) { result in
+      importWorkingFolder(result)
+    }
+    .alert(
+      "Folder selection failed",
+      isPresented: Binding(
+        get: { workingFolderError != nil },
+        set: { if !$0 { workingFolderError = nil } }),
+      presenting: workingFolderError
+    ) { _ in
+      Button("OK", role: .cancel) { workingFolderError = nil }
+    } message: { message in
+      Text(message)
+    }
+  }
+
+  private var workingFolderTitle: String {
+    draft.workingFolder?.displayName
+      ?? "App Default (\(FileWorkspaceService.defaultWorkspaceName))"
+  }
+
+  private func importWorkingFolder(_ result: Result<URL, Error>) {
+    do {
+      let url = try result.get()
+      draft.workingFolder = try WorkingFolderAccess.makeReference(from: url)
+    } catch {
+      workingFolderError = error.localizedDescription
     }
   }
 
