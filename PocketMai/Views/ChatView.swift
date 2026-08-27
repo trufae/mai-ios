@@ -2832,10 +2832,17 @@ private struct ChatComposer: View {
     )
   }
 
+  private static let textAttachmentByteLimit = 1_500_000
+
   private static var textAttachmentTypes: [UTType] {
     var types: [UTType] = [.plainText, .text]
     if let markdown = UTType(filenameExtension: "md") {
       types.append(markdown)
+    }
+    if let word = UTType(filenameExtension: "docx")
+      ?? UTType("org.openxmlformats.wordprocessingml.document")
+    {
+      types.append(word)
     }
     return types
   }
@@ -2848,24 +2855,38 @@ private struct ChatComposer: View {
         if access { url.stopAccessingSecurityScopedResource() }
       }
       let ext = url.pathExtension.lowercased()
-      guard ext == "txt" || ext == "md" || ext == "markdown" else {
-        attachmentError = "Choose a .txt or .md file."
-        return
-      }
-      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-      guard data.count <= 1_500_000 else {
-        attachmentError = "Text attachments are limited to 1.5 MB."
-        return
-      }
-      guard let text = String(data: data, encoding: .utf8) else {
-        attachmentError = "The selected file is not UTF-8 text."
-        return
-      }
-      pendingAttachments.append(
-        .textFile(
+      let attachment: ChatAttachment
+      switch ext {
+      case "docx":
+        // Word documents are converted to Markdown so they can travel as text.
+        let markdown = try DOCXImporter.markdown(from: url)
+        guard markdown.utf8.count <= Self.textAttachmentByteLimit else {
+          attachmentError = "Text attachments are limited to 1.5 MB."
+          return
+        }
+        attachment = .textFile(
+          filename: url.deletingPathExtension().lastPathComponent + ".md",
+          text: markdown,
+          mimeType: "text/markdown")
+      case "txt", "md", "markdown":
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard data.count <= Self.textAttachmentByteLimit else {
+          attachmentError = "Text attachments are limited to 1.5 MB."
+          return
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+          attachmentError = "The selected file is not UTF-8 text."
+          return
+        }
+        attachment = .textFile(
           filename: url.lastPathComponent,
           text: text,
-          mimeType: ext == "md" || ext == "markdown" ? "text/markdown" : "text/plain"))
+          mimeType: ext == "txt" ? "text/plain" : "text/markdown")
+      default:
+        attachmentError = "Choose a .txt, .md, or .docx file."
+        return
+      }
+      pendingAttachments.append(attachment)
       composerFocused = true
     } catch {
       attachmentError = error.localizedDescription
