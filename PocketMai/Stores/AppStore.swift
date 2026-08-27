@@ -461,21 +461,49 @@ final class AppStore: ObservableObject {
     FileWorkspaceTool.workspaceName(for: conversation, settings: settings)
   }
 
-  /// Sets or clears the current chat's custom working folder. Selecting a
-  /// folder also turns the Files tools on so the choice takes effect
-  /// immediately; the user can still opt out from the tool picker later.
-  func setCurrentConversationWorkingFolder(_ reference: WorkingFolderReference?) {
-    updateCurrentConversation { conversation in
+  /// Which of the three working folder choices the chat currently sits on.
+  func workingFolderMode(for conversation: Conversation) -> ConversationWorkingFolderMode {
+    guard conversation.enabledTools.contains(.files) else { return .disabled }
+    return conversation.workingFolder == nil ? .inherited : .custom
+  }
+
+  /// Gives the current chat its own working folder. Selecting a folder also
+  /// turns the Files tools on so the choice takes effect immediately; the user
+  /// can still opt out from the tool picker later.
+  func setCurrentConversationWorkingFolder(_ reference: WorkingFolderReference) {
+    enableFilesTools { conversation in
       conversation.workingFolder = reference
-      if reference != nil {
-        conversation.toolsEnabled = true
-        conversation.enabledTools.insert(.files)
-      }
     }
-    if reference != nil, !settings.toolSettings.filesWorkspaceAccessEnabled {
-      settings.toolSettings.filesWorkspaceAccessEnabled = true
-      saveSettings()
+  }
+
+  /// Drops the current chat's own folder so it falls back to its chat folder's
+  /// default, else the built-in workspace, and makes sure the Files tools are
+  /// on so that folder is actually reachable.
+  func clearCurrentConversationWorkingFolder() {
+    enableFilesTools { conversation in
+      conversation.workingFolder = nil
     }
+  }
+
+  /// Turns the working folder off for the current chat by dropping its own
+  /// folder and taking the Files tools out of the chat, so neither a custom
+  /// folder nor the chat folder's default is reachable from it.
+  func disableCurrentConversationWorkingFolder() {
+    updateCurrentConversation { conversation in
+      conversation.workingFolder = nil
+      conversation.enabledTools.remove(.files)
+    }
+  }
+
+  private func enableFilesTools(_ update: (inout Conversation) -> Void) {
+    updateCurrentConversation { conversation in
+      update(&conversation)
+      conversation.toolsEnabled = true
+      conversation.enabledTools.insert(.files)
+    }
+    guard !settings.toolSettings.filesWorkspaceAccessEnabled else { return }
+    settings.toolSettings.filesWorkspaceAccessEnabled = true
+    saveSettings()
   }
 
   /// Persists a re-created bookmark after the stored one went stale, wherever

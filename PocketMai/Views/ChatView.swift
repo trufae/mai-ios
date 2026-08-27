@@ -1970,6 +1970,7 @@ private struct ChatComposer: View {
   @State private var showingToolMenu = false
   @State private var showingToolPicker = false
   @State private var showingTextFileImporter = false
+  @State private var showingWorkingFolderMenu = false
   @State private var showingWorkingFolderImporter = false
   @State private var showingImagePicker = false
   @State private var showingCameraPicker = false
@@ -2673,6 +2674,12 @@ private struct ChatComposer: View {
         .environmentObject(store)
         .presentationCompactAdaptation(.popover)
     }
+    .popover(
+      isPresented: $showingWorkingFolderMenu, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom
+    ) {
+      workingFolderMenuPopover
+        .presentationCompactAdaptation(.popover)
+    }
     .help("Tools")
   }
 
@@ -2700,7 +2707,7 @@ private struct ChatComposer: View {
       .padding(.vertical, 9)
 
       Button {
-        openWorkingFolderImporter()
+        openWorkingFolderMenu()
       } label: {
         toolMenuRowLabel(
           "Working Folder...",
@@ -2710,18 +2717,6 @@ private struct ChatComposer: View {
       .buttonStyle(.plain)
       .padding(.horizontal, 12)
       .padding(.vertical, 9)
-
-      if store.currentConversation?.workingFolder != nil {
-        Button {
-          showingToolMenu = false
-          store.setCurrentConversationWorkingFolder(nil)
-        } label: {
-          toolMenuRowLabel("Use Default Folder", systemImage: "arrow.uturn.backward")
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-      }
 
       Divider()
 
@@ -2786,6 +2781,70 @@ private struct ChatComposer: View {
     .background(.regularMaterial)
   }
 
+  /// The three ways a chat can resolve its working folder, shown as a popup
+  /// from the "Working Folder..." row of the (+) menu.
+  private var workingFolderMenuPopover: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text("Working Folder")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 2)
+
+      workingFolderMenuRow("Disable", systemImage: "folder.badge.minus", mode: .disabled) {
+        store.disableCurrentConversationWorkingFolder()
+      }
+
+      workingFolderMenuRow(
+        "Use Default Folder",
+        systemImage: "arrow.uturn.backward",
+        mode: .inherited,
+        trailingText: defaultWorkingFolderName
+      ) {
+        store.clearCurrentConversationWorkingFolder()
+      }
+
+      workingFolderMenuRow(
+        "Set Custom Folder...",
+        systemImage: "folder.badge.gearshape",
+        mode: .custom,
+        trailingText: store.currentConversation?.workingFolder?.displayName,
+        dismissesMenu: false
+      ) {
+        openWorkingFolderImporter()
+      }
+    }
+    .padding(8)
+    .frame(minWidth: 260)
+    .background(.regularMaterial)
+  }
+
+  private func workingFolderMenuRow(
+    _ title: String,
+    systemImage: String,
+    mode: ConversationWorkingFolderMode,
+    trailingText: String? = nil,
+    dismissesMenu: Bool = true,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button {
+      if dismissesMenu {
+        showingWorkingFolderMenu = false
+      }
+      action()
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: workingFolderMode == mode ? "checkmark.circle.fill" : "circle")
+          .foregroundStyle(workingFolderMode == mode ? Color.accentColor : Color.secondary)
+        toolMenuRowLabel(title, systemImage: systemImage, trailingText: trailingText)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+  }
+
   private func toolMenuRowLabel(
     _ title: String,
     systemImage: String,
@@ -2812,18 +2871,35 @@ private struct ChatComposer: View {
     showingToolPicker = true
   }
 
+  private func openWorkingFolderMenu() {
+    showingToolMenu = false
+    showingWorkingFolderMenu = true
+  }
+
   private func openWorkingFolderImporter() {
     showingWorkingFolderImporter = false
-    showingToolMenu = false
+    showingWorkingFolderMenu = false
     Task { @MainActor in
       try? await Task.sleep(for: .milliseconds(350))
-      guard !showingToolMenu else { return }
+      guard !showingWorkingFolderMenu else { return }
       showingWorkingFolderImporter = true
     }
   }
 
+  private var workingFolderMode: ConversationWorkingFolderMode {
+    guard let conversation = store.currentConversation else { return .inherited }
+    return store.workingFolderMode(for: conversation)
+  }
+
+  private var defaultWorkingFolderName: String? {
+    guard let conversation = store.currentConversation else { return nil }
+    return store.conversationFolderDefaults(for: conversation.folderID).workingFolder?.displayName
+      ?? FileWorkspaceService.defaultWorkspaceName
+  }
+
   private var workingFolderMenuText: String? {
     guard let conversation = store.currentConversation else { return nil }
+    guard workingFolderMode != .disabled else { return "Off" }
     return store.workingFolderDisplayName(for: conversation)
   }
 
