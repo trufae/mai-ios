@@ -8,19 +8,18 @@ enum DOCXExporter {
     includeThinking: Bool? = nil,
     imageSize: AttachmentImageSize = .full
   ) async throws -> Data {
-    let title = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-    let documentTitle = title.isEmpty ? "Chat" : title
+    let summary = ConversationExportContent.summary(for: conversation)
     let shouldIncludeThinking = includeThinking ?? conversation.showThinking
 
-    let imageCatalog = try await EPUBExporter.buildImageResourceCatalog(
+    let imageCatalog = try await ConversationExportContent.buildImageResourceCatalog(
       conversation: conversation,
       includeThinking: shouldIncludeThinking,
       imageSize: imageSize)
 
     let builder = DocumentBuilder(imageCatalog: imageCatalog)
-    builder.appendTitleSection(conversation: conversation, documentTitle: documentTitle)
+    builder.appendTitleSection(summary: summary)
     for message in conversation.messages {
-      let content = EPUBExporter.messageContent(
+      let content = ConversationExportContent.messageContent(
         for: message,
         includeThinking: shouldIncludeThinking)
       guard content.hasExportedBody || imageCatalog.hasImageAttachments(for: message) else {
@@ -28,11 +27,14 @@ enum DOCXExporter {
       }
       builder.appendMessage(message, content: content)
     }
-    return builder.archive(documentTitle: documentTitle, conversation: conversation)
+    return builder.archive(documentTitle: summary.title, conversation: conversation)
   }
 }
 
 private final class DocumentBuilder {
+  typealias ImageResource = ConversationExportContent.ImageResource
+  typealias ImageResourceCatalog = ConversationExportContent.ImageResourceCatalog
+
   private struct EmbeddedImage {
     let relationshipID: String
     let widthEMU: Int
@@ -52,9 +54,15 @@ private final class DocumentBuilder {
     var strike = false
     var code = false
     var hyperlink = false
+
+    func with(_ keyPath: WritableKeyPath<RunStyle, Bool>) -> RunStyle {
+      var copy = self
+      copy[keyPath: keyPath] = true
+      return copy
+    }
   }
 
-  private let imageCatalog: EPUBExporter.ImageResourceCatalog
+  private let imageCatalog: ImageResourceCatalog
   private var body = ""
   private var relationships: [Relationship] = []
   private var mediaFiles: [(filename: String, data: Data)] = []
@@ -68,27 +76,20 @@ private final class DocumentBuilder {
   private static let maxImageWidthEMU = 5_943_600  // 6.5 in, the content width
   private static let maxImageHeightEMU = 7_315_200  // 8 in
 
-  init(imageCatalog: EPUBExporter.ImageResourceCatalog) {
+  init(imageCatalog: ImageResourceCatalog) {
     self.imageCatalog = imageCatalog
   }
 
   // MARK: - Sections
 
-  func appendTitleSection(conversation: Conversation, documentTitle: String) {
-    let dateFormatter = DateFormatter()
-    dateFormatter.dateStyle = .long
-    dateFormatter.timeStyle = .short
-    let created = dateFormatter.string(from: conversation.createdAt)
-    let updated = dateFormatter.string(from: conversation.updatedAt)
-    let messageCount = conversation.messages.count
-
+  func appendTitleSection(summary: ConversationExportContent.ConversationSummary) {
     body += paragraph(
       paragraphProperties(style: "Title"),
-      textRun(documentTitle, style: RunStyle()))
+      textRun(summary.title, style: RunStyle()))
     for meta in [
-      "Started \(created)",
-      "Last updated \(updated)",
-      "\(messageCount) message\(messageCount == 1 ? "" : "s")",
+      "Started \(summary.started)",
+      "Last updated \(summary.lastUpdated)",
+      summary.messageCountText,
     ] {
       body += paragraph(
         paragraphProperties(alignment: "center"),
@@ -96,7 +97,7 @@ private final class DocumentBuilder {
     }
   }
 
-  func appendMessage(_ message: ChatMessage, content: EPUBExporter.MessageContent) {
+  func appendMessage(_ message: ChatMessage, content: ConversationExportContent.MessageContent) {
     appendRoleHeading(message.role)
     for section in content.reasoningSections {
       appendReasoningSection(section)
@@ -343,149 +344,58 @@ private final class DocumentBuilder {
   // MARK: - Inline runs
 
   private func inlineRuns(_ raw: String, style: RunStyle) -> String {
-    let chars = Array(MarkdownInlineSymbols.displayString(raw))
+    runs(for: ConversationExportContent.inlineNodes(raw), style: style)
+  }
+
+  private func runs(
+    for nodes: [ConversationExportContent.MarkdownInlineNode],
+    style: RunStyle
+  ) -> String {
     var result = ""
-    var pending = ""
-
-    func flush() {
-      if !pending.isEmpty {
-        result += textRun(pending, style: style)
-        pending = ""
-      }
-    }
-
-    var index = 0
-    while index < chars.count {
-      let c = chars[index]
-
-      if c == "\\", index + 1 < chars.count {
-        let next = chars[index + 1]
-        if "\\`*_{}[]()#+-.!~".contains(next) {
-          pending.append(next)
-          index += 2
-          continue
-        }
-      }
-
-      if let codeSpan = MarkdownInlineCodeSpan.span(in: chars, at: index) {
-        flush()
-        var codeStyle = style
-        codeStyle.code = true
-        if let href = MarkdownWebURL.normalizedString(from: codeSpan.code),
-          let relationshipID = hyperlinkRelationshipID(for: href)
-        {
-          codeStyle.hyperlink = true
-          result +=
-            "<w:hyperlink r:id=\"\(relationshipID)\">\(textRun(codeSpan.code, style: codeStyle))</w:hyperlink>"
+    for node in nodes {
+      switch node {
+      case .text(let value):
+        result += textRun(value, style: style)
+      case .lineBreak:
+        result += "<w:r><w:br/></w:r>"
+      case .code(let code):
+        let codeStyle = style.with(\.code)
+        if let relationshipID = hyperlinkRelationshipID(for: code) {
+          result += hyperlink(relationshipID, textRun(code, style: codeStyle.with(\.hyperlink)))
         } else {
-          result += textRun(codeSpan.code, style: codeStyle)
+          result += textRun(code, style: codeStyle)
         }
-        index = codeSpan.end
-        continue
-      }
-
-      if c == "~", index + 1 < chars.count, chars[index + 1] == "~" {
-        if let end = findClose(chars: chars, start: index + 2, marker: "~~") {
-          let inner = String(chars[(index + 2)..<end])
-          if !inner.isEmpty {
-            flush()
-            var strikeStyle = style
-            strikeStyle.strike = true
-            result += inlineRuns(inner, style: strikeStyle)
-            index = end + 2
-            continue
-          }
+      case .emphasis(let children):
+        result += runs(for: children, style: style.with(\.italic))
+      case .strong(let children):
+        result += runs(for: children, style: style.with(\.bold))
+      case .strikethrough(let children):
+        result += runs(for: children, style: style.with(\.strike))
+      case .link(let label, let url):
+        if let relationshipID = hyperlinkRelationshipID(for: url) {
+          result += hyperlink(relationshipID, runs(for: label, style: style.with(\.hyperlink)))
+        } else {
+          result += runs(for: label, style: style)
         }
-      }
-
-      if (c == "*" || c == "_") && index + 1 < chars.count && chars[index + 1] == c {
-        let marker = String([c, c])
-        if let end = findClose(chars: chars, start: index + 2, marker: marker) {
-          let inner = String(chars[(index + 2)..<end])
-          flush()
-          var boldStyle = style
-          boldStyle.bold = true
-          result += inlineRuns(inner, style: boldStyle)
-          index = end + marker.count
-          continue
-        }
-      }
-
-      if c == "*" || c == "_" {
-        if let end = findClose(chars: chars, start: index + 1, marker: String(c)) {
-          let inner = String(chars[(index + 1)..<end])
-          if !inner.isEmpty {
-            flush()
-            var italicStyle = style
-            italicStyle.italic = true
-            result += inlineRuns(inner, style: italicStyle)
-            index = end + 1
-            continue
-          }
-        }
-      }
-
-      if let image = EPUBExporter.markdownImageToken(in: chars, at: index) {
-        if let resource = imageCatalog.resource(forMarkdownImageSource: image.source),
+      case .image(let altText, let source):
+        if let resource = imageCatalog.resource(forMarkdownImageSource: source),
           let embedded = embeddedImage(for: resource)
         {
-          flush()
-          result += drawingRun(embedded, altText: image.altText)
-        } else if let href = MarkdownWebURL.normalizedString(from: image.source),
-          let relationshipID = hyperlinkRelationshipID(for: href)
-        {
-          flush()
+          result += drawingRun(embedded, altText: altText)
+        } else if let relationshipID = hyperlinkRelationshipID(for: source) {
           let label =
-            image.altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? image.source
-            : image.altText
-          var linkStyle = style
-          linkStyle.hyperlink = true
-          result +=
-            "<w:hyperlink r:id=\"\(relationshipID)\">\(inlineRuns(label, style: linkStyle))</w:hyperlink>"
+            altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : altText
+          result += hyperlink(relationshipID, inlineRuns(label, style: style.with(\.hyperlink)))
         } else {
-          pending += "![\(image.altText)](\(image.source))"
-        }
-        index = image.end
-        continue
-      }
-
-      if c == "[" {
-        if let textEnd = findClose(chars: chars, start: index + 1, marker: "]"),
-          textEnd + 1 < chars.count, chars[textEnd + 1] == "(",
-          let urlEnd = findClose(chars: chars, start: textEnd + 2, marker: ")")
-        {
-          let label = String(chars[(index + 1)..<textEnd])
-          let url = String(chars[(textEnd + 2)..<urlEnd])
-          if let href = MarkdownWebURL.normalizedString(from: url),
-            let relationshipID = hyperlinkRelationshipID(for: href)
-          {
-            flush()
-            var linkStyle = style
-            linkStyle.hyperlink = true
-            result +=
-              "<w:hyperlink r:id=\"\(relationshipID)\">\(inlineRuns(label, style: linkStyle))</w:hyperlink>"
-          } else {
-            flush()
-            result += inlineRuns(label, style: style)
-          }
-          index = urlEnd + 1
-          continue
+          result += textRun("![\(altText)](\(source))", style: style)
         }
       }
-
-      if c == "\n" {
-        flush()
-        result += "<w:r><w:br/></w:r>"
-        index += 1
-        continue
-      }
-
-      pending.append(c)
-      index += 1
     }
-    flush()
     return result
+  }
+
+  private func hyperlink(_ relationshipID: String, _ inner: String) -> String {
+    "<w:hyperlink r:id=\"\(relationshipID)\">\(inner)</w:hyperlink>"
   }
 
   private func textRun(_ text: String, style: RunStyle) -> String {
@@ -523,7 +433,7 @@ private final class DocumentBuilder {
 
   // MARK: - Images
 
-  private func embeddedImage(for resource: EPUBExporter.ImageResource) -> EmbeddedImage? {
+  private func embeddedImage(for resource: ImageResource) -> EmbeddedImage? {
     if let cached = embeddedImagesByHref[resource.href] {
       return cached
     }
@@ -532,7 +442,7 @@ private final class DocumentBuilder {
     return embedded
   }
 
-  private func makeEmbeddedImage(for resource: EPUBExporter.ImageResource) -> EmbeddedImage? {
+  private func makeEmbeddedImage(for resource: ImageResource) -> EmbeddedImage? {
     guard let normalized = wordCompatibleImage(for: resource) else { return nil }
 
     let pixelWidth = max(1, normalized.width)
@@ -562,7 +472,7 @@ private final class DocumentBuilder {
       heightEMU: heightEMU)
   }
 
-  private func wordCompatibleImage(for resource: EPUBExporter.ImageResource)
+  private func wordCompatibleImage(for resource: ImageResource)
     -> (data: Data, fileExtension: String, width: Int, height: Int)?
   {
     let supportedExtensions: [String: String] = [
@@ -792,93 +702,56 @@ private final class DocumentBuilder {
     return xml
   }
 
-  private func findClose(chars: [Character], start: Int, marker: String) -> Int? {
-    let markerChars = Array(marker)
-    guard !markerChars.isEmpty, start <= chars.count else { return nil }
-    var i = start
-    while i + markerChars.count <= chars.count {
-      if chars[i] == "\\" {
-        i += 2
-        continue
-      }
-      var matched = true
-      for (offset, mc) in markerChars.enumerated() where chars[i + offset] != mc {
-        matched = false
-        break
-      }
-      if matched {
-        return i
-      }
-      i += 1
-    }
-    return nil
-  }
-
   private func xmlEscaped(_ value: String) -> String {
-    value
-      .replacingOccurrences(of: "&", with: "&amp;")
-      .replacingOccurrences(of: "<", with: "&lt;")
-      .replacingOccurrences(of: ">", with: "&gt;")
-      .replacingOccurrences(of: "\"", with: "&quot;")
-      .replacingOccurrences(of: "'", with: "&#39;")
+    ConversationExportContent.xmlEscaped(value)
   }
 
-  private static let stylesXML = """
-    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-    <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\
-    <w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>\
-    </w:rPrDefault><w:pPrDefault><w:pPr>\
-    <w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>\
-    </w:docDefaults>\
-    <w:style w:type="paragraph" w:default="1" w:styleId="Normal">\
-    <w:name w:val="Normal"/><w:qFormat/></w:style>\
-    <w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont">\
-    <w:name w:val="Default Paragraph Font"/></w:style>\
-    <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:spacing w:before="480" w:after="240"/><w:jc w:val="center"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="360" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:outlineLvl w:val="3"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="23"/><w:szCs w:val="23"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:outlineLvl w:val="4"/></w:pPr>\
-    <w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:outlineLvl w:val="5"/></w:pPr>\
-    <w:rPr><w:b/><w:i/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="D0D7DE"/></w:pBdr></w:pPr>\
-    <w:rPr><w:color w:val="57606A"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="CodeBlock"><w:name w:val="Code Block"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>\
-    <w:spacing w:before="120" w:after="160" w:line="240" w:lineRule="auto"/></w:pPr>\
-    <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/>\
-    <w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>\
-    <w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/>\
-    <w:basedOn w:val="Normal"/><w:qFormat/>\
-    <w:pPr><w:spacing w:after="240"/></w:pPr>\
-    <w:rPr><w:i/><w:color w:val="57606A"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>\
-    <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/>\
-    <w:basedOn w:val="DefaultParagraphFont"/>\
-    <w:rPr><w:color w:val="0969DA"/><w:u w:val="single"/></w:rPr></w:style>\
-    </w:styles>
-    """
+  private static let stylesXML: String = {
+    let headingSizes = [28, 26, 24, 23, 22, 22]
+    let headingStyles = (1...6).map { level in
+      """
+      <w:style w:type="paragraph" w:styleId="Heading\(level)"><w:name w:val="heading \(level)"/>\
+      <w:basedOn w:val="Normal"/><w:qFormat/>\
+      <w:pPr><w:keepNext/><w:spacing w:before="\(level == 1 ? 360 : level <= 3 ? 240 : 200)" \
+      w:after="\(level == 1 ? 120 : 80)"/><w:outlineLvl w:val="\(level - 1)"/></w:pPr>\
+      <w:rPr><w:b/>\(level == 6 ? "<w:i/>" : "")<w:sz w:val="\(headingSizes[level - 1])"/>\
+      <w:szCs w:val="\(headingSizes[level - 1])"/></w:rPr></w:style>
+      """
+    }.joined()
+    return """
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\
+      <w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>\
+      </w:rPrDefault><w:pPrDefault><w:pPr>\
+      <w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>\
+      </w:docDefaults>\
+      <w:style w:type="paragraph" w:default="1" w:styleId="Normal">\
+      <w:name w:val="Normal"/><w:qFormat/></w:style>\
+      <w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont">\
+      <w:name w:val="Default Paragraph Font"/></w:style>\
+      <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/>\
+      <w:basedOn w:val="Normal"/><w:qFormat/>\
+      <w:pPr><w:spacing w:before="480" w:after="240"/><w:jc w:val="center"/></w:pPr>\
+      <w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/></w:rPr></w:style>\
+      \(headingStyles)\
+      <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/>\
+      <w:basedOn w:val="Normal"/><w:qFormat/>\
+      <w:pPr><w:pBdr><w:left w:val="single" w:sz="12" w:space="4" w:color="D0D7DE"/></w:pBdr></w:pPr>\
+      <w:rPr><w:color w:val="57606A"/></w:rPr></w:style>\
+      <w:style w:type="paragraph" w:styleId="CodeBlock"><w:name w:val="Code Block"/>\
+      <w:basedOn w:val="Normal"/><w:qFormat/>\
+      <w:pPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>\
+      <w:spacing w:before="120" w:after="160" w:line="240" w:lineRule="auto"/></w:pPr>\
+      <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/>\
+      <w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>\
+      <w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/>\
+      <w:basedOn w:val="Normal"/><w:qFormat/>\
+      <w:pPr><w:spacing w:after="240"/></w:pPr>\
+      <w:rPr><w:i/><w:color w:val="57606A"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>\
+      <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/>\
+      <w:basedOn w:val="DefaultParagraphFont"/>\
+      <w:rPr><w:color w:val="0969DA"/><w:u w:val="single"/></w:rPr></w:style>\
+      </w:styles>
+      """
+  }()
 }
