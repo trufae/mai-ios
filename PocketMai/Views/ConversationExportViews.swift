@@ -263,6 +263,7 @@ extension View {
     presenting selection: Selection?,
     message: @escaping (Selection) -> String,
     onSelect: @escaping (Selection, AttachmentImageSize) -> Void,
+    onOCR: ((Selection) -> Void)? = nil,
     onCancel: @escaping () -> Void
   ) -> some View {
     confirmationDialog(
@@ -274,6 +275,11 @@ extension View {
       ForEach(AttachmentImageSize.concreteCases) { size in
         Button(size.imageSizeDialogTitle) {
           onSelect(selection, size)
+        }
+      }
+      if let onOCR {
+        Button("Text (OCR)") {
+          onOCR(selection)
         }
       }
       Button("Cancel", role: .cancel, action: onCancel)

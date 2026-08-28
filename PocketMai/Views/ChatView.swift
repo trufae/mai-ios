@@ -1982,7 +1982,7 @@ private struct ChatComposer: View {
   @State private var pendingAttachments: [ChatAttachment] = []
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
   @State private var pendingPDFImport: PendingPDFImport?
-  @State private var isConvertingPDF = false
+  @State private var attachmentConversionMessage: String?
   @State private var attachmentError: String?
   @State private var promptAutocompleteSuppressedCommand: String?
   @State private var draftPersistenceTask: Task<Void, Never>?
@@ -2175,6 +2175,9 @@ private struct ChatComposer: View {
       onSelect: { pending, size in
         appendImageAttachment(pending, size: size)
       },
+      onOCR: { pending in
+        convertImagesToText(pending)
+      },
       onCancel: {
         pendingImageSizePrompt = nil
       })
@@ -2196,11 +2199,11 @@ private struct ChatComposer: View {
 
   private var textControls: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if isConvertingPDF {
+      if let attachmentConversionMessage {
         HStack(spacing: 6) {
           ProgressView()
             .controlSize(.small)
-          Text("Converting PDF...")
+          Text(attachmentConversionMessage)
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -3021,14 +3024,14 @@ private struct ChatComposer: View {
   /// run through OCR, which takes a moment.
   private func convertPDFToMarkdown(_ pending: PendingPDFImport) {
     pendingPDFImport = nil
-    isConvertingPDF = true
+    attachmentConversionMessage = "Converting PDF..."
     let data = pending.data
     let name = pending.name
     Task {
       let outcome = await Task.detached(priority: .userInitiated) {
         PDFTextImportOutcome.convert(data)
       }.value
-      isConvertingPDF = false
+      attachmentConversionMessage = nil
       switch outcome {
       case .markdown(let markdown):
         guard markdown.utf8.count <= Self.textAttachmentByteLimit else {
@@ -3046,14 +3049,14 @@ private struct ChatComposer: View {
 
   private func convertPDFToImages(_ pending: PendingPDFImport) {
     pendingPDFImport = nil
-    isConvertingPDF = true
+    attachmentConversionMessage = "Converting PDF..."
     let data = pending.data
     let name = pending.name
     Task {
       let outcome = await Task.detached(priority: .userInitiated) {
         PDFPageImportOutcome.render(data)
       }.value
-      isConvertingPDF = false
+      attachmentConversionMessage = nil
       switch outcome {
       case .pages(let pages, let truncated):
         await appendPDFPageAttachments(pages, name: name, truncated: truncated)
@@ -3162,6 +3165,49 @@ private struct ChatComposer: View {
       return
     }
     appendImageAttachment(image, filename: filename, size: imageSize)
+  }
+
+  /// Extracts the text instead of attaching the pixels: each image is run
+  /// through Vision's on-device recogniser off the main thread and lands as a
+  /// Markdown text attachment.
+  private func convertImagesToText(_ pending: PendingImageAttachmentImport) {
+    pendingImageSizePrompt = nil
+    attachmentConversionMessage = "Recognizing text..."
+    let items = pending.items
+    Task {
+      var attachments: [ChatAttachment] = []
+      var unreadableCount = 0
+      for item in items {
+        let image = item.image
+        let markdown = await Task.detached(priority: .userInitiated) {
+          try? ImageOCRImporter.markdown(from: image)
+        }.value
+        guard let markdown, markdown.utf8.count <= Self.textAttachmentByteLimit else {
+          unreadableCount += 1
+          continue
+        }
+        attachments.append(
+          .textFile(
+            filename: (item.filename as NSString).deletingPathExtension + ".md",
+            text: markdown,
+            mimeType: "text/markdown"))
+      }
+      attachmentConversionMessage = nil
+      pendingAttachments.append(contentsOf: attachments)
+      if !attachments.isEmpty {
+        composerFocused = true
+      }
+      if unreadableCount > 0 {
+        attachmentError =
+          items.count == 1
+          ? "No text could be recognized in the image."
+          : "No text could be recognized in \(unreadableCount) of \(items.count) images."
+      } else if pending.failedCount > 0 {
+        attachmentError = imageImportFailureMessage(count: pending.failedCount)
+      } else if let note = pending.note {
+        attachmentError = note
+      }
+    }
   }
 
   private func appendImageAttachment(
