@@ -148,6 +148,11 @@ final class UsageStatsStore: ObservableObject {
     persistTotals()
   }
 
+  func remove(providerLabel: String) {
+    totals.removeAll { $0.providerLabel == providerLabel }
+    persistTotals()
+  }
+
   private func persistTotals() {
     guard let data = try? JSONEncoder().encode(totals) else { return }
     UserDefaults.standard.set(data, forKey: Self.defaultsKey)

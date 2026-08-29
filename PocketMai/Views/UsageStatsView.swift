@@ -11,6 +11,7 @@ struct UsageStatsView: View {
   @State private var hasInitializedSelections = false
   @State private var confirmingReset = false
   @State private var detailEntry: UsageStatsStore.ModelTotals?
+  @State private var deletingProvider: ProviderTotals?
 
   private static let chartHeight: CGFloat = 120
 
@@ -165,12 +166,35 @@ struct UsageStatsView: View {
     ) { entry in
       Button("Delete Statistics", role: .destructive) {
         stats.remove(id: entry.id)
+        selectedModelIDs.remove(entry.id)
         if selectedID == entry.id {
           selectedID = nil
         }
       }
     } message: { entry in
       Text(fullDetailText(for: entry))
+    }
+    .confirmationDialog(
+      deletingProvider.map { "Delete all statistics for \($0.providerLabel)?" } ?? "",
+      isPresented: Binding(
+        get: { deletingProvider != nil },
+        set: { if !$0 { deletingProvider = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: deletingProvider
+    ) { provider in
+      Button("Delete Statistics", role: .destructive) {
+        let removedIDs = Set(
+          stats.totals.filter { $0.providerLabel == provider.providerLabel }.map(\.id))
+        stats.remove(providerLabel: provider.providerLabel)
+        selectedModelIDs.subtract(removedIDs)
+        selectedProviderLabels.remove(provider.providerLabel)
+        if let selectedID, removedIDs.contains(selectedID) {
+          self.selectedID = nil
+        }
+      }
+    } message: { provider in
+      Text("Removes the usage statistics of every model of this provider.")
     }
   }
 
@@ -334,6 +358,9 @@ struct UsageStatsView: View {
       }
     }
     .buttonStyle(.plain)
+    .onLongPressGesture {
+      deletingProvider = provider
+    }
     .accessibilityLabel(provider.providerLabel)
     .accessibilityValue("\(isSelected ? "Selected" : "Not selected"), \(providerDetailText(for: provider, approx: approx))")
   }
