@@ -483,17 +483,21 @@ enum GitHubService {
 
   static func listIssues(repo: String, state: String, limit: Int) async -> String {
     do {
+      // The /issues endpoint returns pull requests interleaved with issues, so
+      // requesting exactly `limit` items and filtering PRs out afterward yields
+      // fewer than `limit` issues (or none, when the recent window is all PRs).
+      // Over-fetch (at least 20) and trim to `limit` once PRs have been removed.
       let data = try await get(
         "/repos/\(repo)/issues",
         query: [
           URLQueryItem(name: "state", value: state),
-          URLQueryItem(name: "per_page", value: String(limit)),
+          URLQueryItem(name: "per_page", value: String(max(limit, 20))),
         ])
       guard let items = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
         return "Error: unexpected GitHub response."
       }
       // The issues endpoint also returns pull requests; keep plain issues only.
-      let issues = items.filter { $0["pull_request"] == nil }
+      let issues = items.filter { $0["pull_request"] == nil }.prefix(limit)
       if issues.isEmpty { return "No \(state) issues in \(repo)." }
       let lines = issues.map { issue -> String in
         let number = intValue(issue["number"]).map { "#\($0)" } ?? "#?"
