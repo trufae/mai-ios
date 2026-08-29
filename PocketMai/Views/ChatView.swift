@@ -4913,6 +4913,14 @@ private struct ConversationModelSettingsView: View {
             Toggle("Use memory", isOn: useMemoryBinding)
             Toggle("Stream responses", isOn: streamingBinding)
           }
+
+          Section {
+            Toggle("Suggest follow-ups", isOn: followUpSuggestionsBinding)
+          } header: {
+            Text("Follow-up Suggestions")
+          } footer: {
+            Text("Suggestion count and prompt options are in Settings.")
+          }
         }
       }
       .navigationTitle("Chat Settings")
@@ -5362,6 +5370,17 @@ private struct ConversationModelSettingsView: View {
           conversation.usesStreaming = usesStreaming
         }
         didSaveDefaults = false
+      }
+    )
+  }
+
+  private var followUpSuggestionsBinding: Binding<Bool> {
+    Binding(
+      get: { store.settings.followUps.isEnabled },
+      set: { isEnabled in
+        guard store.settings.followUps.isEnabled != isEnabled else { return }
+        store.settings.followUps.isEnabled = isEnabled
+        store.saveSettings()
       }
     )
   }
