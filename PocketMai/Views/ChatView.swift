@@ -1985,6 +1985,7 @@ private struct ChatComposer: View {
   @State private var attachmentConversionMessage: String?
   @State private var attachmentError: String?
   @State private var promptAutocompleteSuppressedCommand: String?
+  @State private var pendingPromptCompletion: String?
   @State private var draftPersistenceTask: Task<Void, Never>?
 
   private var hasDraftText: Bool {
@@ -2000,7 +2001,8 @@ private struct ChatComposer: View {
   }
 
   private var shouldShowPromptAutocomplete: Bool {
-    draftText.hasPrefix("/")
+    pendingPromptCompletion == nil
+      && draftText.hasPrefix("/")
       && !promptShortcutOptions.isEmpty
       && !isResponding
       && !promptAutocompleteIsSuppressed
@@ -2103,6 +2105,7 @@ private struct ChatComposer: View {
         liveVoiceSession.stop(cancelResponse: false)
       }
       persistDraftTextNow(draftText, for: oldID)
+      pendingPromptCompletion = nil
       draftText = store.draftText(for: newID)
     }
     .onChange(of: queuedMessagePendingEdit) { _, message in
@@ -2637,10 +2640,21 @@ private struct ChatComposer: View {
       remainder.isEmpty
       ? "/\(option.commandName) "
       : PromptSlashCommand.visualText(commandName: option.commandName, remainder: remainder)
-    draftText = completed
+    // Rewriting the draft in the same update that dismisses the popover leaves
+    // the composer's text view showing the typed fragment until it is tapped
+    // again: the text change is swallowed by the presentation teardown. Close
+    // the popover first (pendingPromptCompletion keeps it closed without
+    // touching the draft, so the half-typed command cannot re-open it), then
+    // apply the completion on the next runloop turn.
     promptAutocompleteSuppressedCommand = option.commandName
-    persistDraftTextNow(completed)
-    composerFocused = true
+    pendingPromptCompletion = completed
+    Task { @MainActor in
+      guard pendingPromptCompletion == completed else { return }
+      pendingPromptCompletion = nil
+      draftText = completed
+      persistDraftTextNow(completed)
+      composerFocused = true
+    }
   }
 
   private var toolMenu: some View {
