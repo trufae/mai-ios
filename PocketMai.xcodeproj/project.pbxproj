@@ -65,7 +65,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				PocketMaiWidgets.entitlements,
 			);
 			target = C00000000000000000000001 /* PocketMaiWidgetsExtension */;
 		};

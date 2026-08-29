@@ -2235,11 +2235,10 @@ private struct ChatComposer: View {
       if let replacement = store.composerDraftReplacement,
         replacement.conversationID == conversationID
       {
-        draftText = replacement.text
-        promptAutocompleteSuppressedCommand = nil
-        store.consumeComposerDraftReplacement(replacement.id)
+        applyComposerDraftReplacement(replacement)
+      } else {
+        composerFocused = true
       }
-      composerFocused = true
     }
     .onChange(of: conversationID) { oldID, newID in
       if oldID != newID, liveVoiceSession.isActive {
@@ -2735,6 +2734,26 @@ private struct ChatComposer: View {
     pendingAttachments = message.attachments + pendingAttachments
     persistDraftTextNow()
     composerFocused = true
+  }
+
+  private func applyComposerDraftReplacement(_ replacement: ComposerDraftReplacement) {
+    Task { @MainActor in
+      // A follow-up tap removes its suggestion card in the same update that
+      // requests this replacement. Let that teardown finish before changing
+      // the native text field, otherwise it keeps displaying its cached text
+      // until the user types.
+      await Task.yield()
+      guard !liveVoiceSession.isActive,
+        conversationID == store.currentConversation?.id,
+        store.composerDraftReplacement?.id == replacement.id
+      else {
+        return
+      }
+      draftText = replacement.text
+      promptAutocompleteSuppressedCommand = nil
+      store.consumeComposerDraftReplacement(replacement.id)
+      composerFocused = true
+    }
   }
 
   private var promptAutocompletePopover: some View {
