@@ -1473,6 +1473,12 @@ struct MessageTextSelectionSheet: View {
   // When true the raw text is shown/edited; when false the derived filtered text
   // is shown read-only. Saving is always tied to the raw draft.
   @State private var showingRaw: Bool
+  @State private var shareItem: TextShareItem?
+
+  private struct TextShareItem: Identifiable {
+    let id = UUID()
+    let items: [Any]
+  }
 
   init(
     title: String,
@@ -1575,6 +1581,9 @@ struct MessageTextSelectionSheet: View {
               Label("Copy All", systemImage: "doc.on.doc")
             }
           }
+          ToolbarItem(placement: .topBarTrailing) {
+            shareButton
+          }
           ToolbarItem(placement: .confirmationAction) {
             Button("Save") {
               saveEdits()
@@ -1599,8 +1608,40 @@ struct MessageTextSelectionSheet: View {
               Label("Copy All", systemImage: "doc.on.doc")
             }
           }
+          ToolbarItem(placement: .topBarTrailing) {
+            shareButton
+          }
         }
       }
+      .sheet(item: $shareItem) { item in
+        ActivityShareSheet(activityItems: item.items)
+      }
+    }
+  }
+
+  private var shareButton: some View {
+    Button {
+      shareItem = TextShareItem(items: [exportFileURL() ?? displayedText])
+    } label: {
+      Label("Share", systemImage: "square.and.arrow.up")
+    }
+  }
+
+  /// Writes the displayed text to a temp file named after the sheet title so
+  /// the share sheet exports a real file; falls back to sharing plain text.
+  private func exportFileURL() -> URL? {
+    var filename = title
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .components(separatedBy: CharacterSet(charactersIn: "/\\:"))
+      .joined(separator: "-")
+    if filename.isEmpty { filename = "message" }
+    if !filename.dropFirst().contains(".") { filename += ".md" }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+    do {
+      try Data(displayedText.utf8).write(to: url, options: .atomic)
+      return url
+    } catch {
+      return nil
     }
   }
 
