@@ -1610,6 +1610,19 @@ struct SettingsView: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+      Picker(
+        "Search other chats",
+        selection: settingsBinding(\.toolSettings.conversationSearchScope)
+      ) {
+        ForEach(ConversationSearchScope.allCases) { scope in
+          Text(scope.displayName).tag(scope)
+        }
+      }
+      Text(
+        "When the Memory tool is enabled, lets the assistant call tools to list, search, and read other chats and their attached documents as a source of information. None keeps chats private; Current Folder limits it to chats in the same folder; All Folders covers every chat on this device. Each call asks for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
   }
 

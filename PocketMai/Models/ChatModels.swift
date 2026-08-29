@@ -2771,6 +2771,23 @@ extension VoiceSettings {
   }
 }
 
+/// Which other chats the memory tools may list, search, and read.
+enum ConversationSearchScope: String, Codable, CaseIterable, Identifiable, Sendable {
+  case none
+  case currentFolder
+  case allFolders
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .none: "None"
+    case .currentFolder: "Current Folder"
+    case .allFolders: "All Folders"
+    }
+  }
+}
+
 struct NativeToolSettings: Codable, Equatable, Sendable {
   var includeTimeZone: Bool = true
   var includeMoonPhase: Bool = true
@@ -2804,6 +2821,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webxdcAllowNotifications: Bool = false
   var webxdcAllowRealtimeChannels: Bool = false
   var voices: VoiceSettings = .defaults
+  var conversationSearchScope: ConversationSearchScope = .none
 
   static let defaults = NativeToolSettings()
 
@@ -2822,6 +2840,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case webxdcAllowFileImport, webxdcAllowLocalStorage, webxdcAllowServiceWorkers
     case webxdcAllowNotifications, webxdcAllowRealtimeChannels
     case voices
+    case conversationSearchScope
   }
 
   private enum LegacyCodingKeys: String, CodingKey {
@@ -2931,6 +2950,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     } else {
       voices = defaults.voices
     }
+    conversationSearchScope =
+      (try? c.decode(ConversationSearchScope.self, forKey: .conversationSearchScope))
+      ?? defaults.conversationSearchScope
   }
 
   func encode(to encoder: Encoder) throws {
@@ -2967,6 +2989,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(webxdcAllowNotifications, forKey: .webxdcAllowNotifications)
     try c.encode(webxdcAllowRealtimeChannels, forKey: .webxdcAllowRealtimeChannels)
     try c.encode(voices, forKey: .voices)
+    try c.encode(conversationSearchScope, forKey: .conversationSearchScope)
   }
 }
 

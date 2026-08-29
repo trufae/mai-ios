@@ -79,6 +79,10 @@ enum BuiltInToolCatalog {
       id: .github,
       toolNames: GitHubTool.toolNames,
       approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .memory,
+      toolNames: ConversationSearchTool.toolNames,
+      approvalKind: .confirm),
   ]
 
   static func definitions(
@@ -86,7 +90,10 @@ enum BuiltInToolCatalog {
     settings: AppSettings
   ) -> [ToolDefinition] {
     entries.flatMap { entry -> [ToolDefinition] in
-      guard conversation.enabledTools.contains(entry.id), entry.id.isCallableTool else { return [] }
+      guard conversation.enabledTools.contains(entry.id) else { return [] }
+      // Memory is a context source, but it also carries the callable chats_*
+      // tools when a conversation search scope is configured.
+      guard entry.id.isCallableTool || entry.id == .memory else { return [] }
       guard !(settings.airplaneModeEnabled && entry.id.isDisabledInAirplaneMode) else {
         return []
       }
@@ -183,6 +190,12 @@ enum BuiltInToolCatalog {
         return "Error: GitHub tools are disabled while Airplane Mode is enabled."
       }
       return await GitHubTool.execute(name: name, arguments: call.argumentValues)
+    case let name where ConversationSearchTool.toolNames.contains(name):
+      return ConversationSearchTool.execute(
+        name: name,
+        arguments: call.argumentValues,
+        conversation: conversation,
+        store: store)
     default:
       return nil
     }
@@ -290,7 +303,8 @@ enum BuiltInToolCatalog {
     case .github:
       return GitHubTool.definitions
     case .memory:
-      return []
+      guard settings.toolSettings.conversationSearchScope != .none else { return [] }
+      return ConversationSearchTool.definitions
     }
   }
 
