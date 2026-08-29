@@ -2193,6 +2193,7 @@ struct SettingsPromptsBackup: Codable, Sendable {
   var defaultSystemPromptID: UUID?
   var compactPrompt: String?
   var userPrompts: [UserPrompt]? = nil
+  var followUps: FollowUpSettings? = nil
 }
 
 struct SettingsToolsBackup: Codable, Sendable {
@@ -2966,9 +2967,51 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   }
 }
 
+struct FollowUpSettings: Codable, Equatable, Sendable {
+  static let suggestionCountRange = 1...6
+  static let contextMessageCountRange = 1...20
+  static let defaultPrompt = """
+    Suggest short, natural sentences the user could send next to continue this conversation.
+    Make every option meaningfully different and directly relevant to the assistant's latest response.
+    Write the options in the user's voice, not as advice about what the user should say.
+    """
+
+  var isEnabled: Bool = false
+  var prompt: String = FollowUpSettings.defaultPrompt
+  var suggestionCount: Int = 3
+  var contextMessageCount: Int = 3
+
+  static let defaults = FollowUpSettings()
+
+  init() {}
+
+  enum CodingKeys: String, CodingKey {
+    case isEnabled, prompt, suggestionCount, contextMessageCount
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    isEnabled = (try? container.decode(Bool.self, forKey: .isEnabled)) ?? false
+    prompt =
+      (try? container.decode(String.self, forKey: .prompt)) ?? FollowUpSettings.defaultPrompt
+    suggestionCount = Self.clampedSuggestionCount(
+      (try? container.decode(Int.self, forKey: .suggestionCount)) ?? 3)
+    contextMessageCount = Self.clampedContextMessageCount(
+      (try? container.decode(Int.self, forKey: .contextMessageCount)) ?? 3)
+  }
+
+  static func clampedSuggestionCount(_ count: Int) -> Int {
+    min(suggestionCountRange.upperBound, max(suggestionCountRange.lowerBound, count))
+  }
+
+  static func clampedContextMessageCount(_ count: Int) -> Int {
+    min(contextMessageCountRange.upperBound, max(contextMessageCountRange.lowerBound, count))
+  }
+}
+
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
-  static let currentStockPromptsVersion = 2
+  static let currentStockPromptsVersion = 3
   static let recentChatLanguageLimit = 3
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
@@ -3010,7 +3053,12 @@ struct AppSettings: Codable, Equatable, Sendable {
       If the app talks to you (the LLM host): when it sends an update you are notified in chat with its payload; reply with the webxdc_send_update tool, payload as a JSON object matching what the listener expects. Design a tiny request/response protocol (e.g. app sends {payload:{action:"generate"}}, you reply {"result":"..."}) and state it in a comment at the top of the script so future turns follow it.
       """
   )
-  static let defaultUserPrompts = [goalUserPrompt, newAppUserPrompt]
+  static let followUpUserPrompt = UserPrompt(
+    id: UUID(uuidString: "A8C5AF58-B5D2-48EE-97AA-AC178EAED225")!,
+    name: "followup",
+    text: FollowUpSettings.defaultPrompt
+  )
+  static let defaultUserPrompts = [goalUserPrompt, newAppUserPrompt, followUpUserPrompt]
   static let defaultCompactPrompt = """
     Compact the transcript below into durable context for continuing the same chat.
 
@@ -3057,6 +3105,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var contextWindowMode: ContextWindowMode = .full
   var includeAssistantResponsesInContext: Bool = true
   var includeReasoningContentInContext: Bool = true
+  var followUps: FollowUpSettings = .defaults
   var appearance: AppearanceSettings = .defaults
   var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
@@ -3096,6 +3145,14 @@ struct AppSettings: Codable, Equatable, Sendable {
   func defaultPrompt() -> SystemPrompt {
     systemPrompts.first(where: { $0.id == defaultSystemPromptID }) ?? systemPrompts.first
       ?? AppSettings.defaultSystemPrompt
+  }
+
+  var followUpPromptText: String {
+    userPrompts.first(where: { $0.id == Self.followUpUserPrompt.id })?.text
+      ?? userPrompts.first(where: {
+        PromptSlashCommand.normalized($0.slashCommandName) == "followup"
+      })?.text
+      ?? followUps.prompt
   }
 
   mutating func recordRecentChatLanguage(_ identifier: String) {
@@ -3202,6 +3259,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
+    case followUps
     case appearance, conversation, renderMarkdownInChat, renderMarkdownImagesInChat
     case airplaneModeEnabled, attachmentImageSize
     case mlxMaxKVSize, mlxAutoCompact
@@ -3300,6 +3358,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .includeAssistantResponsesInContext)) ?? true
     includeReasoningContentInContext =
       (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? true
+    followUps =
+      (try? c.decode(FollowUpSettings.self, forKey: .followUps)) ?? .defaults
     appearance =
       (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
     conversation =

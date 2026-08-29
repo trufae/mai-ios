@@ -162,6 +162,17 @@ struct LongRunningOperationTimeoutRequest: Identifiable {
   }
 }
 
+struct FollowUpSuggestionState: Equatable, Sendable {
+  let sourceMessageID: UUID
+  let options: [String]
+}
+
+struct ComposerDraftReplacement: Equatable, Sendable {
+  let id = UUID()
+  let conversationID: UUID
+  let text: String
+}
+
 @MainActor
 final class AppStore: ObservableObject {
   private static let openAPIServerSystemPromptID = UUID(
@@ -181,6 +192,9 @@ final class AppStore: ObservableObject {
   @Published var settings: AppSettings
   @Published var respondingConversationIDs: Set<UUID> = []
   @Published private(set) var queuedUserMessagesByConversationID: [UUID: [QueuedChatMessage]] = [:]
+  @Published private(set) var followUpSuggestionsByConversationID: [UUID: FollowUpSuggestionState] =
+    [:]
+  @Published private(set) var generatingFollowUpSourceMessageIDsByConversationID: [UUID: UUID] = [:]
 
   /// Remembers the last successful MCP catalog / endpoint model fetch so repeated
   /// automatic refreshes (every chat turn, conversation switches, view appears)
@@ -196,6 +210,8 @@ final class AppStore: ObservableObject {
 
   private var responseTasks: [UUID: Task<Void, Never>] = [:]
   private var responseTaskTokens: [UUID: UUID] = [:]
+  private var followUpTasks: [UUID: Task<Void, Never>] = [:]
+  private var followUpTaskTokens: [UUID: UUID] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
   private var cancelledToolCallApprovalIDs: Set<UUID> = []
   private var cancelledLongRunningOperationTimeoutIDs: Set<UUID> = []
@@ -297,6 +313,51 @@ final class AppStore: ObservableObject {
     responseTaskTokens[conversationID] = nil
     respondingConversationIDs.remove(conversationID)
     endResponseBackgroundTask(for: conversationID)
+    clearFollowUpSuggestions(in: conversationID)
+  }
+
+  func followUpSuggestions(
+    in conversationID: UUID,
+    after sourceMessageID: UUID
+  ) -> [String] {
+    guard settings.followUps.isEnabled,
+      let state = followUpSuggestionsByConversationID[conversationID],
+      state.sourceMessageID == sourceMessageID,
+      conversation(withID: conversationID)?.messages.last?.id == sourceMessageID
+    else {
+      return []
+    }
+    return state.options
+  }
+
+  func dismissFollowUpSuggestions(in conversationID: UUID) {
+    clearFollowUpSuggestions(in: conversationID)
+  }
+
+  func isGeneratingFollowUpSuggestions(
+    in conversationID: UUID,
+    after sourceMessageID: UUID
+  ) -> Bool {
+    settings.followUps.isEnabled
+      && generatingFollowUpSourceMessageIDsByConversationID[conversationID] == sourceMessageID
+  }
+
+  private func clearFollowUpSuggestions(in conversationID: UUID) {
+    followUpTasks[conversationID]?.cancel()
+    followUpTasks[conversationID] = nil
+    followUpTaskTokens[conversationID] = nil
+    followUpSuggestionsByConversationID[conversationID] = nil
+    generatingFollowUpSourceMessageIDsByConversationID[conversationID] = nil
+  }
+
+  private func clearAllFollowUpSuggestions() {
+    for task in followUpTasks.values {
+      task.cancel()
+    }
+    followUpTasks.removeAll()
+    followUpTaskTokens.removeAll()
+    followUpSuggestionsByConversationID.removeAll()
+    generatingFollowUpSourceMessageIDsByConversationID.removeAll()
   }
 
   @Published var errorMessage: String?
@@ -324,6 +385,7 @@ final class AppStore: ObservableObject {
   @Published var pendingLaunchAction: LaunchCommand?
   /// Bumped to ask the composer to take keyboard focus (e.g. after a widget tap).
   @Published private(set) var composerFocusRequestID = 0
+  @Published private(set) var composerDraftReplacement: ComposerDraftReplacement?
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
@@ -1333,6 +1395,7 @@ final class AppStore: ObservableObject {
 
   func deleteMessage(_ message: ChatMessage) {
     guard let index = currentConversationIndex else { return }
+    let conversationID = conversations[index].id
     let removedMessages = conversations[index].messages.filter { $0.id == message.id }
     guard !removedMessages.isEmpty else { return }
     clearStreamingText(for: removedMessages)
@@ -1341,10 +1404,12 @@ final class AppStore: ObservableObject {
     upsertSummary(for: conversations[index])
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
+    clearFollowUpSuggestions(in: conversationID)
   }
 
   func deleteMessages(_ ids: Set<UUID>) {
     guard let index = currentConversationIndex, !ids.isEmpty else { return }
+    let conversationID = conversations[index].id
     let removedMessages = conversations[index].messages.filter { ids.contains($0.id) }
     guard !removedMessages.isEmpty else { return }
     clearStreamingText(for: removedMessages)
@@ -1353,6 +1418,7 @@ final class AppStore: ObservableObject {
     upsertSummary(for: conversations[index])
     saveConversations()
     deleteUnreferencedVoiceRecordings(from: removedMessages)
+    clearFollowUpSuggestions(in: conversationID)
   }
 
   func clearAllConversations() {
@@ -1368,6 +1434,7 @@ final class AppStore: ObservableObject {
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
     }
+    clearAllFollowUpSuggestions()
     conversationDrafts.removeAll()
     queuedUserMessagesByConversationID.removeAll()
     if !hasLoadedPersistedDrafts {
@@ -1396,6 +1463,7 @@ final class AppStore: ObservableObject {
     }
     responseTasks.removeAll()
     responseTaskTokens.removeAll()
+    clearAllFollowUpSuggestions()
     endAllResponseBackgroundTasks()
     respondingConversationIDs.removeAll()
     queuedUserMessagesByConversationID.removeAll()
@@ -2391,6 +2459,7 @@ final class AppStore: ObservableObject {
     attachments: [ChatAttachment] = []
   ) async {
     guard let index = indexedConversationIndex(for: conversationID) else { return }
+    clearFollowUpSuggestions(in: conversationID)
     let conversation = conversations[index]
     let context = await ContextBuilder.build(
       input: prompt,
@@ -2505,6 +2574,7 @@ final class AppStore: ObservableObject {
         context: context,
         store: self
       )
+      scheduleFollowUpSuggestions(for: conversationID)
       if selectedConversationID != conversationID,
         let conversation = conversation(withID: conversationID),
         conversation.messages.count > messageCountBeforeResponse
@@ -2514,6 +2584,67 @@ final class AppStore: ObservableObject {
     }
     responseTasks[conversationID] = task
     beginResponseBackgroundTask(for: conversationID)
+  }
+
+  private func scheduleFollowUpSuggestions(for conversationID: UUID) {
+    guard !Task.isCancelled, settings.followUps.isEnabled,
+      let conversation = conversation(withID: conversationID),
+      let sourceMessage = conversation.messages.last,
+      sourceMessage.role == .assistant,
+      !sourceMessage.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return
+    }
+
+    clearFollowUpSuggestions(in: conversationID)
+    let settingsSnapshot = settings
+    let sourceMessageID = sourceMessage.id
+    let taskToken = UUID()
+    followUpTaskTokens[conversationID] = taskToken
+    generatingFollowUpSourceMessageIDsByConversationID[conversationID] = sourceMessageID
+    let task = Task { @MainActor [weak self] in
+      guard
+        let request = FollowUpPromptBuilder.request(
+          conversation: conversation,
+          settings: settingsSnapshot)
+      else {
+        self?.finishFollowUpGeneration(in: conversationID, token: taskToken)
+        return
+      }
+
+      do {
+        let response = try await OneShotPromptRunner.run(request, settings: settingsSnapshot)
+        try Task.checkCancellation()
+        let options = FollowUpSuggestionParser.parse(
+          response,
+          limit: settingsSnapshot.followUps.suggestionCount)
+        let expectedCount = FollowUpSettings.clampedSuggestionCount(
+          settingsSnapshot.followUps.suggestionCount)
+        guard let self,
+          followUpTaskTokens[conversationID] == taskToken,
+          settings.followUps.isEnabled,
+          self.conversation(withID: conversationID)?.messages.last?.id == sourceMessageID,
+          options.count == expectedCount
+        else {
+          self?.finishFollowUpGeneration(in: conversationID, token: taskToken)
+          return
+        }
+        followUpSuggestionsByConversationID[conversationID] = FollowUpSuggestionState(
+          sourceMessageID: sourceMessageID,
+          options: options)
+      } catch {
+        // Follow-up suggestions are optional and should never turn a completed reply into an error.
+      }
+      self?.finishFollowUpGeneration(in: conversationID, token: taskToken)
+    }
+    followUpTasks[conversationID] = task
+  }
+
+  private func finishFollowUpGeneration(in conversationID: UUID, token: UUID) {
+    guard followUpTaskTokens[conversationID] == token else { return }
+    followUpTasks[conversationID] = nil
+    followUpTaskTokens[conversationID] = nil
+    generatingFollowUpSourceMessageIDsByConversationID[conversationID] = nil
   }
 
   private func beginResponseBackgroundTask(for conversationID: UUID) {
@@ -3093,6 +3224,9 @@ final class AppStore: ObservableObject {
   }
 
   func saveSettings() {
+    if !settings.followUps.isEnabled {
+      clearAllFollowUpSuggestions()
+    }
     guard hasLoadedPersistedSettings else {
       pendingSettingsSave = true
       return
@@ -3801,7 +3935,8 @@ final class AppStore: ObservableObject {
   }
 
   nonisolated static func strippedSpuriousToolCallText(_ text: String) -> String {
-    guard AgentTooling.containsToolCallMarker(in: text) else { return text }
+    let actionableText = MessageContentFilter.removingReasoningSections(from: text)
+    guard AgentTooling.containsToolCallMarker(in: actionableText) else { return text }
     let patterns = [
       "<\\s*tool_call\\b[^>]*>[\\s\\S]*?<\\s*/\\s*tool_call\\s*>",
       "<\\s*tool_call\\b[^>]*>[\\s\\S]*$",
@@ -3877,6 +4012,7 @@ final class AppStore: ObservableObject {
     responseTaskTokens[removedID] = nil
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
+    clearFollowUpSuggestions(in: removedID)
     queuedUserMessagesByConversationID[removedID] = nil
     if conversationDrafts.removeValue(forKey: removedID) != nil {
       if !hasLoadedPersistedDrafts {
@@ -4001,6 +4137,19 @@ final class AppStore: ObservableObject {
 
   func requestComposerFocus() {
     composerFocusRequestID &+= 1
+  }
+
+  func replaceComposerDraft(with text: String, in conversationID: UUID) {
+    setDraftText(text, for: conversationID)
+    composerDraftReplacement = ComposerDraftReplacement(
+      conversationID: conversationID,
+      text: text)
+    requestComposerFocus()
+  }
+
+  func consumeComposerDraftReplacement(_ replacementID: UUID) {
+    guard composerDraftReplacement?.id == replacementID else { return }
+    composerDraftReplacement = nil
   }
 
   /// Mirrors the current provider/model into the shared App Group and asks the
@@ -4692,7 +4841,8 @@ final class AppStore: ObservableObject {
       prompts: settings.systemPrompts,
       defaultSystemPromptID: settings.defaultSystemPromptID,
       compactPrompt: settings.compactPrompt,
-      userPrompts: settings.userPrompts)
+      userPrompts: settings.userPrompts,
+      followUps: settings.followUps)
   }
 
   private func toolsBackup() -> SettingsToolsBackup {
@@ -4915,6 +5065,9 @@ final class AppStore: ObservableObject {
     if let userPrompts = payload.userPrompts {
       settings.userPrompts = userPrompts
     }
+    if let followUps = payload.followUps {
+      settings.followUps = followUps
+    }
   }
 
   private func applyToolsBackup(_ payload: SettingsToolsBackup) {
@@ -5035,6 +5188,7 @@ final class AppStore: ObservableObject {
     settings.userPrompts = AppSettings.defaultUserPrompts
     settings.defaultSystemPromptID = AppSettings.defaultSystemPrompt.id
     settings.compactPrompt = AppSettings.defaultCompactPrompt
+    settings.followUps = .defaults
     saveSettings()
   }
 
@@ -5147,6 +5301,8 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$settings)
       observe(store.$respondingConversationIDs)
       observe(store.$queuedUserMessagesByConversationID)
+      observe(store.$followUpSuggestionsByConversationID)
+      observe(store.$generatingFollowUpSourceMessageIDsByConversationID)
       observe(store.$isCompacting)
       observe(store.$endpointStatuses)
       observe(store.$endpointModels)

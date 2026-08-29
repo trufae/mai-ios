@@ -656,14 +656,15 @@ enum AssistantToolLoop {
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
+    let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
     let calls = ToolAgentRegistry.parseCalls(
-      in: response,
+      in: actionableResponse,
       definitions: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
       if let outcome = noToolCallOutcome(
-        response: response,
+        response: actionableResponse,
         mode: requestState.activeMode,
         tools: parseDefinitions,
         completedToolRuns: completedToolRuns,
@@ -727,14 +728,15 @@ enum AssistantToolLoop {
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
+    let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
     let calls = ToolAgentRegistry.parseCalls(
-      in: response,
+      in: actionableResponse,
       definitions: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
       if let outcome = noToolCallOutcome(
-        response: response,
+        response: actionableResponse,
         mode: requestState.activeMode,
         tools: parseDefinitions,
         completedToolRuns: completedToolRuns,

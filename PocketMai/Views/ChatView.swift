@@ -631,6 +631,27 @@ struct ChatView: View {
                 .allowsHitTesting(!isPreviewingConversation)
                 .opacity(isPreviewingConversation ? 0.82 : 1)
                 .id(message.id)
+
+                if !isPreviewingConversation,
+                  !isMessageSelectionMode,
+                  let conversationID = conversation?.id
+                {
+                  let suggestions = store.followUpSuggestions(
+                    in: conversationID,
+                    after: message.id)
+                  let isGenerating = store.isGeneratingFollowUpSuggestions(
+                    in: conversationID,
+                    after: message.id)
+                  if isGenerating || !suggestions.isEmpty {
+                    FollowUpSuggestionsCard(
+                      suggestions: suggestions,
+                      isGenerating: isGenerating,
+                      onSelect: { submitFollowUp($0, in: conversationID) },
+                      onDismiss: { store.dismissFollowUpSuggestions(in: conversationID) }
+                    )
+                    .id("follow-ups-\(message.id.uuidString)")
+                  }
+                }
               }
               if isPreviewingConversation {
                 compactLoadingFooter
@@ -756,6 +777,14 @@ struct ChatView: View {
           guard !messageFontPinchSession.isActive, !userScrolledAfterLastMessage else { return }
           scrollToBottomAfterLayout(proxy, animated: true)
         }
+        .onChange(of: currentFollowUpPresentationSnapshot) { old, new in
+          guard old != new,
+            new != nil,
+            !messageFontPinchSession.isActive,
+            !userScrolledAfterLastMessage
+          else { return }
+          scrollToBottomAfterLayout(proxy, animated: true)
+        }
         .onChange(of: pendingScrollToMessageID) { _, target in
           guard !messageFontPinchSession.isActive, let target else { return }
           withAnimation(.snappy) {
@@ -833,6 +862,35 @@ struct ChatView: View {
 
   private var currentQueuedUserMessageIDs: [UUID] {
     currentQueuedUserMessages.map(\.id)
+  }
+
+  private struct FollowUpPresentationSnapshot: Equatable {
+    let sourceMessageID: UUID
+    let isGenerating: Bool
+    let optionCount: Int
+  }
+
+  private var currentFollowUpPresentationSnapshot: FollowUpPresentationSnapshot? {
+    guard store.settings.followUps.isEnabled,
+      let conversationID = store.currentConversation?.id,
+      let lastMessageID = store.currentConversation?.messages.last?.id
+    else {
+      return nil
+    }
+    let state = store.followUpSuggestionsByConversationID[conversationID]
+    let generatingSourceID =
+      store.generatingFollowUpSourceMessageIDsByConversationID[conversationID]
+    let sourceMessageID = state?.sourceMessageID ?? generatingSourceID
+    guard sourceMessageID == lastMessageID else { return nil }
+    return FollowUpPresentationSnapshot(
+      sourceMessageID: lastMessageID,
+      isGenerating: generatingSourceID == lastMessageID,
+      optionCount: state?.options.count ?? 0)
+  }
+
+  private func submitFollowUp(_ suggestion: String, in conversationID: UUID) {
+    store.dismissFollowUpSuggestions(in: conversationID)
+    store.replaceComposerDraft(with: suggestion, in: conversationID)
   }
 
   private func cancelQueuedMessage(_ message: QueuedChatMessage) {
@@ -1477,6 +1535,82 @@ struct ChatView: View {
   }
 }
 
+private struct FollowUpSuggestionsCard: View {
+  let suggestions: [String]
+  let isGenerating: Bool
+  let onSelect: (String) -> Void
+  let onDismiss: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Label("Continue the conversation", systemImage: "sparkles")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Spacer()
+        Button(action: onDismiss) {
+          Image(systemName: "xmark")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Dismiss follow-up suggestions")
+      }
+
+      if isGenerating {
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Generating suggestions…")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+      } else {
+        ForEach(Array(suggestions.enumerated()), id: \.offset) { _, suggestion in
+          Button {
+            onSelect(suggestion)
+          } label: {
+            HStack(spacing: 8) {
+              Text(suggestion)
+                .font(.subheadline)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+              Spacer(minLength: 8)
+              Image(systemName: "pencil")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Color.accentColor.opacity(0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .accessibilityHint("Places this text in the composer for editing")
+        }
+      }
+    }
+    .padding(10)
+    .background(.thinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5)
+    }
+    .frame(maxWidth: 560, alignment: .leading)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.trailing, 38)
+    .transition(.move(edge: .bottom).combined(with: .opacity))
+  }
+}
+
 private struct QueuedMessageBubble: View {
   let message: QueuedChatMessage
   let onEdit: () -> Void
@@ -2098,6 +2232,13 @@ private struct ChatComposer: View {
     }
     .onChange(of: store.composerFocusRequestID) { _, _ in
       guard !liveVoiceSession.isActive else { return }
+      if let replacement = store.composerDraftReplacement,
+        replacement.conversationID == conversationID
+      {
+        draftText = replacement.text
+        promptAutocompleteSuppressedCommand = nil
+        store.consumeComposerDraftReplacement(replacement.id)
+      }
       composerFocused = true
     }
     .onChange(of: conversationID) { oldID, newID in

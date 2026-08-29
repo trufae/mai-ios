@@ -527,6 +527,51 @@ struct SettingsView: View {
   }
 
   @ViewBuilder
+  private var followUpOptionsContent: some View {
+    Toggle("Suggest follow-ups", isOn: settingsBinding(\.followUps.isEnabled))
+    Text(
+      "After each assistant response, generate short messages the user can tap to continue the chat. Disabled by default."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+
+    if store.settings.followUps.isEnabled {
+      Stepper(
+        value: settingsBinding(\.followUps.suggestionCount),
+        in: FollowUpSettings.suggestionCountRange
+      ) {
+        Text("Suggestions: \(store.settings.followUps.suggestionCount)")
+      }
+
+      Stepper(
+        value: settingsBinding(\.followUps.contextMessageCount),
+        in: FollowUpSettings.contextMessageCountRange
+      ) {
+        Text("Context Messages: \(store.settings.followUps.contextMessageCount)")
+      }
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Follow-up Prompt")
+          .font(.subheadline.weight(.medium))
+        TextEditor(text: followUpPromptBinding)
+          .frame(minHeight: 120)
+          .font(.callout)
+      }
+
+      Text(
+        "PocketMai automatically adds the selected recent messages and requires a JSON options response."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+      Button("Reset Follow-up Prompt") {
+        followUpPromptBinding.wrappedValue = FollowUpSettings.defaultPrompt
+      }
+      .disabled(store.settings.followUpPromptText == FollowUpSettings.defaultPrompt)
+    }
+  }
+
+  @ViewBuilder
   private var toolCallingContent: some View {
     Picker("Tool Calling", selection: settingsBinding(\.toolCallingMode)) {
       ForEach(ToolCallingMode.allCases) { mode in
@@ -577,6 +622,12 @@ struct SettingsView: View {
         advancedOptionsContent
       } label: {
         Label("Advanced Options", systemImage: "slider.horizontal.3")
+      }
+
+      SettingsLazyDisclosureGroup {
+        followUpOptionsContent
+      } label: {
+        Label("Follow-up Suggestions", systemImage: "text.bubble.fill")
       }
 
       SettingsLazyDisclosureGroup {
@@ -1945,6 +1996,26 @@ struct SettingsView: View {
       get: { store.settings[keyPath: keyPath] },
       set: { value in
         store.settings[keyPath: keyPath] = value
+        store.saveSettings()
+      }
+    )
+  }
+
+  private var followUpPromptBinding: Binding<String> {
+    Binding(
+      get: { store.settings.followUpPromptText },
+      set: { text in
+        store.settings.followUps.prompt = text
+        if let index = store.settings.userPrompts.firstIndex(where: {
+          $0.id == AppSettings.followUpUserPrompt.id
+            || PromptSlashCommand.normalized($0.slashCommandName) == "followup"
+        }) {
+          store.settings.userPrompts[index].text = text
+        } else {
+          var prompt = AppSettings.followUpUserPrompt
+          prompt.text = text
+          store.settings.userPrompts.append(prompt)
+        }
         store.saveSettings()
       }
     )

@@ -47,6 +47,13 @@ enum MessageContentFilter {
     conversationContextText(from: text)
   }
 
+  /// Removes model reasoning while preserving every other response byte, including tool-call
+  /// envelopes that downstream parsers still need to inspect.
+  static func removingReasoningSections(from text: String) -> String {
+    guard text.contains("<") else { return text }
+    return scan(text, hiding: ["think"], normalizeVisibleText: false).visibleText
+  }
+
   static func conversationContextText(
     from text: String,
     includeReasoning: Bool = false
@@ -74,7 +81,11 @@ enum MessageContentFilter {
     }.joined(separator: "\n")
   }
 
-  private static func scan(_ text: String, hiding tags: Set<String>) -> RenderedMessageContent {
+  private static func scan(
+    _ text: String,
+    hiding tags: Set<String>,
+    normalizeVisibleText shouldNormalizeVisibleText: Bool = true
+  ) -> RenderedMessageContent {
     var cursor = text.startIndex
     var visible = ""
     var hiddenSections: [HiddenMessageSection] = []
@@ -112,7 +123,7 @@ enum MessageContentFilter {
 
     appendVisibleSegment(text[cursor..<text.endIndex], visible: &visible, parts: &parts)
     return RenderedMessageContent(
-      visibleText: normalizedVisibleText(visible),
+      visibleText: shouldNormalizeVisibleText ? normalizedVisibleText(visible) : visible,
       hiddenSections: hiddenSections,
       parts: parts
     )
