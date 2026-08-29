@@ -23,6 +23,7 @@ struct SidebarView: View {
   @State private var selectedIDs: Set<UUID> = []
   @State private var pendingDeletion: PendingConversationDeletion?
   @State private var showingFolderManager = false
+  @State private var showingGallery = false
   @State private var showingMoveDestinationDialog = false
   @State private var keyboardOverlap: CGFloat = 0
   @FocusState private var isSearchFieldFocused: Bool
@@ -96,6 +97,11 @@ struct SidebarView: View {
     .sheet(isPresented: $showingFolderManager) {
       ConversationFolderManagementView()
         .environmentObject(store)
+    }
+    .sheet(isPresented: $showingGallery) {
+      GalleryView()
+        .environmentObject(store)
+        .environmentObject(TTSPlayer.shared)
     }
   }
 
@@ -361,6 +367,11 @@ struct SidebarView: View {
         }
       }
       Divider()
+      Button {
+        showingGallery = true
+      } label: {
+        Label("Gallery", systemImage: "photo.on.rectangle.angled")
+      }
       Button {
         showingFolderManager = true
       } label: {

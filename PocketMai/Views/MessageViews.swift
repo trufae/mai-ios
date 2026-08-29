@@ -933,7 +933,7 @@ private struct MessageImageAttachmentView: View {
   }
 }
 
-private struct MessageImageFullscreenView: View {
+struct MessageImageFullscreenView: View {
   @Environment(\.dismiss) private var dismiss
   let image: UIImage
   let imageData: Data
@@ -995,7 +995,7 @@ private struct MessageImageFullscreenView: View {
   }
 }
 
-private struct MessageImageFullscreenLoader: View {
+struct MessageImageFullscreenLoader: View {
   private let maximumDisplayPixelDimension = 4_096
   let attachment: ChatAttachment
   @State private var image: UIImage?
@@ -1027,7 +1027,7 @@ private struct MessageImageFullscreenLoader: View {
   }
 }
 
-private struct ZoomableUIImageView: UIViewRepresentable {
+struct ZoomableUIImageView: UIViewRepresentable {
   let image: UIImage
   let onSwipeDown: () -> Void
 
