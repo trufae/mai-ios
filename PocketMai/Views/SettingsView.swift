@@ -1573,6 +1573,12 @@ struct SettingsView: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+    case .github:
+      Text(
+        "Read-only GitHub tools for public repositories using the unauthenticated GitHub API: list and review pull requests and diffs, browse files, read commit history, check issues, and inspect CI check runs and job logs. No login is used, so private repositories are unreachable and the anonymous rate limit of 60 requests per hour applies. Disabled by default; each call asks for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     case .memory:
       TextEditor(text: settingsBinding(\.memory))
         .frame(minHeight: 140)

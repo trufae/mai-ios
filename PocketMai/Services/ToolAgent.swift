@@ -75,6 +75,10 @@ enum BuiltInToolCatalog {
       id: .webxdc,
       toolNames: WebXDCTool.toolNames,
       approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
+      id: .github,
+      toolNames: GitHubTool.toolNames,
+      approvalKind: .confirm),
   ]
 
   static func definitions(
@@ -174,6 +178,11 @@ enum BuiltInToolCatalog {
     case let name where WebXDCTool.toolNames.contains(name):
       return WebXDCTool.execute(
         name: name, arguments: call.argumentValues, hub: store.webxdcHub)
+    case let name where GitHubTool.toolNames.contains(name):
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: GitHub tools are disabled while Airplane Mode is enabled."
+      }
+      return await GitHubTool.execute(name: name, arguments: call.argumentValues)
     default:
       return nil
     }
@@ -278,6 +287,8 @@ enum BuiltInToolCatalog {
       return AlarmTool.definitions
     case .webxdc:
       return WebXDCTool.definitions
+    case .github:
+      return GitHubTool.definitions
     case .memory:
       return []
     }

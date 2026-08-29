@@ -2713,6 +2713,9 @@ enum ToolCallParser {
   }
 
   private static func icon(for name: String) -> String {
+    if name.lowercased().hasPrefix("github") {
+      return "arrow.triangle.branch"
+    }
     switch name.lowercased() {
     case "date & time": return "clock"
     case "location": return "location"

@@ -491,6 +491,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case clipboard
   case alarms
   case webxdc
+  case github
   case memory
 
   var id: String { rawValue }
@@ -506,7 +507,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .datetime, .language, .location, .memory:
       return true
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms, .webxdc:
+      .alarms, .webxdc, .github:
       return false
     }
   }
@@ -514,7 +515,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   var isCallableTool: Bool {
     switch self {
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms, .webxdc:
+      .alarms, .webxdc, .github:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -536,6 +537,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .clipboard: "Clipboard"
     case .alarms: "Alarms"
     case .webxdc: "WebXDC Apps"
+    case .github: "GitHub"
     case .memory: "Memory"
     }
   }
@@ -555,13 +557,14 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .clipboard: "doc.on.clipboard"
     case .alarms: "alarm"
     case .webxdc: "square.grid.2x2"
+    case .github: "arrow.triangle.branch"
     case .memory: "brain"
     }
   }
 
   var isDisabledInAirplaneMode: Bool {
     switch self {
-    case .weather, .webSearch:
+    case .weather, .webSearch, .github:
       return true
     case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .calendar,
       .clipboard, .alarms, .webxdc, .memory:

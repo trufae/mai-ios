@@ -2120,6 +2120,8 @@ private struct ChatComposer: View {
   @State private var attachmentError: String?
   @State private var promptAutocompleteSuppressedCommand: String?
   @State private var pendingPromptCompletion: String?
+  @State private var composerTextFieldRefreshID = UUID()
+  @State private var focusComposerAfterTextFieldRefresh = false
   @State private var draftPersistenceTask: Task<Void, Never>?
 
   private var hasDraftText: Bool {
@@ -2246,6 +2248,7 @@ private struct ChatComposer: View {
       }
       persistDraftTextNow(draftText, for: oldID)
       pendingPromptCompletion = nil
+      focusComposerAfterTextFieldRefresh = false
       draftText = store.draftText(for: newID)
     }
     .onChange(of: queuedMessagePendingEdit) { _, message in
@@ -2364,6 +2367,12 @@ private struct ChatComposer: View {
           .padding(.vertical, 5)
           .frame(minHeight: 32, alignment: .center)
           .focused($composerFocused)
+          .onAppear {
+            guard focusComposerAfterTextFieldRefresh else { return }
+            focusComposerAfterTextFieldRefresh = false
+            composerFocused = true
+          }
+          .id(composerTextFieldRefreshID)
           .popover(
             isPresented: promptAutocompleteBinding,
             attachmentAnchor: .rect(.bounds),
@@ -2749,10 +2758,12 @@ private struct ChatComposer: View {
       else {
         return
       }
+      composerFocused = false
       draftText = replacement.text
       promptAutocompleteSuppressedCommand = nil
+      focusComposerAfterTextFieldRefresh = true
+      composerTextFieldRefreshID = replacement.id
       store.consumeComposerDraftReplacement(replacement.id)
-      composerFocused = true
     }
   }
 
