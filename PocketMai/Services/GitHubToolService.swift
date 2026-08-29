@@ -13,12 +13,13 @@ enum GitHubTool {
   static let commitName = "github_commit"
   static let issuesName = "github_issues"
   static let issueName = "github_issue"
+  static let releasesName = "github_releases"
   static let ciStatusName = "github_ci_status"
   static let ciLogName = "github_ci_log"
 
   static let toolNames: [String] = [
     listPRsName, prName, prDiffName, listFilesName, readFileName,
-    commitsName, commitName, issuesName, issueName, ciStatusName, ciLogName,
+    commitsName, commitName, issuesName, issueName, releasesName, ciStatusName, ciLogName,
   ]
 
   private static let repoParameter = ToolParameterDef(
@@ -130,6 +131,14 @@ enum GitHubTool {
           description: "Issue number.", required: true),
       ]),
     ToolDefinition(
+      name: releasesName,
+      description:
+        "List releases of a public GitHub repository as markdown, with each release's downloadable assets and source archives as download links.",
+      parameters: [
+        repoParameter,
+        limitParameter,
+      ]),
+    ToolDefinition(
       name: ciStatusName,
       description:
         "List CI check runs (GitHub Actions jobs and other checks) for a commit, branch, or tag, with status, conclusion, and job IDs for github_ci_log.",
@@ -201,6 +210,8 @@ enum GitHubTool {
         return "Error: number is required."
       }
       return await GitHubService.issue(repo: repo, number: number)
+    case releasesName:
+      return await GitHubService.listReleases(repo: repo, limit: limitArgument(arguments))
     case ciStatusName:
       let ref = (arguments["ref"]?.stringValue ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -557,6 +568,70 @@ enum GitHubService {
       let body = truncated(stringValue(comment["body"]) ?? "", limit: 1_000)
       return "@\(author) (\(date)):\n\(body)"
     }.joined(separator: "\n---\n")
+  }
+
+  // MARK: - Releases
+
+  static func listReleases(repo: String, limit: Int) async -> String {
+    do {
+      let data = try await get(
+        "/repos/\(repo)/releases",
+        query: [URLQueryItem(name: "per_page", value: String(limit))])
+      guard let items = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        return "Error: unexpected GitHub response."
+      }
+      if items.isEmpty { return "No releases in \(repo)." }
+      let blocks = items.map { release -> String in
+        let tag = stringValue(release["tag_name"]) ?? "?"
+        let name = stringValue(release["name"])
+        let heading = (name == nil || name == tag) ? tag : "\(tag) — \(name!)"
+        var badges: [String] = []
+        if (release["prerelease"] as? Bool) == true { badges.append("pre-release") }
+        if (release["draft"] as? Bool) == true { badges.append("draft") }
+        let badgeText = badges.isEmpty ? "" : " [\(badges.joined(separator: ", "))]"
+        let date = stringValue(release["published_at"]) ?? stringValue(release["created_at"]) ?? ""
+        let dateText = date.isEmpty ? "" : " (\(date))"
+
+        var lines = ["### \(heading)\(badgeText)\(dateText)"]
+        if let page = stringValue(release["html_url"]) {
+          lines.append("Release page: \(page)")
+        }
+
+        let assets = release["assets"] as? [[String: Any]] ?? []
+        let assetLinks = assets.compactMap { asset -> String? in
+          guard let url = stringValue(asset["browser_download_url"]) else { return nil }
+          let assetName = stringValue(asset["name"]) ?? url
+          let size = intValue(asset["size"]).map { " (\(formattedBytes($0)))" } ?? ""
+          let downloads = intValue(asset["download_count"]).map { ", \($0) downloads" } ?? ""
+          return "- [\(assetName)](\(url))\(size)\(downloads)"
+        }
+        if assetLinks.isEmpty {
+          lines.append("Assets: none")
+        } else {
+          lines.append("Assets:")
+          lines.append(contentsOf: assetLinks)
+        }
+
+        // Source archives are always available for a tag, even without assets.
+        let escapedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tag
+        lines.append(
+          "- [Source code (zip)](https://github.com/\(repo)/archive/refs/tags/\(escapedTag).zip)")
+        lines.append(
+          "- [Source code (tar.gz)](https://github.com/\(repo)/archive/refs/tags/\(escapedTag).tar.gz)"
+        )
+        return lines.joined(separator: "\n")
+      }
+      return "Releases of \(repo) (showing \(items.count)):\n\n"
+        + blocks.joined(separator: "\n\n")
+    } catch {
+      return "Error: \(error.localizedDescription)"
+    }
+  }
+
+  private static func formattedBytes(_ bytes: Int) -> String {
+    let formatter = ByteCountFormatter()
+    formatter.countStyle = .file
+    return formatter.string(fromByteCount: Int64(bytes))
   }
 
   // MARK: - CI
