@@ -2114,6 +2114,7 @@ private struct ChatComposer: View {
   @State private var selectedPhotoItems: [PhotosPickerItem] = []
   @State private var draftText = ""
   @State private var pendingAttachments: [ChatAttachment] = []
+  @State private var viewingPendingAttachment: ChatAttachment?
   @State private var pendingImageSizePrompt: PendingImageAttachmentImport?
   @State private var pendingPDFImport: PendingPDFImport?
   @State private var attachmentConversionMessage: String?
@@ -2286,6 +2287,19 @@ private struct ChatComposer: View {
       }
       .ignoresSafeArea()
     }
+    .sheet(item: $viewingPendingAttachment) { attachment in
+      MessageTextSelectionSheet(
+        title: attachment.displayName,
+        text: attachment.text ?? "",
+        appearance: store.settings.appearance,
+        initialFontSize: store.settings.appearance.fontSize,
+        initialLineSpacing: store.settings.appearance.lineSpacing,
+        fontFamily: store.settings.appearance.fontFamily(for: .user),
+        isEditable: true,
+        onSave: { text in
+          updatePendingAttachmentText(id: attachment.id, text: text)
+        })
+    }
     .sheet(isPresented: $showingWebXDCLauncher) {
       WebXDCAppLauncherSheet { app in
         store.startWebXDCSession(app: app)
@@ -2421,9 +2435,14 @@ private struct ChatComposer: View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
         ForEach(pendingAttachments) { attachment in
-          AttachmentPill(attachment: attachment) {
-            pendingAttachments.removeAll { $0.id == attachment.id }
-          }
+          AttachmentPill(
+            attachment: attachment,
+            onOpen: attachment.kind == .textFile
+              ? { viewingPendingAttachment = attachment }
+              : nil,
+            onRemove: {
+              pendingAttachments.removeAll { $0.id == attachment.id }
+            })
         }
         if pendingImageAttachmentCount > 1 {
           Button {
@@ -2447,6 +2466,11 @@ private struct ChatComposer: View {
 
   private var pendingImageAttachmentCount: Int {
     pendingAttachments.filter { $0.kind == .image }.count
+  }
+
+  private func updatePendingAttachmentText(id: UUID, text: String) {
+    guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return }
+    pendingAttachments[index].text = text
   }
 
   private var trailingActionSystemImage: String {
@@ -3572,6 +3596,7 @@ private struct CameraImagePicker: UIViewControllerRepresentable {
 
 private struct AttachmentPill: View {
   let attachment: ChatAttachment
+  let onOpen: (() -> Void)?
   let onRemove: () -> Void
 
   var body: some View {
@@ -3595,6 +3620,11 @@ private struct AttachmentPill: View {
     .padding(.vertical, 6)
     .background(.regularMaterial)
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .onTapGesture {
+      onOpen?()
+    }
+    .accessibilityHint(onOpen == nil ? "" : "Tap to view and edit the file contents")
   }
 
   private var imageAttachmentPill: some View {
