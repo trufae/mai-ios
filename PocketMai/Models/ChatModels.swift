@@ -3003,6 +3003,10 @@ struct FollowUpSettings: Codable, Equatable, Sendable {
     """
 
   var isEnabled: Bool = false
+  /// When true, suggestions are generated automatically after each assistant
+  /// reply. When false, the suggestion box still appears at the end of the chat
+  /// but stays empty until the user taps its refresh button.
+  var autoGenerate: Bool = true
   var prompt: String = FollowUpSettings.defaultPrompt
   var suggestionCount: Int = 3
   var contextMessageCount: Int = 3
@@ -3012,12 +3016,13 @@ struct FollowUpSettings: Codable, Equatable, Sendable {
   init() {}
 
   enum CodingKeys: String, CodingKey {
-    case isEnabled, prompt, suggestionCount, contextMessageCount
+    case isEnabled, autoGenerate, prompt, suggestionCount, contextMessageCount
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     isEnabled = (try? container.decode(Bool.self, forKey: .isEnabled)) ?? false
+    autoGenerate = (try? container.decode(Bool.self, forKey: .autoGenerate)) ?? true
     prompt =
       (try? container.decode(String.self, forKey: .prompt)) ?? FollowUpSettings.defaultPrompt
     suggestionCount = Self.clampedSuggestionCount(

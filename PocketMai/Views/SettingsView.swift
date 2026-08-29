@@ -536,6 +536,15 @@ struct SettingsView: View {
     .foregroundStyle(.secondary)
 
     if store.settings.followUps.isEnabled {
+      Toggle("Generate automatically", isOn: settingsBinding(\.followUps.autoGenerate))
+      Text(
+        store.settings.followUps.autoGenerate
+          ? "Suggestions appear on their own after each reply. Tap the refresh button in the box for a new set."
+          : "The suggestion box appears after each reply but stays empty until you tap its refresh button."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
       Stepper(
         value: settingsBinding(\.followUps.suggestionCount),
         in: FollowUpSettings.suggestionCountRange

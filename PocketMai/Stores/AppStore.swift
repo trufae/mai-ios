@@ -2587,6 +2587,18 @@ final class AppStore: ObservableObject {
   }
 
   private func scheduleFollowUpSuggestions(for conversationID: UUID) {
+    guard settings.followUps.autoGenerate else { return }
+    beginFollowUpGeneration(for: conversationID)
+  }
+
+  /// Explicit user request (the refresh button in the suggestion box). Generates
+  /// suggestions for the last assistant message regardless of the automatic
+  /// setting, giving a fresh set each tap.
+  func regenerateFollowUpSuggestions(in conversationID: UUID) {
+    beginFollowUpGeneration(for: conversationID)
+  }
+
+  private func beginFollowUpGeneration(for conversationID: UUID) {
     guard !Task.isCancelled, settings.followUps.isEnabled,
       let conversation = conversation(withID: conversationID),
       let sourceMessage = conversation.messages.last,

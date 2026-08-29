@@ -634,6 +634,10 @@ struct ChatView: View {
 
                 if !isPreviewingConversation,
                   !isMessageSelectionMode,
+                  store.settings.followUps.isEnabled,
+                  message.role == .assistant,
+                  renderedMessages.last?.id == message.id,
+                  !currentChatIsResponding,
                   let conversationID = conversation?.id
                 {
                   let suggestions = store.followUpSuggestions(
@@ -642,15 +646,14 @@ struct ChatView: View {
                   let isGenerating = store.isGeneratingFollowUpSuggestions(
                     in: conversationID,
                     after: message.id)
-                  if isGenerating || !suggestions.isEmpty {
-                    FollowUpSuggestionsCard(
-                      suggestions: suggestions,
-                      isGenerating: isGenerating,
-                      onSelect: { submitFollowUp($0, in: conversationID) },
-                      onDismiss: { store.dismissFollowUpSuggestions(in: conversationID) }
-                    )
-                    .id("follow-ups-\(message.id.uuidString)")
-                  }
+                  FollowUpSuggestionsCard(
+                    suggestions: suggestions,
+                    isGenerating: isGenerating,
+                    onSend: { sendFollowUp($0, in: conversationID) },
+                    onEdit: { submitFollowUp($0, in: conversationID) },
+                    onRefresh: { store.regenerateFollowUpSuggestions(in: conversationID) }
+                  )
+                  .id("follow-ups-\(message.id.uuidString)")
                 }
               }
               if isPreviewingConversation {
@@ -891,6 +894,13 @@ struct ChatView: View {
   private func submitFollowUp(_ suggestion: String, in conversationID: UUID) {
     store.dismissFollowUpSuggestions(in: conversationID)
     store.replaceComposerDraft(with: suggestion, in: conversationID)
+  }
+
+  private func sendFollowUp(_ suggestion: String, in conversationID: UUID) {
+    let trimmed = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    store.dismissFollowUpSuggestions(in: conversationID)
+    Task { _ = await store.send(prompt: suggestion) }
   }
 
   private func cancelQueuedMessage(_ message: QueuedChatMessage) {
@@ -1538,8 +1548,9 @@ struct ChatView: View {
 private struct FollowUpSuggestionsCard: View {
   let suggestions: [String]
   let isGenerating: Bool
-  let onSelect: (String) -> Void
-  let onDismiss: () -> Void
+  let onSend: (String) -> Void
+  let onEdit: (String) -> Void
+  let onRefresh: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -1548,15 +1559,16 @@ private struct FollowUpSuggestionsCard: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
         Spacer()
-        Button(action: onDismiss) {
-          Image(systemName: "xmark")
+        Button(action: onRefresh) {
+          Image(systemName: "arrow.clockwise")
             .font(.caption.weight(.bold))
             .foregroundStyle(.secondary)
             .frame(width: 28, height: 28)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Dismiss follow-up suggestions")
+        .disabled(isGenerating)
+        .accessibilityLabel("Regenerate suggestions")
       }
 
       if isGenerating {
@@ -1570,30 +1582,63 @@ private struct FollowUpSuggestionsCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+      } else if suggestions.isEmpty {
+        Button(action: onRefresh) {
+          HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+            Text("Suggest replies")
+              .font(.subheadline.weight(.medium))
+            Spacer(minLength: 0)
+          }
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 9)
+          .background(Color.accentColor.opacity(0.09))
+          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Generates messages you can send to continue the chat")
       } else {
         ForEach(Array(suggestions.enumerated()), id: \.offset) { _, suggestion in
-          Button {
-            onSelect(suggestion)
-          } label: {
-            HStack(spacing: 8) {
+          HStack(spacing: 0) {
+            Button {
+              onSend(suggestion)
+            } label: {
               Text(suggestion)
                 .font(.subheadline)
                 .multilineTextAlignment(.leading)
                 .lineLimit(2)
-              Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Sends this message")
+
+            Rectangle()
+              .fill(Color.secondary.opacity(0.18))
+              .frame(width: 0.5)
+              .padding(.vertical, 6)
+
+            Button {
+              onEdit(suggestion)
+            } label: {
               Image(systemName: "pencil")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .frame(width: 42)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color.accentColor.opacity(0.09))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edit in composer")
+            .accessibilityHint("Places this text in the composer for editing")
           }
-          .buttonStyle(.plain)
-          .accessibilityHint("Places this text in the composer for editing")
+          .background(Color.accentColor.opacity(0.09))
+          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
       }
     }
