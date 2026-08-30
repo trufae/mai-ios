@@ -368,6 +368,12 @@ struct ChatView: View {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .lineLimit(1)
+        if isLoadingCurrentLocalModel {
+          ProgressView()
+            .progressViewStyle(.linear)
+            .frame(width: 150)
+            .accessibilityLabel("Loading local model into memory")
+        }
       }
       .frame(maxWidth: 240)
       .contentShape(Rectangle())

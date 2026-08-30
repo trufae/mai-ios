@@ -1,5 +1,4 @@
 import Foundation
-import HFAPI
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -119,7 +118,10 @@ actor LocalMLXProvider {
       try Task.checkCancellation()
       let config = ModelConfiguration(id: modelID)
       let loadedContainer = try await loadModelContainer(
-        from: HubClient.default,
+        // Settings downloads into LocalMLXHub's app-owned cache. Using the
+        // default HubClient here selected a different cache and could make a
+        // supposedly downloaded model fetch its files again before chat.
+        from: LocalMLXImmediateCancelDownloader(),
         using: TokenizersLoader(),
         configuration: config,
         progressHandler: progressHandler
