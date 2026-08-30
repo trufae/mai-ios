@@ -649,9 +649,15 @@ struct ChatView: View {
                   FollowUpSuggestionsCard(
                     suggestions: suggestions,
                     isGenerating: isGenerating,
+                    autoSuggestEnabled: store.settings.followUps.autoGenerate,
                     onSend: { sendFollowUp($0, in: conversationID) },
                     onEdit: { submitFollowUp($0, in: conversationID) },
-                    onRefresh: { store.regenerateFollowUpSuggestions(in: conversationID) }
+                    onRefresh: { store.regenerateFollowUpSuggestions(in: conversationID) },
+                    onAutoSuggestChange: { isEnabled in
+                      guard store.settings.followUps.autoGenerate != isEnabled else { return }
+                      store.settings.followUps.autoGenerate = isEnabled
+                      store.saveSettings()
+                    }
                   )
                   .id("follow-ups-\(message.id.uuidString)")
                 }
@@ -1548,9 +1554,11 @@ struct ChatView: View {
 private struct FollowUpSuggestionsCard: View {
   let suggestions: [String]
   let isGenerating: Bool
+  let autoSuggestEnabled: Bool
   let onSend: (String) -> Void
   let onEdit: (String) -> Void
   let onRefresh: () -> Void
+  let onAutoSuggestChange: (Bool) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -1652,6 +1660,21 @@ private struct FollowUpSuggestionsCard: View {
     .frame(maxWidth: 560, alignment: .leading)
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.trailing, 38)
+    .contentShape(Rectangle())
+    .contextMenu {
+      Button(action: onRefresh) {
+        Label("Refresh Suggestions", systemImage: "arrow.clockwise")
+      }
+      .disabled(isGenerating)
+
+      Button {
+        onAutoSuggestChange(!autoSuggestEnabled)
+      } label: {
+        Label(
+          "Auto-suggest",
+          systemImage: autoSuggestEnabled ? "checkmark.circle.fill" : "circle")
+      }
+    }
     .transition(.move(edge: .bottom).combined(with: .opacity))
   }
 }
@@ -4957,14 +4980,7 @@ private struct ConversationModelSettingsView: View {
               .disabled(!store.settings.showThinkingByDefault)
             Toggle("Use memory", isOn: useMemoryBinding)
             Toggle("Stream responses", isOn: streamingBinding)
-          }
-
-          Section {
             Toggle("Suggest follow-ups", isOn: followUpSuggestionsBinding)
-          } header: {
-            Text("Follow-up Suggestions")
-          } footer: {
-            Text("Suggestion count and prompt options are in Settings.")
           }
         }
       }
