@@ -89,7 +89,11 @@ actor LocalMLXProvider {
   // Minimum headroom reserved for output tokens within the KV window.
   private static let outputHeadroom = 512
 
-  private init() {}
+  private init() {
+    // MLX 0.31.6 resolves its default device from the C++ core. This provider
+    // requires Metal, so make the intended device explicit on iOS.
+    Device.setDefault(device: .gpu)
+  }
 
   func load(
     modelID rawModelID: String,
@@ -167,19 +171,34 @@ actor LocalMLXProvider {
 
     let maxKVSize = request.settings.mlxMaxKVSize.effectiveSize
     let promptTokenLimit = maxKVSize - Self.outputHeadroom
-    let input = try await container.prepare(
-      input: UserInput(chat: messages, tools: Self.mlxToolSpecs(from: request.nativeTools))
-    )
-    let promptTokenCount = input.text.tokens.size
-    if promptTokenCount > promptTokenLimit {
-      throw LocalMLXError.contextLengthExceeded(tokenCount: promptTokenCount)
-    }
     let temperature: Float = request.hasToolCalling ? 0.2 : 0.7
-    let stream = try await container.generate(
-      input: input,
-      parameters: GenerateParameters(
-        maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
-    )
+    let parameters = GenerateParameters(
+      maxTokens: 1_200, maxKVSize: maxKVSize, temperature: temperature)
+
+    // Keep the generation task for the whole request rather than using the
+    // convenience stream API, which hides it. Preparing the input and building
+    // the iterator inside ModelContainer's serialized access also keeps all
+    // MLX state on its owner.
+    let (stream, generationTask, promptTokenCount) = try await container.perform(
+      nonSendable: UserInput(
+        chat: messages, tools: Self.mlxToolSpecs(from: request.nativeTools))
+    ) { context, userInput in
+      let input = try await context.processor.prepare(input: userInput)
+      let promptTokenCount = input.text.tokens.size
+      if promptTokenCount > promptTokenLimit {
+        throw LocalMLXError.contextLengthExceeded(tokenCount: promptTokenCount)
+      }
+      let iterator = try TokenIterator(
+        input: input, model: context.model, parameters: parameters)
+      let (stream, task) = MLXLMCommon.generateTask(
+        promptTokenCount: promptTokenCount,
+        modelConfiguration: context.configuration,
+        tokenizer: context.tokenizer,
+        iterator: iterator,
+        tools: Self.mlxToolSpecs(from: request.nativeTools)
+      )
+      return (stream, task, promptTokenCount)
+    }
 
     let requestStart = Date()
     var output = ""
@@ -206,6 +225,9 @@ actor LocalMLXProvider {
         }
       }
     }
+    // In particular, wait if iteration was stopped by cancellation or a stream
+    // consumer change before the producer completed its MLX work.
+    await generationTask.value
 
     if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       throw ChatProviderError.emptyResponse
