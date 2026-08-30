@@ -143,6 +143,7 @@ struct ChatCompletionRequest: Sendable {
   var toolPrompt: String = ""
   var toolPromptInContext: Bool = false
   var messageLimitOverride: Int? = nil
+  var oneShotResponseFormat: OneShotPromptResponseFormat = .text
   var usesInteractiveTimeoutPrompt = false
 
   var transportTimeoutInterval: TimeInterval {
@@ -242,6 +243,7 @@ enum ChatProviderRouter {
         }
       } catch {
         attempts += 1
+        if case .followUpSuggestions = current.oneShotResponseFormat { throw error }
         guard attempts <= 3, isContextOverflowError(error) else { throw error }
         let messageCount = current.conversation.messages.count
         let baseLimit =
@@ -988,7 +990,60 @@ enum AppleFoundationProvider {
     guard #available(iOS 26.0, *) else {
       throw ChatProviderError.appleModelUnavailable(unsupportedOSMessage)
     }
+    if case .followUpSuggestions(let count) = request.oneShotResponseFormat {
+      return try await completeFollowUpSuggestionsOnSupportedOS(
+        prompt: request.conversation.messages.last?.text ?? "",
+        count: count,
+        request: request)
+    }
     return try await completeOnSupportedOS(request: request, onUpdate: onUpdate)
+  }
+
+  @available(iOS 26.0, *)
+  private static func completeFollowUpSuggestionsOnSupportedOS(
+    prompt: String,
+    count: Int,
+    request: ChatCompletionRequest
+  ) async throws -> String {
+    let deviceOnly = request.settings.airplaneModeEnabled
+    if let unavailableMessage = unavailableMessage(deviceOnly: deviceOnly) {
+      throw ChatProviderError.appleModelUnavailable(unavailableMessage)
+    }
+
+    let itemSchema = DynamicGenerationSchema(
+      type: String.self,
+      guides: [])
+    let optionsSchema = DynamicGenerationSchema(
+      arrayOf: itemSchema,
+      minimumElements: count,
+      maximumElements: count)
+    let rootSchema = DynamicGenerationSchema(
+      name: "FollowUpSuggestions",
+      description: "Short messages the user can send next.",
+      properties: [
+        DynamicGenerationSchema.Property(
+          name: "options",
+          description: "Distinct follow-up messages written in the user's voice.",
+          schema: optionsSchema)
+      ])
+    let schema = try GenerationSchema(root: rootSchema, dependencies: [])
+    let session = LanguageModelSession(
+      model: systemModel(deviceOnly: deviceOnly),
+      instructions:
+        "Generate only the requested follow-up suggestions. Keep them concise and distinct."
+    )
+    let requestStart = Date()
+    let response = try await session.respond(
+      to: prompt,
+      schema: schema,
+      options: GenerationOptions(maximumResponseTokens: 240))
+    let content = response.content.jsonString
+    await recordEstimatedUsage(
+      request: request,
+      promptCharacterCount: prompt.count,
+      outputCharacterCount: content.count,
+      requestStart: requestStart)
+    return content
   }
 
   @available(iOS 26.0, *)

@@ -1,11 +1,17 @@
 import Foundation
 
+enum OneShotPromptResponseFormat: Sendable {
+  case text
+  case followUpSuggestions(count: Int)
+}
+
 struct OneShotPromptRequest: Sendable {
   let title: String
   let prompt: String
   let provider: ProviderKind
   let modelID: String
   let endpointID: UUID?
+  var responseFormat: OneShotPromptResponseFormat = .text
 }
 
 struct CompactConversationRequest: Sendable {
@@ -139,12 +145,13 @@ enum OneShotPromptRunner {
     oneShot.enabledTools = []
     oneShot.usesStreaming = false
     oneShot.messages = [ChatMessage(role: .user, text: prompt.prompt)]
-    let request = ChatCompletionRequest(
+    var request = ChatCompletionRequest(
       conversation: oneShot,
       settings: settings,
       context: "",
       assistantMessageID: UUID()
     )
+    request.oneShotResponseFormat = prompt.responseFormat
     return try await ChatProviderRouter.complete(request: request) { _ in }
   }
 }

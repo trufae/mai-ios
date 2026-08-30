@@ -2630,13 +2630,11 @@ final class AppStore: ObservableObject {
         let options = FollowUpSuggestionParser.parse(
           response,
           limit: settingsSnapshot.followUps.suggestionCount)
-        let expectedCount = FollowUpSettings.clampedSuggestionCount(
-          settingsSnapshot.followUps.suggestionCount)
         guard let self,
           followUpTaskTokens[conversationID] == taskToken,
           settings.followUps.isEnabled,
           self.conversation(withID: conversationID)?.messages.last?.id == sourceMessageID,
-          options.count == expectedCount
+          !options.isEmpty
         else {
           self?.finishFollowUpGeneration(in: conversationID, token: taskToken)
           return

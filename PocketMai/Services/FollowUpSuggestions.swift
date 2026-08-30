@@ -23,13 +23,22 @@ enum FollowUpPromptBuilder {
     let count = FollowUpSettings.clampedSuggestionCount(followUps.suggestionCount)
     let customPrompt = settings.followUpPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
     let instruction = customPrompt.isEmpty ? FollowUpSettings.defaultPrompt : customPrompt
+    let outputInstruction: String
+    if conversation.provider == .apple {
+      outputInstruction =
+        "Write exactly \(count) options. Keep each option to one sentence and at most 12 words."
+    } else {
+      outputInstruction = """
+        Generate exactly \(count) options. Each option must be a single short sentence of no more than 12 words. Questions and brief statements are both allowed.
+
+        Return only one valid JSON object in this exact shape, with no Markdown or commentary:
+        {"options":["First option","Second option"]}
+        """
+    }
     let prompt = """
       \(instruction)
 
-      Generate exactly \(count) options. Each option must be a single short sentence of no more than 12 words. Questions and brief statements are both allowed.
-
-      Return only one valid JSON object in this exact shape, with no Markdown or commentary:
-      {"options":["First option","Second option"]}
+      \(outputInstruction)
 
       Recent conversation:
 
@@ -41,7 +50,8 @@ enum FollowUpPromptBuilder {
       prompt: prompt,
       provider: conversation.provider,
       modelID: effectiveModelID(for: conversation, settings: settings),
-      endpointID: conversation.endpointID)
+      endpointID: conversation.endpointID,
+      responseFormat: .followUpSuggestions(count: count))
   }
 
   private static func effectiveModelID(
@@ -63,6 +73,8 @@ enum FollowUpPromptBuilder {
 }
 
 enum FollowUpSuggestionParser {
+  private static let maximumAcceptedWordCount = 24
+
   private struct Payload: Decodable {
     let options: [String]
   }
@@ -79,7 +91,9 @@ enum FollowUpSuggestionParser {
       let key = option.folding(
         options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
       let wordCount = option.split(whereSeparator: \Character.isWhitespace).count
-      guard !option.isEmpty, wordCount <= 12, seen.insert(key).inserted else { continue }
+      guard !option.isEmpty, wordCount <= maximumAcceptedWordCount,
+        seen.insert(key).inserted
+      else { continue }
       result.append(option)
       if result.count == limit { break }
     }
