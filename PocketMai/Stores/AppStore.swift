@@ -191,6 +191,7 @@ final class AppStore: ObservableObject {
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
   @Published var respondingConversationIDs: Set<UUID> = []
+  @Published private(set) var loadingLocalModelConversationIDs: Set<UUID> = []
   @Published private(set) var queuedUserMessagesByConversationID: [UUID: [QueuedChatMessage]] = [:]
   @Published private(set) var followUpSuggestionsByConversationID: [UUID: FollowUpSuggestionState] =
     [:]
@@ -221,6 +222,10 @@ final class AppStore: ObservableObject {
 
   func isResponding(in conversationID: UUID) -> Bool {
     respondingConversationIDs.contains(conversationID)
+  }
+
+  func isLoadingLocalModel(in conversationID: UUID) -> Bool {
+    loadingLocalModelConversationIDs.contains(conversationID)
   }
 
   func cancelResponse(in conversationID: UUID) {
@@ -2563,10 +2568,22 @@ final class AppStore: ObservableObject {
       defer {
         if responseTaskTokens[conversationID] == responseTaskToken {
           respondingConversationIDs.remove(conversationID)
+          loadingLocalModelConversationIDs.remove(conversationID)
           responseTasks[conversationID] = nil
           responseTaskTokens[conversationID] = nil
           endResponseBackgroundTask(for: conversationID)
           saveConversations()
+        }
+      }
+      if let conversation = conversation(withID: conversationID), conversation.provider == .mlx {
+        let modelID = LocalMLXProvider.effectiveModelID(
+          conversation: conversation, settings: settings)
+        if !modelID.isEmpty {
+          loadingLocalModelConversationIDs.insert(conversationID)
+          defer { loadingLocalModelConversationIDs.remove(conversationID) }
+          // Settings may have preloaded this exact shared container. If not,
+          // load it before the assistant turn so the chat can report progress.
+          try? await LocalMLXProvider.shared.load(modelID: modelID)
         }
       }
       await AssistantTurnRunner.run(

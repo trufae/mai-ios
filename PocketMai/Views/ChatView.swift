@@ -358,10 +358,16 @@ struct ChatView: View {
         .font(.headline)
         .lineLimit(1)
         .foregroundStyle(.primary)
-        Text(providerSubtitle)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
+        HStack(spacing: 4) {
+          if isLoadingCurrentLocalModel {
+            ProgressView()
+              .controlSize(.mini)
+          }
+          Text(providerSubtitle)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
       }
       .frame(maxWidth: 240)
       .contentShape(Rectangle())
@@ -418,11 +424,17 @@ struct ChatView: View {
   private var providerSubtitle: String {
     if store.isCompacting { return "Compacting…" }
     if store.selectedConversationIsLoading { return "Loading…" }
+    if isLoadingCurrentLocalModel { return "Loading local model into memory…" }
     guard let conversation = store.currentConversation else { return "No conversation" }
     let providerName = providerLabel(for: conversation)
     let model = conversation.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
     let parts = [providerName, model.isEmpty ? nil : model, systemPromptTitle].compactMap { $0 }
     return parts.joined(separator: " · ")
+  }
+
+  private var isLoadingCurrentLocalModel: Bool {
+    guard let id = store.currentConversation?.id else { return false }
+    return store.isLoadingLocalModel(in: id)
   }
 
   private func providerLabel(for conversation: Conversation) -> String {

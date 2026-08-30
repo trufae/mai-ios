@@ -135,6 +135,12 @@ actor LocalMLXProvider {
     }
   }
 
+  func unload(modelID: String) {
+      guard loadedModelID == LocalMLXProvider.normalizedModelID(modelID) else { return }
+    container = nil
+    loadedModelID = nil
+  }
+
   func complete(
     request: ChatCompletionRequest,
     onUpdate: @escaping @MainActor (String) -> Void

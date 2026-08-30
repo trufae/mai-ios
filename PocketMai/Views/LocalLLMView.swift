@@ -1,6 +1,5 @@
 import Foundation
 import MLXLMCommon
-import MLXLMTokenizers
 import SwiftUI
 
 @MainActor
@@ -18,7 +17,6 @@ final class LocalLLMViewModel: ObservableObject {
 
   let presets = LocalMLXModels.presets
 
-  private var container: ModelContainer?
   private var loadedModelId: String?
   private var loadTask: Task<Void, Never>?
   private var activeLoadID: UUID?
@@ -44,7 +42,8 @@ final class LocalLLMViewModel: ObservableObject {
     if isLoading {
       return "Cancel Download"
     }
-    return isActiveModelReady ? "Reload Model" : "Download Model"
+    if isActiveModelReady { return "Reload Model" }
+    return LocalMLXModelCache.containsRepository(activeModelId) ? "Load Model" : "Download & Load Model"
   }
 
   var loadButtonSystemImage: String {
@@ -68,7 +67,9 @@ final class LocalLLMViewModel: ObservableObject {
     isReady = false
     downloadProgress = nil
     downloadProgressText = nil
-    status = "Preparing Hugging Face download for \(modelId)..."
+    status = LocalMLXModelCache.containsRepository(modelId)
+      ? "Loading model into memory..."
+      : "Preparing Hugging Face download for \(modelId)..."
     let loadID = UUID()
     activeLoadID = loadID
     loadTask = Task { [weak self] in
@@ -98,14 +99,15 @@ final class LocalLLMViewModel: ObservableObject {
 
   private func loadModel(modelId: String, loadID: UUID) async {
     guard isCurrentLoad(loadID: loadID), !Task.isCancelled else { return }
-    let previousContainer = container
     let previousLoadedModelId = loadedModelId
     let wasCachedBeforeLoad = LocalMLXModelCache.containsRepository(modelId)
     isLoading = true
     isReady = false
     downloadProgress = nil
     downloadProgressText = nil
-    status = "Preparing Hugging Face download for \(modelId)..."
+    status = wasCachedBeforeLoad
+      ? "Loading model into memory..."
+      : "Preparing Hugging Face download for \(modelId)..."
     defer {
       if isCurrentLoad(loadID: loadID) {
         isLoading = false
@@ -119,8 +121,6 @@ final class LocalLLMViewModel: ObservableObject {
 
     do {
       try Task.checkCancellation()
-      let config = ModelConfiguration(id: modelId)
-      let downloader = LocalMLXImmediateCancelDownloader()
       let progressHandler: @Sendable (Progress) -> Void = { [weak self] progress in
         let total = progress.totalUnitCount
         let completed = max(progress.completedUnitCount, 0)
@@ -153,23 +153,19 @@ final class LocalLLMViewModel: ObservableObject {
         }
       }
 
-      let loadedContainer = try await loadModelContainer(
-        from: downloader,
-        using: TokenizersLoader(),
-        configuration: config,
-        progressHandler: progressHandler
-      )
+      try await LocalMLXProvider.shared.load(
+        modelID: modelId,
+        progressHandler: progressHandler)
       try Task.checkCancellation()
       guard isCurrentLoad(loadID: loadID) else {
-        restorePreviousModel(container: previousContainer, loadedModelId: previousLoadedModelId)
+        restorePreviousModel(loadedModelId: previousLoadedModelId)
         return
       }
-      container = loadedContainer
       loadedModelId = modelId
       isReady = true
       status = "Model ready: \(modelId)"
     } catch is CancellationError {
-      restorePreviousModel(container: previousContainer, loadedModelId: previousLoadedModelId)
+      restorePreviousModel(loadedModelId: previousLoadedModelId)
       let cleanupError =
         activeLoadID == nil
         ? removePartialDownloadIfNeeded(for: modelId, wasCachedBeforeLoad: wasCachedBeforeLoad)
@@ -179,7 +175,7 @@ final class LocalLLMViewModel: ObservableObject {
       }
     } catch {
       if Self.isCancellation(error) {
-        restorePreviousModel(container: previousContainer, loadedModelId: previousLoadedModelId)
+        restorePreviousModel(loadedModelId: previousLoadedModelId)
         let cleanupError =
           activeLoadID == nil
           ? removePartialDownloadIfNeeded(for: modelId, wasCachedBeforeLoad: wasCachedBeforeLoad)
@@ -189,7 +185,7 @@ final class LocalLLMViewModel: ObservableObject {
         }
         return
       }
-      restorePreviousModel(container: previousContainer, loadedModelId: previousLoadedModelId)
+      restorePreviousModel(loadedModelId: previousLoadedModelId)
       let cleanupError =
         activeLoadID == nil || activeLoadID == loadID
         ? removePartialDownloadIfNeeded(for: modelId, wasCachedBeforeLoad: wasCachedBeforeLoad)
@@ -207,11 +203,11 @@ final class LocalLLMViewModel: ObservableObject {
     cachedModels = LocalMLXModelCache.listModels()
   }
 
-  func deleteCachedModel(_ model: CachedMLXModel) {
+  func deleteCachedModel(_ model: CachedMLXModel) async {
     do {
+      await LocalMLXProvider.shared.unload(modelID: model.repoID)
       try LocalMLXModelCache.delete(model)
       if loadedModelId == model.repoID {
-        container = nil
         loadedModelId = nil
         isReady = false
       }
@@ -224,7 +220,7 @@ final class LocalLLMViewModel: ObservableObject {
 
   private func showFailure(_ error: Error, action: String, modelId: String) {
     let message = Self.message(for: error, action: action, modelId: modelId)
-    isReady = container != nil && loadedModelId == activeModelId
+    isReady = loadedModelId == activeModelId
     status = message
   }
 
@@ -318,10 +314,9 @@ final class LocalLLMViewModel: ObservableObject {
     return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
   }
 
-  private func restorePreviousModel(container: ModelContainer?, loadedModelId: String?) {
-    self.container = container
+  private func restorePreviousModel(loadedModelId: String?) {
     self.loadedModelId = loadedModelId
-    isReady = container != nil && loadedModelId == activeModelId
+    isReady = loadedModelId == activeModelId
   }
 
   private func removePartialDownloadIfNeeded(
@@ -426,7 +421,7 @@ struct LocalLLMView: View {
       presenting: pendingModelDeletion
     ) { model in
       Button("Delete", role: .destructive) {
-        vm.deleteCachedModel(model)
+        Task { await vm.deleteCachedModel(model) }
       }
       Button("Cancel", role: .cancel) {}
     } message: { model in
