@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ["[0-9]*"]
+
+# Needed by `gh release create`; the default token is otherwise read-only.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish IPA
+    runs-on: macos-latest
+    env:
+      PROJECT: PocketMai.xcodeproj
+      SCHEME: PocketMai
+      ARCHIVE_PATH: ${{ runner.temp }}/PocketMai.xcarchive
+      EXPORT_PATH: ${{ runner.temp }}/export
+      EXPORT_METHOD: ${{ vars.IPA_EXPORT_METHOD || 'ad-hoc' }}
+      SIGNING_IDENTITY: ${{ vars.IPA_SIGNING_IDENTITY || 'Apple Distribution' }}
+      TEAM_ID: J5PTVY8BHH
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify the release version
+        run: |
+          set -eu
+          case "$GITHUB_REF_NAME" in
+            *[!0-9.]* | .* | *..* | '')
+              echo "A release tag must be numeric (for example 1.6.8), got: $GITHUB_REF_NAME" >&2
+              exit 1
+              ;;
+          esac
+          version=$(./version.sh)
+          test "$version" = "$GITHUB_REF_NAME" || {
+            echo "Tag $GITHUB_REF_NAME does not match MARKETING_VERSION $version" >&2
+            exit 1
+          }
+
+      # These secrets are deliberately decoded only on the hosted runner.  The
+      # provisioning profiles must cover both the app and its widget extension.
+      - name: Install signing certificate and provisioning profiles
+        id: signing
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          WIDGET_PROVISION_PROFILE_BASE64: ${{ secrets.WIDGET_PROVISION_PROFILE_BASE64 }}
+        run: |
+          set -eu
+          for secret in BUILD_CERTIFICATE_BASE64 P12_PASSWORD BUILD_PROVISION_PROFILE_BASE64 WIDGET_PROVISION_PROFILE_BASE64; do
+            test -n "$(printenv "$secret")" || {
+              echo "Missing required repository secret: $secret" >&2
+              exit 1
+            }
+          done
+
+          cert_path="$RUNNER_TEMP/certificate.p12"
+          keychain_path="$RUNNER_TEMP/signing.keychain-db"
+          base64 -D -o "$cert_path" <<< "$BUILD_CERTIFICATE_BASE64"
+          security create-keychain -p "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+          security import "$cert_path" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychain -d user -s "$keychain_path" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+
+          profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profile_dir"
+          install_profile() {
+            encoded=$1
+            output=$2
+            profile="$RUNNER_TEMP/$output.mobileprovision"
+            plist="$RUNNER_TEMP/$output.plist"
+            base64 -D -o "$profile" <<< "$encoded"
+            security cms -D -i "$profile" > "$plist"
+            uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$plist")
+            name=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$plist")
+            cp "$profile" "$profile_dir/$uuid.mobileprovision"
+            echo "$output=$name" >> "$GITHUB_OUTPUT"
+          }
+          install_profile "$BUILD_PROVISION_PROFILE_BASE64" app_profile
+          install_profile "$WIDGET_PROVISION_PROFILE_BASE64" widget_profile
+
+      - name: Archive signed app
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            -skipPackagePluginValidation \
+            archive
+
+      - name: Export IPA
+        env:
+          APP_PROFILE: ${{ steps.signing.outputs.app_profile }}
+          WIDGET_PROFILE: ${{ steps.signing.outputs.widget_profile }}
+        run: |
+          set -eu
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>$EXPORT_METHOD</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>provisioningProfiles</key><dict>
+              <key>io.github.trufae.mai</key><string>$APP_PROFILE</string>
+              <key>io.github.trufae.mai.PocketMaiWidgetsExtension</key><string>$WIDGET_PROFILE</string>
+            </dict>
+          </dict></plist>
+          EOF
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$EXPORT_PATH"
+          mv "$EXPORT_PATH/PocketMai.ipa" "PocketMai-$GITHUB_REF_NAME.ipa"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          asset="PocketMai-$GITHUB_REF_NAME.ipa"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$asset" \
+              --title "PocketMai $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
