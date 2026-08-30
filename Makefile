@@ -4,6 +4,7 @@ CONFIG ?= Debug
 DESTINATION ?= generic/platform=iOS Simulator
 TEST_DESTINATION ?=
 DERIVED_DATA ?= build/DerivedData
+XCODE_PACKAGE_FLAGS ?= -skipPackagePluginValidation
 DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
@@ -13,7 +14,7 @@ APP_BUNDLE ?=
 all: build
 
 build:
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination '$(DESTINATION)' -derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO build
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination '$(DESTINATION)' -derivedDataPath $(DERIVED_DATA) $(XCODE_PACKAGE_FLAGS) CODE_SIGNING_ALLOWED=NO build
 
 test:
 	@set -e; \
@@ -28,7 +29,7 @@ test:
 		xcrun simctl bootstatus "$$simulator_id" -b; \
 		destination="platform=iOS Simulator,id=$$simulator_id"; \
 	fi; \
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination "$$destination" -derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO test
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) -destination "$$destination" -derivedDataPath $(DERIVED_DATA) $(XCODE_PACKAGE_FLAGS) CODE_SIGNING_ALLOWED=NO test
 
 list:
 	xcrun devicectl list devices
@@ -53,7 +54,7 @@ run:
 	if [ -z "$$app_bundle" ]; then \
 		xcodebuild -project '$(PROJECT)' -scheme '$(SCHEME)' -configuration '$(CONFIG)' \
 			-destination "platform=iOS,id=$$device" -derivedDataPath '$(DERIVED_DATA)' \
-			-allowProvisioningUpdates build; \
+			$(XCODE_PACKAGE_FLAGS) -allowProvisioningUpdates build; \
 		app_bundle='$(DERIVED_DATA)/Build/Products/$(CONFIG)-iphoneos/$(SCHEME).app'; \
 	fi; \
 	if [ -z "$$app_bundle" ] || [ ! -d "$$app_bundle" ]; then \

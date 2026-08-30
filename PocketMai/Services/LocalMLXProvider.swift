@@ -260,7 +260,8 @@ actor LocalMLXProvider {
           "Unsupported model format for \(modelID). Use a Hugging Face repo that is already converted to MLX and supported by mlx-swift-lm."
       case .noModelFactoryAvailable:
         return "MLX LLM support is not available in this build. Check that MLXLLM is linked."
-      case .configurationFileError, .configurationDecodingError, .unsupportedProcessorType:
+      case .configurationFileError, .configurationDecodingError, .invalidConfiguration,
+        .unsupportedProcessorType:
         return
           "Unsupported MLX model configuration for \(modelID): \(factoryError.localizedDescription)"
       }

@@ -240,7 +240,8 @@ final class LocalLLMViewModel: ObservableObject {
           "Unsupported model format for \(modelId). Use a Hugging Face repo that is already converted to MLX and supported by mlx-swift-lm."
       case .noModelFactoryAvailable:
         return "MLX LLM support is not available in this build. Check that MLXLLM is linked."
-      case .configurationFileError, .configurationDecodingError, .unsupportedProcessorType:
+      case .configurationFileError, .configurationDecodingError, .invalidConfiguration,
+        .unsupportedProcessorType:
         return
           "Unsupported MLX model configuration for \(modelId): \(factoryError.localizedDescription)"
       }
