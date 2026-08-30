@@ -1500,6 +1500,10 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var disabledMCPTools: Set<String> = []
   var reasoningLevel: ReasoningLevel = .automatic
   var showThinking: Bool = false
+  // nil inherits the app-wide setting. These overrides are especially useful
+  // for local models where tool transcripts consume the KV cache quickly.
+  var contextWindowMode: ContextWindowMode? = nil
+  var mlxMaxKVSize: MLXKVCacheSize? = nil
   var lastContextSignature: String? = nil
   var folderID: String = ConversationFolder.defaultID
   var languageOverrideIdentifier: String? = nil
@@ -1532,6 +1536,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     case disabledMCPTools
     case reasoningLevel
     case showThinking
+    case contextWindowMode
+    case mlxMaxKVSize
     case lastContextSignature
     case lastToolContextSignature
     case folderID
@@ -1566,6 +1572,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     reasoningLevel =
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
     showThinking = (try? container.decode(Bool.self, forKey: .showThinking)) ?? false
+    contextWindowMode = try? container.decodeIfPresent(ContextWindowMode.self, forKey: .contextWindowMode)
+    mlxMaxKVSize = try? container.decodeIfPresent(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)
     lastContextSignature =
       (try? container.decodeIfPresent(String.self, forKey: .lastContextSignature))
       ?? (try? container.decodeIfPresent(String.self, forKey: .lastToolContextSignature))
@@ -1601,6 +1609,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     try container.encode(disabledMCPTools, forKey: .disabledMCPTools)
     try container.encode(reasoningLevel, forKey: .reasoningLevel)
     try container.encode(showThinking, forKey: .showThinking)
+    try container.encodeIfPresent(contextWindowMode, forKey: .contextWindowMode)
+    try container.encodeIfPresent(mlxMaxKVSize, forKey: .mlxMaxKVSize)
     try container.encodeIfPresent(lastContextSignature, forKey: .lastContextSignature)
     try container.encode(folderID, forKey: .folderID)
     try container.encode(isArchived, forKey: .isArchived)

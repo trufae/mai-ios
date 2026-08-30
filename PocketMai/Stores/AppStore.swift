@@ -2517,7 +2517,7 @@ final class AppStore: ObservableObject {
 
     // Estimate token count at ~3 chars/token; compact when exceeding 75% of the KV window.
     let totalChars = conversation.messages.reduce(0) { $0 + $1.text.count }
-    let kvLimit = settings.mlxMaxKVSize.effectiveSize
+    let kvLimit = (conversation.mlxMaxKVSize ?? settings.mlxMaxKVSize).effectiveSize
     guard totalChars > kvLimit * 3 else { return }
 
     // Summarize all messages except the most recent user message so it is preserved.

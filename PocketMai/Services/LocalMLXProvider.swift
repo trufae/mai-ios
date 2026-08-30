@@ -169,7 +169,7 @@ actor LocalMLXProvider {
       throw LocalMLXError.emptyPrompt
     }
 
-    let maxKVSize = request.settings.mlxMaxKVSize.effectiveSize
+    let maxKVSize = (request.conversation.mlxMaxKVSize ?? request.settings.mlxMaxKVSize).effectiveSize
     let promptTokenLimit = maxKVSize - Self.outputHeadroom
     let temperature: Float = request.hasToolCalling ? 0.2 : 0.7
     let parameters = GenerateParameters(
@@ -342,7 +342,10 @@ actor LocalMLXProvider {
       : "\(baseSystem)\n\n## Context\n\(context)"
     var messages: [Chat.Message] = [.system(systemContent)]
 
-    let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
+    let effectiveLimit =
+      messageLimitOverride
+      ?? conversation.contextWindowMode?.messageLimit
+      ?? settings.contextWindowMode.messageLimit
     let limited = PromptComposer.contextMessages(
       from: conversation, settings: settings, limit: effectiveLimit)
 

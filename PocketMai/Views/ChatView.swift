@@ -4975,6 +4975,31 @@ private struct ConversationModelSettingsView: View {
             .pickerStyle(.menu)
           }
 
+          Section("Context") {
+            Picker("Chat history", selection: contextWindowModeBinding) {
+              Text("App Default").tag(ContextWindowMode?.none)
+              ForEach(ContextWindowMode.allCases) { mode in
+                Text(mode.displayName).tag(Optional(mode))
+              }
+            }
+            .pickerStyle(.menu)
+
+            if provider == .mlx {
+              Picker("MLX KV Cache", selection: mlxKVCacheSizeBinding) {
+                Text("App Default").tag(MLXKVCacheSize?.none)
+                ForEach(MLXKVCacheSize.allCases) { size in
+                  Text(size.displayName).tag(Optional(size))
+                }
+              }
+              .pickerStyle(.menu)
+              Text(
+                "Tool schemas and tool results use this budget too. Use a larger cache when memory allows, or keep fewer history messages for tool-heavy chats."
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            }
+          }
+
           Section {
             Toggle("Show thinking", isOn: showThinkingBinding)
               .disabled(!store.settings.showThinkingByDefault)
@@ -5177,6 +5202,8 @@ private struct ConversationModelSettingsView: View {
       && conversation.effectiveLanguageOverrideIdentifier == nil
       && conversation.showThinking == store.settings.showThinkingByDefault
       && conversation.usesStreaming == store.settings.streamByDefault
+      && conversation.contextWindowMode == nil
+      && conversation.mlxMaxKVSize == nil
       && memoryMatches
   }
 
@@ -5241,6 +5268,12 @@ private struct ConversationModelSettingsView: View {
     }
     store.settings.streamByDefault = conversation.usesStreaming
     store.settings.showThinkingByDefault = conversation.showThinking
+    if let contextWindowMode = conversation.contextWindowMode {
+      store.settings.contextWindowMode = contextWindowMode
+    }
+    if let mlxMaxKVSize = conversation.mlxMaxKVSize {
+      store.settings.mlxMaxKVSize = mlxMaxKVSize
+    }
     if conversation.enabledTools.contains(.memory) {
       store.settings.defaultEnabledTools.insert(.memory)
     } else {
@@ -5267,6 +5300,8 @@ private struct ConversationModelSettingsView: View {
       conversation.languageOverrideIdentifier = nil
       conversation.showThinking = store.settings.showThinkingByDefault
       conversation.usesStreaming = store.settings.streamByDefault
+      conversation.contextWindowMode = nil
+      conversation.mlxMaxKVSize = nil
       if store.settings.defaultEnabledTools.contains(.memory) {
         conversation.enabledTools.insert(.memory)
       } else {
@@ -5429,6 +5464,30 @@ private struct ConversationModelSettingsView: View {
       set: { usesStreaming in
         store.updateCurrentConversationSettings { conversation in
           conversation.usesStreaming = usesStreaming
+        }
+        didSaveDefaults = false
+      }
+    )
+  }
+
+  private var contextWindowModeBinding: Binding<ContextWindowMode?> {
+    Binding(
+      get: { store.currentConversation?.contextWindowMode },
+      set: { mode in
+        store.updateCurrentConversationSettings { conversation in
+          conversation.contextWindowMode = mode
+        }
+        didSaveDefaults = false
+      }
+    )
+  }
+
+  private var mlxKVCacheSizeBinding: Binding<MLXKVCacheSize?> {
+    Binding(
+      get: { store.currentConversation?.mlxMaxKVSize },
+      set: { size in
+        store.updateCurrentConversationSettings { conversation in
+          conversation.mlxMaxKVSize = size
         }
         didSaveDefaults = false
       }

@@ -36,6 +36,22 @@ bundle. Build in Xcode first after source changes; this preserves Xcode's
 private-key access for code signing. Open `PocketMai.xcodeproj` when you need
 debugger attachment or to run in the Simulator.
 
+## Releases
+
+Pushing a numeric tag matching `MARKETING_VERSION` (for example `1.6.8`) builds
+a signed Release IPA, creates its GitHub release, and lets GitHub generate the
+release notes. No IPA upload or notes editing is required. Before the first
+tag, add these repository Action secrets:
+
+- `BUILD_CERTIFICATE_BASE64` — base64-encoded signing `.p12`
+- `P12_PASSWORD` — password for that `.p12`
+- `BUILD_PROVISION_PROFILE_BASE64` — base64-encoded profile for `io.github.trufae.mai`
+- `WIDGET_PROVISION_PROFILE_BASE64` — base64-encoded profile for `io.github.trufae.mai.PocketMaiWidgetsExtension`
+
+The default export is an ad-hoc IPA. Set the repository variable
+`IPA_EXPORT_METHOD` to `development` and `IPA_SIGNING_IDENTITY` to `Apple Development`
+when using development profiles instead.
+
 ## Layout
 
 - `PocketMai/` — the iOS app (SwiftUI views, stores, provider + tool services).
