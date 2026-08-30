@@ -15,8 +15,6 @@ jobs:
     env:
       PROJECT: PocketMai.xcodeproj
       SCHEME: PocketMai
-      ARCHIVE_PATH: ${{ runner.temp }}/PocketMai.xcarchive
-      EXPORT_PATH: ${{ runner.temp }}/export
       EXPORT_METHOD: ${{ vars.IPA_EXPORT_METHOD || 'ad-hoc' }}
       SIGNING_IDENTITY: ${{ vars.IPA_SIGNING_IDENTITY || 'Apple Distribution' }}
       TEAM_ID: J5PTVY8BHH
@@ -92,7 +90,7 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath "$ARCHIVE_PATH" \
+            -archivePath "$RUNNER_TEMP/PocketMai.xcarchive" \
             CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             -skipPackagePluginValidation \
@@ -119,10 +117,10 @@ jobs:
           EOF
           plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
           xcodebuild -exportArchive \
-            -archivePath "$ARCHIVE_PATH" \
+            -archivePath "$RUNNER_TEMP/PocketMai.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$EXPORT_PATH"
-          mv "$EXPORT_PATH/PocketMai.ipa" "PocketMai-$GITHUB_REF_NAME.ipa"
+            -exportPath "$RUNNER_TEMP/export"
+          mv "$RUNNER_TEMP/export/PocketMai.ipa" "PocketMai-$GITHUB_REF_NAME.ipa"
 
       - name: Publish GitHub release
         env:
