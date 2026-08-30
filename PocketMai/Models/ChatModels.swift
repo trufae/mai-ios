@@ -3052,7 +3052,7 @@ struct FollowUpSettings: Codable, Equatable, Sendable {
 
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
-  static let currentStockPromptsVersion = 3
+  static let currentStockPromptsVersion = 4
   static let recentChatLanguageLimit = 3
   static let appleDefaultModelID = ""
   static let localMLXDefaultModelID = "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit"
@@ -3094,12 +3094,21 @@ struct AppSettings: Codable, Equatable, Sendable {
       If the app talks to you (the LLM host): when it sends an update you are notified in chat with its payload; reply with the webxdc_send_update tool, payload as a JSON object matching what the listener expects. Design a tiny request/response protocol (e.g. app sends {payload:{action:"generate"}}, you reply {"result":"..."}) and state it in a comment at the top of the script so future turns follow it.
       """
   )
+  static let tldrUserPrompt = UserPrompt(
+    id: UUID(uuidString: "A0D22794-D497-4D31-828E-AD79B8B23F25")!,
+    name: "tldr",
+    text: """
+      Take the last message in this chat and respond with few emojis and 1-3 short sentences using bullet points if needed a summary of it. Focus on clarify and concise info for the reader.
+      """
+  )
   static let followUpUserPrompt = UserPrompt(
     id: UUID(uuidString: "A8C5AF58-B5D2-48EE-97AA-AC178EAED225")!,
     name: "followup",
     text: FollowUpSettings.defaultPrompt
   )
-  static let defaultUserPrompts = [goalUserPrompt, newAppUserPrompt, followUpUserPrompt]
+  static let defaultUserPrompts = [
+    goalUserPrompt, newAppUserPrompt, tldrUserPrompt, followUpUserPrompt,
+  ]
   static let defaultCompactPrompt = """
     Compact the transcript below into durable context for continuing the same chat.
 
