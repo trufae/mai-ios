@@ -33,6 +33,28 @@ struct ChatView: View {
     var isResponding: Bool
   }
 
+  private struct UserMessageNavigationState: Equatable {
+    var isAtBottom = true
+    var previousID: UUID?
+    var nextID: UUID?
+  }
+
+  private struct MessageListScrollMetrics: Equatable {
+    var viewportMinY: CGFloat
+    var contentHeight: CGFloat
+    var isAtBottom: Bool
+  }
+
+  private enum UserMessageNavigationDirection {
+    case previous
+    case next
+  }
+
+  private enum UserMessageNavigationDestination: Equatable {
+    case message(UUID)
+    case bottom
+  }
+
   @ObservedObject var storeObservation: AppStoreViewObservation
   @EnvironmentObject private var ttsPlayer: TTSPlayer
   @State private var showingRenameAlert = false
@@ -56,6 +78,9 @@ struct ChatView: View {
   @State private var keyboardOverlap: CGFloat = 0
   @State private var lastUpdatedVisibleConversationID: UUID?
   @State private var queuedMessagePendingEdit: QueuedChatMessage?
+  @State private var userMessageNavigation = UserMessageNavigationState()
+  @State private var userMessageNavigationDestination: UserMessageNavigationDestination?
+  @State private var userMessageNavigationHiddenBySwipe = false
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -95,6 +120,7 @@ struct ChatView: View {
       }
       .onChange(of: currentMessageIDs) { _, _ in
         pruneSelectedMessages()
+        refreshUserMessageNavigation()
         if chatSearch.isActive {
           chatSearch.rebuild(messages: store.currentConversation?.messages ?? [])
         }
@@ -642,6 +668,9 @@ struct ChatView: View {
                   geometry.frame(in: .named(MessageFontPinchSession.coordinateSpaceName))
                 } action: { frame in
                   messageFontPinchSession.updateFrame(frame, for: message.id)
+                  if message.role == .user {
+                    refreshUserMessageNavigation()
+                  }
                 }
                 .onDisappear {
                   messageFontPinchSession.removeFrame(for: message.id)
@@ -720,9 +749,9 @@ struct ChatView: View {
             }
             Color.clear
               .frame(height: 1)
-              .id(messageListBottomID)
           }
           .padding()
+          .id(messageListBottomID)
           // Pin the scroll content to the viewport without using
           // containerRelativeFrame, which can create a layout cycle on rotation.
           .frame(width: scrollGeometry.size.width, alignment: .center)
@@ -763,9 +792,22 @@ struct ChatView: View {
         }
         .coordinateSpace(name: MessageFontPinchSession.coordinateSpaceName)
         .scrollDismissesKeyboard(.interactively)
+        .onScrollGeometryChange(for: MessageListScrollMetrics.self) { geometry in
+          MessageListScrollMetrics(
+            viewportMinY: geometry.visibleRect.minY,
+            contentHeight: geometry.contentSize.height,
+            isAtBottom: geometry.contentSize.height <= geometry.containerSize.height
+              || geometry.visibleRect.maxY >= geometry.contentSize.height - 2)
+        } action: { _, metrics in
+          refreshUserMessageNavigation(isAtBottom: metrics.isAtBottom)
+        }
         .onScrollPhaseChange { _, phase in
           if phase == .interacting {
             userScrolledAfterLastMessage = true
+            userMessageNavigationDestination = nil
+            userMessageNavigationHiddenBySwipe = false
+          } else if phase == .idle {
+            userMessageNavigationDestination = nil
           }
         }
         .onAppear {
@@ -773,6 +815,9 @@ struct ChatView: View {
         }
         .onChange(of: store.selectedConversationID) { _, _ in
           messageFontPinchSession.resetMetrics()
+          userMessageNavigation = UserMessageNavigationState()
+          userMessageNavigationDestination = nil
+          userMessageNavigationHiddenBySwipe = false
           userScrolledAfterLastMessage = false
           streamingScrollTask?.cancel()
           streamingScrollTask = nil
@@ -831,8 +876,168 @@ struct ChatView: View {
             }
           }
         }
+        .overlay(alignment: .bottomTrailing) {
+          if !userMessageNavigation.isAtBottom && !userMessageNavigationHiddenBySwipe {
+            userMessageNavigationControls(proxy: proxy)
+              .transition(.move(edge: .bottom).combined(with: .opacity))
+          }
+        }
+        .animation(
+          .snappy,
+          value: userMessageNavigation.isAtBottom || userMessageNavigationHiddenBySwipe)
       }
     }
+  }
+
+  private func userMessageNavigationControls(proxy: ScrollViewProxy) -> some View {
+    let previousDestination = userMessageNavigationTarget(for: .previous)
+    let nextDestination = userMessageNavigationTarget(for: .next)
+
+    return VStack(spacing: 8) {
+      userMessageNavigationButton(
+        systemImage: "chevron.up",
+        label: "Previous user message",
+        direction: .previous,
+        destination: previousDestination,
+        proxy: proxy)
+
+      userMessageNavigationButton(
+        systemImage: "chevron.down",
+        label: nextDestination == .bottom ? "Bottom of conversation" : "Next user message",
+        direction: .next,
+        destination: nextDestination,
+        proxy: proxy)
+    }
+    .fixedSize()
+    .padding(.trailing, 12)
+    .padding(.bottom, 12)
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 16)
+        .onEnded { value in
+          let distance = hypot(value.translation.width, value.translation.height)
+          guard distance >= 24 else { return }
+          userMessageNavigationHiddenBySwipe = true
+        }
+    )
+  }
+
+  @ViewBuilder
+  private func userMessageNavigationButton(
+    systemImage: String,
+    label: String,
+    direction: UserMessageNavigationDirection,
+    destination: UserMessageNavigationDestination?,
+    proxy: ScrollViewProxy
+  ) -> some View {
+    let button = Button {
+      guard let destination = userMessageNavigationTarget(for: direction) else { return }
+      userScrolledAfterLastMessage = true
+      userMessageNavigationDestination = destination
+      withAnimation(.easeOut(duration: 0.16)) {
+        switch destination {
+        case .message(let id):
+          proxy.scrollTo(id, anchor: .top)
+        case .bottom:
+          proxy.scrollTo(messageListBottomID, anchor: .bottom)
+        }
+      }
+    } label: {
+      Image(systemName: systemImage)
+        .font(.title2)
+        .symbolRenderingMode(.hierarchical)
+        .foregroundStyle(destination == nil ? Color.secondary.opacity(0.45) : Color.primary)
+        .frame(width: 24, height: 24)
+        .contentShape(Circle())
+    }
+
+    Group {
+      if #available(iOS 26.0, *) {
+        button
+          .buttonStyle(.plain)
+          .padding(8)
+          .glassEffect(.clear.interactive(), in: Circle())
+      } else {
+        button
+          .buttonStyle(.plain)
+          .padding(8)
+          .background(.ultraThinMaterial, in: Circle())
+          .overlay {
+            Circle()
+              .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+          }
+          .shadow(color: .black.opacity(0.1), radius: 5, y: 2)
+      }
+    }
+    .contentShape(Circle())
+    .disabled(destination == nil)
+    .accessibilityLabel(label)
+  }
+
+  private func userMessageNavigationTarget(
+    for direction: UserMessageNavigationDirection
+  ) -> UserMessageNavigationDestination? {
+    let userMessageIDs = currentUserMessageIDs
+    guard let destination = userMessageNavigationDestination else {
+      switch direction {
+      case .previous:
+        return userMessageNavigation.previousID.map(UserMessageNavigationDestination.message)
+      case .next:
+        if let nextID = userMessageNavigation.nextID {
+          return .message(nextID)
+        }
+        return userMessageNavigation.isAtBottom ? nil : .bottom
+      }
+    }
+
+    switch destination {
+    case .bottom:
+      return direction == .previous
+        ? userMessageIDs.last.map(UserMessageNavigationDestination.message)
+        : nil
+    case .message(let destinationID):
+      guard let destinationIndex = userMessageIDs.firstIndex(of: destinationID) else { return nil }
+      switch direction {
+      case .previous:
+        guard destinationIndex > userMessageIDs.startIndex else { return nil }
+        return .message(userMessageIDs[userMessageIDs.index(before: destinationIndex)])
+      case .next:
+        let nextIndex = userMessageIDs.index(after: destinationIndex)
+        return nextIndex < userMessageIDs.endIndex
+          ? .message(userMessageIDs[nextIndex])
+          : .bottom
+      }
+    }
+  }
+
+  private var currentUserMessageIDs: [UUID] {
+    (store.currentConversation?.messages
+      ?? store.selectedConversationPreviewMessages)
+      .filter { $0.role == .user }
+      .map(\.id)
+  }
+
+  private func refreshUserMessageNavigation(isAtBottom: Bool? = nil) {
+    let atBottom = isAtBottom ?? userMessageNavigation.isAtBottom
+    let userMessageIDs = currentUserMessageIDs
+    let alignedTopTolerance: CGFloat = 4
+    var previousID: UUID?
+    var nextID: UUID?
+
+    for id in userMessageIDs {
+      guard let frame = messageFontPinchSession.frame(for: id) else { continue }
+      if frame.minY < -alignedTopTolerance {
+        previousID = id
+      } else if frame.minY > alignedTopTolerance, nextID == nil {
+        nextID = id
+      }
+    }
+
+    let newState = UserMessageNavigationState(
+      isAtBottom: atBottom,
+      previousID: previousID,
+      nextID: nextID)
+    guard newState != userMessageNavigation else { return }
+    userMessageNavigation = newState
   }
 
   private var deleteMessageConfirmationBinding: Binding<Bool> {
