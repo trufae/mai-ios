@@ -473,16 +473,26 @@ enum AgentTooling {
   ) -> ParsedToolCall? {
     let lines = body.components(separatedBy: .newlines)
     let nameKeys = Set(["tool", "name", "function"])
-    let name = lines.compactMap { line -> String? in
+    let resolver = AgentToolNameResolver(tools: tools)
+    let candidates = lines.enumerated().compactMap {
+      index, line -> (index: Int, key: String, value: String)? in
       guard let pair = lineKeyValue(line), nameKeys.contains(pair.key.lowercased()) else {
         return nil
       }
-      let trimmed = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
-      return trimmed.isEmpty ? nil : trimmed
-    }.first
-    guard let name else { return nil }
+      let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return value.isEmpty ? nil : (index, pair.key.lowercased(), value)
+    }
+    // Prefer an explicit tool:/function: line, then any line resolving to a
+    // listed tool: a tool's own "name" argument (call-tool, webxdc_create)
+    // must not be mistaken for the call's tool name.
+    let toolNameLine =
+      candidates.first { $0.key != "name" && resolver.canonicalName(for: $0.value) != nil }
+      ?? candidates.first { resolver.canonicalName(for: $0.value) != nil }
+      ?? candidates.first { $0.key != "name" }
+      ?? candidates.first
+    guard let toolNameLine else { return nil }
+    let name = toolNameLine.value
 
-    let resolver = AgentToolNameResolver(tools: tools)
     let canonical = resolver.canonicalName(for: name) ?? name
     let tool = tools.first { $0.name == canonical }
     let parameterNames = Set(tool?.parameters.map(\.name) ?? [])
@@ -496,16 +506,17 @@ enum AgentTooling {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    for line in lines {
+    for (index, line) in lines.enumerated() {
+      guard index != toolNameLine.index else { continue }
       guard let pair = lineKeyValue(line) else {
         if currentKey != nil { currentValue.append(line) }
         continue
       }
       let key = pair.key
-      if nameKeys.contains(key.lowercased()) {
-        continue
-      }
-      let isKnownArgument = parameterNames.isEmpty || parameterNames.contains(key)
+      let isKnownArgument =
+        nameKeys.contains(key.lowercased())
+        ? parameterNames.contains(key)
+        : parameterNames.isEmpty || parameterNames.contains(key)
       if isKnownArgument {
         flush()
         currentKey = key
