@@ -352,6 +352,12 @@ enum ToolAgentRegistry {
     var defs = BuiltInToolCatalog.definitions(
       for: conversation,
       settings: settings)
+    // Tool names must stay unique: duplicates shadow each other at dispatch
+    // and trap the by-name lookups. Keep the first definition — built-ins,
+    // then servers in settings order — matching executeConcrete's resolution
+    // order, which also routes mcp_read_resource before any MCP server.
+    var takenNames = Set(defs.map(\.name))
+    takenNames.insert(MCPResourceTool.readName)
     var enabledResourceServers: [(server: MCPServer, resources: [MCPResourceDescriptor])] = []
     for server in settings.mcpServers
     where server.isEnabled && server.hasValidEndpointURL
@@ -362,6 +368,7 @@ enum ToolAgentRegistry {
       for tool in tools {
         let key = MCPToolSelection.key(serverID: server.id, toolName: tool.name)
         guard conversation.enabledMCPTools.contains(key) else { continue }
+        guard takenNames.insert(tool.name).inserted else { continue }
         let description = cleanedToolDescription(
           tool.description,
           fallback: "MCP tool from \(server.name).")
@@ -408,7 +415,8 @@ enum ToolAgentRegistry {
   static func normalized(call: ParsedToolCall, definitions: [ToolDefinition]) -> ParsedToolCall {
     let resolver = AgentToolNameResolver(tools: definitions)
     let canonicalName = resolver.canonicalName(for: call.name) ?? call.name
-    let definitionByName = Dictionary(uniqueKeysWithValues: definitions.map { ($0.name, $0) })
+    let definitionByName = Dictionary(
+      definitions.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     let normalizedArguments = AgentTooling.normalizeArguments(
       call.argumentValues, for: definitionByName[canonicalName])
     return ParsedToolCall(
@@ -1105,12 +1113,14 @@ enum CalendarTool {
             ToolParameterDef(
               name: "start_date",
               type: "string",
-              description: "Event start as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
+              description:
+                "Event start as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
               required: true),
             ToolParameterDef(
               name: "end_date",
               type: "string",
-              description: "Event end as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
+              description:
+                "Event end as YYYY-MM-DD, ISO 8601 date-time, today, tomorrow, or yesterday.",
               required: true),
             ToolParameterDef(
               name: "all_day",
