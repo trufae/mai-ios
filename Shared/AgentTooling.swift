@@ -412,7 +412,9 @@ enum AgentTooling {
       let attributes = nsText.substring(with: match.range(at: 1))
       let payload = nsText.substring(with: match.range(at: 2))
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      if let call = parseToolCallPayload(payload, attributes: attributes, rawBlock: raw) {
+      if let call = parseToolCallPayload(
+        payload, attributes: attributes, rawBlock: raw, tools: tools)
+      {
         calls.append(call)
       }
     }
@@ -442,7 +444,7 @@ enum AgentTooling {
         let canonical = resolver.canonicalName(for: name),
         tools.contains(where: { $0.name == canonical })
       else { return nil }
-      return parseToolCallPayload("", attributes: attributes, rawBlock: raw)
+      return parseToolCallPayload("", attributes: attributes, rawBlock: raw, tools: tools)
     }
   }
 
@@ -1028,7 +1030,8 @@ enum AgentTooling {
   private static func parseToolCallPayload(
     _ payload: String,
     attributes: String,
-    rawBlock: String
+    rawBlock: String,
+    tools: [ToolDefinition]
   ) -> ParsedToolCall? {
     let attrs = toolCallAttributes(from: attributes)
     let attrName = firstNonEmpty(attrs["name"], attrs["tool"], attrs["function"])
@@ -1046,7 +1049,7 @@ enum AgentTooling {
 
     for candidate in candidates {
       guard let object = jsonObject(from: candidate) else { continue }
-      if let normalized = normalizeToolCallObject(object),
+      if let normalized = normalizeToolCallObject(object, tools: tools),
         let name = (normalized["name"] as? String)?
           .trimmingCharacters(in: .whitespacesAndNewlines),
         !name.isEmpty
@@ -1284,18 +1287,24 @@ enum AgentTooling {
     return attrs
   }
 
-  private static func normalizeToolCallObject(_ object: [String: Any]) -> [String: Any]? {
+  private static func normalizeToolCallObject(
+    _ object: [String: Any],
+    tools: [ToolDefinition] = []
+  ) -> [String: Any]? {
     if let name = object["name"] as? String,
       !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
       // Only treat arguments.name as the tool name when the nested object is
       // itself a wrapped call (it carries its own arguments container) or the
       // outer name is a generic placeholder. A real tool call may legitimately
-      // take a "name" argument (e.g. webxdc_create name=...), and that must
-      // stay an argument.
+      // take a "name" argument (e.g. webxdc_create name=..., or the call-tool
+      // proxy whose parameters are exactly name + arguments), and that must
+      // stay an argument. When the outer name resolves to a listed tool, keep
+      // it — unless the nested name resolves to the same tool (a double-wrap).
       if let nested = object["arguments"] as? [String: Any],
         let nestedName = nested["name"] as? String,
-        looksLikeWrappedCall(nested) || isPlaceholderToolName(name)
+        shouldUnwrapNestedCall(
+          outerName: name, nested: nested, nestedName: nestedName, tools: tools)
       {
         return ["name": nestedName, "arguments": toolArguments(from: nested)]
       }
@@ -1314,6 +1323,20 @@ enum AgentTooling {
       return ["name": name, "arguments": toolArguments(from: function)]
     }
     return nil
+  }
+
+  private static func shouldUnwrapNestedCall(
+    outerName: String,
+    nested: [String: Any],
+    nestedName: String,
+    tools: [ToolDefinition]
+  ) -> Bool {
+    if isPlaceholderToolName(outerName) { return true }
+    guard looksLikeWrappedCall(nested) else { return false }
+    guard !tools.isEmpty else { return true }
+    let resolver = AgentToolNameResolver(tools: tools)
+    guard let outerCanonical = resolver.canonicalName(for: outerName) else { return true }
+    return resolver.canonicalName(for: nestedName) == outerCanonical
   }
 
   private static func looksLikeWrappedCall(_ object: [String: Any]) -> Bool {
