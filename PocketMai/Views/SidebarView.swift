@@ -17,6 +17,7 @@ struct SidebarView: View {
   @ObservedObject var storeObservation: AppStoreViewObservation
   let store: AppStore
   @Binding var showingSettings: Bool
+  @Binding var isShowingBookmarks: Bool
   @State private var isSearchActive = false
   @State private var searchText = ""
   @State private var isSelectionMode = false
@@ -26,8 +27,12 @@ struct SidebarView: View {
   @State private var showingGallery = false
   @State private var showingMoveDestinationDialog = false
   @State private var keyboardOverlap: CGFloat = 0
+  @State private var isLoadingBookmarks = false
+  @State private var visibleBookmarks: [BookmarkedMessage] = []
+  @State private var bookmarksLoadTask: Task<Void, Never>?
   @FocusState private var isSearchFieldFocused: Bool
   let onSelectConversation: (UUID) -> Void
+  let onSelectBookmarkedMessage: (UUID, UUID) -> Void
   let onDismiss: () -> Void
   @State private var visibleConversations: [ConversationSummary] = []
   @State private var visibleConversationsRefreshTask: Task<Void, Never>?
@@ -38,7 +43,7 @@ struct SidebarView: View {
 
   var body: some View {
     ZStack(alignment: .bottomTrailing) {
-      conversationList
+      sidebarList
         .safeAreaInset(edge: .bottom) {
           Color.clear.frame(height: 80 + keyboardOverlap)
         }
@@ -69,9 +74,21 @@ struct SidebarView: View {
     } message: {
       Text(moveDestinationDialogMessage)
     }
-    .onAppear { refreshVisibleConversations() }
-    .onChange(of: store.conversationSummaries) { _, _ in refreshVisibleConversations() }
-    .onChange(of: searchText) { _, _ in refreshVisibleConversations() }
+    .onAppear {
+      refreshVisibleConversations()
+      if isShowingBookmarks {
+        showBookmarks()
+      }
+    }
+    .onChange(of: store.conversationSummaries) { _, _ in
+      refreshVisibleConversations()
+      refreshVisibleBookmarks()
+    }
+    .onChange(of: store.messageBookmarks) { _, _ in refreshVisibleBookmarks() }
+    .onChange(of: searchText) { _, _ in
+      refreshVisibleConversations()
+      refreshVisibleBookmarks()
+    }
     .onChange(of: isSearchFieldFocused) { _, focused in
       if focused {
         activateSearch()
@@ -86,6 +103,8 @@ struct SidebarView: View {
     .onDisappear {
       visibleConversationsRefreshTask?.cancel()
       visibleConversationsRefreshTask = nil
+      bookmarksLoadTask?.cancel()
+      bookmarksLoadTask = nil
     }
     .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
       updateKeyboardOverlap(from: $0)
@@ -152,6 +171,44 @@ struct SidebarView: View {
         visibleConversations = next
       }
     }
+  }
+
+  private func refreshVisibleBookmarks() {
+    let query = searchQuery
+    visibleBookmarks = store.bookmarkedMessages.filter { item in
+      query.isEmpty
+        || Self.text(item.conversationTitle, contains: query)
+        || Self.text(item.message.presentationText, contains: query)
+        || Self.text(item.message.role.displayName, contains: query)
+    }
+  }
+
+  private func showBookmarks() {
+    withAnimation(.snappy) {
+      isShowingBookmarks = true
+      isSelectionMode = false
+      selectedIDs.removeAll()
+    }
+    refreshVisibleBookmarks()
+    bookmarksLoadTask?.cancel()
+    bookmarksLoadTask = Task { @MainActor in
+      isLoadingBookmarks = true
+      await store.loadStoredConversationsForSearch()
+      guard !Task.isCancelled, isShowingBookmarks else { return }
+      store.pruneInvalidMessageBookmarks()
+      refreshVisibleBookmarks()
+      isLoadingBookmarks = false
+    }
+  }
+
+  private func showConversationFolder(_ folderID: String) {
+    bookmarksLoadTask?.cancel()
+    bookmarksLoadTask = nil
+    isLoadingBookmarks = false
+    withAnimation(.snappy) {
+      isShowingBookmarks = false
+    }
+    store.selectConversationFolder(folderID)
   }
 
   nonisolated private static func filteredVisibleConversations(
@@ -241,6 +298,96 @@ struct SidebarView: View {
       Color.clear.frame(height: 32)
     }
     .scrollIndicators(.hidden)
+  }
+
+  @ViewBuilder
+  private var sidebarList: some View {
+    if isShowingBookmarks {
+      bookmarkList
+    } else {
+      conversationList
+    }
+  }
+
+  private var bookmarkList: some View {
+    List {
+      if isLoadingBookmarks && visibleBookmarks.isEmpty {
+        HStack(spacing: 10) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Loading bookmarks...")
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 12)
+      } else if visibleBookmarks.isEmpty {
+        Text(searchQuery.isEmpty ? "No bookmarked messages." : "No matching bookmarks.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .padding(.vertical, 12)
+      }
+      if !pinnedBookmarks.isEmpty {
+        SidebarConversationGroupHeader(title: "Pinned")
+        ForEach(pinnedBookmarks) { item in
+          bookmarkRow(item)
+        }
+      }
+      ForEach(bookmarkGroups) { group in
+        SidebarConversationGroupHeader(title: group.title)
+        ForEach(group.bookmarks) { item in
+          bookmarkRow(item)
+        }
+      }
+    }
+    .listStyle(.sidebar)
+    .safeAreaInset(edge: .top) {
+      Color.clear.frame(height: 32)
+    }
+    .scrollIndicators(.hidden)
+  }
+
+  private var pinnedBookmarks: [BookmarkedMessage] {
+    visibleBookmarks.filter(\.bookmark.isPinned)
+  }
+
+  private var bookmarkGroups: [SidebarBookmarkGroup] {
+    var groups: [SidebarBookmarkGroup] = []
+    for item in visibleBookmarks where !item.bookmark.isPinned {
+      let title = ConversationDatePresentation.sidebarGroupTitle(for: item.bookmark.createdAt)
+      if groups.last?.title == title {
+        groups[groups.count - 1].bookmarks.append(item)
+      } else {
+        groups.append(SidebarBookmarkGroup(id: title, title: title, bookmarks: [item]))
+      }
+    }
+    return groups
+  }
+
+  private func bookmarkRow(_ item: BookmarkedMessage) -> some View {
+    BookmarkRow(item: item) {
+      onSelectBookmarkedMessage(item.bookmark.conversationID, item.bookmark.messageID)
+    }
+    .contextMenu {
+      Text(ConversationDatePresentation.timestamp(item.bookmark.createdAt))
+        .font(.system(size: 8))
+        .foregroundStyle(.secondary)
+      Divider()
+      Button {
+        store.toggleBookmarkPin(
+          conversationID: item.bookmark.conversationID,
+          messageID: item.bookmark.messageID)
+      } label: {
+        Label(
+          item.bookmark.isPinned ? "Unpin Bookmark" : "Pin to Top",
+          systemImage: item.bookmark.isPinned ? "pin.slash" : "pin")
+      }
+      Button {
+        store.removeMessageBookmark(
+          conversationID: item.bookmark.conversationID,
+          messageID: item.bookmark.messageID)
+      } label: {
+        Label("Unbookmark", systemImage: "bookmark.slash")
+      }
+    }
   }
 
   private var pinnedConversations: [ConversationSummary] {
@@ -344,24 +491,33 @@ struct SidebarView: View {
   private func defaultFloatingActions(compact: Bool) -> some View {
     Menu {
       Button {
-        store.selectConversationFolder(ConversationFolder.defaultID)
+        showConversationFolder(ConversationFolder.defaultID)
       } label: {
         folderPickerLabel(for: ConversationFolder.defaultFolder)
       }
       Button {
-        store.selectConversationFolder(ConversationFolder.iCloudID)
+        showConversationFolder(ConversationFolder.iCloudID)
       } label: {
         folderPickerLabel(for: ConversationFolder.iCloudFolder)
       }
       .disabled(!store.canUseConversationFolder(ConversationFolder.iCloudID))
       Button {
-        store.selectConversationFolder(ConversationFolder.archivedID)
+        showConversationFolder(ConversationFolder.archivedID)
       } label: {
         folderPickerLabel(for: ConversationFolder.archivedFolder)
       }
+      Button {
+        showBookmarks()
+      } label: {
+        if isShowingBookmarks {
+          Label("Bookmarks", systemImage: "checkmark")
+        } else {
+          Label("Bookmarks", systemImage: "bookmark")
+        }
+      }
       ForEach(store.customConversationFolders) { folder in
         Button {
-          store.selectConversationFolder(folder.id)
+          showConversationFolder(folder.id)
         } label: {
           folderPickerLabel(for: folder)
         }
@@ -380,7 +536,8 @@ struct SidebarView: View {
     } label: {
       FloatingActionMenuIcon(
         systemImage: selectedFolderMenuIcon,
-        isActive: store.selectedConversationFolderID != ConversationFolder.defaultID,
+        isActive: isShowingBookmarks
+          || store.selectedConversationFolderID != ConversationFolder.defaultID,
         compact: compact)
     }
     .menuOrder(.fixed)
@@ -407,7 +564,7 @@ struct SidebarView: View {
   @ViewBuilder
   private func folderPickerLabel(for folder: ConversationFolder) -> some View {
     let isUnavailable = !store.canUseConversationFolder(folder.id)
-    if store.selectedConversationFolderID == folder.id {
+    if !isShowingBookmarks && store.selectedConversationFolderID == folder.id {
       Label(folder.displayName, systemImage: "checkmark")
         .foregroundStyle(isUnavailable ? Color.secondary : Color.primary)
     } else {
@@ -417,6 +574,9 @@ struct SidebarView: View {
   }
 
   private var selectedFolderMenuIcon: String {
+    if isShowingBookmarks {
+      return "bookmark.fill"
+    }
     let folder = store.selectedConversationFolder
     if folder.id == ConversationFolder.iCloudID {
       return "icloud.fill"
@@ -435,7 +595,14 @@ struct SidebarView: View {
       withAnimation(.snappy) {
         isSearchActive = true
       }
-      Task { await store.loadStoredConversationsForSearch() }
+      Task {
+        await store.loadStoredConversationsForSearch()
+        if isShowingBookmarks {
+          refreshVisibleBookmarks()
+        } else {
+          refreshVisibleConversations()
+        }
+      }
     }
     isSearchFieldFocused = true
   }
@@ -644,6 +811,84 @@ private struct SidebarConversationGroup: Identifiable {
   let id: String
   let title: String
   var conversations: [ConversationSummary]
+}
+
+private struct SidebarBookmarkGroup: Identifiable {
+  let id: String
+  let title: String
+  var bookmarks: [BookmarkedMessage]
+}
+
+private struct BookmarkRow: View {
+  let item: BookmarkedMessage
+  let action: () -> Void
+
+  private var preview: String {
+    let text = MessageContentFilter.previewText(from: item.message.presentationText)
+    if !text.isEmpty {
+      return text
+    }
+    if item.message.voiceRecordingFilename != nil || !item.message.attachments.isEmpty {
+      return "Attachment"
+    }
+    return "No text"
+  }
+
+  private var roleIcon: String {
+    switch item.message.role {
+    case .user: "person.crop.circle"
+    case .assistant: "sparkles"
+    case .system: "gearshape"
+    case .tool: "wrench.and.screwdriver"
+    case .error: "exclamationmark.triangle"
+    }
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: roleIcon)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+          .frame(width: 18, height: 22)
+        VStack(alignment: .leading, spacing: 4) {
+          Text(item.conversationTitle)
+            .font(.body.weight(.medium))
+            .lineLimit(1)
+          Text(preview)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(3)
+          Text(
+            "\(item.message.role.displayName) · \(ConversationDatePresentation.timestamp(item.bookmark.createdAt))"
+          )
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+        }
+        Spacer(minLength: 6)
+        Image(systemName: "bookmark.fill")
+          .font(.caption)
+          .foregroundStyle(Color.accentColor)
+          .padding(.top, 3)
+      }
+      .padding(.vertical, 5)
+      .padding(.trailing, 14)
+      .contentShape(Rectangle())
+      .overlay(alignment: .topTrailing) {
+        if item.bookmark.isPinned {
+          Image(systemName: "pin.fill")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .offset(x: 4, y: -3)
+            .accessibilityHidden(true)
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(item.conversationTitle), \(preview)")
+    .accessibilityValue(item.bookmark.isPinned ? "Pinned bookmark" : "Bookmark")
+  }
 }
 
 private struct SidebarConversationGroupHeader: View {

@@ -1122,6 +1122,31 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
+struct MessageBookmark: Codable, Equatable, Sendable {
+  var conversationID: UUID
+  var messageID: UUID
+  var createdAt: Date
+  var isPinned: Bool = false
+
+  var storageKey: String {
+    "\(conversationID.uuidString)/\(messageID.uuidString)"
+  }
+}
+
+struct BookmarkedMessage: Identifiable, Equatable, Sendable {
+  var bookmark: MessageBookmark
+  var message: ChatMessage
+  var conversationTitle: String
+
+  var id: String { bookmark.storageKey }
+}
+
+struct MessageNavigationRequest: Identifiable, Equatable, Sendable {
+  let id = UUID()
+  var conversationID: UUID
+  var messageID: UUID
+}
+
 /// A user turn waiting for the active assistant loop to reach a safe interruption point.
 /// Queued turns are runtime state, not conversation history, until the loop consumes them.
 struct QueuedChatMessage: Identifiable, Equatable, Sendable {

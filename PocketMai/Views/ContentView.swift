@@ -14,6 +14,7 @@ struct ContentView: View {
   @State private var isHistoryPanelMounted = false
   @State private var historyDragOffset: CGFloat = 0
   @State private var sidebarSelectionGeneration = 0
+  @State private var isShowingBookmarksFolder = false
 
   var body: some View {
     GeometryReader { proxy in
@@ -28,7 +29,9 @@ struct ContentView: View {
             storeObservation: sidebarStoreObservation,
             store: store,
             showingSettings: $showingSettings,
+            isShowingBookmarks: $isShowingBookmarksFolder,
             onSelectConversation: selectConversationFromSidebar,
+            onSelectBookmarkedMessage: selectBookmarkedMessageFromSidebar,
             onDismiss: { closeHistoryPanel() }
           )
           .equatable()
@@ -172,6 +175,36 @@ struct ContentView: View {
       Task { @MainActor in
         guard sidebarSelectionGeneration == selectionGeneration else { return }
         await store.selectConversation(id: id)
+      }
+    }
+  }
+
+  private func selectBookmarkedMessageFromSidebar(
+    conversationID: UUID,
+    messageID: UUID
+  ) {
+    sidebarSelectionGeneration += 1
+    let selectionGeneration = sidebarSelectionGeneration
+
+    if conversationID == store.selectedConversationID {
+      store.markConversationRead(id: conversationID)
+      closeHistoryPanel {
+        guard sidebarSelectionGeneration == selectionGeneration else { return }
+        store.requestNavigationToMessage(messageID, in: conversationID)
+      }
+      return
+    }
+
+    Task {
+      await store.preloadConversation(id: conversationID)
+    }
+    closeHistoryPanel {
+      guard sidebarSelectionGeneration == selectionGeneration else { return }
+      Task { @MainActor in
+        guard sidebarSelectionGeneration == selectionGeneration else { return }
+        await store.selectConversation(id: conversationID)
+        guard sidebarSelectionGeneration == selectionGeneration else { return }
+        store.requestNavigationToMessage(messageID, in: conversationID)
       }
     }
   }

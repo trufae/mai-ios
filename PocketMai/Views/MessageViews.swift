@@ -114,7 +114,9 @@ struct MessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   var searchHighlight: MessageSearchMatch? = nil
+  var isBookmarked: Bool = false
   let onDelete: () -> Void
+  var onToggleBookmark: (() -> Void)? = nil
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onEditAttachment: ((UUID, String) -> Void)? = nil
@@ -139,7 +141,9 @@ struct MessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       searchHighlight: searchHighlight,
+      isBookmarked: isBookmarked,
       onDelete: onDelete,
+      onToggleBookmark: onToggleBookmark,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
       onEditAttachment: onEditAttachment,
@@ -168,7 +172,9 @@ private struct StreamingMessageBubble: View {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   var searchHighlight: MessageSearchMatch? = nil
+  var isBookmarked: Bool = false
   let onDelete: () -> Void
+  var onToggleBookmark: (() -> Void)? = nil
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onEditAttachment: ((UUID, String) -> Void)? = nil
@@ -194,7 +200,9 @@ private struct StreamingMessageBubble: View {
       renderMarkdown: renderMarkdown,
       renderImages: renderImages,
       searchHighlight: searchHighlight,
+      isBookmarked: isBookmarked,
       onDelete: onDelete,
+      onToggleBookmark: onToggleBookmark,
       onBeginSelection: onBeginSelection,
       onEdit: onEdit,
       onEditAttachment: onEditAttachment,
@@ -227,7 +235,9 @@ private struct MessageBubbleContent: View, Equatable {
   var renderMarkdown: Bool = true
   var renderImages: Bool = true
   var searchHighlight: MessageSearchMatch? = nil
+  var isBookmarked: Bool = false
   let onDelete: () -> Void
+  var onToggleBookmark: (() -> Void)? = nil
   var onBeginSelection: (() -> Void)? = nil
   var onEdit: ((String) -> Void)? = nil
   var onEditAttachment: ((UUID, String) -> Void)? = nil
@@ -265,6 +275,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.renderMarkdown == rhs.renderMarkdown
       && lhs.renderImages == rhs.renderImages
       && lhs.searchHighlight == rhs.searchHighlight
+      && lhs.isBookmarked == rhs.isBookmarked
       && lhs.conversationCreatedAt == rhs.conversationCreatedAt
       && lhs.showThinking == rhs.showThinking
       && lhs.isWaitingForResponse == rhs.isWaitingForResponse
@@ -536,6 +547,14 @@ private struct MessageBubbleContent: View, Equatable {
     if let onBeginSelection {
       Button(action: onBeginSelection) {
         Label("Select...", systemImage: "checkmark.circle")
+      }
+    }
+
+    if let onToggleBookmark {
+      Button(action: onToggleBookmark) {
+        Label(
+          isBookmarked ? "Unbookmark" : "Bookmark",
+          systemImage: isBookmarked ? "bookmark.slash" : "bookmark")
       }
     }
 

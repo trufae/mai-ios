@@ -642,7 +642,13 @@ struct ChatView: View {
                     renderMarkdown: store.settings.renderMarkdownInChat,
                     renderImages: store.settings.renderMarkdownImagesInChat,
                     searchHighlight: searchHighlight,
+                    isBookmarked: conversation.map {
+                      store.isMessageBookmarked(message.id, in: $0.id)
+                    } ?? false,
                     onDelete: { messagePendingDeletion = message },
+                    onToggleBookmark: conversation.map { conversation in
+                      { store.toggleMessageBookmark(message, in: conversation.id) }
+                    },
                     onBeginSelection: { beginMessageSelection(with: message.id) },
                     onEdit: { editedText in editMessage(message, text: editedText) },
                     onEditAttachment: { attachmentID, editedText in
@@ -812,6 +818,9 @@ struct ChatView: View {
         }
         .onAppear {
           scrollToBottomAfterLayout(proxy, animated: false)
+          DispatchQueue.main.async {
+            scrollToRequestedMessage(store.pendingMessageNavigation, proxy: proxy)
+          }
         }
         .onChange(of: store.selectedConversationID) { _, _ in
           messageFontPinchSession.resetMetrics()
@@ -863,6 +872,9 @@ struct ChatView: View {
             proxy.scrollTo(target, anchor: .center)
           }
           pendingScrollToMessageID = nil
+        }
+        .onChange(of: store.pendingMessageNavigation) { _, request in
+          scrollToRequestedMessage(request, proxy: proxy)
         }
         .onChange(of: chatSearch.currentMatch) { _, target in
           guard !messageFontPinchSession.isActive,
@@ -1234,6 +1246,24 @@ struct ChatView: View {
     DispatchQueue.main.async {
       guard !userScrolledAfterLastMessage else { return }
       scrollToBottom(proxy, animated: animated)
+    }
+  }
+
+  private func scrollToRequestedMessage(
+    _ request: MessageNavigationRequest?,
+    proxy: ScrollViewProxy
+  ) {
+    guard let request,
+      request.conversationID == store.selectedConversationID,
+      currentMessageIDs.contains(request.messageID)
+    else { return }
+    userScrolledAfterLastMessage = true
+    userMessageNavigationDestination = nil
+    DispatchQueue.main.async {
+      withAnimation(.easeOut(duration: 0.18)) {
+        proxy.scrollTo(request.messageID, anchor: .center)
+      }
+      store.consumeMessageNavigationRequest(id: request.id)
     }
   }
 

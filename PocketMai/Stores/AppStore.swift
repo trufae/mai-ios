@@ -187,6 +187,7 @@ final class AppStore: ObservableObject {
   @Published private(set) var activeConversation: Conversation? = nil
   @Published var conversationSummaries: [ConversationSummary] = []
   @Published private(set) var recentConversationSummaries: [ConversationSummary] = []
+  @Published private(set) var messageBookmarks: [MessageBookmark] = []
   @Published var selectedConversationID: UUID?
   @Published var selectedConversationIDs: Set<UUID> = []
   @Published var settings: AppSettings
@@ -391,6 +392,7 @@ final class AppStore: ObservableObject {
   /// Bumped to ask the composer to take keyboard focus (e.g. after a widget tap).
   @Published private(set) var composerFocusRequestID = 0
   @Published private(set) var composerDraftReplacement: ComposerDraftReplacement?
+  @Published private(set) var pendingMessageNavigation: MessageNavigationRequest?
 
   let streamingTextStore: StreamingTextStore
   lazy var locationService = LocationService()
@@ -409,6 +411,12 @@ final class AppStore: ObservableObject {
   private var pendingDraftSave = false
   private var dirtyDraftIDsBeforeLoad: Set<UUID> = []
   private var deletedDraftIDsBeforeLoad: Set<UUID> = []
+  private var hasLoadedPersistedBookmarks = false
+  private var pendingBookmarkSave = false
+  private var dirtyBookmarkKeysBeforeLoad: Set<String> = []
+  private var deletedBookmarkKeysBeforeLoad: Set<String> = []
+  private var deletedBookmarkConversationIDsBeforeLoad: Set<UUID> = []
+  private var clearedBookmarksBeforeLoad = false
   private var hasLoadedPersistedConversations = false
   private var pendingConversationSave = false
   private var dirtyConversationIDsBeforeLoad: Set<UUID> = []
@@ -881,6 +889,9 @@ final class AppStore: ObservableObject {
     let draftsTask = Task.detached(priority: .utility) {
       persistence.loadDrafts()
     }
+    let bookmarksTask = Task.detached(priority: .utility) {
+      persistence.loadBookmarks()
+    }
 
     let loadedSettings = await settingsTask.value
     guard generation == dataGeneration else { return }
@@ -910,6 +921,10 @@ final class AppStore: ObservableObject {
     let loadedDrafts = await draftsTask.value
     guard generation == dataGeneration else { return }
     applyLoadedDrafts(loadedDrafts)
+
+    let loadedBookmarks = await bookmarksTask.value
+    guard generation == dataGeneration else { return }
+    applyLoadedBookmarks(loadedBookmarks)
 
     let deviceOnlyApple = settings.airplaneModeEnabled
     let availabilityTask = Task.detached(priority: .utility) {
@@ -956,6 +971,32 @@ final class AppStore: ObservableObject {
     if pendingDraftSave {
       pendingDraftSave = false
       persistDrafts()
+    }
+  }
+
+  private func applyLoadedBookmarks(_ loadedBookmarks: [MessageBookmark]) {
+    guard !hasLoadedPersistedBookmarks else { return }
+    var byKey: [String: MessageBookmark] = [:]
+    if !clearedBookmarksBeforeLoad {
+      for bookmark in loadedBookmarks
+      where !deletedBookmarkConversationIDsBeforeLoad.contains(bookmark.conversationID)
+        && !deletedBookmarkKeysBeforeLoad.contains(bookmark.storageKey)
+      {
+        byKey[bookmark.storageKey] = bookmark
+      }
+    }
+    for bookmark in messageBookmarks where dirtyBookmarkKeysBeforeLoad.contains(bookmark.storageKey) {
+      byKey[bookmark.storageKey] = bookmark
+    }
+    messageBookmarks = Self.sortedMessageBookmarks(Array(byKey.values))
+    hasLoadedPersistedBookmarks = true
+    dirtyBookmarkKeysBeforeLoad.removeAll()
+    deletedBookmarkKeysBeforeLoad.removeAll()
+    deletedBookmarkConversationIDsBeforeLoad.removeAll()
+    clearedBookmarksBeforeLoad = false
+    if pendingBookmarkSave {
+      pendingBookmarkSave = false
+      saveBookmarks()
     }
   }
 
@@ -1219,6 +1260,96 @@ final class AppStore: ObservableObject {
     saveConversations()
   }
 
+  var bookmarkedMessages: [BookmarkedMessage] {
+    let conversationsByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+    let summariesByID = Dictionary(uniqueKeysWithValues: conversationSummaries.map { ($0.id, $0) })
+    return messageBookmarks.compactMap { bookmark in
+      guard let conversation = conversationsByID[bookmark.conversationID],
+        let message = conversation.messages.first(where: { $0.id == bookmark.messageID })
+      else {
+        return nil
+      }
+      return BookmarkedMessage(
+        bookmark: bookmark,
+        message: message,
+        conversationTitle: summariesByID[bookmark.conversationID]?.displayTitle
+          ?? conversation.displayTitle)
+    }
+  }
+
+  func isMessageBookmarked(_ messageID: UUID, in conversationID: UUID) -> Bool {
+    messageBookmarks.contains {
+      $0.conversationID == conversationID && $0.messageID == messageID
+    }
+  }
+
+  func toggleMessageBookmark(_ message: ChatMessage, in conversationID: UUID) {
+    if let index = messageBookmarks.firstIndex(where: {
+      $0.conversationID == conversationID && $0.messageID == message.id
+    }) {
+      let removed = messageBookmarks.remove(at: index)
+      noteDeletedBookmarkBeforeLoad(removed)
+    } else {
+      let bookmark = MessageBookmark(
+        conversationID: conversationID,
+        messageID: message.id,
+        createdAt: message.createdAt)
+      messageBookmarks.append(bookmark)
+      noteDirtyBookmarkBeforeLoad(bookmark)
+    }
+    messageBookmarks = Self.sortedMessageBookmarks(messageBookmarks)
+    saveBookmarks()
+  }
+
+  func toggleBookmarkPin(conversationID: UUID, messageID: UUID) {
+    guard let index = messageBookmarks.firstIndex(where: {
+      $0.conversationID == conversationID && $0.messageID == messageID
+    }) else { return }
+    messageBookmarks[index].isPinned.toggle()
+    noteDirtyBookmarkBeforeLoad(messageBookmarks[index])
+    messageBookmarks = Self.sortedMessageBookmarks(messageBookmarks)
+    saveBookmarks()
+  }
+
+  func removeMessageBookmark(conversationID: UUID, messageID: UUID) {
+    guard let bookmark = messageBookmarks.first(where: {
+      $0.conversationID == conversationID && $0.messageID == messageID
+    }) else { return }
+    messageBookmarks.removeAll { $0.storageKey == bookmark.storageKey }
+    noteDeletedBookmarkBeforeLoad(bookmark)
+    saveBookmarks()
+  }
+
+  func pruneInvalidMessageBookmarks() {
+    guard hasLoadedPersistedConversations else { return }
+    let validKeys = Set(
+      conversations.flatMap { conversation in
+        conversation.messages.map {
+          MessageBookmark(
+            conversationID: conversation.id,
+            messageID: $0.id,
+            createdAt: $0.createdAt
+          ).storageKey
+        }
+      })
+    let removed = messageBookmarks.filter { !validKeys.contains($0.storageKey) }
+    guard !removed.isEmpty else { return }
+    messageBookmarks.removeAll { !validKeys.contains($0.storageKey) }
+    removed.forEach(noteDeletedBookmarkBeforeLoad)
+    saveBookmarks()
+  }
+
+  func requestNavigationToMessage(_ messageID: UUID, in conversationID: UUID) {
+    pendingMessageNavigation = MessageNavigationRequest(
+      conversationID: conversationID,
+      messageID: messageID)
+  }
+
+  func consumeMessageNavigationRequest(id: UUID) {
+    guard pendingMessageNavigation?.id == id else { return }
+    pendingMessageNavigation = nil
+  }
+
   func setConversationUnread(id: UUID, isUnread: Bool) async {
     await ensureConversationLoaded(id)
     updateConversationUnreadState(id: id, isUnread: isUnread)
@@ -1405,6 +1536,7 @@ final class AppStore: ObservableObject {
     guard !removedMessages.isEmpty else { return }
     clearStreamingText(for: removedMessages)
     conversations[index].messages.removeAll { $0.id == message.id }
+    removeBookmarks(for: removedMessages, in: conversationID)
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
     saveConversations()
@@ -1419,6 +1551,7 @@ final class AppStore: ObservableObject {
     guard !removedMessages.isEmpty else { return }
     clearStreamingText(for: removedMessages)
     conversations[index].messages.removeAll { ids.contains($0.id) }
+    removeBookmarks(for: removedMessages, in: conversationID)
     conversations[index].updatedAt = Date()
     upsertSummary(for: conversations[index])
     saveConversations()
@@ -1449,6 +1582,7 @@ final class AppStore: ObservableObject {
     draftStorageRevision += 1
     persistDrafts()
     streamingTextStore.removeAll()
+    clearMessageBookmarks()
     conversations.removeAll()
     rebuildConversationIndexes()
     conversationSummaries.removeAll()
@@ -1473,6 +1607,7 @@ final class AppStore: ObservableObject {
     respondingConversationIDs.removeAll()
     queuedUserMessagesByConversationID.removeAll()
     conversationDrafts.removeAll()
+    messageBookmarks.removeAll()
     streamingTextStore.removeAll()
     settings = .defaults
     conversations.removeAll()
@@ -1498,6 +1633,12 @@ final class AppStore: ObservableObject {
     dirtyDraftIDsBeforeLoad.removeAll()
     deletedDraftIDsBeforeLoad.removeAll()
     draftStorageRevision += 1
+    hasLoadedPersistedBookmarks = true
+    pendingBookmarkSave = false
+    dirtyBookmarkKeysBeforeLoad.removeAll()
+    deletedBookmarkKeysBeforeLoad.removeAll()
+    deletedBookmarkConversationIDsBeforeLoad.removeAll()
+    clearedBookmarksBeforeLoad = false
     hasLoadedPersistedConversations = true
     pendingConversationSave = false
     dirtyConversationIDsBeforeLoad.removeAll()
@@ -1538,6 +1679,7 @@ final class AppStore: ObservableObject {
     let removedMessages = conversations[currentIndex].messages
     clearStreamingText(for: removedMessages)
     conversations[currentIndex].messages.removeAll()
+    removeBookmarks(for: removedMessages, in: conversationID)
     conversations[currentIndex].title = "New chat"
     conversations[currentIndex].updatedAt = Date()
     upsertSummary(for: conversations[currentIndex])
@@ -1622,6 +1764,7 @@ final class AppStore: ObservableObject {
       clearStreamingText(for: $0.messages)
     }
     conversations.removeAll { ids.contains($0.id) }
+    removeBookmarks(in: ids)
     rebuildConversationIndexes()
     removeSummaries(for: ids)
     selectedConversationIDs.removeAll()
@@ -2423,6 +2566,7 @@ final class AppStore: ObservableObject {
     let removedMessages = Array(conversations[convIndex].messages.dropFirst(cutoff + 1))
     clearStreamingText(for: removedMessages)
     conversations[convIndex].messages = Array(conversations[convIndex].messages.prefix(cutoff + 1))
+    removeBookmarks(for: removedMessages, in: conversationID)
     conversations[convIndex].updatedAt = Date()
     upsertSummary(for: conversations[convIndex])
     saveConversations()
@@ -3866,6 +4010,79 @@ final class AppStore: ObservableObject {
     persistence.saveConversations(conversations)
   }
 
+  private func saveBookmarks() {
+    guard hasLoadedPersistedBookmarks else {
+      pendingBookmarkSave = true
+      return
+    }
+    persistence.saveBookmarks(messageBookmarks)
+  }
+
+  private func noteDirtyBookmarkBeforeLoad(_ bookmark: MessageBookmark) {
+    guard !hasLoadedPersistedBookmarks else { return }
+    dirtyBookmarkKeysBeforeLoad.insert(bookmark.storageKey)
+    deletedBookmarkKeysBeforeLoad.remove(bookmark.storageKey)
+  }
+
+  private func noteDeletedBookmarkBeforeLoad(_ bookmark: MessageBookmark) {
+    guard !hasLoadedPersistedBookmarks else { return }
+    deletedBookmarkKeysBeforeLoad.insert(bookmark.storageKey)
+    dirtyBookmarkKeysBeforeLoad.remove(bookmark.storageKey)
+  }
+
+  private func removeBookmarks(for messages: [ChatMessage], in conversationID: UUID) {
+    guard !messages.isEmpty else { return }
+    let messageIDs = Set(messages.map(\.id))
+    let removed = messageBookmarks.filter {
+      $0.conversationID == conversationID && messageIDs.contains($0.messageID)
+    }
+    if !hasLoadedPersistedBookmarks {
+      for messageID in messageIDs {
+        deletedBookmarkKeysBeforeLoad.insert(
+          MessageBookmark(
+            conversationID: conversationID,
+            messageID: messageID,
+            createdAt: .distantPast
+          ).storageKey)
+      }
+      dirtyBookmarkKeysBeforeLoad.subtract(removed.map(\.storageKey))
+      saveBookmarks()
+    }
+    guard !removed.isEmpty else { return }
+    messageBookmarks.removeAll {
+      $0.conversationID == conversationID && messageIDs.contains($0.messageID)
+    }
+    saveBookmarks()
+  }
+
+  private func removeBookmarks(in conversationIDs: Set<UUID>) {
+    guard !conversationIDs.isEmpty else { return }
+    if !hasLoadedPersistedBookmarks {
+      deletedBookmarkConversationIDsBeforeLoad.formUnion(conversationIDs)
+      dirtyBookmarkKeysBeforeLoad.subtract(
+        messageBookmarks.lazy
+          .filter { conversationIDs.contains($0.conversationID) }
+          .map(\.storageKey))
+      saveBookmarks()
+    }
+    let originalCount = messageBookmarks.count
+    messageBookmarks.removeAll { conversationIDs.contains($0.conversationID) }
+    if messageBookmarks.count != originalCount {
+      saveBookmarks()
+    }
+  }
+
+  private func clearMessageBookmarks() {
+    messageBookmarks.removeAll()
+    if !hasLoadedPersistedBookmarks {
+      clearedBookmarksBeforeLoad = true
+      dirtyBookmarkKeysBeforeLoad.removeAll()
+      deletedBookmarkKeysBeforeLoad.removeAll()
+      deletedBookmarkConversationIDsBeforeLoad.removeAll()
+    }
+    saveBookmarks()
+  }
+
   private func sortConversations() {
     conversations = Self.sortedConversations(conversations)
     rebuildConversationIndexes()
@@ -3990,6 +4207,20 @@ final class AppStore: ObservableObject {
     -> [ConversationSummary]
   {
     summaries.sorted(by: summaryPrecedes)
+  }
+
+  nonisolated static func sortedMessageBookmarks(_ bookmarks: [MessageBookmark])
+    -> [MessageBookmark]
+  {
+    bookmarks.sorted { lhs, rhs in
+      if lhs.isPinned != rhs.isPinned {
+        return lhs.isPinned && !rhs.isPinned
+      }
+      if lhs.createdAt != rhs.createdAt {
+        return lhs.createdAt > rhs.createdAt
+      }
+      return lhs.storageKey < rhs.storageKey
+    }
   }
 
   nonisolated private static func conversationPrecedes(
@@ -5323,6 +5554,7 @@ final class AppStoreViewObservation: ObservableObject {
     case .chat:
       observe(store.$activeConversation)
       observe(store.$conversationSummaries)
+      observe(store.$messageBookmarks)
       observe(store.$recentConversationSummaries)
       observe(store.$selectedConversationID)
       observe(store.$settings)
@@ -5343,8 +5575,10 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$openAPIServerState)
       observe(store.$pendingLaunchAction)
       observe(store.$composerFocusRequestID)
+      observe(store.$pendingMessageNavigation)
     case .sidebar:
       observe(store.$conversationSummaries)
+      observe(store.$messageBookmarks)
       observe(store.$selectedConversationID)
       observe(store.$selectedConversationIDs)
       observe(store.$settings)

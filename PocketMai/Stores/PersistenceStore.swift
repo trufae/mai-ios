@@ -30,6 +30,11 @@ private struct PersistedDrafts: Codable {
   var drafts: [String: String]
 }
 
+private struct PersistedBookmarks: Codable {
+  var version = 1
+  var bookmarks: [MessageBookmark]
+}
+
 private struct ConversationStorageURLs {
   var baseURL: URL
 
@@ -90,6 +95,7 @@ final class PersistenceStore: @unchecked Sendable {
   private var pendingSettings: DispatchWorkItem?
   private var pendingConversations: DispatchWorkItem?
   private var pendingDrafts: DispatchWorkItem?
+  private var pendingBookmarks: DispatchWorkItem?
   private var persistedConversationsByID: [UUID: Conversation] = [:]
 
   init(fileManager: FileManager = .default, localBaseURL: URL? = nil) {
@@ -141,6 +147,10 @@ final class PersistenceStore: @unchecked Sendable {
 
   private var draftsURL: URL {
     localBaseURL.appendingPathComponent("drafts.json")
+  }
+
+  private var bookmarksURL: URL {
+    localBaseURL.appendingPathComponent("bookmarks.json")
   }
 
   private var launchConversationCacheURL: URL {
@@ -204,6 +214,17 @@ final class PersistenceStore: @unchecked Sendable {
       }
       return lhs.createdAt < rhs.createdAt
     }
+  }
+
+  func loadBookmarks() -> [MessageBookmark] {
+    prepareForAccess()
+    guard let data = try? Data(contentsOf: bookmarksURL),
+      let persisted = try? makeDecoder().decode(PersistedBookmarks.self, from: data)
+    else {
+      return []
+    }
+    var seen = Set<String>()
+    return persisted.bookmarks.filter { seen.insert($0.storageKey).inserted }
   }
 
   func corruptedConversationCount() -> Int {
@@ -883,6 +904,23 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  func saveBookmarks(_ bookmarks: [MessageBookmark]) {
+    let bookmarks = bookmarks
+    let url = bookmarksURL
+    let dir = localBaseURL
+    let delay = debounce
+    writeQueue.async { [weak self] in
+      guard let self else { return }
+      self.prepareForAccess()
+      self.pendingBookmarks?.cancel()
+      let item = DispatchWorkItem {
+        Self.persist(PersistedBookmarks(bookmarks: bookmarks), to: url, dir: dir)
+      }
+      self.pendingBookmarks = item
+      self.writeQueue.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+  }
+
   func factoryReset() {
     let localBaseURL = localBaseURL
     let iCloudBaseURL = iCloudStorageURLs().baseURL
@@ -895,6 +933,8 @@ final class PersistenceStore: @unchecked Sendable {
       self.pendingConversations = nil
       self.pendingDrafts?.cancel()
       self.pendingDrafts = nil
+      self.pendingBookmarks?.cancel()
+      self.pendingBookmarks = nil
       self.persistedConversationsByID.removeAll()
       try? self.fileManager.removeItem(at: localBaseURL)
       if iCloudBaseURL != localBaseURL {
