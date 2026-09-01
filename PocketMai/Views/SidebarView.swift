@@ -229,6 +229,10 @@ struct SidebarView: View {
     visible.reserveCapacity(summaries.count)
     for summary in summaries {
       guard !Task.isCancelled else { return nil }
+      // The selected composer may have a disposable, message-less "New chat"
+      // placeholder. It is needed by the editor, but is not a conversation
+      // that belongs in the sidebar.
+      guard summary.hasMessages else { continue }
       if query.isEmpty {
         if summary.folderID == folderID {
           visible.append(summary)
