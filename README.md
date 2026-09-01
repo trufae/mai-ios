@@ -8,7 +8,7 @@
 
 A native iOS chat client for talking to LLMs — Apple's on-device Foundation Models and any OpenAI-compatible HTTP endpoint.
 
-This app is inspired in the [MAI](https://github.com/trufae/mai) which is a Go agent tool with focus on batch/prompt/cli usecases and also integrates well with VIM.
+This app, comes after [MAI](https://github.com/trufae/mai), a cli agent with focus on batch/prompt/cli workflows that also integrates well with VIM editor.
 
 ## Features
 
@@ -40,22 +40,8 @@ debugger attachment or to run in the Simulator.
 
 ## Releases
 
-Pushing a numeric tag matching `MARKETING_VERSION` (for example `1.6.8`) builds
-a signed Release IPA, creates its GitHub release, and lets GitHub generate the
-release notes. No IPA upload or notes editing is required. Before the first
-tag, add these repository Action secrets:
+Ready to use from the [AppStore](https://apps.apple.com/es/app/pocketmai/id6764296742)
 
-- `BUILD_CERTIFICATE_BASE64` — base64-encoded signing `.p12`
-- `P12_PASSWORD` — password for that `.p12`
-- `BUILD_PROVISION_PROFILE_BASE64` — base64-encoded profile for `io.github.trufae.mai`
-- `WIDGET_PROVISION_PROFILE_BASE64` — base64-encoded profile for `io.github.trufae.mai.PocketMaiWidgetsExtension`
+But you may find the ipa and source zips in the [Release](https://github.com/trufae/pocketmai/releases) page.
 
-The default export is an ad-hoc IPA. Set the repository variable
-`IPA_EXPORT_METHOD` to `development` and `IPA_SIGNING_IDENTITY` to `Apple Development`
-when using development profiles instead.
-
-## Layout
-
-- `PocketMai/` — the iOS app (SwiftUI views, stores, provider + tool services).
-- `Shared/` — cross-target types (used by `aitest`).
-- `aitest/` — Swift Package CLI mirroring the same agentic protocol for headless debugging.
+—pancake
