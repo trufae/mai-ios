@@ -664,6 +664,7 @@ struct ChatView: View {
                     onRestartFresh: { messagePendingRestartFresh = message },
                     onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
                     onSpeakFromHere: { speakFromHere(message) },
+                    onReply: { reply in sendReply(reply) },
                     conversationCreatedAt: conversation?.createdAt
                       ?? store.selectedConversationSummary?.createdAt,
                     showUserTimestamp: message.role == .user && message.id != firstUserMessageID,
@@ -1204,6 +1205,19 @@ struct ChatView: View {
     guard !trimmed.isEmpty else { return }
     store.dismissFollowUpSuggestions(in: conversationID)
     Task { _ = await store.send(prompt: suggestion) }
+  }
+
+  /// Sends a reply composed from an assistant message. While that conversation
+  /// is still responding the reply is queued, exactly like a composer submit.
+  private func sendReply(_ text: String) {
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    if let conversationID = store.currentConversation?.id,
+      store.isResponding(in: conversationID),
+      store.enqueueUserMessage(prompt: text, in: conversationID)
+    {
+      return
+    }
+    Task { _ = await store.send(prompt: text) }
   }
 
   private func cancelQueuedMessage(_ message: QueuedChatMessage) {
