@@ -5,6 +5,7 @@ enum PocketMaiDirectories {
   private static let filesWorkspaceDirectoryName = "FilesData"
   private static let appPrivateFilenames = Set([
     "settings.json",
+    "bookmarks.json",
     "conversations.json",
     "conversations",
     "voice-recordings",

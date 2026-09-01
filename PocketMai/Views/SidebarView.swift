@@ -195,7 +195,6 @@ struct SidebarView: View {
       isLoadingBookmarks = true
       await store.loadStoredConversationsForSearch()
       guard !Task.isCancelled, isShowingBookmarks else { return }
-      store.pruneInvalidMessageBookmarks()
       refreshVisibleBookmarks()
       isLoadingBookmarks = false
     }
@@ -867,23 +866,21 @@ private struct BookmarkRow: View {
           .lineLimit(1)
         }
         Spacer(minLength: 6)
-        Image(systemName: "bookmark.fill")
-          .font(.caption)
-          .foregroundStyle(Color.accentColor)
-          .padding(.top, 3)
+        HStack(spacing: 5) {
+          if item.bookmark.isPinned {
+            Image(systemName: "pin.fill")
+              .foregroundStyle(.secondary)
+              .accessibilityHidden(true)
+          }
+          Image(systemName: "bookmark.fill")
+            .foregroundStyle(Color.accentColor)
+        }
+        .font(.caption)
+        .padding(.top, 3)
       }
       .padding(.vertical, 5)
       .padding(.trailing, 14)
       .contentShape(Rectangle())
-      .overlay(alignment: .topTrailing) {
-        if item.bookmark.isPinned {
-          Image(systemName: "pin.fill")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .offset(x: 4, y: -3)
-            .accessibilityHidden(true)
-        }
-      }
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(item.conversationTitle), \(preview)")

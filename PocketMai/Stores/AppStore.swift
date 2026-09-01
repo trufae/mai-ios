@@ -985,7 +985,9 @@ final class AppStore: ObservableObject {
         byKey[bookmark.storageKey] = bookmark
       }
     }
-    for bookmark in messageBookmarks where dirtyBookmarkKeysBeforeLoad.contains(bookmark.storageKey) {
+    for bookmark in messageBookmarks
+    where dirtyBookmarkKeysBeforeLoad.contains(bookmark.storageKey)
+    {
       byKey[bookmark.storageKey] = bookmark
     }
     messageBookmarks = Self.sortedMessageBookmarks(Array(byKey.values))
@@ -1249,6 +1251,12 @@ final class AppStore: ObservableObject {
     guard changed else { return }
     sortConversations()
     saveConversations()
+
+    // Keep the sidebar focused on the active chat after it is moved; otherwise
+    // the displayed conversation would disappear from the selected folder.
+    if let activeConversationID = activeConversation?.id, ids.contains(activeConversationID) {
+      selectConversationFolder(destination)
+    }
   }
 
   func togglePin(id: UUID) async {
@@ -1302,9 +1310,11 @@ final class AppStore: ObservableObject {
   }
 
   func toggleBookmarkPin(conversationID: UUID, messageID: UUID) {
-    guard let index = messageBookmarks.firstIndex(where: {
-      $0.conversationID == conversationID && $0.messageID == messageID
-    }) else { return }
+    guard
+      let index = messageBookmarks.firstIndex(where: {
+        $0.conversationID == conversationID && $0.messageID == messageID
+      })
+    else { return }
     messageBookmarks[index].isPinned.toggle()
     noteDirtyBookmarkBeforeLoad(messageBookmarks[index])
     messageBookmarks = Self.sortedMessageBookmarks(messageBookmarks)
@@ -1312,30 +1322,13 @@ final class AppStore: ObservableObject {
   }
 
   func removeMessageBookmark(conversationID: UUID, messageID: UUID) {
-    guard let bookmark = messageBookmarks.first(where: {
-      $0.conversationID == conversationID && $0.messageID == messageID
-    }) else { return }
+    guard
+      let bookmark = messageBookmarks.first(where: {
+        $0.conversationID == conversationID && $0.messageID == messageID
+      })
+    else { return }
     messageBookmarks.removeAll { $0.storageKey == bookmark.storageKey }
     noteDeletedBookmarkBeforeLoad(bookmark)
-    saveBookmarks()
-  }
-
-  func pruneInvalidMessageBookmarks() {
-    guard hasLoadedPersistedConversations else { return }
-    let validKeys = Set(
-      conversations.flatMap { conversation in
-        conversation.messages.map {
-          MessageBookmark(
-            conversationID: conversation.id,
-            messageID: $0.id,
-            createdAt: $0.createdAt
-          ).storageKey
-        }
-      })
-    let removed = messageBookmarks.filter { !validKeys.contains($0.storageKey) }
-    guard !removed.isEmpty else { return }
-    messageBookmarks.removeAll { !validKeys.contains($0.storageKey) }
-    removed.forEach(noteDeletedBookmarkBeforeLoad)
     saveBookmarks()
   }
 
