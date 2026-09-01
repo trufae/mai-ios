@@ -80,6 +80,10 @@ enum BuiltInToolCatalog {
       toolNames: GitHubTool.toolNames,
       approvalKind: .confirm),
     BuiltInToolCatalogEntry(
+      id: .mastodon,
+      toolNames: [MastodonTool.name],
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
       id: .memory,
       toolNames: ConversationSearchTool.toolNames,
       approvalKind: .confirm),
@@ -190,6 +194,12 @@ enum BuiltInToolCatalog {
         return "Error: GitHub tools are disabled while Airplane Mode is enabled."
       }
       return await GitHubTool.execute(name: name, arguments: call.argumentValues)
+    case MastodonTool.name:
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: Mastodon is disabled while Airplane Mode is enabled."
+      }
+      return await MastodonTool.execute(
+        arguments: call.argumentValues, settings: store.settings.toolSettings)
     case let name where ConversationSearchTool.toolNames.contains(name):
       return ConversationSearchTool.execute(
         name: name,
@@ -302,6 +312,8 @@ enum BuiltInToolCatalog {
       return WebXDCTool.definitions
     case .github:
       return GitHubTool.definitions
+    case .mastodon:
+      return MastodonTool.definitions
     case .memory:
       guard settings.toolSettings.conversationSearchScope != .none else { return [] }
       return ConversationSearchTool.definitions

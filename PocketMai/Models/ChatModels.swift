@@ -333,7 +333,7 @@ struct AppearanceSettings: Codable, Equatable, Sendable {
       solidBubbles = decoded
     } else if let legacySolidResponses =
       (try? c.decode(Bool.self, forKey: .solidResponseBubbles))
-        ?? (try? c.decode(Bool.self, forKey: .colorizeResponseBubbles))
+      ?? (try? c.decode(Bool.self, forKey: .colorizeResponseBubbles))
     {
       solidBubbles = legacySolidResponses ? .both : .user
     } else {
@@ -492,6 +492,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   case alarms
   case webxdc
   case github
+  case mastodon
   case memory
 
   var id: String { rawValue }
@@ -507,7 +508,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .datetime, .language, .location, .memory:
       return true
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms, .webxdc, .github:
+      .alarms, .webxdc, .github, .mastodon:
       return false
     }
   }
@@ -515,7 +516,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
   var isCallableTool: Bool {
     switch self {
     case .weather, .webSearch, .todo, .calculator, .textToSpeech, .files, .calendar, .clipboard,
-      .alarms, .webxdc, .github:
+      .alarms, .webxdc, .github, .mastodon:
       return true
     case .datetime, .language, .location, .memory:
       return false
@@ -538,6 +539,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .alarms: "Alarms"
     case .webxdc: "WebXDC Apps"
     case .github: "GitHub"
+    case .mastodon: "Mastodon"
     case .memory: "Memory"
     }
   }
@@ -558,13 +560,14 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
     case .alarms: "alarm"
     case .webxdc: "square.grid.2x2"
     case .github: "arrow.triangle.branch"
+    case .mastodon: "bubble.left.and.bubble.right"
     case .memory: "brain"
     }
   }
 
   var isDisabledInAirplaneMode: Bool {
     switch self {
-    case .weather, .webSearch, .github:
+    case .weather, .webSearch, .github, .mastodon:
       return true
     case .datetime, .language, .location, .todo, .calculator, .textToSpeech, .files, .calendar,
       .clipboard, .alarms, .webxdc, .memory:
@@ -1597,7 +1600,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     reasoningLevel =
       (try? container.decode(ReasoningLevel.self, forKey: .reasoningLevel)) ?? .automatic
     showThinking = (try? container.decode(Bool.self, forKey: .showThinking)) ?? false
-    contextWindowMode = try? container.decodeIfPresent(ContextWindowMode.self, forKey: .contextWindowMode)
+    contextWindowMode = try? container.decodeIfPresent(
+      ContextWindowMode.self, forKey: .contextWindowMode)
     mlxMaxKVSize = try? container.decodeIfPresent(MLXKVCacheSize.self, forKey: .mlxMaxKVSize)
     lastContextSignature =
       (try? container.decodeIfPresent(String.self, forKey: .lastContextSignature))
@@ -2857,6 +2861,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
   var webxdcAllowRealtimeChannels: Bool = false
   var voices: VoiceSettings = .defaults
   var conversationSearchScope: ConversationSearchScope = .none
+  var mastodonInstance: String = "mastodon.social"
+  var mastodonAPIKey: String = ""
+  var mastodonWriteEnabled: Bool = false
 
   static let defaults = NativeToolSettings()
 
@@ -2875,7 +2882,7 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     case webxdcAllowFileImport, webxdcAllowLocalStorage, webxdcAllowServiceWorkers
     case webxdcAllowNotifications, webxdcAllowRealtimeChannels
     case voices
-    case conversationSearchScope
+    case conversationSearchScope, mastodonInstance, mastodonAPIKey, mastodonWriteEnabled
   }
 
   private enum LegacyCodingKeys: String, CodingKey {
@@ -2988,6 +2995,12 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     conversationSearchScope =
       (try? c.decode(ConversationSearchScope.self, forKey: .conversationSearchScope))
       ?? defaults.conversationSearchScope
+    mastodonInstance =
+      (try? c.decode(String.self, forKey: .mastodonInstance)) ?? defaults.mastodonInstance
+    mastodonAPIKey =
+      (try? c.decode(String.self, forKey: .mastodonAPIKey)) ?? defaults.mastodonAPIKey
+    mastodonWriteEnabled =
+      (try? c.decode(Bool.self, forKey: .mastodonWriteEnabled)) ?? defaults.mastodonWriteEnabled
   }
 
   func encode(to encoder: Encoder) throws {
@@ -3025,6 +3038,9 @@ struct NativeToolSettings: Codable, Equatable, Sendable {
     try c.encode(webxdcAllowRealtimeChannels, forKey: .webxdcAllowRealtimeChannels)
     try c.encode(voices, forKey: .voices)
     try c.encode(conversationSearchScope, forKey: .conversationSearchScope)
+    try c.encode(mastodonInstance, forKey: .mastodonInstance)
+    try c.encode(mastodonAPIKey, forKey: .mastodonAPIKey)
+    try c.encode(mastodonWriteEnabled, forKey: .mastodonWriteEnabled)
   }
 }
 

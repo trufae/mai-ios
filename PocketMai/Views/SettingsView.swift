@@ -1588,6 +1588,19 @@ struct SettingsView: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+    case .mastodon:
+      Text(
+        "Connects to one Mastodon instance for searching posts, reading a user's recent posts, and posting or replying. Search is public where the instance allows it; posting requires an API key. Calls ask for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      TextField("Mastodon instance", text: settingsBinding(\.toolSettings.mastodonInstance))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+      SecureField("Mastodon API key", text: settingsBinding(\.toolSettings.mastodonAPIKey))
+      Toggle(
+        "Allow posting and replying",
+        isOn: settingsBinding(\.toolSettings.mastodonWriteEnabled))
     case .memory:
       TextEditor(text: settingsBinding(\.memory))
         .frame(minHeight: 140)
