@@ -56,6 +56,13 @@ private struct ImageSaveNotice: Identifiable, Equatable {
   }
 }
 
+/// Identity for the reply sheet: presenting it carries the quoted text that
+/// pre-fills the editor, so the draft is rebuilt from the message each time.
+private struct MessageReplyDraft: Identifiable {
+  let id = UUID()
+  let text: String
+}
+
 private struct ImageSaveNoticeModifier: ViewModifier {
   @Binding var notice: ImageSaveNotice?
 
@@ -125,6 +132,7 @@ struct MessageBubble: View {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var onReply: ((String) -> Void)? = nil
   var conversationCreatedAt: Date? = nil
   var showUserTimestamp: Bool = false
   var showThinking: Bool = false
@@ -153,6 +161,7 @@ struct MessageBubble: View {
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
+      onReply: onReply,
       conversationCreatedAt: conversationCreatedAt,
       showUserTimestamp: showUserTimestamp,
       showThinking: showThinking,
@@ -185,6 +194,7 @@ private struct StreamingMessageBubble: View {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var onReply: ((String) -> Void)? = nil
   var conversationCreatedAt: Date? = nil
   var showUserTimestamp: Bool = false
   var showThinking: Bool = false
@@ -214,6 +224,7 @@ private struct StreamingMessageBubble: View {
       onRestartFresh: onRestartFresh,
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
+      onReply: onReply,
       conversationCreatedAt: conversationCreatedAt,
       showUserTimestamp: showUserTimestamp,
       showThinking: showThinking,
@@ -250,6 +261,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onRestartFresh: (() -> Void)? = nil
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
+  var onReply: ((String) -> Void)? = nil
   var conversationCreatedAt: Date? = nil
   var showUserTimestamp: Bool = false
   var showThinking: Bool = false
@@ -259,6 +271,7 @@ private struct MessageBubbleContent: View, Equatable {
   @State private var selectedTextAttachment: ChatAttachment?
   @State private var selectedImageAttachment: ChatAttachment?
   @State private var imageSaveNotice: ImageSaveNotice?
+  @State private var replyDraft: MessageReplyDraft?
 
   private var isUser: Bool { message.role == .user }
   private var displayText: String { streamingOverride ?? message.presentationText }
@@ -482,6 +495,19 @@ private struct MessageBubbleContent: View, Equatable {
           isEditable: onEditAttachment != nil,
           onSave: { text in onEditAttachment?(attachment.id, text) })
       }
+      .sheet(item: $replyDraft) { draft in
+        MessageTextSelectionSheet(
+          title: "Reply",
+          text: draft.text,
+          appearance: appearance,
+          initialFontSize: appearance.fontSize,
+          initialLineSpacing: appearance.lineSpacing,
+          fontFamily: appearance.fontFamily(for: message.role),
+          isEditable: true,
+          saveTitle: "Send",
+          saveConfirmation: "Send this reply?",
+          onSave: { text in onReply?(text) })
+      }
       .fullScreenCover(item: $selectedImageAttachment) { attachment in
         MessageImageFullscreenLoader(attachment: attachment)
       }
@@ -592,6 +618,13 @@ private struct MessageBubbleContent: View, Equatable {
       UIPasteboard.general.string = visibleText
     } label: {
       Label("Copy Message", systemImage: "doc.on.doc")
+    }
+    if message.role == .assistant, onReply != nil {
+      Button {
+        replyDraft = MessageReplyDraft(text: MarkdownQuote.quote(visibleText) + "\n\n")
+      } label: {
+        Label("Reply…", systemImage: "arrowshape.turn.up.left")
+      }
     }
 
     Divider()
@@ -1497,6 +1530,12 @@ struct MessageTextSelectionSheet: View {
   let fontFamily: AppearanceFontFamily
   let lineSpacing: Double
   let isEditable: Bool
+  // Title of the button that commits the draft.
+  let saveTitle: String
+  // When set, committing asks for confirmation with this question first and is
+  // offered even for an untouched draft — the reply composer, where the quoted
+  // text alone is a valid message.
+  let saveConfirmation: String?
   let onSave: ((String) -> Void)?
   @State private var draftText: String
   @State private var fontSize: Double
@@ -1505,6 +1544,7 @@ struct MessageTextSelectionSheet: View {
   // is shown read-only. Saving is always tied to the raw draft.
   @State private var showingRaw: Bool
   @State private var shareItem: TextShareItem?
+  @State private var showingSaveConfirmation = false
 
   private struct TextShareItem: Identifiable {
     let id = UUID()
@@ -1520,6 +1560,8 @@ struct MessageTextSelectionSheet: View {
     initialLineSpacing: Double = AppearanceSettings.defaults.lineSpacing,
     fontFamily: AppearanceFontFamily = .system,
     isEditable: Bool = false,
+    saveTitle: String = "Save",
+    saveConfirmation: String? = nil,
     onSave: ((String) -> Void)? = nil
   ) {
     self.title = title
@@ -1529,6 +1571,8 @@ struct MessageTextSelectionSheet: View {
     self.fontFamily = fontFamily
     self.lineSpacing = AppearanceSettings.clampedLineSpacing(initialLineSpacing)
     self.isEditable = isEditable
+    self.saveTitle = saveTitle
+    self.saveConfirmation = saveConfirmation
     self.onSave = onSave
     _draftText = State(initialValue: text)
     _fontSize = State(initialValue: AppearanceSettings.clampedFontSize(initialFontSize))
@@ -1616,10 +1660,14 @@ struct MessageTextSelectionSheet: View {
             shareButton
           }
           ToolbarItem(placement: .confirmationAction) {
-            Button("Save") {
-              saveEdits()
+            Button(saveTitle) {
+              if saveConfirmation == nil {
+                saveEdits()
+              } else {
+                showingSaveConfirmation = true
+              }
             }
-            .disabled(draftText == text)
+            .disabled(saveConfirmation == nil && draftText == text)
           }
         } else {
           ToolbarItem(placement: .topBarLeading) {
@@ -1646,6 +1694,16 @@ struct MessageTextSelectionSheet: View {
       }
       .sheet(item: $shareItem) { item in
         ActivityShareSheet(activityItems: item.items)
+      }
+      .confirmationDialog(
+        saveConfirmation ?? "",
+        isPresented: $showingSaveConfirmation,
+        titleVisibility: .visible
+      ) {
+        Button(saveTitle) {
+          commitEdits()
+        }
+        Button("Cancel", role: .cancel) {}
       }
     }
   }
@@ -1691,6 +1749,10 @@ struct MessageTextSelectionSheet: View {
       dismiss()
       return
     }
+    commitEdits()
+  }
+
+  private func commitEdits() {
     onSave?(draftText)
     dismiss()
   }
