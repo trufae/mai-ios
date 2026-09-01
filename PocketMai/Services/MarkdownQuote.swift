@@ -6,7 +6,7 @@ import Foundation
 /// read as quoted material next to the reply typed under it.
 enum MarkdownQuote {
   /// Total width of a quoted line, quote marker included.
-  static let defaultLineWidth = 20
+  static let defaultLineWidth = 40
 
   private static let marker = "> "
 
