@@ -4,8 +4,11 @@ import XCTest
 @testable import PocketMai
 
 final class MarkdownQuoteTests: XCTestCase {
+  // Pins the wrapping itself, at a width of its own, so that tuning
+  // `defaultLineWidth` stays a product decision instead of a test failure.
   func testWrapsAndPrefixesEveryLine() {
-    let quoted = MarkdownQuote.quote("The quick brown fox jumps over the lazy dog")
+    let quoted = MarkdownQuote.quote(
+      "The quick brown fox jumps over the lazy dog", lineWidth: 20)
 
     XCTAssertEqual(
       quoted,
@@ -14,6 +17,21 @@ final class MarkdownQuoteTests: XCTestCase {
       > fox jumps over the
       > lazy dog
       """)
+  }
+
+  // Whatever the default width is, the wrap has to be greedy: a line is only
+  // broken because the next word would not have fit on it.
+  func testDefaultWidthPacksEachLineBeforeBreakingIt() {
+    let words = Array(repeating: "lorem", count: 40)
+    let lines = MarkdownQuote.quote(words.joined(separator: " "))
+      .components(separatedBy: "\n")
+
+    XCTAssertGreaterThan(lines.count, 1, "The sample must be long enough to wrap")
+    for line in lines.dropLast() {
+      XCTAssertGreaterThan(
+        line.count + " lorem".count, MarkdownQuote.defaultLineWidth,
+        "Broke early, another word still fitted: \(line)")
+    }
   }
 
   func testEveryLineFitsTheConfiguredWidth() {

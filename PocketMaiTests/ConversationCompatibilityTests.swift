@@ -193,6 +193,84 @@ final class ConversationCompatibilityTests: XCTestCase {
     XCTAssertNotNil(encodedObject["enabledTools"] as? [String])
   }
 
+  // Bookmarks live in bookmarks.json beside the conversations, never inside a
+  // conversation file. A build that predates them has to keep reading, and
+  // rewriting, conversations a bookmarks-era build has touched.
+  func testBookmarkingAddsNoFieldToTheConversationDocument() throws {
+    for name in fixtures.keys.sorted() {
+      try XCTContext.runActivity(named: name) { _ in
+        let conversation = try decodeFixture(named: name)
+        let object = try XCTUnwrap(
+          try JSONSerialization.jsonObject(with: makeEncoder().encode(conversation))
+            as? [String: Any])
+
+        XCTAssertFalse(
+          object.keys.contains { $0.lowercased().contains("bookmark") },
+          "A bookmark field leaked into the conversation document: \(object.keys.sorted())")
+        for message in try XCTUnwrap(object["messages"] as? [[String: Any]]) {
+          XCTAssertFalse(
+            message.keys.contains { $0.lowercased().contains("bookmark") },
+            "A bookmark field leaked into a message: \(message.keys.sorted())")
+        }
+      }
+    }
+  }
+
+  // The other half of that contract: were a later version to put bookmark state
+  // into the conversation document after all, this version must ignore it
+  // rather than refuse the file or drop the rest of the conversation.
+  func testUnknownFutureFieldsInAConversationAreIgnored() throws {
+    let expected = try decodeFixture(named: "conversation-v1.6.2")
+    var object = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: fixtureData(named: "conversation-v1.6.2"))
+        as? [String: Any])
+    object["bookmarks"] = [
+      ["messageID": UUID().uuidString, "createdAt": "2026-09-01T00:00:00Z", "isPinned": true]
+    ]
+    var messages = try XCTUnwrap(object["messages"] as? [[String: Any]])
+    messages[0]["isBookmarked"] = true
+    object["messages"] = messages
+
+    let conversation = try makeDecoder().decode(
+      Conversation.self, from: JSONSerialization.data(withJSONObject: object))
+    XCTAssertEqual(conversation, expected)
+  }
+
+  // bookmarks.json sits at the store root, outside the scanned conversations
+  // directory, so loading must neither pick it up nor quarantine it.
+  func testBookmarksFileBesideTheConversationsIsLeftAlone() throws {
+    let expected = try decodeFixture(named: "conversation-v1.6.2")
+    let baseURL = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: baseURL) }
+
+    let conversationsURL = baseURL.appendingPathComponent("conversations", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: conversationsURL, withIntermediateDirectories: true)
+    try fixtureData(named: "conversation-v1.6.2").write(
+      to: conversationsURL.appendingPathComponent("\(expected.id.uuidString).json"),
+      options: .atomic)
+
+    let bookmarksURL = baseURL.appendingPathComponent("bookmarks.json")
+    let bookmarks: [String: Any] = [
+      "version": 1,
+      "bookmarks": [
+        [
+          "conversationID": expected.id.uuidString,
+          "messageID": expected.messages[0].id.uuidString,
+          "createdAt": "2026-09-01T00:00:00Z",
+          "isPinned": false,
+        ]
+      ],
+    ]
+    let bookmarksData = try JSONSerialization.data(withJSONObject: bookmarks)
+    try bookmarksData.write(to: bookmarksURL, options: .atomic)
+
+    XCTAssertEqual(PersistenceStore(localBaseURL: baseURL).loadConversations(), [expected])
+    XCTAssertEqual(try Data(contentsOf: bookmarksURL), bookmarksData)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: bookmarksURL.appendingPathExtension("corrupt").path))
+  }
+
   private func fixtureData(named name: String) throws -> Data {
     let bundle = Bundle(for: Self.self)
     let url = bundle.url(forResource: name, withExtension: "json", subdirectory: "Fixtures")
