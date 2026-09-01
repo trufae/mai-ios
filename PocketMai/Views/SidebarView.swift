@@ -505,6 +505,14 @@ struct SidebarView: View {
       } label: {
         folderPickerLabel(for: ConversationFolder.archivedFolder)
       }
+      ForEach(store.customConversationFolders) { folder in
+        Button {
+          showConversationFolder(folder.id)
+        } label: {
+          folderPickerLabel(for: folder)
+        }
+      }
+      Divider()
       Button {
         showBookmarks()
       } label: {
@@ -514,14 +522,6 @@ struct SidebarView: View {
           Label("Bookmarks", systemImage: "bookmark")
         }
       }
-      ForEach(store.customConversationFolders) { folder in
-        Button {
-          showConversationFolder(folder.id)
-        } label: {
-          folderPickerLabel(for: folder)
-        }
-      }
-      Divider()
       Button {
         showingGallery = true
       } label: {

@@ -604,6 +604,7 @@ struct ChatView: View {
           let renderedMessages =
             conversation?.messages
             ?? store.selectedConversationPreviewMessages
+          let firstUserMessageID = renderedMessages.first(where: { $0.role == .user })?.id
           // A single response can be several viewports tall and changes height while streaming.
           // LazyVStack can retain a stale row estimate and scroll past the rendered content.
           VStack(spacing: 14) {
@@ -663,6 +664,7 @@ struct ChatView: View {
                     onSpeakFromHere: { speakFromHere(message) },
                     conversationCreatedAt: conversation?.createdAt
                       ?? store.selectedConversationSummary?.createdAt,
+                    showUserTimestamp: message.role == .user && message.id != firstUserMessageID,
                     showThinking: store.effectiveShowThinking(for: store.currentConversation),
                     isWaitingForResponse: isWaitingForResponse(message),
                     onStreamingTextChange: { _ in

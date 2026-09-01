@@ -126,6 +126,7 @@ struct MessageBubble: View {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var conversationCreatedAt: Date? = nil
+  var showUserTimestamp: Bool = false
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
@@ -153,6 +154,7 @@ struct MessageBubble: View {
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
       conversationCreatedAt: conversationCreatedAt,
+      showUserTimestamp: showUserTimestamp,
       showThinking: showThinking,
       isWaitingForResponse: isWaitingForResponse,
       onStreamingTextChange: onStreamingTextChange
@@ -184,6 +186,7 @@ private struct StreamingMessageBubble: View {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var conversationCreatedAt: Date? = nil
+  var showUserTimestamp: Bool = false
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var onStreamingTextChange: ((String) -> Void)? = nil
@@ -212,6 +215,7 @@ private struct StreamingMessageBubble: View {
       onNewChatWithMessage: onNewChatWithMessage,
       onSpeakFromHere: onSpeakFromHere,
       conversationCreatedAt: conversationCreatedAt,
+      showUserTimestamp: showUserTimestamp,
       showThinking: showThinking,
       isWaitingForResponse: isWaitingForResponse,
       colorScheme: colorScheme
@@ -247,6 +251,7 @@ private struct MessageBubbleContent: View, Equatable {
   var onNewChatWithMessage: (() -> Void)? = nil
   var onSpeakFromHere: (() -> Void)? = nil
   var conversationCreatedAt: Date? = nil
+  var showUserTimestamp: Bool = false
   var showThinking: Bool = false
   var isWaitingForResponse: Bool = false
   var colorScheme: ColorScheme
@@ -277,6 +282,7 @@ private struct MessageBubbleContent: View, Equatable {
       && lhs.searchHighlight == rhs.searchHighlight
       && lhs.isBookmarked == rhs.isBookmarked
       && lhs.conversationCreatedAt == rhs.conversationCreatedAt
+      && lhs.showUserTimestamp == rhs.showUserTimestamp
       && lhs.showThinking == rhs.showThinking
       && lhs.isWaitingForResponse == rhs.isWaitingForResponse
       && lhs.colorScheme == rhs.colorScheme
@@ -437,6 +443,12 @@ private struct MessageBubbleContent: View, Equatable {
             onSave: { saveImageAttachment(attachment) }
           )
         }
+      }
+      if includeMessageExtras && showUserTimestamp {
+        Text(ConversationDatePresentation.timestamp(message.createdAt))
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .trailing)
       }
     }
     .padding(14)
