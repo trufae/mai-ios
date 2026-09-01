@@ -81,6 +81,8 @@ struct ChatView: View {
   @State private var userMessageNavigation = UserMessageNavigationState()
   @State private var userMessageNavigationDestination: UserMessageNavigationDestination?
   @State private var userMessageNavigationHiddenBySwipe = false
+  @State private var userMessageNavigationIndicatorVisible = false
+  @State private var userMessageNavigationIndicatorTask: Task<Void, Never>?
   @StateObject private var exportCoordinator = ConversationExportCoordinator()
   @StateObject private var liveVoiceSession = LiveVoiceSession()
   private let messageListBottomID = "MessageListBottom"
@@ -829,6 +831,9 @@ struct ChatView: View {
           userMessageNavigation = UserMessageNavigationState()
           userMessageNavigationDestination = nil
           userMessageNavigationHiddenBySwipe = false
+          userMessageNavigationIndicatorVisible = false
+          userMessageNavigationIndicatorTask?.cancel()
+          userMessageNavigationIndicatorTask = nil
           userScrolledAfterLastMessage = false
           streamingScrollTask?.cancel()
           streamingScrollTask = nil
@@ -908,6 +913,8 @@ struct ChatView: View {
     let nextDestination = userMessageNavigationTarget(for: .next)
 
     return VStack(spacing: 8) {
+      userMessageNavigationIndicator
+
       userMessageNavigationButton(
         systemImage: "chevron.up",
         label: "Previous user message",
@@ -935,6 +942,58 @@ struct ChatView: View {
     )
   }
 
+  private var userMessageNavigationIndicator: some View {
+    let (current, total) = userMessageNavigationPosition
+    guard total > 0 else { return AnyView(EmptyView()) }
+
+    return AnyView(
+      Text("\(current)/\(total)")
+        .font(.caption2.weight(.semibold))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+          Capsule()
+            .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .opacity(userMessageNavigationIndicatorVisible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: userMessageNavigationIndicatorVisible)
+        .accessibilityHidden(true)
+    )
+  }
+
+  private var userMessageNavigationPosition: (current: Int, total: Int) {
+    let ids = currentUserMessageIDs
+    guard !ids.isEmpty else { return (0, 0) }
+    if userMessageNavigation.isAtBottom {
+      return (ids.count, ids.count)
+    }
+    if let destination = userMessageNavigationDestination,
+      case .message(let id) = destination,
+      let index = ids.firstIndex(of: id) {
+      return (index + 1, ids.count)
+    }
+    if let nextID = userMessageNavigation.nextID,
+      let index = ids.firstIndex(of: nextID) {
+      return (index, ids.count)
+    }
+    return (ids.count, ids.count)
+  }
+
+  private func showUserMessageNavigationIndicator() {
+    userMessageNavigationIndicatorVisible = true
+    userMessageNavigationIndicatorTask?.cancel()
+    userMessageNavigationIndicatorTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(2))
+      guard !Task.isCancelled else { return }
+      withAnimation(.easeInOut(duration: 0.2)) {
+        userMessageNavigationIndicatorVisible = false
+      }
+    }
+  }
+
   @ViewBuilder
   private func userMessageNavigationButton(
     systemImage: String,
@@ -947,6 +1006,7 @@ struct ChatView: View {
       guard let destination = userMessageNavigationTarget(for: direction) else { return }
       userScrolledAfterLastMessage = true
       userMessageNavigationDestination = destination
+      showUserMessageNavigationIndicator()
       withAnimation(.easeOut(duration: 0.16)) {
         switch destination {
         case .message(let id):
