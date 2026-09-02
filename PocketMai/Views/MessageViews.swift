@@ -268,6 +268,7 @@ private struct MessageBubbleContent: View, Equatable {
   var isWaitingForResponse: Bool = false
   var colorScheme: ColorScheme
   @State private var showingTextSelection = false
+  @State private var showingRawTextSelection = false
   @State private var selectedTextAttachment: ChatAttachment?
   @State private var selectedImageAttachment: ChatAttachment?
   @State private var imageSaveNotice: ImageSaveNotice?
@@ -327,7 +328,9 @@ private struct MessageBubbleContent: View, Equatable {
             includeMessageExtras: index == prepared.firstVisiblePartIndex
           )
         case .tool(_, let entry):
-          ToolCallRow(entry: entry)
+          ToolCallRow(
+            entry: entry,
+            onEdit: toolEditAction(for: entry, partID: part.id, in: prepared))
         case .reasoning(_, let section):
           FoldableMetaSection(
             title: "Reasoning",
@@ -389,6 +392,7 @@ private struct MessageBubbleContent: View, Equatable {
   {
     let messageFont = appearance.swiftUIFont(for: message.role)
     let messageFontFamily = appearance.fontFamily(for: message.role)
+    let messageText = actionText ?? visibleText
     let hasIncludedExtras = includeMessageExtras && hasDisplayedAttachmentContent
     let bubbleView = VStack(alignment: .leading, spacing: 8) {
       if includeMessageExtras && showsSenderHeader {
@@ -473,16 +477,24 @@ private struct MessageBubbleContent: View, Equatable {
     let bubbleWithSheet =
       bubbleView
       .sheet(isPresented: $showingTextSelection) {
-        // Editing, viewing and copying an assistant reply work on its answer,
-        // never on the reasoning it went through to get there.
-        let sourceText =
-          message.role == .assistant
-          ? MessageContentFilter.textWithoutReasoning(from: rawText)
-          : rawText
+        // Only the prose of the message: tool calls and reasoning are edited
+        // from their own rows, and are spliced back untouched on save.
         MessageTextSelectionSheet(
           title: onEdit == nil ? message.role.displayName : "",
-          text: sourceText,
-          canFilter: sourceText != visibleText,
+          text: messageText,
+          appearance: appearance,
+          initialFontSize: appearance.fontSize,
+          initialLineSpacing: appearance.lineSpacing,
+          fontFamily: appearance.fontFamily(for: message.role),
+          isEditable: onEdit != nil,
+          onSave: messageEditAction(rawText: rawText))
+      }
+      .sheet(isPresented: $showingRawTextSelection) {
+        // Escape hatch for the whole stored message, tags included.
+        MessageTextSelectionSheet(
+          title: "Raw Message",
+          text: rawText,
+          canFilter: rawText != messageText,
           appearance: appearance,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,
@@ -521,7 +533,7 @@ private struct MessageBubbleContent: View, Equatable {
     if !isLiveAssistantResponse {
       bubbleWithSheet
         .contextMenu {
-          messageContextMenu(visibleText: actionText ?? visibleText)
+          messageContextMenu(visibleText: messageText, rawText: rawText)
         } preview: {
           Color.clear
             .frame(width: 1, height: 1)
@@ -551,6 +563,57 @@ private struct MessageBubbleContent: View, Equatable {
       isStreaming: isStreaming)
   }
 
+  /// Applies an edit made on the bubble text back onto the whole message, keeping
+  /// the tool and reasoning blocks the bubble does not show.
+  private func messageEditAction(rawText: String) -> ((String) -> Void)? {
+    guard let onEdit else { return nil }
+    return { edited in
+      onEdit(MessageContentFilter.replacingVisibleText(in: rawText, with: edited))
+    }
+  }
+
+  /// Writes an edited tool block back into the message, leaving the prose and the
+  /// other tool blocks untouched. Nil while the response streams, when the message
+  /// is not editable, or when the block can no longer be located in the message.
+  private func toolEditAction(
+    for entry: ToolEntry,
+    partID: Int,
+    in prepared: PreparedMessageContent
+  ) -> ((String) -> Void)? {
+    guard let onEdit, !isLiveAssistantResponse, !entry.rawBlock.isEmpty else { return nil }
+    let rawText = displayText
+    // A message may repeat an identical block, so edit the occurrence this row
+    // was built from rather than the first textual match.
+    var occurrence = 0
+    for part in prepared.parts {
+      guard case .tool(let id, let other) = part else { continue }
+      if id == partID { break }
+      if other.rawBlock == entry.rawBlock { occurrence += 1 }
+    }
+    let block = entry.rawBlock
+    guard let range = Self.range(ofOccurrence: occurrence, of: block, in: rawText) else {
+      return nil
+    }
+    return { edited in
+      onEdit(rawText.replacingCharacters(in: range, with: edited))
+    }
+  }
+
+  private static func range(
+    ofOccurrence occurrence: Int,
+    of block: String,
+    in text: String
+  ) -> Range<String.Index>? {
+    var searchStart = text.startIndex
+    var remaining = occurrence
+    while let range = text.range(of: block, range: searchStart..<text.endIndex) {
+      if remaining == 0 { return range }
+      remaining -= 1
+      searchStart = range.upperBound
+    }
+    return nil
+  }
+
   private var generationStatsText: String? {
     guard let stats = message.stats else { return nil }
     var parts: [String] = []
@@ -574,7 +637,7 @@ private struct MessageBubbleContent: View, Equatable {
   }
 
   @ViewBuilder
-  private func messageContextMenu(visibleText: String) -> some View {
+  private func messageContextMenu(visibleText: String, rawText: String) -> some View {
     if let conversationCreatedAt {
       Text(ConversationDatePresentation.startedText(conversationCreatedAt))
         .font(.system(size: 8))
@@ -624,6 +687,15 @@ private struct MessageBubbleContent: View, Equatable {
       UIPasteboard.general.string = visibleText
     } label: {
       Label("Copy Message", systemImage: "doc.on.doc")
+    }
+    if rawText != visibleText {
+      Button {
+        showingRawTextSelection = true
+      } label: {
+        Label(
+          onEdit == nil ? "View Raw Message" : "Edit Raw Message",
+          systemImage: "chevron.left.forwardslash.chevron.right")
+      }
     }
     if message.role == .assistant, onReply != nil {
       Button {
@@ -2605,6 +2677,9 @@ private struct VoiceRecordingPlaybackButton: View {
 
 private struct ToolCallRow: View {
   let entry: ToolEntry
+  /// Applies an edited tool block back onto the message. Nil while the response
+  /// is still streaming, or when the message itself is not editable.
+  var onEdit: ((String) -> Void)? = nil
   @State private var expanded = false
   @State private var previewDocument: ToolPreviewDocument?
 
@@ -2654,7 +2729,9 @@ private struct ToolCallRow: View {
         text: document.text,
         initialFontSize: 13,
         initialLineSpacing: 2,
-        fontFamily: .monospaced)
+        fontFamily: .monospaced,
+        isEditable: document.isEditable,
+        onSave: document.isEditable ? onEdit : nil)
     }
     .background(.thinMaterial.opacity(0.55))
     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2662,6 +2739,57 @@ private struct ToolCallRow: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(Color.accentColor.opacity(0.18), lineWidth: 0.5)
     )
+    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .contextMenu {
+      toolContextMenu()
+    } preview: {
+      Color.clear
+        .frame(width: 1, height: 1)
+        .accessibilityHidden(true)
+    }
+  }
+
+  @ViewBuilder
+  private func toolContextMenu() -> some View {
+    Button {
+      UIPasteboard.general.string = entry.copyText
+    } label: {
+      Label("Copy Tool Call", systemImage: "doc.on.doc")
+    }
+    if !entry.params.isEmpty {
+      Button {
+        UIPasteboard.general.string = entry.params
+      } label: {
+        Label("Copy Input", systemImage: "arrow.down.doc")
+      }
+    }
+    if Self.hasVisibleContent(entry.body) {
+      Button {
+        UIPasteboard.general.string = entry.body
+      } label: {
+        Label("Copy Output", systemImage: "arrow.up.doc")
+      }
+    }
+
+    Divider()
+
+    Button {
+      previewDocument = ToolPreviewDocument(
+        title: entry.name,
+        text: entry.rawBlock,
+        isEditable: onEdit != nil)
+    } label: {
+      Label(
+        onEdit == nil ? "View Tool Call" : "Edit Tool Call",
+        systemImage: onEdit == nil ? "text.cursor" : "square.and.pencil")
+    }
+    if Self.hasVisibleContent(entry.body) {
+      Button {
+        previewDocument = ToolPreviewDocument(title: "Output", text: entry.body)
+      } label: {
+        Label("View Output", systemImage: "doc.text.magnifyingglass")
+      }
+    }
   }
 
   @ViewBuilder
@@ -2775,6 +2903,7 @@ private struct ToolPreviewDocument: Identifiable {
   let id = UUID()
   let title: String
   let text: String
+  var isEditable: Bool = false
 }
 
 struct ToolEntry: Identifiable {
@@ -2783,6 +2912,14 @@ struct ToolEntry: Identifiable {
   let params: String
   let body: String
   let systemImage: String
+  /// Verbatim slice of the message this entry was parsed from, so edits can be
+  /// written back into the message without touching the surrounding text.
+  let rawBlock: String
+
+  var copyText: String {
+    let header = params.isEmpty ? "\(name) tool:" : "\(name) tool (\(params)):"
+    return body.isEmpty ? header : "\(header)\n\(body)"
+  }
 }
 
 enum ToolCallParser {
@@ -2793,24 +2930,33 @@ enum ToolCallParser {
     var entries: [ToolEntry] = []
     var currentHeader: String? = nil
     var currentBody: [String] = []
+    var currentRawLines: [String] = []
 
     func flush() {
       guard let header = currentHeader else { return }
       let body = currentBody.joined(separator: "\n")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      if let entry = makeEntry(index: entries.count, header: header, body: body) {
+      if let entry = makeEntry(
+        index: entries.count,
+        header: header,
+        body: body,
+        rawBlock: currentRawLines.joined(separator: "\n"))
+      {
         entries.append(entry)
       }
       currentHeader = nil
       currentBody.removeAll()
+      currentRawLines.removeAll()
     }
 
     for line in trimmed.components(separatedBy: "\n") {
       if isToolHeader(line) {
         flush()
         currentHeader = line.trimmingCharacters(in: .whitespaces)
+        currentRawLines.append(line)
       } else if currentHeader != nil {
         currentBody.append(line)
+        currentRawLines.append(line)
       }
     }
     flush()
@@ -2829,7 +2975,12 @@ enum ToolCallParser {
     return !name.isEmpty && (suffix.isEmpty || (suffix.hasPrefix("(") && suffix.hasSuffix(")")))
   }
 
-  private static func makeEntry(index: Int, header: String, body: String) -> ToolEntry? {
+  private static func makeEntry(
+    index: Int,
+    header: String,
+    body: String,
+    rawBlock: String
+  ) -> ToolEntry? {
     guard let toolRange = header.range(of: " tool", options: [.caseInsensitive]) else {
       return nil
     }
@@ -2848,7 +2999,8 @@ enum ToolCallParser {
       name: name.isEmpty ? "Tool" : name,
       params: params,
       body: body,
-      systemImage: icon(for: name)
+      systemImage: icon(for: name),
+      rawBlock: rawBlock
     )
   }
 
