@@ -2145,7 +2145,7 @@ private struct PreviousConversationSuggestionButton: View {
       HStack(spacing: 10) {
         Image(systemName: folder.systemImage)
           .font(.body)
-          .foregroundStyle(Color.accentColor)
+          .foregroundStyle(folder.tint?.swatchColor ?? Color.accentColor)
           .frame(width: 22, height: 22)
 
         VStack(alignment: .leading, spacing: 3) {

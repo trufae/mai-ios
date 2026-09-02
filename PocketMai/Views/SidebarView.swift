@@ -1082,7 +1082,7 @@ private struct ConversationFolderManagementView: View {
   @State private var nameDraft = ""
   @State private var pendingDeletion: ConversationFolder?
   @State private var defaultsFolder: ConversationFolder?
-  @State private var iconFolder: ConversationFolder?
+  @State private var appearanceFolder: ConversationFolder?
 
   var body: some View {
     NavigationStack {
@@ -1156,8 +1156,8 @@ private struct ConversationFolderManagementView: View {
       ConversationFolderDefaultsView(folder: folder)
         .environmentObject(store)
     }
-    .sheet(item: $iconFolder) { folder in
-      ConversationFolderIconPickerView(folder: folder)
+    .sheet(item: $appearanceFolder) { folder in
+      ConversationFolderAppearanceView(folder: folder)
         .environmentObject(store)
     }
   }
@@ -1173,7 +1173,12 @@ private struct ConversationFolderManagementView: View {
 
   private func customFolderRow(_ folder: ConversationFolder) -> some View {
     HStack {
-      Label(folder.displayName, systemImage: folder.systemImage)
+      Label {
+        Text(folder.displayName)
+      } icon: {
+        Image(systemName: folder.systemImage)
+          .foregroundStyle(folder.tint?.swatchColor ?? Color.primary)
+      }
       Spacer()
       folderActionsMenu(for: folder, allowsRenameDelete: true)
     }
@@ -1196,9 +1201,9 @@ private struct ConversationFolderManagementView: View {
           Label("Rename", systemImage: "pencil")
         }
         Button {
-          iconFolder = folder
+          appearanceFolder = folder
         } label: {
-          Label("Change Icon...", systemImage: "square.grid.2x2")
+          Label("Icon & Color...", systemImage: "square.grid.2x2")
         }
         Button(role: .destructive) {
           pendingDeletion = folder
@@ -1273,7 +1278,7 @@ private struct ConversationFolderNameEdit: Identifiable {
   }
 }
 
-private struct ConversationFolderIconPickerView: View {
+private struct ConversationFolderAppearanceView: View {
   @EnvironmentObject private var store: AppStore
   @Environment(\.dismiss) private var dismiss
   let folder: ConversationFolder
@@ -1281,14 +1286,32 @@ private struct ConversationFolderIconPickerView: View {
 
   private let columns = [GridItem(.adaptive(minimum: 56), spacing: 12)]
 
+  private var storedFolder: ConversationFolder? {
+    store.customConversationFolders.first { $0.id == folder.id }
+  }
+
   private var selectedIcon: String {
-    store.customConversationFolders.first { $0.id == folder.id }?.icon ?? "folder"
+    storedFolder?.icon ?? "folder"
+  }
+
+  private var selectedTint: ConversationFolderTint? {
+    storedFolder?.tint
+  }
+
+  private var tintColor: Color {
+    selectedTint?.color ?? .accentColor
+  }
+
+  private var isSearching: Bool {
+    !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private var filteredGroups: [ConversationFolderIconCatalog.Group] {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !query.isEmpty else { return ConversationFolderIconCatalog.groups }
-    return ConversationFolderIconCatalog.groups.compactMap { group in
+    return ConversationFolderIconCatalog.groups.compactMap {
+      group -> ConversationFolderIconCatalog.Group? in
+      if group.title.lowercased().contains(query) { return group }
       let matches = group.symbols.filter { $0.contains(query) }
       return matches.isEmpty ? nil : .init(title: group.title, symbols: matches)
     }
@@ -1298,11 +1321,13 @@ private struct ConversationFolderIconPickerView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 24) {
+          if !isSearching {
+            preview
+            tintSection
+          }
           ForEach(filteredGroups) { group in
             VStack(alignment: .leading, spacing: 12) {
-              Text(group.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+              sectionTitle(group.title)
               LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(group.symbols, id: \.self) { symbol in
                   iconCell(symbol)
@@ -1319,7 +1344,7 @@ private struct ConversationFolderIconPickerView: View {
         }
         .padding()
       }
-      .navigationTitle("Folder Icon")
+      .navigationTitle("Folder Icon & Color")
       .navigationBarTitleDisplayMode(.inline)
       .searchable(text: $searchText, prompt: "Search icons")
       .toolbar {
@@ -1330,11 +1355,101 @@ private struct ConversationFolderIconPickerView: View {
     }
   }
 
+  private var preview: some View {
+    HStack(spacing: 12) {
+      Image(systemName: selectedIcon)
+        .font(.title2)
+        .foregroundStyle(tintColor)
+        .frame(width: 44, height: 44)
+        .background(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(tintColor.opacity(0.16))
+        )
+      VStack(alignment: .leading, spacing: 2) {
+        Text(folder.displayName)
+          .font(.headline)
+        Text(selectedTint?.displayName ?? "App accent color")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var tintSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      sectionTitle("Accent Color")
+      LazyVGrid(columns: columns, spacing: 12) {
+        tintCell(nil)
+        ForEach(ConversationFolderTint.presetOptions) { tint in
+          tintCell(tint)
+        }
+      }
+      ColorPicker(
+        "Custom Color",
+        selection: customColorBinding,
+        supportsOpacity: false
+      )
+      .font(.subheadline)
+      Text("Overrides the app accent color while this folder is selected.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private func sectionTitle(_ title: String) -> some View {
+    Text(title)
+      .font(.subheadline.weight(.semibold))
+      .foregroundStyle(.secondary)
+  }
+
+  private var customColorBinding: Binding<Color> {
+    Binding {
+      selectedTint?.color ?? .accentColor
+    } set: { newColor in
+      guard let hex = newColor.folderTintHex else { return }
+      store.setConversationFolderTint(id: folder.id, to: .custom(hex))
+    }
+  }
+
+  private func tintCell(_ tint: ConversationFolderTint?) -> some View {
+    let isSelected = tint == selectedTint
+    let swatch = tint?.swatchColor ?? .accentColor
+    return Button {
+      store.setConversationFolderTint(id: folder.id, to: tint)
+    } label: {
+      ZStack {
+        Circle()
+          .fill(swatch)
+          .frame(width: 30, height: 30)
+        if tint == nil {
+          Image(systemName: "a.circle.fill")
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(.white)
+        }
+        if isSelected {
+          Circle()
+            .strokeBorder(Color.primary.opacity(0.55), lineWidth: 2)
+            .frame(width: 40, height: 40)
+        }
+      }
+      .frame(maxWidth: .infinity)
+      .frame(height: 52)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(Color.secondary.opacity(0.1))
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(tint?.displayName ?? "App accent color")
+    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+  }
+
   private func iconCell(_ symbol: String) -> some View {
     let isSelected = symbol == selectedIcon
     return Button {
       store.setConversationFolderIcon(id: folder.id, to: symbol)
-      dismiss()
     } label: {
       Image(systemName: symbol)
         .font(.title2)
@@ -1342,13 +1457,13 @@ private struct ConversationFolderIconPickerView: View {
         .frame(height: 52)
         .background(
           RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1))
+            .fill(isSelected ? tintColor.opacity(0.18) : Color.secondary.opacity(0.1))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+            .strokeBorder(isSelected ? tintColor : .clear, lineWidth: 2)
         )
-        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+        .foregroundStyle(isSelected ? tintColor : Color.primary)
     }
     .buttonStyle(.plain)
     .accessibilityLabel(symbol)
@@ -1367,8 +1482,9 @@ private enum ConversationFolderIconCatalog {
     Group(
       title: "Folders",
       symbols: [
-        "folder", "folder.fill", "tray", "tray.full", "archivebox", "shippingbox",
-        "internaldrive", "externaldrive", "doc", "doc.text", "doc.on.doc", "books.vertical",
+        "folder", "folder.fill", "folder.badge.gearshape", "tray", "tray.full", "tray.2",
+        "archivebox", "shippingbox", "internaldrive", "externaldrive", "doc", "doc.text",
+        "doc.on.doc", "doc.richtext", "books.vertical",
       ]),
     Group(
       title: "Symbols",
@@ -1376,6 +1492,15 @@ private enum ConversationFolderIconCatalog {
         "star", "star.fill", "heart", "heart.fill", "bookmark", "bookmark.fill",
         "flag", "flag.fill", "tag", "tag.fill", "pin", "pin.fill", "bell", "bolt.fill",
         "sparkles", "crown", "trophy", "gift", "lightbulb", "flame.fill",
+        "exclamationmark.triangle", "questionmark.circle", "checkmark.circle", "xmark.circle",
+        "plus.circle", "eye", "hand.thumbsup", "infinity", "asterisk", "number",
+      ]),
+    Group(
+      title: "Shapes",
+      symbols: [
+        "circle.fill", "square.fill", "triangle.fill", "diamond.fill", "hexagon.fill",
+        "octagon.fill", "seal.fill", "rhombus.fill", "capsule.fill", "shield.fill",
+        "square.grid.2x2", "square.stack", "circle.grid.3x3", "app.fill", "burst.fill",
       ]),
     Group(
       title: "Work",
@@ -1383,20 +1508,68 @@ private enum ConversationFolderIconCatalog {
         "briefcase", "briefcase.fill", "case", "building.2", "building.columns",
         "graduationcap", "books.vertical.fill", "pencil", "paperclip", "calendar",
         "clock", "checkmark.seal", "list.bullet.clipboard", "chart.bar", "chart.pie",
+        "chart.line.uptrend.xyaxis", "person.badge.clock", "signature", "printer",
+        "text.badge.checkmark",
+      ]),
+    Group(
+      title: "Time",
+      symbols: [
+        "clock.fill", "alarm", "timer", "stopwatch", "hourglass", "calendar.badge.clock",
+        "calendar.badge.plus", "deskclock", "moon.zzz", "sunrise", "sunset", "gauge.with.needle",
+      ]),
+    Group(
+      title: "Writing",
+      symbols: [
+        "note.text", "square.and.pencil", "pencil.and.outline", "highlighter", "text.quote",
+        "text.alignleft", "list.bullet", "list.number", "checklist", "book", "book.closed",
+        "newspaper", "doc.plaintext", "character.book.closed", "textformat",
       ]),
     Group(
       title: "Tech",
       symbols: [
         "desktopcomputer", "laptopcomputer", "iphone", "ipad", "keyboard", "terminal",
         "cpu", "memorychip", "server.rack", "cloud", "wifi", "antenna.radiowaves.left.and.right",
-        "gearshape", "gearshape.2", "hammer", "wrench.and.screwdriver",
+        "gearshape", "gearshape.2", "hammer", "wrench.and.screwdriver", "network",
+        "bolt.horizontal", "battery.100", "display", "printer.fill",
+        "externaldrive.connected.to.line.below",
+      ]),
+    Group(
+      title: "Development",
+      symbols: [
+        "chevron.left.forwardslash.chevron.right", "curlybraces", "curlybraces.square",
+        "terminal.fill", "ladybug", "ladybug.fill", "arrow.triangle.branch",
+        "arrow.triangle.pull", "arrow.triangle.merge", "point.3.connected.trianglepath.dotted",
+        "square.stack.3d.up", "shippingbox.fill", "hammer.fill", "wrench.adjustable",
+        "doc.text.magnifyingglass", "app.badge", "cube", "cube.transparent",
+      ]),
+    Group(
+      title: "Security",
+      symbols: [
+        "lock", "lock.fill", "lock.shield", "lock.open", "key", "key.fill", "shield",
+        "shield.lefthalf.filled", "checkmark.shield", "exclamationmark.shield", "eye.slash",
+        "faceid", "touchid", "hand.raised", "person.badge.key",
       ]),
     Group(
       title: "Communication",
       symbols: [
         "message", "bubble.left", "bubble.left.and.bubble.right", "envelope", "envelope.fill",
         "phone", "video", "mic", "waveform", "person", "person.2", "person.crop.circle",
-        "quote.bubble", "text.bubble",
+        "quote.bubble", "text.bubble", "at", "paperplane", "megaphone", "person.3",
+        "bell.badge", "hand.wave",
+      ]),
+    Group(
+      title: "Media",
+      symbols: [
+        "play.rectangle", "film", "tv", "headphones", "music.note.list", "guitars",
+        "theatermasks", "ticket", "gamecontroller.fill", "dice", "puzzlepiece", "radio",
+        "speaker.wave.2", "record.circle", "photo.on.rectangle.angled", "video.fill",
+      ]),
+    Group(
+      title: "Art",
+      symbols: [
+        "paintpalette", "paintbrush", "paintbrush.pointed", "pencil.tip", "scissors",
+        "camera.fill", "photo.stack", "wand.and.stars", "eyedropper", "square.on.circle",
+        "lasso", "scribble.variable", "swatchpalette",
       ]),
     Group(
       title: "Life",
@@ -1406,10 +1579,61 @@ private enum ConversationFolderIconCatalog {
         "gamecontroller", "music.note", "paintpalette", "camera", "photo",
       ]),
     Group(
+      title: "Home",
+      symbols: [
+        "house.circle", "sofa", "bed.double", "lamp.desk", "washer", "refrigerator",
+        "shower", "sink", "key.horizontal", "lightbulb.max", "powerplug", "fan",
+        "figure.2.and.child.holdinghands", "stroller", "teddybear", "dog", "cat",
+      ]),
+    Group(
+      title: "Food",
+      symbols: [
+        "fork.knife.circle", "cup.and.saucer.fill", "mug", "wineglass", "birthday.cake",
+        "carrot", "takeoutbag.and.cup.and.straw", "frying.pan", "popcorn", "waterbottle",
+        "waterbottle.fill", "basket",
+      ]),
+    Group(
+      title: "Health",
+      symbols: [
+        "heart.text.square", "cross.case", "pills", "bandage", "stethoscope", "brain",
+        "brain.head.profile", "lungs", "waveform.path.ecg", "bed.double.fill", "eyes",
+        "facemask", "syringe",
+      ]),
+    Group(
+      title: "Sports",
+      symbols: [
+        "figure.walk", "figure.run", "figure.hiking", "figure.pool.swim", "figure.yoga",
+        "dumbbell", "sportscourt", "soccerball", "basketball", "tennis.racket",
+        "flag.checkered", "trophy.fill", "medal", "bicycle.circle",
+      ]),
+    Group(
+      title: "Travel",
+      symbols: [
+        "airplane.departure", "suitcase", "beach.umbrella", "map.fill", "signpost.right",
+        "mappin.and.ellipse", "globe.europe.africa", "tram", "bus", "ferry", "sailboat",
+        "fuelpump", "tent", "binoculars", "camera.macro", "car.2",
+      ]),
+    Group(
+      title: "Finance",
+      symbols: [
+        "dollarsign.circle", "eurosign.circle", "bitcoinsign.circle", "creditcard.fill",
+        "banknote", "wallet.pass", "giftcard", "chart.bar.xaxis", "percent",
+        "building.columns.fill", "cart.fill", "arrow.left.arrow.right",
+      ]),
+    Group(
+      title: "Science",
+      symbols: [
+        "atom", "function", "sum", "testtube.2", "microbe", "compass.drawing", "ruler",
+        "backpack", "graduationcap.fill", "telescope", "globe.desk", "text.book.closed",
+        "waveform.path", "gyroscope",
+      ]),
+    Group(
       title: "Nature",
       symbols: [
         "sun.max", "moon", "moon.stars", "cloud.rain", "snowflake", "drop", "flame",
         "tree", "mountain.2", "tortoise", "hare", "ant", "fish", "bird",
+        "cloud.sun", "cloud.bolt.rain", "cloud.fog", "wind", "tornado", "rainbow",
+        "thermometer.sun", "humidity", "leaf.fill", "tree.fill",
       ]),
   ]
 }
