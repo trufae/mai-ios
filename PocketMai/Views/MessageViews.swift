@@ -473,10 +473,16 @@ private struct MessageBubbleContent: View, Equatable {
     let bubbleWithSheet =
       bubbleView
       .sheet(isPresented: $showingTextSelection) {
+        // Editing, viewing and copying an assistant reply work on its answer,
+        // never on the reasoning it went through to get there.
+        let sourceText =
+          message.role == .assistant
+          ? MessageContentFilter.textWithoutReasoning(from: rawText)
+          : rawText
         MessageTextSelectionSheet(
           title: onEdit == nil ? message.role.displayName : "",
-          text: rawText,
-          canFilter: rawText != visibleText,
+          text: sourceText,
+          canFilter: sourceText != visibleText,
           appearance: appearance,
           initialFontSize: appearance.fontSize,
           initialLineSpacing: appearance.lineSpacing,

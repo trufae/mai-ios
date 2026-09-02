@@ -54,6 +54,14 @@ enum MessageContentFilter {
     return scan(text, hiding: ["think"], normalizeVisibleText: false).visibleText
   }
 
+  /// Reasoning-free text for the long-press actions: drops the think blocks and
+  /// tidies up the blank lines they leave behind, keeping everything else intact.
+  static func textWithoutReasoning(from text: String) -> String {
+    let stripped = removingReasoningSections(from: text)
+    guard stripped != text else { return text }
+    return collapseBlankLines(stripped.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
   static func conversationContextText(
     from text: String,
     includeReasoning: Bool = false
