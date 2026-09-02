@@ -511,6 +511,11 @@ struct SettingsView: View {
     Toggle(
       "Include reasoning content",
       isOn: settingsBinding(\.includeReasoningContentInContext))
+    Text(
+      "Send the think blocks of previous replies back to the model. Disabled by default, so reasoning is trimmed away."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
     Picker("MLX KV Cache", selection: settingsBinding(\.mlxMaxKVSize)) {
       ForEach(MLXKVCacheSize.allCases) { size in
         Text(size.displayName).tag(size)
