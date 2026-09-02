@@ -52,6 +52,48 @@ final class ReasoningResponseFilteringTests: XCTestCase {
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "visible request")
   }
 
+  func testEditableTextDropsReasoningAndTidiesBlankLines() {
+    let response = """
+      <think>
+      Internal notes.
+      </think>
+
+      Final answer.
+      """
+
+    XCTAssertEqual(MessageContentFilter.textWithoutReasoning(from: response), "Final answer.")
+  }
+
+  func testEditableTextKeepsEverythingButReasoning() {
+    let response = """
+      <tool_run>
+      tool(search): done
+      </tool_run>
+
+      <think>
+      Internal notes.
+      </think>
+
+      Final answer.
+      """
+
+    XCTAssertEqual(
+      MessageContentFilter.textWithoutReasoning(from: response),
+      """
+      <tool_run>
+      tool(search): done
+      </tool_run>
+
+      Final answer.
+      """)
+  }
+
+  func testEditableTextLeavesReasoningFreeMessagesUntouched() {
+    let response = "  Final answer.\n"
+
+    XCTAssertEqual(MessageContentFilter.textWithoutReasoning(from: response), response)
+  }
+
   func testSpuriousToolCallFilterIgnoresMarkersInsideReasoning() {
     let response = """
       <think>
