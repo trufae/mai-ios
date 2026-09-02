@@ -74,6 +74,59 @@ enum MessageContentFilter {
     return String(trimmed.prefix(maxLength))
   }
 
+  /// Rewrites `text` so its user-facing prose becomes `replacement` while every
+  /// hidden section (tool runs, reasoning, transcripts) is kept verbatim. Lets the
+  /// message editor work on what the bubble shows without dropping the tool data
+  /// that the same message carries for the model.
+  static func replacingVisibleText(in text: String, with replacement: String) -> String {
+    let spans = hiddenSpans(in: text, hiding: hiddenTagSet)
+    guard !spans.isEmpty else { return replacement }
+
+    let trimmedReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+    var pieces: [String] = []
+    var insertedReplacement = false
+    var cursor = text.startIndex
+    for span in spans {
+      if !insertedReplacement,
+        !text[cursor..<span.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        if !trimmedReplacement.isEmpty { pieces.append(trimmedReplacement) }
+        insertedReplacement = true
+      }
+      pieces.append(String(text[span]))
+      cursor = span.upperBound
+    }
+    if !insertedReplacement, !trimmedReplacement.isEmpty {
+      pieces.append(trimmedReplacement)
+    }
+    return pieces.joined(separator: "\n\n")
+  }
+
+  /// Ranges of the hidden blocks, tags included, in the order they appear.
+  private static func hiddenSpans(
+    in text: String,
+    hiding tags: Set<String>
+  ) -> [Range<String.Index>] {
+    guard text.contains("<") else { return [] }
+    var spans: [Range<String.Index>] = []
+    var cursor = text.startIndex
+    while let opening = nextOpening(in: text, from: cursor, hiding: tags) {
+      if opening.isSelfClosing {
+        spans.append(opening.range)
+        cursor = opening.range.upperBound
+        continue
+      }
+      if let closing = matchingClose(for: opening, in: text) {
+        spans.append(opening.range.lowerBound..<closing.range.upperBound)
+        cursor = closing.range.upperBound
+      } else {
+        spans.append(opening.range.lowerBound..<text.endIndex)
+        cursor = text.endIndex
+      }
+    }
+    return spans
+  }
+
   static func markdownPlainText(from text: String) -> String {
     text.components(separatedBy: .newlines).map { line in
       guard let attributed = try? AttributedString(markdown: line) else { return line }
