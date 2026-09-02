@@ -154,8 +154,8 @@ struct ContentView: View {
         store.drainPendingSharedLaunchCommand()
       }
     }
-    .tint(store.settings.appearance.tintColor)
-    .accentColor(store.settings.appearance.tintColor)
+    .tint(store.effectiveTintColor)
+    .accentColor(store.effectiveTintColor)
   }
 
   private func selectConversationFromSidebar(_ id: UUID) {

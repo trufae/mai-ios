@@ -693,6 +693,16 @@ final class AppStore: ObservableObject {
     saveSettings()
   }
 
+  func setConversationFolderTint(id: String, to tint: ConversationFolderTint?) {
+    guard let index = settings.conversationFolders.firstIndex(where: { $0.id == id }) else {
+      errorMessage = "This folder no longer exists."
+      return
+    }
+    guard settings.conversationFolders[index].tint != tint else { return }
+    settings.conversationFolders[index].tint = tint
+    saveSettings()
+  }
+
   func deleteConversationFolder(id: String) async {
     guard !ConversationFolder.reservedIDs.contains(id) else { return }
     guard settings.conversationFolders.contains(where: { $0.id == id }) else {

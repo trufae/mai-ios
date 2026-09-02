@@ -223,6 +223,53 @@ extension AppearanceTint {
   }
 }
 
+extension ConversationFolderTint {
+  var color: Color? {
+    switch self {
+    case .preset(let tint): tint.color
+    case .custom(let hex): Color(folderTintHex: hex)
+    }
+  }
+
+  var swatchColor: Color {
+    color ?? .accentColor
+  }
+}
+
+extension Color {
+  init?(folderTintHex hex: String) {
+    guard let normalized = ConversationFolderTint.normalizedHex(hex),
+      let value = UInt64(normalized.dropFirst(), radix: 16)
+    else {
+      return nil
+    }
+    self.init(
+      red: Double((value >> 16) & 0xFF) / 255,
+      green: Double((value >> 8) & 0xFF) / 255,
+      blue: Double(value & 0xFF) / 255)
+  }
+
+  /// `#RRGGBB` for the resolved color, so a picked color can be persisted.
+  var folderTintHex: String? {
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 0
+    guard UIColor(self).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+      return nil
+    }
+    let channel = { (value: CGFloat) in Int((min(max(value, 0), 1) * 255).rounded()) }
+    return String(format: "#%02X%02X%02X", channel(red), channel(green), channel(blue))
+  }
+}
+
+extension AppStore {
+  /// The accent color to paint the app with: the selected folder wins over the app tint.
+  var effectiveTintColor: Color? {
+    selectedConversationFolder.tint?.color ?? settings.appearance.tintColor
+  }
+}
+
 extension AppearanceTheme {
   var colorScheme: ColorScheme? {
     switch self {

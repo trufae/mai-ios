@@ -192,6 +192,87 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
+/// Accent color a conversation folder can use instead of the app tint.
+/// A folder without a tint keeps whatever accent the app is configured with.
+enum ConversationFolderTint: Codable, Equatable, Hashable, Identifiable, Sendable {
+  case preset(AppearanceTint)
+  case custom(String)
+
+  static let customPrefix = "custom:"
+
+  static let presetOptions: [ConversationFolderTint] =
+    AppearanceTint.allCases.filter { $0 != .system }.map { ConversationFolderTint.preset($0) }
+
+  var id: String { rawIdentifier }
+
+  var rawIdentifier: String {
+    switch self {
+    case .preset(let tint): tint.rawValue
+    case .custom(let hex): "\(Self.customPrefix)\(hex)"
+    }
+  }
+
+  var displayName: String {
+    switch self {
+    case .preset(let tint): tint.displayName
+    case .custom(let hex): hex
+    }
+  }
+
+  var customHex: String? {
+    switch self {
+    case .preset: nil
+    case .custom(let hex): hex
+    }
+  }
+
+  init?(rawIdentifier: String) {
+    let trimmed = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.hasPrefix(Self.customPrefix) {
+      guard let hex = Self.normalizedHex(String(trimmed.dropFirst(Self.customPrefix.count)))
+      else {
+        return nil
+      }
+      self = .custom(hex)
+      return
+    }
+    guard let tint = AppearanceTint(rawValue: trimmed.lowercased()), tint != .system else {
+      return nil
+    }
+    self = .preset(tint)
+  }
+
+  /// Accepts `#RGB`, `RGB`, `#RRGGBB` and `RRGGBB`, always answering `#RRGGBB`.
+  static func normalizedHex(_ raw: String) -> String? {
+    var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if value.hasPrefix("#") {
+      value.removeFirst()
+    }
+    if value.count == 3 {
+      value = value.map { "\($0)\($0)" }.joined()
+    }
+    guard value.count == 6, value.allSatisfy({ $0.isHexDigit }) else { return nil }
+    return "#\(value)"
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    let value = try container.decode(String.self)
+    guard let tint = ConversationFolderTint(rawIdentifier: value) else {
+      throw DecodingError.dataCorruptedError(
+        in: container,
+        debugDescription: "Unsupported folder tint \"\(value)\".")
+    }
+    self = tint
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawIdentifier)
+  }
+}
+
 enum AppearanceTheme: String, Codable, CaseIterable, Identifiable, Sendable {
   case system
   case light
@@ -1302,18 +1383,31 @@ struct ConversationFolder: Identifiable, Codable, Equatable, Sendable {
   var id: String
   var name: String
   var icon: String?
+  var tint: ConversationFolderTint?
   var createdAt: Date
 
   init(
     id: String = UUID().uuidString,
     name: String,
     icon: String? = nil,
+    tint: ConversationFolderTint? = nil,
     createdAt: Date = Date()
   ) {
     self.id = Self.normalizedID(id)
     self.name = name
     self.icon = Self.normalizedIcon(icon)
+    self.tint = tint
     self.createdAt = createdAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = Self.normalizedID((try? c.decode(String.self, forKey: .id)) ?? "")
+    name = (try? c.decode(String.self, forKey: .name)) ?? ""
+    let decodedIcon = try? c.decode(String.self, forKey: .icon)
+    icon = Self.normalizedIcon(decodedIcon)
+    tint = try? c.decode(ConversationFolderTint.self, forKey: .tint)
+    createdAt = (try? c.decode(Date.self, forKey: .createdAt)) ?? Date()
   }
 
   var displayName: String {
@@ -3284,6 +3378,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         id: id,
         name: folder.name,
         icon: folder.icon,
+        tint: folder.tint,
         createdAt: folder.createdAt)
     }
   }
