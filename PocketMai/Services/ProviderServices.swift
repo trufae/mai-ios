@@ -572,7 +572,8 @@ enum PromptComposer {
           includeAssistantResponses: settings.includeAssistantResponsesInContext,
           echoReasoningContent: echoReasoningContent,
           includeImageAttachments: includeImageAttachments
-            && message.id == latestUserMessageID)
+            && message.id == latestUserMessageID,
+          includeReasoning: settings.includeReasoningContentInContext)
       }
     )
     messages.append(contentsOf: nativeContinuationMessages)
@@ -614,10 +615,15 @@ enum PromptComposer {
     from message: ChatMessage,
     includeAssistantResponses: Bool,
     echoReasoningContent: Bool,
-    includeImageAttachments: Bool = false
+    includeImageAttachments: Bool = false,
+    includeReasoning: Bool = false
   ) -> [OpenAIMessage] {
-    let content = promptText(from: message, includeImageFallbacks: !includeImageAttachments)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let content = promptText(
+      from: message,
+      includeImageFallbacks: !includeImageAttachments,
+      includeReasoning: includeReasoning
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !content.isEmpty || !message.attachments.isEmpty else { return [] }
 
     switch message.role {
@@ -633,7 +639,8 @@ enum PromptComposer {
         from: message.text,
         safeContent: content,
         includeAssistantResponses: includeAssistantResponses,
-        echoReasoningContent: echoReasoningContent)
+        echoReasoningContent: echoReasoningContent,
+        includeReasoning: includeReasoning)
     case .system:
       return [OpenAIMessage(role: "system", content: content)]
     case .tool:
@@ -646,7 +653,7 @@ enum PromptComposer {
   static func promptText(
     from message: ChatMessage,
     includeImageFallbacks: Bool = true,
-    includeReasoning: Bool = true
+    includeReasoning: Bool = false
   ) -> String {
     let visible = MessageContentFilter.conversationContextText(
       from: message.text,
@@ -717,7 +724,8 @@ enum PromptComposer {
     from rawText: String,
     safeContent: String,
     includeAssistantResponses: Bool,
-    echoReasoningContent: Bool
+    echoReasoningContent: Bool,
+    includeReasoning: Bool
   ) -> [OpenAIMessage] {
     let rendered = MessageContentFilter.render(safeContent)
     var messages = rendered.hiddenSections
@@ -727,12 +735,18 @@ enum PromptComposer {
         OpenAIMessage(role: "user", content: wrappedToolRunContent(section.content))
       }
 
+    guard includeAssistantResponses else { return messages }
+
+    // Endpoints taking reasoning in their own field get it there, everybody else
+    // gets it inlined, and only when the user opted reasoning into the context.
     let visible = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
-    if includeAssistantResponses, !visible.isEmpty {
+    let reasoning = includeReasoning && !echoReasoningContent ? reasoningText(in: rendered) : ""
+    let content = assistantContextContent(visible: visible, reasoning: reasoning)
+    if !content.isEmpty {
       messages.append(
         OpenAIMessage(
           role: "assistant",
-          content: visible,
+          content: content,
           reasoningContent: reasoningContent(
             from: rawText,
             echoReasoningContent: echoReasoningContent)))
@@ -745,12 +759,22 @@ enum PromptComposer {
     echoReasoningContent: Bool
   ) -> String? {
     guard echoReasoningContent else { return nil }
-    let content = MessageContentFilter.render(text).hiddenSections
+    let content = reasoningText(in: MessageContentFilter.render(text))
+    return content.isEmpty ? nil : content
+  }
+
+  static func reasoningText(in rendered: RenderedMessageContent) -> String {
+    rendered.hiddenSections
       .filter { $0.tag.caseInsensitiveCompare("think") == .orderedSame }
       .map(\.content)
       .joined(separator: "\n\n")
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    return content.isEmpty ? nil : content
+  }
+
+  static func assistantContextContent(visible: String, reasoning: String) -> String {
+    if reasoning.isEmpty { return visible }
+    if visible.isEmpty { return "<think>\n\(reasoning)\n</think>" }
+    return "<think>\n\(reasoning)\n</think>\n\n\(visible)"
   }
 
   private static func isCompletedToolRunContent(_ content: String) -> Bool {
@@ -852,22 +876,8 @@ enum PromptComposer {
     guard includeAssistantResponses else { return entries }
 
     let visible = rendered.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
-    let reasoning =
-      includeReasoning
-      ? rendered.hiddenSections
-        .filter { $0.tag.caseInsensitiveCompare("think") == .orderedSame }
-        .map(\.content)
-        .joined(separator: "\n\n")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      : ""
-    let assistantContent: String
-    if reasoning.isEmpty {
-      assistantContent = visible
-    } else if visible.isEmpty {
-      assistantContent = "<think>\n\(reasoning)\n</think>"
-    } else {
-      assistantContent = "<think>\n\(reasoning)\n</think>\n\n\(visible)"
-    }
+    let reasoning = includeReasoning ? reasoningText(in: rendered) : ""
+    let assistantContent = assistantContextContent(visible: visible, reasoning: reasoning)
     if !assistantContent.isEmpty {
       entries.append(TranscriptEntry(displayName: "Assistant", content: assistantContent))
     }

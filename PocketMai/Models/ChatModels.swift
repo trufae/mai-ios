@@ -3289,7 +3289,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var useToolProxy: Bool = false
   var contextWindowMode: ContextWindowMode = .full
   var includeAssistantResponsesInContext: Bool = true
-  var includeReasoningContentInContext: Bool = true
+  var includeReasoningContentInContext: Bool = false
   var followUps: FollowUpSettings = .defaults
   var appearance: AppearanceSettings = .defaults
   var conversation: ConversationSettings = .defaults
@@ -3543,7 +3543,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     includeAssistantResponsesInContext =
       (try? c.decode(Bool.self, forKey: .includeAssistantResponsesInContext)) ?? true
     includeReasoningContentInContext =
-      (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? true
+      (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? false
     followUps =
       (try? c.decode(FollowUpSettings.self, forKey: .followUps)) ?? .defaults
     appearance =
