@@ -615,12 +615,9 @@ enum AssistantToolLoop {
       store: store)
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
-    let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
     let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
     let decision = AgentToolLoopPolicy.evaluate(
       response: response,
-      actionableResponse: actionableResponse,
-      visibleText: MessageContentFilter.render(actionableResponse).visibleText,
       tools: hostDefinitions,
       mode: requestState.activeMode,
       completedToolRuns: completedToolRuns,
@@ -667,12 +664,9 @@ enum AssistantToolLoop {
       mcpStatuses: mcpStatuses)
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
-    let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
     let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
     let decision = AgentToolLoopPolicy.evaluate(
       response: response,
-      actionableResponse: actionableResponse,
-      visibleText: MessageContentFilter.render(actionableResponse).visibleText,
       tools: hostDefinitions,
       mode: requestState.activeMode,
       completedToolRuns: completedToolRuns,
