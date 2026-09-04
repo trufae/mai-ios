@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 
 enum ChatRole: String, Codable, CaseIterable, Identifiable, Sendable {
   case user
@@ -2577,58 +2578,8 @@ struct ToolFile: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
-struct MCPToolDescriptor: Identifiable, Codable, Equatable, Sendable {
-  var name: String
-  var description: String
-  var parametersJSON: String
-
-  var id: String { name }
-
-  init(name: String, description: String = "", parametersJSON: String = "") {
-    self.name = name
-    self.description = description
-    self.parametersJSON = parametersJSON
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case name, description, parametersJSON
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    name = try c.decode(String.self, forKey: .name)
-    description = (try? c.decode(String.self, forKey: .description)) ?? ""
-    parametersJSON = (try? c.decode(String.self, forKey: .parametersJSON)) ?? ""
-  }
-}
-
-struct MCPResourceDescriptor: Identifiable, Codable, Equatable, Sendable {
-  var uri: String
-  var name: String
-  var description: String
-  var mimeType: String
-
-  var id: String { uri }
-
-  init(uri: String, name: String = "", description: String = "", mimeType: String = "") {
-    self.uri = uri
-    self.name = name
-    self.description = description
-    self.mimeType = mimeType
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case uri, name, description, mimeType
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    uri = try c.decode(String.self, forKey: .uri)
-    name = (try? c.decode(String.self, forKey: .name)) ?? ""
-    description = (try? c.decode(String.self, forKey: .description)) ?? ""
-    mimeType = (try? c.decode(String.self, forKey: .mimeType)) ?? ""
-  }
-}
+typealias MCPToolDescriptor = ToolDefinition
+typealias MCPResourceDescriptor = MaiCore.MCPResourceDescriptor
 
 enum MCPToolSelection {
   static func key(serverID: UUID, toolName: String) -> String {

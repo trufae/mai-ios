@@ -19,19 +19,8 @@ enum MCPHTTPClient {
     let catalog = try await MCPStreamableHTTPTransport.fetchCatalog(
       server: try configuration(for: server, timeout: timeout))
     return Catalog(
-      tools: catalog.tools.map {
-        MCPToolDescriptor(
-          name: $0.name,
-          description: $0.description,
-          parametersJSON: $0.inputSchema.compactJSONString)
-      },
-      resources: catalog.resources.map {
-        MCPResourceDescriptor(
-          uri: $0.uri,
-          name: $0.name,
-          description: $0.description,
-          mimeType: $0.mimeType ?? "")
-      },
+      tools: catalog.tools,
+      resources: catalog.resources,
       transport: .streamableHTTP,
       serverName: catalog.serverName,
       protocolVersion: catalog.protocolVersion)
