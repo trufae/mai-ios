@@ -307,13 +307,13 @@ enum WebXDCTool {
       if arguments["base64"]?.boolValue == true {
         guard
           let decoded = Data(
-            base64Encoded: content.stringValue, options: [.ignoreUnknownCharacters])
+            base64Encoded: content.coercedStringValue, options: [.ignoreUnknownCharacters])
         else {
           return "Error: content is not valid base64."
         }
         data = decoded
       } else {
-        data = Data(content.stringValue.utf8)
+        data = Data(content.coercedStringValue.utf8)
       }
       do {
         let updated = try WebXDCLibrary.writeFile(app, path: path, data: data)

@@ -46,7 +46,7 @@ enum MCPHTTPClient {
     let output = try await MCPStreamableHTTPTransport.callTool(
       server: try configuration(for: server, timeout: timeout),
       name: name,
-      arguments: .object(arguments.mapValues(jsonValue)))
+      arguments: .object(arguments))
     let text = render(output.content, empty: "(no output)")
     return output.isError ? "Error: \(text)" : text
   }
@@ -92,18 +92,6 @@ enum MCPHTTPClient {
       url: url,
       headers: headers,
       timeout: timeout)
-  }
-
-  private static func jsonValue(_ value: AgentToolArgumentValue) -> MaiCore.JSONValue {
-    switch value {
-    case .string(let value): .string(value)
-    case .bool(let value): .bool(value)
-    case .int(let value): .integer(value)
-    case .double(let value): .number(value)
-    case .object(let value): .object(value.mapValues(jsonValue))
-    case .array(let value): .array(value.map(jsonValue))
-    case .null: .null
-    }
   }
 
   private static func render(_ content: [MaiCore.ContentPart], empty: String) -> String {

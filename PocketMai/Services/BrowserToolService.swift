@@ -352,36 +352,19 @@ enum BrowserTool {
   // MARK: - Argument helpers
 
   private static func string(_ value: AgentToolArgumentValue?) -> String {
-    value?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    value?.coercedStringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   }
 
   private static func bool(_ value: AgentToolArgumentValue?) -> Bool {
-    switch value {
-    case .bool(let flag): return flag
-    case .int(let number): return number != 0
-    case .string(let text):
-      return ["true", "yes", "1", "on"].contains(
-        text.trimmingCharacters(in: .whitespaces).lowercased())
-    default: return false
-    }
+    value?.coercedBoolValue ?? false
   }
 
   private static func int(_ value: AgentToolArgumentValue?) -> Int? {
-    switch value {
-    case .int(let number): return number
-    case .double(let number): return Int(number)
-    case .string(let text): return Int(text.trimmingCharacters(in: .whitespaces))
-    default: return nil
-    }
+    value?.coercedNumberValue.map(Int.init)
   }
 
   private static func double(_ value: AgentToolArgumentValue?) -> Double? {
-    switch value {
-    case .int(let number): return Double(number)
-    case .double(let number): return number
-    case .string(let text): return Double(text.trimmingCharacters(in: .whitespaces))
-    default: return nil
-    }
+    value?.coercedNumberValue
   }
 
   private static func charLimit(_ value: AgentToolArgumentValue?, default fallback: Int) -> Int {

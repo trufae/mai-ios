@@ -49,28 +49,28 @@ enum MastodonTool {
     arguments: [String: AgentToolArgumentValue], settings: NativeToolSettings
   ) async -> String {
     let action =
-      arguments["action"]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      arguments["action"]?.coercedStringValue.trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased() ?? ""
     let instance =
-      arguments["instance"]?.stringValue
+      arguments["instance"]?.coercedStringValue
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .nilIfEmpty ?? settings.mastodonInstance.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let baseURL = normalizedBaseURL(instance) else {
       return "Error: configure a valid Mastodon instance URL, such as https://mastodon.social."
     }
-    let token = (arguments["api_key"]?.stringValue.nilIfEmpty ?? settings.mastodonAPIKey)
+    let token = (arguments["api_key"]?.coercedStringValue.nilIfEmpty ?? settings.mastodonAPIKey)
       .trimmingCharacters(in: .whitespacesAndNewlines)
 
     switch action {
     case "toot_search":
       let query =
-        arguments["query"]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        arguments["query"]?.coercedStringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       guard !query.isEmpty else { return "Error: query is required for toot_search." }
       return await search(
         query: query, limit: limit(arguments), baseURL: baseURL, token: token)
     case "post":
       let content =
-        arguments["content"]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        arguments["content"]?.coercedStringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       guard !content.isEmpty else { return "Error: content is required for post." }
       guard settings.mastodonWriteEnabled else {
         return "Error: Mastodon posting and replying are disabled in Mastodon settings."
@@ -80,13 +80,13 @@ enum MastodonTool {
       }
       return await post(
         content: content,
-        replyToID: arguments["reply_to_id"]?.stringValue.nilIfEmpty,
-        visibility: arguments["visibility"]?.stringValue.nilIfEmpty ?? "public",
+        replyToID: arguments["reply_to_id"]?.coercedStringValue.nilIfEmpty,
+        visibility: arguments["visibility"]?.coercedStringValue.nilIfEmpty ?? "public",
         baseURL: baseURL,
         token: token)
     case "user_posts":
       let username =
-        arguments["username"]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        arguments["username"]?.coercedStringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       guard !username.isEmpty else { return "Error: username is required for user_posts." }
       return await userPosts(
         username: username, limit: limit(arguments), baseURL: baseURL,
