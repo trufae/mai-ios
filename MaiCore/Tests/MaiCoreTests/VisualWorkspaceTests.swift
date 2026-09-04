@@ -164,6 +164,9 @@ func workspaceSnapshotRoundTrip() async throws {
 func workspaceRegistersProviders() async throws {
   let workspace = try await makeWorkspace(
     seed: VisualConversationSeed(title: "repl", profile: helloProfile))
+  let path = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-visual-\(UUID().uuidString)/config.json").path
+  workspace.configurationPath = path
   try await workspace.plugins.install(MaiCoreBuiltinsPlugin())
   await workspace.refreshRegistries()
   #expect(workspace.providers.map(\.id) == [.hello])
@@ -176,6 +179,9 @@ func workspaceRegistersProviders() async throws {
   #expect(workspace.providers.map(\.id) == [ProviderID("greeter"), .hello])
   #expect(workspace.configuration.providers.map(\.id) == ["greeter"])
   #expect(workspace.configurationChanged)
+  #expect(!workspace.configurationNeedsSave)
+  let persisted = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
+  #expect(persisted.providers.map(\.id) == ["greeter"])
 
   form.id = ""
   await #expect(throws: VisualWorkspaceError.missingField("Identifier")) {
@@ -186,16 +192,14 @@ func workspaceRegistersProviders() async throws {
   agent.id = "saved"
   workspace.useProvider(ProviderID("greeter"))
   try await workspace.saveFocusedConversationAsAgent(agent)
-  #expect(workspace.agents.map(\.id) == ["saved"])
-  #expect(workspace.configuration.agents.first?.provider == ProviderID("greeter"))
+  #expect(workspace.agents.map(\.id) == ["main", "saved"])
+  #expect(
+    workspace.configuration.agents.first(where: { $0.id == "saved" })?.provider
+      == ProviderID("greeter"))
   #expect(workspace.focusedConversation?.profile.id == "saved")
 
-  let path = FileManager.default.temporaryDirectory
-    .appendingPathComponent("mai-visual-\(UUID().uuidString)/config.json").path
-  workspace.configurationPath = path
-  try workspace.saveConfiguration()
   let saved = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
-  #expect(saved.agents.map(\.id) == ["saved"])
+  #expect(saved.agents.map(\.id) == ["main", "saved"])
   #expect(saved.providers.map(\.id) == ["greeter"])
 }
 

@@ -61,7 +61,7 @@ private struct SaveConfigurationRow: View {
             message = "error: \(error.localizedDescription)"
           }
         }
-        if workspace.configurationChanged {
+        if workspace.configurationNeedsSave {
           Text("unsaved changes").foregroundStyle(.warning)
         }
       }
@@ -293,7 +293,11 @@ private struct FocusedToolsList: View {
       "\(conversation.profile.toolNames.count) of \(workspace.tools.count) enabled. Return toggles the focused row."
     )
     .foregroundStyle(.muted)
-    Toggle("Tool proxy (models see list-tools and call-tool)", isOn: $conversation.profile.useToolProxy)
+    Toggle(
+      "Tool proxy (models see list-tools and call-tool)",
+      isOn: Binding(
+        get: { conversation.profile.useToolProxy },
+        set: { workspace.setToolProxy($0, for: conversation) }))
     Divider()
     if workspace.tools.isEmpty {
       Text("No tools are registered.").foregroundStyle(.muted)
@@ -407,7 +411,31 @@ private struct FocusedChatSettings: View {
   private var providerBinding: Binding<String> {
     Binding(
       get: { conversation.profile.provider.rawValue },
-      set: { workspace.useProvider(ProviderID($0)) })
+      set: { workspace.useProvider(ProviderID($0), for: conversation) })
+  }
+
+  private var modelBinding: Binding<String> {
+    Binding(
+      get: { conversation.profile.model },
+      set: { workspace.useModel($0, for: conversation) })
+  }
+
+  private var instructionsBinding: Binding<String> {
+    Binding(
+      get: { conversation.profile.instructions },
+      set: { workspace.updateInstructions($0, for: conversation) })
+  }
+
+  private var streamingBinding: Binding<Bool> {
+    Binding(
+      get: { conversation.profile.stream },
+      set: { workspace.setStreaming($0, for: conversation) })
+  }
+
+  private var toolProxyBinding: Binding<Bool> {
+    Binding(
+      get: { conversation.profile.useToolProxy },
+      set: { workspace.setToolProxy($0, for: conversation) })
   }
 
   var body: some View {
@@ -424,7 +452,7 @@ private struct FocusedChatSettings: View {
       .pickerStyle(.segmented)
     }
     HStack(spacing: 1) {
-      TextField("Model", text: $conversation.profile.model)
+      TextField("Model", text: modelBinding)
       Button(workspace.isFetchingModels ? "Fetching…" : "Fetch models") {
         let provider = conversation.profile.provider
         Task { await workspace.fetchModels(for: provider) }
@@ -456,12 +484,11 @@ private struct FocusedChatSettings: View {
       .border(.separator, placement: .outset)
     }
     Text("Instructions (system prompt)")
-    TextEditor(text: $conversation.profile.instructions)
+    TextEditor(text: instructionsBinding)
       .frame(height: 5)
       .border(.separator, placement: .outset)
-      .onChange(of: conversation.profile.instructions) { conversation.applyInstructions() }
-    Toggle("Stream replies", isOn: $conversation.profile.stream)
-    Toggle("Tool proxy", isOn: $conversation.profile.useToolProxy)
+    Toggle("Stream replies", isOn: streamingBinding)
+    Toggle("Tool proxy", isOn: toolProxyBinding)
     HStack(spacing: 1) {
       Text("Tools: \(conversation.profile.toolNames.sorted().joined(separator: ", "))")
         .foregroundStyle(.muted)
