@@ -28,7 +28,7 @@ enum AssistantToolLoop {
   private struct RunOutput {
     let text: String
     let nativeMessages: [AgentMessage]
-    let completedRuns: [(fingerprint: String, result: String)]
+    let completedRuns: [(key: ToolCallKey, result: String)]
     let parsedCalls: [ParsedToolCall]
     let results: [CallResult]
   }
@@ -45,7 +45,7 @@ enum AssistantToolLoop {
   private struct State {
     var assistantText = ""
     var nativeContinuationMessages: [AgentMessage] = []
-    var completedToolRuns: [String: String] = [:]
+    var completedToolRuns: [ToolCallKey: String] = [:]
     var provisionalText = ""
     var debugRoundIndex = 0
     var toolCallCount = 0
@@ -113,53 +113,6 @@ enum AssistantToolLoop {
     case final(String)
     case retry(String, provisionalText: String?)
     case toolRun(RunOutput)
-  }
-
-  private enum ResponseAction {
-    case final
-    case askUser
-    case noSolution
-
-    init?(_ rawValue: String) {
-      switch rawValue
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-        .replacingOccurrences(of: "-", with: "_")
-      {
-      case "final":
-        self = .final
-      case "ask_user":
-        self = .askUser
-      case "no_solution":
-        self = .noSolution
-      default:
-        return nil
-      }
-    }
-  }
-
-  private enum ToolLoopResponseTool {
-    static let name = "respond"
-
-    static let definition = ToolDefinition(
-      name: name,
-      description:
-        "Optionally return the user-visible response in tool-call form when no more host tool runs are needed.",
-      parameters: [
-        ToolParameterDef(
-          name: "action",
-          type: "string",
-          description: "One of final, ask_user, or no_solution.",
-          required: true),
-        ToolParameterDef(
-          name: "content",
-          type: "string",
-          description: "The user-visible response text.",
-          required: true),
-      ],
-      inputSchemaJSON: """
-        {"type":"object","properties":{"action":{"type":"string","enum":["final","ask_user","no_solution"],"description":"One of final, ask_user, or no_solution."},"content":{"type":"string","description":"The user-visible response text."}},"required":["action","content"]}
-        """)
   }
 
   static func run(
@@ -261,7 +214,7 @@ enum AssistantToolLoop {
             store: store)
           state.setProvisionalText(provisionalDisplayText(from: turnText))
           let canonicalText = state.append(
-            missingPostToolActionFeedback(mode: requestState.activeMode))
+            AgentToolLoopPolicy.repairFeedbackAfterToolResult(mode: requestState.activeMode))
           store.setAssistantMessage(id: activeAssistantID, text: canonicalText, role: .assistant)
           if !state.provisionalText.isEmpty {
             store.setAssistantMessage(
@@ -361,7 +314,7 @@ enum AssistantToolLoop {
         }
         store.saveConversations()
         for completedRun in output.completedRuns where isSuccessfulToolResult(completedRun.result) {
-          state.completedToolRuns[completedRun.fingerprint] = completedRun.result
+          state.completedToolRuns[completedRun.key] = completedRun.result
         }
         state.toolCallCount += output.results.count
         state.applyNativeContinuation(
@@ -453,7 +406,8 @@ enum AssistantToolLoop {
         if shouldRetryHiddenOnlyFinal(turnText, state: state, maxRepairTurns: maxRepairTurns) {
           state.debugRoundIndex += 1
           state.repairTurnCount += 1
-          let text = state.append(missingPostToolActionFeedback(mode: requestState.activeMode))
+          let text = state.append(
+            AgentToolLoopPolicy.repairFeedbackAfterToolResult(mode: requestState.activeMode))
           updateLocalAssistantMessage(id: assistantID, text: text, conversation: &conversation)
           state.nativeContinuationMessages.removeAll()
           continue
@@ -483,7 +437,7 @@ enum AssistantToolLoop {
               isError: isToolResultError($0.result))
           })
         for completedRun in output.completedRuns where isSuccessfulToolResult(completedRun.result) {
-          state.completedToolRuns[completedRun.fingerprint] = completedRun.result
+          state.completedToolRuns[completedRun.key] = completedRun.result
         }
         state.toolCallCount += output.results.count
         state.applyNativeContinuation(
@@ -650,7 +604,7 @@ enum AssistantToolLoop {
     conversationID: UUID,
     assistantID: UUID,
     store: AppStore,
-    completedToolRuns: [String: String],
+    completedToolRuns: [ToolCallKey: String],
     baselineText: String,
     remainingToolCalls: Int
   ) async throws -> Outcome {
@@ -661,42 +615,22 @@ enum AssistantToolLoop {
       store: store)
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
-    let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
-    let calls = AgentTooling.parseCalls(
-      in: actionableResponse,
-      tools: parseDefinitions,
-      mode: requestState.activeMode)
-
-    guard !calls.isEmpty else {
-      if let outcome = noToolCallOutcome(
-        response: actionableResponse,
-        mode: requestState.activeMode,
-        tools: parseDefinitions,
-        completedToolRuns: completedToolRuns,
-        remainingToolCalls: remainingToolCalls)
-      {
-        return outcome
-      }
-      return .final(response)
+    let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
+    let decision = AgentToolLoopPolicy.evaluate(
+      response: response,
+      actionableResponse: actionableResponse,
+      visibleText: MessageContentFilter.render(actionableResponse).visibleText,
+      tools: hostDefinitions,
+      mode: requestState.activeMode,
+      completedToolRuns: completedToolRuns,
+      remainingToolCalls: remainingToolCalls)
+    let calls: [ParsedToolCall]
+    switch decision {
+    case .final(let text): return .final(text)
+    case .repair(let feedback): return .retry(feedback, provisionalText: nil)
+    case .execute(let parsedCalls): calls = parsedCalls
     }
-
-    if let responseOutcome = responseToolOutcome(
-      calls: calls,
-      definitions: parseDefinitions,
-      mode: requestState.activeMode)
-    {
-      return responseOutcome
-    }
-
-    if let repeated = repeatedCompletedToolResult(
-      calls: calls,
-      definitions: parseDefinitions,
-      completedToolRuns: completedToolRuns)
-    {
-      return .final(repeated)
-    }
-    guard remainingToolCalls > 0 else { return .final(response) }
 
     let output = try await runToolCalls(
       response: response,
@@ -720,7 +654,7 @@ enum AssistantToolLoop {
     mcpResources: [UUID: [MCPResourceDescriptor]],
     mcpStatuses: [UUID: EndpointConnectionState],
     store: AppStore,
-    completedToolRuns: [String: String],
+    completedToolRuns: [ToolCallKey: String],
     remainingToolCalls: Int
   ) async throws -> Outcome {
     guard !requestState.definitions.isEmpty else { return .final(response) }
@@ -733,42 +667,22 @@ enum AssistantToolLoop {
       mcpStatuses: mcpStatuses)
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
-    let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
-    let calls = AgentTooling.parseCalls(
-      in: actionableResponse,
-      tools: parseDefinitions,
-      mode: requestState.activeMode)
-
-    guard !calls.isEmpty else {
-      if let outcome = noToolCallOutcome(
-        response: actionableResponse,
-        mode: requestState.activeMode,
-        tools: parseDefinitions,
-        completedToolRuns: completedToolRuns,
-        remainingToolCalls: remainingToolCalls)
-      {
-        return outcome
-      }
-      return .final(response)
+    let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
+    let decision = AgentToolLoopPolicy.evaluate(
+      response: response,
+      actionableResponse: actionableResponse,
+      visibleText: MessageContentFilter.render(actionableResponse).visibleText,
+      tools: hostDefinitions,
+      mode: requestState.activeMode,
+      completedToolRuns: completedToolRuns,
+      remainingToolCalls: remainingToolCalls)
+    let calls: [ParsedToolCall]
+    switch decision {
+    case .final(let text): return .final(text)
+    case .repair(let feedback): return .retry(feedback, provisionalText: nil)
+    case .execute(let parsedCalls): calls = parsedCalls
     }
-
-    if let responseOutcome = responseToolOutcome(
-      calls: calls,
-      definitions: parseDefinitions,
-      mode: requestState.activeMode)
-    {
-      return responseOutcome
-    }
-
-    if let repeated = repeatedCompletedToolResult(
-      calls: calls,
-      definitions: parseDefinitions,
-      completedToolRuns: completedToolRuns)
-    {
-      return .final(repeated)
-    }
-    guard remainingToolCalls > 0 else { return .final(response) }
 
     let output = try await runToolCalls(
       response: response,
@@ -809,7 +723,7 @@ enum AssistantToolLoop {
     var assistantContent = response
     var appendedRunBlocks: [String] = []
     var results: [CallResult] = []
-    var completedRuns: [(fingerprint: String, result: String)] = []
+    var completedRuns: [(key: ToolCallKey, result: String)] = []
     var executedCount = 0
 
     for call in calls {
@@ -835,7 +749,7 @@ enum AssistantToolLoop {
         appendedRunBlocks.append(runBlock)
       }
       results.append(result)
-      completedRuns.append((toolCallFingerprint(result.call), result.result))
+      completedRuns.append((ToolCallKey(result.call), result.result))
       executedCount += 1
       publishToolRunProgress(
         transcriptText: transcriptText,
@@ -965,7 +879,7 @@ enum AssistantToolLoop {
     var assistantContent = response
     var appendedRunBlocks: [String] = []
     var results: [CallResult] = []
-    var completedRuns: [(fingerprint: String, result: String)] = []
+    var completedRuns: [(key: ToolCallKey, result: String)] = []
     var executedCount = 0
 
     for call in calls {
@@ -990,7 +904,7 @@ enum AssistantToolLoop {
         appendedRunBlocks.append(runBlock)
       }
       results.append(result)
-      completedRuns.append((toolCallFingerprint(result.call), result.result))
+      completedRuns.append((ToolCallKey(result.call), result.result))
       executedCount += 1
     }
 
@@ -1026,7 +940,7 @@ enum AssistantToolLoop {
       conversationID: conversationID,
       store: store)
     let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
-    guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
+    guard let normalizedCall = AgentTooling.availableCall(call, tools: currentDefinitions) else {
       return CallResult(
         call: fallbackCall,
         result: AgentTooling.unavailableToolError(name: fallbackCall.name))
@@ -1063,7 +977,7 @@ enum AssistantToolLoop {
     let executionDefinitions = currentVisibleDefinitions(
       conversationID: conversationID,
       store: store)
-    guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
+    guard let executableCall = AgentTooling.availableCall(approvedCall, tools: executionDefinitions)
     else {
       let unavailableCall = AgentTooling.normalized(
         call: approvedCall,
@@ -1128,7 +1042,7 @@ enum AssistantToolLoop {
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
     let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
-    guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
+    guard let normalizedCall = AgentTooling.availableCall(call, tools: currentDefinitions) else {
       return CallResult(
         call: fallbackCall,
         result: AgentTooling.unavailableToolError(name: fallbackCall.name))
@@ -1163,7 +1077,7 @@ enum AssistantToolLoop {
       mcpTools: mcpTools,
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
-    guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
+    guard let executableCall = AgentTooling.availableCall(approvedCall, tools: executionDefinitions)
     else {
       let unavailableCall = AgentTooling.normalized(
         call: approvedCall,
@@ -1234,7 +1148,7 @@ enum AssistantToolLoop {
       mcpTools: mcpTools,
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
-    let loopDefinitions = toolLoopDefinitions(for: visibleDefinitions)
+    let loopDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: visibleDefinitions)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
       settings: settings,
@@ -1257,11 +1171,6 @@ enum AssistantToolLoop {
       activeMode: activeMode,
       context: requestContext,
       toolPrompt: toolPrompt)
-  }
-
-  private static func toolLoopDefinitions(for definitions: [ToolDefinition]) -> [ToolDefinition] {
-    guard !definitions.isEmpty else { return [] }
-    return definitions + [ToolLoopResponseTool.definition]
   }
 
   private static func nativeToolLoopPrompt() -> String {
@@ -1531,65 +1440,6 @@ enum AssistantToolLoop {
       mcpStatuses: mcpStatuses)
   }
 
-  private static func availableCall(
-    _ call: ParsedToolCall,
-    definitions: [ToolDefinition]
-  ) -> ParsedToolCall? {
-    let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
-    guard AgentTooling.containsDefinition(named: normalizedCall.name, in: definitions) else {
-      return nil
-    }
-    return normalizedCall
-  }
-
-  private static func repeatedCompletedToolResult(
-    calls: [ParsedToolCall],
-    definitions: [ToolDefinition],
-    completedToolRuns: [String: String]
-  ) -> String? {
-    guard !calls.isEmpty, !completedToolRuns.isEmpty else { return nil }
-    let results = calls.compactMap { call -> String? in
-      let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
-      guard AgentTooling.containsDefinition(named: normalizedCall.name, in: definitions) else {
-        return nil
-      }
-      return completedToolRuns[toolCallFingerprint(normalizedCall)]
-    }
-    guard results.count == calls.count, !results.isEmpty else { return nil }
-    return
-      results
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-      .joined(separator: "\n\n")
-  }
-
-  private static func noToolCallOutcome(
-    response: String,
-    mode: ToolCallingMode,
-    tools: [ToolDefinition],
-    completedToolRuns: [String: String],
-    remainingToolCalls: Int
-  ) -> Outcome? {
-    if AgentTooling.containsToolCallMarker(in: response, mode: mode) {
-      return .retry(
-        AgentTooling.malformedToolCallFeedback(from: response, mode: mode, tools: tools)
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        provisionalText: nil)
-    }
-    if AgentTooling.containsNonToolJSONToolLoopObject(in: response, tools: tools) {
-      return .retry(
-        AgentTooling.nonToolJSONToolLoopFeedback(from: response, mode: mode, tools: tools)
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        provisionalText: nil)
-    }
-    guard !completedToolRuns.isEmpty else { return nil }
-    if hasVisibleText(response) { return nil }
-    guard remainingToolCalls > 0 else { return nil }
-    return .retry(
-      missingPostToolActionFeedback(mode: mode),
-      provisionalText: provisionalDisplayText(from: response))
-  }
-
   private static func shouldRetryHiddenOnlyFinal(
     _ response: String,
     state: State,
@@ -1598,42 +1448,6 @@ enum AssistantToolLoop {
     state.toolCallCount > 0
       && state.repairTurnCount < maxRepairTurns
       && !hasVisibleText(response)
-  }
-
-  private static func responseToolOutcome(
-    calls: [ParsedToolCall],
-    definitions: [ToolDefinition],
-    mode: ToolCallingMode
-  ) -> Outcome? {
-    let normalizedCalls = calls.map {
-      AgentTooling.normalized(call: $0, tools: definitions)
-    }
-    guard normalizedCalls.contains(where: { $0.name == ToolLoopResponseTool.name }) else {
-      return nil
-    }
-    guard normalizedCalls.count == 1, let call = normalizedCalls.first else {
-      return .retry(
-        invalidResponseToolFeedback(
-          mode: mode,
-          message:
-            "Error: respond must be the only tool call in this assistant turn."),
-        provisionalText: nil)
-    }
-    let actionText = call.argumentValues["action"]?.stringValue ?? ""
-    guard ResponseAction(actionText) != nil else {
-      return .retry(
-        invalidResponseToolFeedback(
-          mode: mode,
-          message:
-            "Error: respond action must be one of final, ask_user, or no_solution."),
-        provisionalText: nil)
-    }
-    let content = (call.argumentValues["content"]?.stringValue ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !content.isEmpty else {
-      return .retry(emptyToolResponseFeedback(mode: mode), provisionalText: nil)
-    }
-    return .final(content)
   }
 
   private static func provisionalDisplayText(from response: String) -> String? {
@@ -1647,58 +1461,6 @@ enum AssistantToolLoop {
     !MessageContentFilter.render(response).visibleText
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .isEmpty
-  }
-
-  private static func missingPostToolActionFeedback(mode: ToolCallingMode) -> String {
-    AgentTooling.makeRunBlock(
-      toolName: "missing_tool_call",
-      argumentsJSON: "{}",
-      result: missingPostToolActionMessage(mode: mode)
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private static func emptyToolResponseFeedback(mode: ToolCallingMode) -> String {
-    AgentTooling.makeRunBlock(
-      toolName: "invalid_respond",
-      argumentsJSON: "{}",
-      result:
-        "Error: respond content is empty. Emit a host tool call if another host tool run is needed, or call respond with non-empty user-visible content."
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private static func invalidResponseToolFeedback(mode: ToolCallingMode, message: String) -> String
-  {
-    return AgentTooling.makeRunBlock(
-      toolName: "invalid_respond",
-      argumentsJSON: "{}",
-      result: "\(message)\n\n\(missingPostToolActionMessage(mode: mode))"
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private static func missingPostToolActionMessage(mode: ToolCallingMode) -> String {
-    switch mode {
-    case .native:
-      return
-        "After a host tool result, call one provided native tool if another host tool run is needed, or give the final answer directly if the result is enough. Do not write prose that announces a future tool call."
-    case .text, .xml, .json:
-      return """
-        After a host tool result, give the final answer directly if the result is enough.
-
-        If another host tool run is needed, emit exactly one tool call in the configured \(mode.displayName) format. You may also call \(ToolLoopResponseTool.name) with final content:
-        \(responseToolExample(mode: mode))
-        """
-    }
-  }
-
-  private static func responseToolExample(mode: ToolCallingMode) -> String {
-    let call = ParsedToolCall(
-      name: ToolLoopResponseTool.name,
-      arguments: [
-        "action": "final",
-        "content": "The user-visible answer goes here.",
-      ],
-      rawBlock: "")
-    return AgentTooling.editableToolCallText(for: call, mode: mode)
   }
 
   private static func debugModelName(for conversation: Conversation, store: AppStore) -> String {
@@ -1755,10 +1517,6 @@ enum AssistantToolLoop {
       },
       inputSchemaJSON: definition.inputSchemaJSON.trimmingCharacters(in: .whitespacesAndNewlines)
         .isEmpty ? nil : definition.inputSchemaJSON)
-  }
-
-  private static func toolCallFingerprint(_ call: ParsedToolCall) -> String {
-    "\(call.name)\n\(call.argsJSON)"
   }
 
   private static func isSuccessfulToolResult(_ result: String) -> Bool {

@@ -165,7 +165,7 @@ public actor AgentRuntime {
     var totalUsage: TokenUsage?
     var localModelTurns = 0
     var localToolCalls = 0
-    var fingerprints = Set<String>()
+    var fingerprints = Set<ToolCallKey>()
 
     await emit(.started(context, provider.descriptor))
     while localModelTurns < request.limits.maxModelTurns {
@@ -258,9 +258,8 @@ public actor AgentRuntime {
           throw AgentRuntimeError.limitExceeded("tool calls")
         }
         localToolCalls += 1
-        let fingerprint = "\(call.name)\n\(call.arguments.compactJSONString)"
         let result: ToolResult
-        if fingerprints.insert(fingerprint).inserted {
+        if fingerprints.insert(ToolCallKey(call)).inserted {
           result = try await execute(
             call,
             definitions: concreteDefinitions,
