@@ -1,120 +1,24 @@
 import AVFoundation
 import Foundation
+import MaiStandardTools
 import UIKit
-
-enum ToolApprovalKind: Sendable {
-  case auto
-  case confirm
-  case dangerous
-}
-
-struct BuiltInToolCatalogEntry: Sendable {
-  let id: BuiltInToolID
-  let toolNames: [String]
-  let approvalKind: ToolApprovalKind
-}
 
 @MainActor
 enum BuiltInToolCatalog {
-  static let entries: [BuiltInToolCatalogEntry] = [
-    BuiltInToolCatalogEntry(
-      id: .datetime,
-      toolNames: [DateTimeTool.name],
-      approvalKind: .auto),
-    BuiltInToolCatalogEntry(
-      id: .location,
-      toolNames: [LocationTool.name],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .weather,
-      toolNames: [WeatherTool.name],
-      approvalKind: .auto),
-    BuiltInToolCatalogEntry(
-      id: .webSearch,
-      toolNames: [WebSearchTool.name, WebSearchTool.fetchName],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .todo,
-      toolNames: [TodoTool.listName, TodoTool.addName, TodoTool.doneName],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .calculator,
-      toolNames: [CalculatorTool.name],
-      approvalKind: .auto),
-    BuiltInToolCatalogEntry(
-      id: .textToSpeech,
-      toolNames: [TextToSpeechTool.name],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .files,
-      toolNames: [
-        FileWorkspaceTool.listName,
-        FileWorkspaceTool.readName,
-        FileWorkspaceTool.readDocumentName,
-        FileWorkspaceTool.readIndexName,
-        FileWorkspaceTool.readRangeName,
-        FileWorkspaceTool.replaceRangeName,
-        FileWorkspaceTool.writeName,
-        FileWorkspaceTool.renameName,
-        FileWorkspaceTool.deleteName,
-      ],
-      approvalKind: .dangerous),
-    BuiltInToolCatalogEntry(
-      id: .calendar,
-      toolNames: [CalendarTool.readName, CalendarTool.createName],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .clipboard,
-      toolNames: [ClipboardTool.getName, ClipboardTool.setName],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .alarms,
-      toolNames: [AlarmTool.setName, AlarmTool.listName, AlarmTool.cancelName],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .webxdc,
-      toolNames: WebXDCTool.toolNames,
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .github,
-      toolNames: GitHubTool.toolNames,
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .mastodon,
-      toolNames: [MastodonTool.name],
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .browser,
-      toolNames: BrowserTool.toolNames,
-      approvalKind: .confirm),
-    BuiltInToolCatalogEntry(
-      id: .memory,
-      toolNames: ConversationSearchTool.toolNames,
-      approvalKind: .confirm),
-  ]
-
   static func definitions(
     for conversation: Conversation,
     settings: AppSettings
   ) -> [ToolDefinition] {
-    entries.flatMap { entry -> [ToolDefinition] in
-      guard conversation.enabledTools.contains(entry.id) else { return [] }
+    BuiltInToolID.allCases.flatMap { id -> [ToolDefinition] in
+      guard conversation.enabledTools.contains(id) else { return [] }
       // Memory is a context source, but it also carries the callable chats_*
       // tools when a conversation search scope is configured.
-      guard entry.id.isCallableTool || entry.id == .memory else { return [] }
-      guard !(settings.airplaneModeEnabled && entry.id.isDisabledInAirplaneMode) else {
+      guard id.isCallableTool || id == .memory else { return [] }
+      guard !(settings.airplaneModeEnabled && id.isDisabledInAirplaneMode) else {
         return []
       }
-      return definitions(for: entry.id, conversation: conversation, settings: settings)
+      return definitions(for: id, conversation: conversation, settings: settings)
     }
-  }
-
-  static func isBuiltInToolName(_ name: String) -> Bool {
-    entry(containingToolName: name) != nil
-  }
-
-  static func approvalKind(forToolName name: String) -> ToolApprovalKind? {
-    entry(containingToolName: name)?.approvalKind
   }
 
   static func execute(
@@ -133,8 +37,10 @@ enum BuiltInToolCatalog {
         call.arguments["title_or_id"] ?? call.arguments["id"]
         ?? call.arguments["title"] ?? ""
       return TodoTool.markDone(query: query, store: store)
-    case CalculatorTool.name:
-      return CalculatorTool.run(arguments: call.argumentValues)
+    case MaiCalculatorTool.name:
+      return await PocketMaiPluginHost.shared.callStandardTool(
+        name: call.name,
+        arguments: call.argumentValues)
     case WebSearchTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: web search is disabled while Airplane Mode is enabled."
@@ -153,11 +59,6 @@ enum BuiltInToolCatalog {
         skipTechnicalContent: store.effectiveConversationSettings(for: conversation)
           .skipTechnicalContentInTTS,
         openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints)
-    case DateTimeTool.name:
-      return DateTimeTool.run(settings: store.settings.toolSettings)
-    case LocationTool.name:
-      return await LocationTool.run(
-        settings: store.settings.toolSettings, locationService: { store.locationService })
     case WeatherTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: weather is disabled while Airplane Mode is enabled."
@@ -290,12 +191,8 @@ enum BuiltInToolCatalog {
     settings: AppSettings
   ) -> [ToolDefinition] {
     switch id {
-    case .datetime:
-      return DateTimeTool.definitions
-    case .language:
+    case .datetime, .language, .location:
       return []
-    case .location:
-      return LocationTool.definitions
     case .weather:
       return WeatherTool.definitions
     case .webSearch:
@@ -303,7 +200,7 @@ enum BuiltInToolCatalog {
     case .todo:
       return TodoTool.definitions
     case .calculator:
-      return CalculatorTool.definitions
+      return [MaiCalculatorTool.toolDefinition]
     case .textToSpeech:
       return TextToSpeechTool.definitions
     case .files:
@@ -329,10 +226,6 @@ enum BuiltInToolCatalog {
       guard settings.toolSettings.conversationSearchScope != .none else { return [] }
       return ConversationSearchTool.definitions
     }
-  }
-
-  private static func entry(containingToolName name: String) -> BuiltInToolCatalogEntry? {
-    entries.first { $0.toolNames.contains(name) }
   }
 
   private static func fileWorkspaceToolsEnabled(
@@ -1277,188 +1170,6 @@ enum TodoTool {
 }
 
 @MainActor
-enum CalculatorTool {
-  static let name = "calculator"
-
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: name,
-      description:
-        "Evaluate a numeric math expression with parentheses using +, -, *, /, and unary signs.",
-      parameters: [
-        ToolParameterDef(
-          name: "expression", type: "string",
-          description: "Math expression to evaluate, such as (2 + 3) * 4 / 5.",
-          required: true)
-      ])
-  ]
-
-  static func run(arguments: [String: AgentToolArgumentValue]) -> String {
-    let expression =
-      arguments["expression"]?.stringValue ?? arguments["expr"]?.stringValue
-      ?? arguments["input"]?.stringValue ?? ""
-    let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Error: expression is required." }
-
-    do {
-      var parser = CalculatorParser(trimmed)
-      let result = try parser.parse()
-      return format(result)
-    } catch {
-      return "Error: invalid expression: \(error.localizedDescription)"
-    }
-  }
-
-  private static func format(_ value: Double) -> String {
-    guard value.isFinite else { return "Error: calculation result is not finite." }
-    if value.rounded() == value && value <= Double(Int64.max) && value >= Double(Int64.min) {
-      return String(Int64(value))
-    }
-    return String(format: "%.15g", value)
-  }
-}
-
-private struct CalculatorParser {
-  private let text: String
-  private var index: String.Index
-
-  init(_ text: String) {
-    self.text = text
-    self.index = text.startIndex
-  }
-
-  mutating func parse() throws -> Double {
-    let value = try parseExpression()
-    skipWhitespace()
-    guard index == text.endIndex else {
-      throw CalculatorParserError("unexpected '\(text[index])'")
-    }
-    guard value.isFinite else {
-      throw CalculatorParserError("result is not finite")
-    }
-    return value
-  }
-
-  private mutating func parseExpression() throws -> Double {
-    var value = try parseTerm()
-    while true {
-      if consume("+") {
-        value += try parseTerm()
-      } else if consume("-") {
-        value -= try parseTerm()
-      } else {
-        return value
-      }
-    }
-  }
-
-  private mutating func parseTerm() throws -> Double {
-    var value = try parseFactor()
-    while true {
-      if consume("*") {
-        value *= try parseFactor()
-      } else if consume("/") {
-        let divisor = try parseFactor()
-        guard divisor != 0 else { throw CalculatorParserError("division by zero") }
-        value /= divisor
-      } else {
-        return value
-      }
-    }
-  }
-
-  private mutating func parseFactor() throws -> Double {
-    skipWhitespace()
-    if consume("+") {
-      return try parseFactor()
-    }
-    if consume("-") {
-      return -(try parseFactor())
-    }
-    if consume("(") {
-      let value = try parseExpression()
-      guard consume(")") else { throw CalculatorParserError("expected ')'") }
-      return value
-    }
-    return try parseNumber()
-  }
-
-  private mutating func parseNumber() throws -> Double {
-    skipWhitespace()
-    let start = index
-    var hasDigit = false
-
-    while let char = current, char.isNumber {
-      hasDigit = true
-      advance()
-    }
-    if consumeRaw(".") {
-      while let char = current, char.isNumber {
-        hasDigit = true
-        advance()
-      }
-    }
-    guard hasDigit else { throw CalculatorParserError("expected number") }
-
-    if let char = current, char == "e" || char == "E" {
-      let exponentStart = index
-      advance()
-      _ = consumeRaw("+") || consumeRaw("-")
-      var hasExponentDigit = false
-      while let char = current, char.isNumber {
-        hasExponentDigit = true
-        advance()
-      }
-      guard hasExponentDigit else {
-        index = exponentStart
-        throw CalculatorParserError("expected exponent digits")
-      }
-    }
-
-    let raw = String(text[start..<index])
-    guard let value = Double(raw), value.isFinite else {
-      throw CalculatorParserError("invalid number '\(raw)'")
-    }
-    return value
-  }
-
-  private var current: Character? {
-    index < text.endIndex ? text[index] : nil
-  }
-
-  private mutating func skipWhitespace() {
-    while let char = current, char.isWhitespace {
-      advance()
-    }
-  }
-
-  private mutating func consume(_ char: Character) -> Bool {
-    skipWhitespace()
-    return consumeRaw(char)
-  }
-
-  private mutating func consumeRaw(_ char: Character) -> Bool {
-    guard current == char else { return false }
-    advance()
-    return true
-  }
-
-  private mutating func advance() {
-    index = text.index(after: index)
-  }
-}
-
-private struct CalculatorParserError: LocalizedError {
-  let message: String
-
-  init(_ message: String) {
-    self.message = message
-  }
-
-  var errorDescription: String? { message }
-}
-
-@MainActor
 enum TextToSpeechTool {
   static let name = "text-to-speech"
 
@@ -1546,45 +1257,6 @@ enum TextToSpeechTool {
       skipTechnicalContent: skipTechnicalContent,
       interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
-  }
-}
-
-@MainActor
-enum DateTimeTool {
-  static let name = "datetime"
-
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: name,
-      description:
-        "Return current date/time using configured options.",
-      parameters: []
-    )
-  ]
-
-  static func run(settings: NativeToolSettings) -> String {
-    DateTimeRenderer.render(settings: settings)
-  }
-}
-
-@MainActor
-enum LocationTool {
-  static let name = "location"
-
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: name,
-      description:
-        "Return GPS or manually configured location.",
-      parameters: []
-    )
-  ]
-
-  static func run(
-    settings: NativeToolSettings,
-    locationService: @MainActor () -> LocationService
-  ) async -> String {
-    await LocationRenderer.render(settings: settings, locationService: locationService)
   }
 }
 

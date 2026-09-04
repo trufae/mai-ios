@@ -1,6 +1,7 @@
 import Foundation
 import MaiCore
 import MaiOpenAI
+import MaiStandardTools
 
 /// PocketMai's static composition root. iOS cannot load arbitrary unsigned
 /// dylibs, so app integrations use the same MaiPlugin API as the CLI while
@@ -10,6 +11,7 @@ actor PocketMaiPluginHost {
 
   private let registry = PluginRegistry()
   private var startup: Task<Void, Error>?
+  private var standardTools: [String: any AgentTool]?
 
   private init() {}
 
@@ -44,6 +46,33 @@ actor PocketMaiPluginHost {
     return await registry.installedPlugins()
   }
 
+  func callStandardTool(
+    name: String,
+    arguments: [String: JSONValue]
+  ) async -> String {
+    do {
+      try await prepare()
+      if standardTools == nil {
+        let tools = try await registry.makeTools(
+          kind: MaiStandardToolsPlugin.factoryKind,
+          context: PluginFactoryContext(id: "pocketmai-standard-tools"))
+        standardTools = Dictionary(
+          tools.map { ($0.definition.name, $0) },
+          uniquingKeysWith: { first, _ in first })
+      }
+      guard let tool = standardTools?[name] else {
+        return "Error: standard tool '\(name)' is not registered."
+      }
+      let context = ToolExecutionContext(
+        run: AgentEventContext(
+          runID: UUID(), parentRunID: nil, agentID: "pocketmai", depth: 0),
+        modelTurn: 0)
+      return try await tool.call(arguments: .object(arguments), context: context).text
+    } catch {
+      return "Error: \(error.localizedDescription)"
+    }
+  }
+
   private func prepare() async throws {
     if let startup {
       return try await startup.value
@@ -51,6 +80,7 @@ actor PocketMaiPluginHost {
     let registry = registry
     let task = Task {
       try await registry.install(MaiOpenAIPlugin(), origin: "PocketMai")
+      try await registry.install(MaiStandardToolsPlugin(), origin: "PocketMai")
       try await registry.install(PocketMaiPlatformPlugin(), origin: "PocketMai")
     }
     startup = task

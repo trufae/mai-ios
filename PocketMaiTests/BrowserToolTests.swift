@@ -20,8 +20,7 @@ final class BrowserToolTests: XCTestCase {
     let names = BrowserTool.definitions.map(\.name)
     XCTAssertEqual(names, BrowserTool.toolNames)
     XCTAssertEqual(Set(names).count, names.count)
-    XCTAssertTrue(names.allSatisfy(BuiltInToolCatalog.isBuiltInToolName))
-    XCTAssertEqual(BuiltInToolCatalog.approvalKind(forToolName: BrowserTool.actName), .confirm)
+    XCTAssertTrue(BrowserTool.definitions.allSatisfy { $0.annotations.approval == .confirm })
   }
 
   func testOpenConversationDeepLinkRoundTrips() {

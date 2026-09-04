@@ -11,6 +11,7 @@ let package = Package(
     .library(name: "MaiCore", targets: ["MaiCore"]),
     .library(name: "MaiOpenAI", targets: ["MaiOpenAI"]),
     .library(name: "MaiMCP", targets: ["MaiMCP"]),
+    .library(name: "MaiStandardTools", targets: ["MaiStandardTools"]),
     .library(name: "MaiVisionOCR", targets: ["MaiVisionOCR"]),
     .library(name: "MaiPluginSDK", targets: ["MaiPluginSDK"]),
     .library(name: "MaiPluginHost", targets: ["MaiPluginHost"]),
@@ -21,6 +22,7 @@ let package = Package(
     .target(name: "MaiCore"),
     .target(name: "MaiOpenAI", dependencies: ["MaiCore"]),
     .target(name: "MaiMCP", dependencies: ["MaiCore"]),
+    .target(name: "MaiStandardTools", dependencies: ["MaiCore"]),
     .target(name: "MaiVisionOCR", dependencies: ["MaiCore"]),
     .target(
       name: "CMaiPluginABI",
@@ -36,9 +38,13 @@ let package = Package(
       dependencies: ["MaiPluginSDK", "CMaiPluginABI"]),
     .executableTarget(
       name: "MaiCLI",
-      dependencies: ["MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiVisionOCR"],
+      dependencies: [
+        "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
+      ],
       path: "Sources/mai"),
     .testTarget(
       name: "MaiCoreTests",
-      dependencies: ["MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiVisionOCR"]),
+      dependencies: [
+        "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
+      ]),
   ])
