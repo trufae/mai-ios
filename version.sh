@@ -32,4 +32,16 @@ fi
 
 perl -0pi -e "s/MARKETING_VERSION = [^;]+;/MARKETING_VERSION = $new_version;/g" "$PBXPROJ"
 
-printf '%s -> %s\n' "$current_version" "$new_version"
+current_build=$(awk -F'= ' '
+  /CURRENT_PROJECT_VERSION = / {
+    gsub(/;[[:space:]]*$/, "", $2)
+    print $2
+    exit
+  }
+' "$PBXPROJ")
+new_build=$((current_build + 1))
+
+perl -0pi -e "s/CURRENT_PROJECT_VERSION = [^;]+;/CURRENT_PROJECT_VERSION = $new_build;/g" "$PBXPROJ"
+
+printf 'version: %s -> %s\n' "$current_version" "$new_version"
+printf 'build:   %s -> %s\n' "$current_build" "$new_build"
