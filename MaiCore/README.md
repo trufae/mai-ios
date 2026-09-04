@@ -2,7 +2,9 @@
 
 MaiCore is the provider-neutral agent runtime shared by the `pmai` command-line
 client and PocketMai. Concrete integrations are separate products:
-`MaiOpenAI`, `MaiMCP`, and `MaiVisionOCR`. Each registers through the same plugin
+`MaiOpenAI`, `MaiMCP`, and `MaiVisionOCR`. `MaiVisual` adds the SwiftTUI
+terminal workspace used by the CLI's `/visual` command and is the package's only
+external dependency; PocketMai does not link it. Each registers through the same plugin
 API available to third-party providers. Together they support structured
 message content, multimodal requests, native tool calls, approvals, MCP
 Streamable HTTP servers, and bounded child agents.
@@ -36,6 +38,33 @@ changed at any point with `/chat edit N TEXT`, `/chat remove N`, `/chat undo
 [N]`, `/chat trim N`, and `/chat clear`. Trimming keeps messages through `N`;
 linked tool-call transactions are kept structurally valid when removing or
 trimming messages.
+
+`/copy` puts the last assistant reply on the system clipboard as plain text,
+without reasoning blocks. `/copy N` copies the last `N` conversation messages
+instead; several messages are labelled `User:`, `Assistant:`, and `Tool:`, while
+tool calls, tool results, and attachments are summarized on their own lines.
+Instructions are never copied. macOS uses the native pasteboard; other platforms
+use the first of `wl-copy`, `xclip`, `xsel`, `pbcopy`, or `clip.exe` found in
+`PATH`.
+
+`/visual` hands the terminal to a [SwiftTUI](https://swifttui.sh/) workspace
+built by the `MaiVisual` module and returns to the prompt on `Ctrl+C` or
+`Ctrl+Q`. The Chats tab keeps several conversations in a sidebar and shows them
+in framed panes: `Alt+N` starts a conversation in the focused pane, `Alt+V` and
+`Alt+S` split it right or down with a new conversation, `Alt+X` closes a pane,
+`Alt+arrows` move focus, `Alt+B` hides the sidebar, `Alt+K` cancels the focused
+reply, and `Alt+C` copies the last reply through the terminal clipboard. The
+Providers, MCP, Tools, and Agents tabs (`Alt+1` to `Alt+5`) register new
+OpenAI-compatible or plugin providers, connect Streamable HTTP MCP servers,
+toggle the tools each conversation may call, register plugin tool sources,
+switch agents, and save the focused conversation as a named agent. Registrations
+apply to the running session immediately and accumulate in a configuration
+draft that "Save configuration" writes to the loaded config path, or to
+`~/.config/mai/config.json` when none was loaded. Tool approvals raised while
+the workspace is open appear as a sheet instead of a stdin prompt. Leaving the
+workspace makes the focused conversation the REPL conversation; the other
+conversations and the pane layout are kept in memory for the next `/visual`.
+Visual mode needs an interactive terminal and, on macOS, version 15 or later.
 
 `/image` always takes a mode and a path. `tiny`, `small`, `medium`, and `big`
 cap the longest edge at 100, 320, 640, and 1024 pixels; `full` preserves the

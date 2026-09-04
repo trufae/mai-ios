@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
   name: "MaiCore",
   platforms: [
-    .macOS(.v13),
+    .macOS(.v15),
     .iOS(.v18),
   ],
   products: [
@@ -15,8 +15,12 @@ let package = Package(
     .library(name: "MaiVisionOCR", targets: ["MaiVisionOCR"]),
     .library(name: "MaiPluginSDK", targets: ["MaiPluginSDK"]),
     .library(name: "MaiPluginHost", targets: ["MaiPluginHost"]),
+    .library(name: "MaiVisual", targets: ["MaiVisual"]),
     .library(name: "MaiFixturePlugin", type: .dynamic, targets: ["MaiFixturePlugin"]),
     .executable(name: "pmai", targets: ["MaiCLI"]),
+  ],
+  dependencies: [
+    .package(url: "https://github.com/SwiftTUI/swift-tui", .upToNextMinor(from: "0.10.1"))
   ],
   targets: [
     .target(name: "MaiCore"),
@@ -36,15 +40,26 @@ let package = Package(
     .target(
       name: "MaiFixturePlugin",
       dependencies: ["MaiPluginSDK", "CMaiPluginABI"]),
+    .target(
+      name: "MaiVisual",
+      dependencies: [
+        "MaiCore",
+        .product(name: "SwiftTUIRuntime", package: "swift-tui"),
+        .product(name: "SwiftTUICLI", package: "swift-tui"),
+      ]),
     .executableTarget(
       name: "MaiCLI",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
+        "MaiVisual",
       ],
       path: "Sources/mai"),
     .testTarget(
       name: "MaiCoreTests",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
+        "MaiVisual",
+        .product(name: "SwiftTUIRuntime", package: "swift-tui"),
+        .product(name: "SwiftTUICLI", package: "swift-tui"),
       ]),
   ])

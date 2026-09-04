@@ -5,6 +5,7 @@ import MaiOpenAI
 import MaiPluginHost
 import MaiStandardTools
 import MaiVisionOCR
+import MaiVisual
 
 #if os(Linux)
   import Glibc
@@ -97,6 +98,18 @@ private enum CLIError: LocalizedError {
   }
 }
 
+private struct RuntimeSetup {
+  var catalogs: [MCPServerCatalog]
+  var implicitProviders: [ConfiguredProvider] = []
+}
+
+/// What `/visual` needs beyond the REPL session itself.
+private struct VisualBridge {
+  var approvalHandler: TerminalApprovalHandler
+  var configurationPath: String?
+  var implicitProviders: [ConfiguredProvider]
+}
+
 private struct SessionProfile {
   var agentID: String
   var provider: ProviderID
@@ -133,7 +146,17 @@ private struct SessionProfile {
     self.provider = provider
     self.model = model
     self.instructions = instructions
-    toolNames = [MaiEchoTool.name, MaiCurrentTimeTool.name, MaiReadTextFileTool.name]
+    toolNames = Set(
+      [
+        MaiEchoTool.name,
+        MaiCurrentTimeTool.name,
+        MaiCalculatorTool.name,
+        MaiReadTextFileTool.name,
+        MaiWeatherTool.name,
+        MaiWebSearchTool.name,
+        MaiWebFetchTool.name,
+        MaiMastodonTool.name,
+      ] + MaiGitHubTool.toolNames)
     subagentNames = []
     self.stream = stream
     limits = .init()
@@ -143,12 +166,31 @@ private struct SessionProfile {
     toolCallingStrategy = .automatic
     useToolProxy = false
   }
+
+  var agentDefinition: AgentDefinition {
+    AgentDefinition(
+      id: agentID,
+      instructions: instructions,
+      provider: provider,
+      model: model,
+      toolNames: toolNames,
+      subagentNames: subagentNames,
+      stream: stream,
+      limits: limits,
+      toolChoice: toolChoice,
+      responseFormat: responseFormat,
+      options: options,
+      toolCallingStrategy: toolCallingStrategy,
+      useToolProxy: useToolProxy)
+  }
 }
 
 private struct REPLSession {
   var profile: SessionProfile
   var history: AgentTranscript
   var pendingContent: [ContentPart]
+  /// Conversations and panes left behind by the last `/visual` session.
+  var visualSnapshot: VisualWorkspaceSnapshot?
 
   init(profile: SessionProfile, pendingContent: [ContentPart] = []) {
     self.profile = profile
@@ -160,6 +202,20 @@ private struct REPLSession {
     if let profile { self.profile = profile }
     history.replaceAll(with: Self.initialHistory(for: self.profile))
     pendingContent.removeAll()
+  }
+
+  func visualSeed() -> VisualConversationSeed {
+    VisualConversationSeed(
+      title: profile.agentID,
+      profile: profile.agentDefinition,
+      messages: history.messages,
+      pendingContent: pendingContent)
+  }
+
+  mutating func adopt(_ conversation: VisualConversationSeed) {
+    profile = SessionProfile(definition: conversation.profile)
+    history.replaceAll(with: conversation.messages)
+    pendingContent = conversation.pendingContent
   }
 
   private static func initialHistory(for profile: SessionProfile) -> [AgentMessage] {
@@ -228,9 +284,15 @@ private actor TerminalWriter {
 
 private actor TerminalApprovalHandler: ApprovalHandler {
   private let configuration: ConfiguredApprovals
+  private var delegate: (any ApprovalHandler)?
 
   init(configuration: ConfiguredApprovals) {
     self.configuration = configuration
+  }
+
+  /// Routes `ask` decisions elsewhere while another surface owns the terminal.
+  func setDelegate(_ handler: (any ApprovalHandler)?) {
+    delegate = handler
   }
 
   func decide(_ request: ApprovalRequest) async throws -> ApprovalDecision {
@@ -243,6 +305,7 @@ private actor TerminalApprovalHandler: ApprovalHandler {
     case .deny:
       return .deny(reason: "Denied by configuration.")
     case .ask:
+      if let delegate { return try await delegate.decide(request) }
       guard isatty(STDIN_FILENO) != 0 else {
         return .deny(reason: "Interactive approval requires a terminal.")
       }
@@ -317,7 +380,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: configuration,
         environment: environment)
-      let catalogs = try await configureRuntime(
+      let setup = try await configureRuntime(
         runtime,
         plugins: plugins,
         configuration: configuration,
@@ -350,7 +413,11 @@ private struct MaiCLI {
         plugins: plugins,
         ocrProvider: ocrProvider,
         configuration: configuration,
-        catalogs: catalogs,
+        catalogs: setup.catalogs,
+        visual: VisualBridge(
+          approvalHandler: approvalHandler,
+          configurationPath: loaded?.path,
+          implicitProviders: setup.implicitProviders),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -401,12 +468,26 @@ private struct MaiCLI {
     configuration: MaiConfiguration?,
     environment: [String: String]
   ) async throws {
-    let builtins = try await plugins.makeTools(
-      kind: MaiStandardToolsPlugin.factoryKind,
-      context: PluginFactoryContext(id: "standard-tools", environment: environment))
-    for tool in builtins { try await runtime.register(tool: tool) }
+    let sources = configuration?.toolSources ?? []
+    let configuredStandardTools = sources.filter {
+      $0.kind == MaiStandardToolsPlugin.factoryKind
+    }
+    if configuredStandardTools.isEmpty {
+      let tools = try await plugins.makeTools(
+        kind: MaiStandardToolsPlugin.factoryKind,
+        context: PluginFactoryContext(id: "standard-tools", environment: environment))
+      for tool in tools { try await runtime.register(tool: tool) }
+    } else {
+      for source in configuredStandardTools where source.enabled {
+        let tools = try await plugins.makeTools(
+          kind: source.kind,
+          context: source.context(environment: environment))
+        for tool in tools { try await runtime.register(tool: tool) }
+      }
+    }
 
-    for source in configuration?.toolSources ?? [] where source.enabled {
+    for source in sources
+    where source.enabled && source.kind != MaiStandardToolsPlugin.factoryKind {
       let tools = try await plugins.makeTools(
         kind: source.kind,
         context: source.context(environment: environment))
@@ -435,7 +516,7 @@ private struct MaiCLI {
     configuration: MaiConfiguration?,
     options: CLIOptions,
     environment: [String: String]
-  ) async throws -> [MCPServerCatalog] {
+  ) async throws -> RuntimeSetup {
     if let configuration {
       for provider in configuration.providers {
         try await runtime.register(
@@ -458,28 +539,30 @@ private struct MaiCLI {
           throw MaiConfigurationError.unknownTool(agent: agent.id, tool: name)
         }
       }
-      return catalogs
+      return RuntimeSetup(catalogs: catalogs)
     }
 
-    try await runtime.register(
-      plugins.makeProvider(
-        from: ConfiguredProvider(id: "hello", kind: .hello),
-        environment: environment))
+    let hello = ConfiguredProvider(id: "hello", kind: .hello)
+    try await runtime.register(plugins.makeProvider(from: hello, environment: environment))
     let rawBaseURL =
       options.baseURLOverride?.absoluteString
       ?? environment["MAI_BASE_URL"] ?? environment["OPENAI_BASE_URL"]
       ?? "https://api.openai.com/v1"
     guard let baseURL = URL(string: rawBaseURL) else { throw CLIError.invalidURL(rawBaseURL) }
-    try await runtime.register(
-      plugins.makeProvider(
-        from: ConfiguredProvider(
-          id: ProviderID.openAI.rawValue,
-          kind: .openAICompatible,
-          baseURL: baseURL,
-          apiKey: options.apiKeyOverride ?? environment["MAI_API_KEY"]
-            ?? environment["OPENAI_API_KEY"]),
-        environment: environment))
-    return []
+    let openAI = ConfiguredProvider(
+      id: ProviderID.openAI.rawValue,
+      kind: .openAICompatible,
+      baseURL: baseURL,
+      apiKey: options.apiKeyOverride ?? environment["MAI_API_KEY"]
+        ?? environment["OPENAI_API_KEY"])
+    try await runtime.register(plugins.makeProvider(from: openAI, environment: environment))
+    // The visual workspace drafts a configuration from these implicit providers.
+    // It references the API key through its environment variable instead of
+    // copying the secret into a file.
+    var draft = openAI
+    draft.apiKey = nil
+    draft.apiKeyEnvironment = ["MAI_API_KEY", "OPENAI_API_KEY"].first { environment[$0] != nil }
+    return RuntimeSetup(catalogs: [], implicitProviders: [hello, draft])
   }
 
   private static func selectedProfile(
@@ -517,8 +600,11 @@ private struct MaiCLI {
     ocrProvider: any OCRProvider,
     configuration: MaiConfiguration?,
     catalogs: [MCPServerCatalog],
+    visual: VisualBridge,
     terminal: TerminalWriter
   ) async {
+    var configuration = configuration
+    var catalogs = catalogs
     await terminal.line("mai — MaiCore agent REPL")
     await terminal.line("Type /help for commands. Agent: \(session.profile.agentID)")
 
@@ -537,8 +623,9 @@ private struct MaiCLI {
           runtime: runtime,
           plugins: plugins,
           ocrProvider: ocrProvider,
-          configuration: configuration,
-          catalogs: catalogs,
+          configuration: &configuration,
+          catalogs: &catalogs,
+          visual: visual,
           terminal: terminal)
         {
           return
@@ -594,8 +681,9 @@ private struct MaiCLI {
     runtime: AgentRuntime,
     plugins: PluginRegistry,
     ocrProvider: any OCRProvider,
-    configuration: MaiConfiguration?,
-    catalogs: [MCPServerCatalog],
+    configuration: inout MaiConfiguration?,
+    catalogs: inout [MCPServerCatalog],
+    visual: VisualBridge,
     terminal: TerminalWriter
   ) async -> Bool {
     let parts = input.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(String.init)
@@ -738,6 +826,17 @@ private struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/copy":
+      await copyToClipboard(argument, session: session, terminal: terminal)
+    case "/visual":
+      await runVisualMode(
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        catalogs: &catalogs,
+        visual: visual,
+        terminal: terminal)
     case "/clear":
       session.reset()
       await terminal.line("Conversation cleared.")
@@ -745,6 +844,73 @@ private struct MaiCLI {
       await terminal.line("Unknown command. Type /help.")
     }
     return false
+  }
+
+  private static func copyToClipboard(
+    _ argument: String,
+    session: REPLSession,
+    terminal: TerminalWriter
+  ) async {
+    do {
+      let selection = try TranscriptCopy.selection(parsing: argument)
+      let result = try TranscriptCopy.text(for: selection, in: session.history.messages)
+      try SystemClipboard.write(result.text)
+      let count = result.messages.count
+      let subject =
+        selection == .lastAssistantReply
+        ? "the last reply" : "\(count) message\(count == 1 ? "" : "s")"
+      await terminal.line(
+        "Copied \(subject) (\(result.text.count) characters) to the clipboard.")
+    } catch let error as TranscriptCopyError {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      if case .invalidCount = error { await terminal.line("Usage: /copy [N]") }
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  /// Hands the terminal to the SwiftTUI workspace and adopts its focused
+  /// conversation, registrations, and configuration draft when it returns.
+  private static func runVisualMode(
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    catalogs: inout [MCPServerCatalog],
+    visual: VisualBridge,
+    terminal: TerminalWriter
+  ) async {
+    guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
+      await terminal.line("Visual mode needs an interactive terminal.", to: .standardError)
+      return
+    }
+    let launch = VisualLaunch(
+      focusedConversation: session.visualSeed(),
+      snapshot: session.visualSnapshot,
+      configuration: configuration ?? MaiConfiguration(providers: visual.implicitProviders),
+      configurationPath: visual.configurationPath,
+      catalogs: catalogs,
+      environment: ProcessInfo.processInfo.environment)
+    let approvals = VisualApprovalHandler()
+    await visual.approvalHandler.setDelegate(approvals)
+    do {
+      let outcome = try await VisualMode.run(
+        launch,
+        runtime: runtime,
+        plugins: plugins,
+        approvals: approvals)
+      await visual.approvalHandler.setDelegate(nil)
+      session.adopt(outcome.focusedConversation)
+      session.visualSnapshot = outcome.snapshot
+      catalogs = outcome.catalogs
+      if outcome.configurationChanged || configuration != nil {
+        configuration = outcome.configuration
+      }
+      await terminal.line(outcome.summary)
+    } catch {
+      await visual.approvalHandler.setDelegate(nil)
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
   }
 
   private static func handleChatCommand(
@@ -1006,6 +1172,16 @@ private struct MaiCLI {
           apiKeyEnvironment: "OPENAI_API_KEY"),
       ],
       toolSources: [
+        ConfiguredToolSource(
+          id: "standard-tools",
+          kind: MaiStandardToolsPlugin.factoryKind,
+          options: [
+            "webSearchProvider": .string(MaiWebSearchProvider.exa.rawValue),
+            "weatherLocation": .string(""),
+            "mastodonInstance": .string("mastodon.social"),
+            "mastodonAPIKeyEnvironment": .string("MASTODON_API_KEY"),
+            "mastodonWriteEnabled": .bool(false),
+          ]),
         ConfiguredToolSource(id: "example-tools", kind: "example", enabled: false)
       ],
       ocrProviders: [
@@ -1032,7 +1208,16 @@ private struct MaiCLI {
           instructions: "You are a helpful assistant. Use tools when needed.",
           provider: "openai",
           model: "your-model",
-          toolNames: [MaiCurrentTimeTool.name, MaiEchoTool.name, MaiReadTextFileTool.name],
+          toolNames: Set(
+            [
+              MaiCurrentTimeTool.name,
+              MaiEchoTool.name,
+              MaiReadTextFileTool.name,
+              MaiWeatherTool.name,
+              MaiWebSearchTool.name,
+              MaiWebFetchTool.name,
+              MaiMastodonTool.name,
+            ] + MaiGitHubTool.toolNames),
           subagentNames: ["researcher"],
           useToolProxy: true),
         AgentDefinition(
@@ -1058,6 +1243,8 @@ private struct MaiCLI {
     /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcps               List connected MCP servers
     /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
+    /copy [N]           Copy the last reply, or the last N messages, to the clipboard
+    /visual             Open the terminal workspace: split chats, providers, MCPs, tools
     /clear              Clear conversation history
     /exit               Exit the REPL
     """

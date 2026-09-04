@@ -29,6 +29,17 @@
   ],
   "toolSources": [
     {
+      "id": "standard-tools",
+      "kind": "standard-tools",
+      "options": {
+        "webSearchProvider": "exa",
+        "weatherLocation": "",
+        "mastodonInstance": "mastodon.social",
+        "mastodonAPIKeyEnvironment": "MASTODON_API_KEY",
+        "mastodonWriteEnabled": false
+      }
+    },
+    {
       "id": "example-tools",
       "kind": "example",
       "enabled": false
@@ -67,9 +78,26 @@
       "provider": "openai",
       "model": "your-model",
       "toolNames": [
+        "calculator",
         "current_time",
         "echo",
-        "read_text_file"
+        "github_ci_log",
+        "github_ci_status",
+        "github_commit",
+        "github_commits",
+        "github_issue",
+        "github_issues",
+        "github_list_files",
+        "github_list_prs",
+        "github_pr",
+        "github_pr_diff",
+        "github_read_file",
+        "github_releases",
+        "mastodon",
+        "read_text_file",
+        "weather",
+        "web_fetch",
+        "web_search"
       ],
       "subagentNames": [
         "researcher"
