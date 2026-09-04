@@ -1,5 +1,9 @@
 import CMaiPluginABI
+#if os(Linux)
+import Glibc
+#else
 import Darwin
+#endif
 import Foundation
 import MaiCore
 import MaiPluginSDK

@@ -1,9 +1,12 @@
 import Foundation
+#if canImport(Vision)
 import ImageIO
-import MaiCore
 import Vision
+#endif
+import MaiCore
 
 /// On-device OCR backed by Apple's Vision framework.
+#if canImport(Vision)
 public struct VisionOCRProvider: OCRProvider {
   public let descriptor = OCRProviderDescriptor(id: "vision", displayName: "Apple Vision OCR")
 
@@ -45,6 +48,7 @@ public struct VisionOCRProvider: OCRProvider {
     }.value
   }
 }
+#endif
 
 public struct MaiVisionOCRPlugin: MaiPlugin {
   public let manifest = PluginManifest(
@@ -56,12 +60,15 @@ public struct MaiVisionOCRPlugin: MaiPlugin {
   public init() {}
 
   public func register(in registry: PluginRegistry) async throws {
+#if canImport(Vision)
     try await registry.register(
       ocrFactory: VisionConfiguredOCRProviderFactory(),
       from: manifest.id)
+#endif
   }
 }
 
+#if canImport(Vision)
 public struct VisionConfiguredOCRProviderFactory: ConfiguredOCRProviderFactory {
   public let kind = "vision"
 
@@ -71,3 +78,4 @@ public struct VisionConfiguredOCRProviderFactory: ConfiguredOCRProviderFactory {
     VisionOCRProvider()
   }
 }
+#endif
