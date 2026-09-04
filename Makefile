@@ -8,8 +8,9 @@ XCODE_PACKAGE_FLAGS ?= -skipPackagePluginValidation
 DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
+BINDIR ?= /usr/local/bin
 
-.PHONY: all build test list run repl plugin-fixture fmt clean check-shared-tooling aitest-build
+.PHONY: all build test list run repl repl-install plugin-fixture fmt clean check-shared-tooling aitest-build
 
 all: build
 
@@ -65,7 +66,11 @@ run:
 	xcrun devicectl device process launch --terminate-existing --device "$$device" "$(BUNDLE_ID)"
 
 repl:
-	swift run --package-path MaiCore mai $(ARGS)
+	swift run --package-path MaiCore pmai $(ARGS)
+
+repl-install:
+	swift build --package-path MaiCore -c release --product pmai
+	sudo cp -f MaiCore/.build/release/pmai $(BINDIR)/pmai
 
 plugin-fixture:
 	swift build --package-path MaiCore --product MaiFixturePlugin

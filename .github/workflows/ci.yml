@@ -17,10 +17,10 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            artifact: mai-linux
+            artifact: pmai-linux
           - os: macos-latest
             name: macOS
-            artifact: mai-macos
+            artifact: pmai-macos
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -30,13 +30,13 @@ jobs:
         run: swift --version
 
       - name: Build release CLI
-        run: swift build --package-path MaiCore -c release --product mai
+        run: swift build --package-path MaiCore -c release --product pmai
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: MaiCore/.build/release/mai
+          path: MaiCore/.build/release/pmai
           if-no-files-found: error
 
   build:

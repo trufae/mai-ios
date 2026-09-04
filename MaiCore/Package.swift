@@ -15,7 +15,7 @@ let package = Package(
     .library(name: "MaiPluginSDK", targets: ["MaiPluginSDK"]),
     .library(name: "MaiPluginHost", targets: ["MaiPluginHost"]),
     .library(name: "MaiFixturePlugin", type: .dynamic, targets: ["MaiFixturePlugin"]),
-    .executable(name: "mai", targets: ["MaiCLI"]),
+    .executable(name: "pmai", targets: ["MaiCLI"]),
   ],
   targets: [
     .target(name: "MaiCore"),

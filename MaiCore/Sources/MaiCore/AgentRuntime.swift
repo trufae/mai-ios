@@ -144,10 +144,20 @@ public actor AgentRuntime {
     if request.toolCallingStrategy == .native, !definitions.isEmpty, !supportsNativeTools {
       throw AgentRuntimeError.nativeToolCallingUnavailable(request.provider)
     }
-    let usesTextToolProtocol =
-      !definitions.isEmpty
-      && (request.toolCallingStrategy == .json
-        || (request.toolCallingStrategy == .automatic && !supportsNativeTools))
+    let textToolMode: ToolCallingMode?
+    switch request.toolCallingStrategy {
+    case .automatic:
+      textToolMode = definitions.isEmpty || supportsNativeTools ? nil : .json
+    case .native:
+      textToolMode = nil
+    case .text:
+      textToolMode = definitions.isEmpty ? nil : .text
+    case .xml:
+      textToolMode = definitions.isEmpty ? nil : .xml
+    case .json:
+      textToolMode = definitions.isEmpty ? nil : .json
+    }
+    let usesTextToolProtocol = textToolMode != nil
     var transcript = request.messages
     var totalUsage: TokenUsage?
     var localModelTurns = 0
@@ -164,12 +174,13 @@ public actor AgentRuntime {
       await emit(.modelStarted(context, turn: localModelTurns))
 
       var providerMessages = transcript
-      if usesTextToolProtocol {
+      if let textToolMode {
         let insertionIndex =
           providerMessages.firstIndex {
             $0.role != .system && $0.role != .developer
           } ?? providerMessages.endIndex
-        providerMessages.insert(.system(textToolPrompt(definitions)), at: insertionIndex)
+        providerMessages.insert(
+          .system(textToolPrompt(definitions, mode: textToolMode)), at: insertionIndex)
       }
       var providerResponse = try await provider.complete(
         ProviderRequest(
@@ -187,10 +198,11 @@ public actor AgentRuntime {
         await emit(.provider(context, event))
       }
       try Task.checkCancellation()
-      if usesTextToolProtocol,
+      if let textToolMode,
         let call = textToolCall(
           in: providerResponse.message.text,
-          definitions: definitions)
+          definitions: definitions,
+          mode: textToolMode)
       {
         var content = providerResponse.message.content.filter {
           if case .reasoning = $0 { return true }
@@ -517,47 +529,29 @@ public actor AgentRuntime {
       toolCallingStrategy: definition.toolCallingStrategy)
   }
 
-  private func textToolPrompt(_ definitions: [ToolDefinition]) -> String {
-    let tools = definitions.map { definition in
-      JSONValue.object([
-        "name": .string(definition.name),
-        "description": .string(definition.description),
-        "inputSchema": definition.inputSchema,
-      ])
-    }
-    return """
-      Tools are available through a JSON fallback protocol. When a tool is required, reply with exactly one JSON object and no surrounding prose or Markdown:
-      {"tool":"exact tool name","arguments":{}}
-
-      Available tools:
-      \(JSONValue.array(tools).compactJSONString)
-
-      After a tool result, either call another tool with the same format or answer the user normally. Never invent tool names or repeat identical calls.
-      """
+  private func textToolPrompt(
+    _ definitions: [ToolDefinition],
+    mode: ToolCallingMode
+  ) -> String {
+    "Tools are available through a \(mode.displayName.uppercased()) fallback protocol.\n\n"
+      + AgentTooling.promptDescription(for: definitions, mode: mode)
   }
 
   private func textToolCall(
     in response: String,
-    definitions: [ToolDefinition]
+    definitions: [ToolDefinition],
+    mode: ToolCallingMode
   ) -> ToolCall? {
-    var raw = response.trimmingCharacters(in: .whitespacesAndNewlines)
-    if raw.hasPrefix("```") {
-      guard let firstNewline = raw.firstIndex(of: "\n") else { return nil }
-      raw = String(raw[raw.index(after: firstNewline)...])
-      if raw.hasSuffix("```") { raw.removeLast(3) }
-      raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    guard let data = raw.data(using: .utf8),
-      let value = try? JSONDecoder().decode(JSONValue.self, from: data),
-      let object = value.objectValue,
-      let suppliedName = object["tool"]?.stringValue ?? object["name"]?.stringValue
+    guard let parsed = AgentTooling.parseCalls(in: response, tools: definitions, mode: mode).first
     else { return nil }
-    let resolver = ToolNameResolver(definitions: definitions)
-    let name = resolver.canonicalName(for: suppliedName) ?? suppliedName
-    guard definitions.contains(where: { $0.name == name }) else { return nil }
-    let arguments = object["arguments"] ?? object["args"] ?? .object([:])
-    guard arguments.objectValue != nil else { return nil }
-    return ToolCall(id: "text_\(UUID().uuidString)", name: name, arguments: arguments)
+    let resolver = AgentToolNameResolver(tools: definitions)
+    let name = resolver.canonicalName(for: parsed.name) ?? parsed.name
+    guard let definition = definitions.first(where: { $0.name == name }) else { return nil }
+    let arguments = AgentTooling.normalizeArguments(parsed.argumentValues, for: definition)
+    return ToolCall(
+      id: parsed.toolCallID ?? "text_\(UUID().uuidString)",
+      name: name,
+      arguments: .object(arguments.mapValues(\.jsonValue)))
   }
 }
 

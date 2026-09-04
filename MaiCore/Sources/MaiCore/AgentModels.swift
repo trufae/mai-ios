@@ -495,6 +495,8 @@ public enum ToolChoice: Codable, Equatable, Sendable {
 public enum ToolCallingStrategy: String, Codable, Equatable, Sendable {
   case automatic
   case native
+  case text
+  case xml
   case json
 }
 
