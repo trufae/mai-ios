@@ -61,8 +61,10 @@ OpenAI-compatible or plugin providers, connect Streamable HTTP MCP servers,
 toggle the tools each conversation may call, register plugin tool sources,
 switch agents, and save the focused conversation as a named agent. Registrations
 apply to the running session immediately and accumulate in a configuration
-draft that "Save configuration" writes to the loaded config path, or to
-`~/.config/pmai/config.json` when none was loaded. Tool approvals raised while
+draft that is saved atomically to the loaded config path, or to
+`~/.config/pmai/config.json` when none was loaded. Provider, MCP, tool-source,
+model, system-prompt, and named-agent changes therefore survive a restart; the
+manual save control can also write the draft to a different path. Tool approvals raised while
 the workspace is open appear as a sheet instead of a stdin prompt; “Always
 (YOLO)” permits the current and subsequent calls for the session. Chats can be
 renamed from the sidebar, and deleting one requires confirmation. Leaving the

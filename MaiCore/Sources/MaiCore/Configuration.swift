@@ -420,6 +420,14 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     return try encoder.encode(self)
   }
 
+  public func save(to url: URL, prettyPrinted: Bool = true) throws {
+    try validate()
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(),
+      withIntermediateDirectories: true)
+    try encoded(prettyPrinted: prettyPrinted).write(to: url, options: .atomic)
+  }
+
   public func validate() throws {
     guard version == 1 else { throw MaiConfigurationError.unsupportedVersion(version) }
     try Self.requireUnique(providers.map(\.id), kind: "provider")

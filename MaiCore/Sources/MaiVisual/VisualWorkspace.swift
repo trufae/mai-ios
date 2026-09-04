@@ -88,6 +88,7 @@ public final class VisualWorkspace {
   public let environment: [String: String]
   public var configuration: MaiConfiguration
   public private(set) var configurationChanged = false
+  public private(set) var configurationNeedsSave = false
   public var configurationPath: String
   public private(set) var catalogs: [MCPServerCatalog]
   public private(set) var conversations: [VisualConversation]
@@ -322,13 +323,40 @@ public final class VisualWorkspace {
 
   public func useProvider(_ id: ProviderID) {
     guard let focused = focusedConversation else { return }
-    focused.profile.provider = id
+    useProvider(id, for: focused)
+  }
+
+  public func useProvider(_ id: ProviderID, for conversation: VisualConversation) {
+    conversation.profile.provider = id
     if modelCatalogProvider != id { modelCatalog = [] }
-    status = "'\(focused.title)' now uses provider '\(id)'."
+    persistAgentProfile(for: conversation)
+    status = "'\(conversation.title)' now uses provider '\(id)'."
   }
 
   public func useModel(_ id: String) {
-    focusedConversation?.profile.model = id
+    guard let focused = focusedConversation else { return }
+    useModel(id, for: focused)
+  }
+
+  public func useModel(_ id: String, for conversation: VisualConversation) {
+    conversation.profile.model = id
+    persistAgentProfile(for: conversation)
+  }
+
+  public func updateInstructions(_ instructions: String, for conversation: VisualConversation) {
+    conversation.profile.instructions = instructions
+    conversation.applyInstructions()
+    persistAgentProfile(for: conversation)
+  }
+
+  public func setStreaming(_ enabled: Bool, for conversation: VisualConversation) {
+    conversation.profile.stream = enabled
+    persistAgentProfile(for: conversation)
+  }
+
+  public func setToolProxy(_ enabled: Bool, for conversation: VisualConversation) {
+    conversation.profile.useToolProxy = enabled
+    persistAgentProfile(for: conversation)
   }
 
   public func useAgent(_ definition: AgentDefinition) {
@@ -344,6 +372,7 @@ public final class VisualWorkspace {
     } else {
       conversation.profile.toolNames.remove(name)
     }
+    persistAgentProfile(for: conversation)
   }
 
   public func fetchModels(for provider: ProviderID) async {
@@ -387,6 +416,7 @@ public final class VisualWorkspace {
     let provider = try await plugins.makeProvider(from: configured, environment: environment)
     try await runtime.register(provider, replacingExisting: true)
     upsert(configured, into: &configuration.providers)
+    try saveConfiguration()
     await refreshRegistries()
     status = "Registered provider '\(id)'."
   }
@@ -423,6 +453,7 @@ public final class VisualWorkspace {
     catalogs.removeAll { $0.serverID == catalog.serverID }
     catalogs.append(catalog)
     upsert(configured, into: &configuration.mcpServers)
+    try saveConfiguration()
     await refreshRegistries()
     status = "Connected MCP server '\(id)' with \(catalog.tools.count) tools."
   }
@@ -444,6 +475,7 @@ public final class VisualWorkspace {
       try await runtime.register(tool: tool, replacingExisting: true)
     }
     upsert(configured, into: &configuration.toolSources)
+    try saveConfiguration()
     await refreshRegistries()
     status = "Registered \(tools.count) tools from '\(id)'."
   }
@@ -458,19 +490,21 @@ public final class VisualWorkspace {
     definition.displayName = optional(form.displayName) ?? id
     try await runtime.register(agent: definition, replacingExisting: true)
     upsert(definition, into: &configuration.agents)
+    if configuration.defaultAgent == nil {
+      configuration.defaultAgent = id
+      markConfigurationChanged()
+    }
     focused.profile.id = id
+    try saveConfiguration()
     await refreshRegistries()
     status = "Saved agent '\(id)'."
   }
 
   /// Validates the draft and writes it to `configurationPath`.
   public func saveConfiguration() throws {
-    try configuration.validate()
     let url = URL(fileURLWithPath: configurationPath)
-    try FileManager.default.createDirectory(
-      at: url.deletingLastPathComponent(),
-      withIntermediateDirectories: true)
-    try configuration.encoded().write(to: url)
+    try configuration.save(to: url)
+    configurationNeedsSave = false
     status = "Saved configuration to \(configurationPath)."
   }
 
@@ -591,6 +625,29 @@ public final class VisualWorkspace {
     } else {
       items.append(item)
     }
+    markConfigurationChanged()
+  }
+
+  private func markConfigurationChanged() {
     configurationChanged = true
+    configurationNeedsSave = true
+  }
+
+  private func persistAgentProfile(for conversation: VisualConversation) {
+    let definition = conversation.profile
+    upsert(definition, into: &configuration.agents)
+    if configuration.defaultAgent == nil {
+      configuration.defaultAgent = definition.id
+      markConfigurationChanged()
+    }
+    do {
+      try saveConfiguration()
+      let runtime = runtime
+      Task {
+        try? await runtime.register(agent: definition, replacingExisting: true)
+      }
+    } catch {
+      status = "error: \(error.localizedDescription)"
+    }
   }
 }
