@@ -12,8 +12,12 @@ public actor VisualApprovalHandler: ApprovalHandler {
 
   private var presenter: (@Sendable (Pending) async -> Void)?
   private var continuations: [UUID: CheckedContinuation<ApprovalDecision, any Error>] = [:]
+  private let onAlwaysApprove: @Sendable () async -> Void
+  private var alwaysApproves = false
 
-  public init() {}
+  public init(onAlwaysApprove: @escaping @Sendable () async -> Void = {}) {
+    self.onAlwaysApprove = onAlwaysApprove
+  }
 
   public var pendingCount: Int { continuations.count }
 
@@ -31,6 +35,9 @@ public actor VisualApprovalHandler: ApprovalHandler {
   }
 
   public func decide(_ request: ApprovalRequest) async throws -> ApprovalDecision {
+    if alwaysApproves {
+      return .approve(arguments: request.call.arguments)
+    }
     guard let presenter else {
       return .deny(reason: "No interactive approval surface is available.")
     }
@@ -45,5 +52,15 @@ public actor VisualApprovalHandler: ApprovalHandler {
   /// sheet can safely deny a request that was already answered.
   public func resolve(_ id: UUID, with decision: ApprovalDecision) {
     continuations.removeValue(forKey: id)?.resume(returning: decision)
+  }
+
+  /// Enables automatic approval and approves every request already visible or queued.
+  public func resolveAlways(_ pending: [Pending]) async {
+    alwaysApproves = true
+    await onAlwaysApprove()
+    for item in pending {
+      continuations.removeValue(forKey: item.id)?.resume(
+        returning: .approve(arguments: item.request.call.arguments))
+    }
   }
 }

@@ -79,6 +79,26 @@ struct VisualRootView: View {
     ) { pending in
       ApprovalSheet(pending: pending, workspace: workspace)
     }
+    .sheet(
+      "Rename chat",
+      item: $workspace.pendingConversationRename,
+      onDismiss: { workspace.cancelConversationRename() }
+    ) { request in
+      RenameConversationSheet(request: request, workspace: workspace)
+    }
+    .confirmationDialog(
+      "Delete chat?",
+      item: $workspace.pendingConversationDeletion
+    ) { request in
+      Button("Delete", role: .destructive) {
+        workspace.confirmConversationDeletion(request)
+      }
+      Button("Cancel", role: .cancel) {
+        workspace.cancelConversationDeletion()
+      }
+    } message: { request in
+      Text("Delete '\(request.title)' permanently?")
+    }
     .task { await workspace.refreshRegistries() }
   }
 
@@ -114,15 +134,15 @@ struct VisualRootView: View {
   private var footerHint: String {
     switch workspace.selectedTab {
     case .chats:
-      "Alt+N new · Alt+V/S split · Alt+X close · Alt+arrows focus · Alt+B sidebar · Alt+C copy · Alt+K cancel · Alt+1-5 tabs"
+      "\(visualAlternateKeyName)+N new · \(visualAlternateKeyName)+V/S split · \(visualAlternateKeyName)+X close · \(visualAlternateKeyName)+arrows focus · \(visualAlternateKeyName)+B sidebar · \(visualAlternateKeyName)+C copy · \(visualAlternateKeyName)+K cancel · \(visualAlternateKeyName)+1-5 tabs"
     case .providers:
-      "Register OpenAI-compatible or plugin providers; 'Use' switches the focused chat · Alt+1-5 tabs"
+      "Register OpenAI-compatible or plugin providers; 'Use' switches the focused chat · \(visualAlternateKeyName)+1-5 tabs"
     case .mcp:
-      "Connect Streamable HTTP MCP servers; their tools appear in the Tools tab · Alt+1-5 tabs"
+      "Connect Streamable HTTP MCP servers; their tools appear in the Tools tab · \(visualAlternateKeyName)+1-5 tabs"
     case .tools:
-      "Toggle which tools the focused chat may call; register plugin tool sources · Alt+1-5 tabs"
+      "Toggle which tools the focused chat may call; register plugin tool sources · \(visualAlternateKeyName)+1-5 tabs"
     case .agents:
-      "Tune the focused chat, switch agents, or save the chat as a named agent · Alt+1-5 tabs"
+      "Tune the focused chat, switch agents, or save the chat as a named agent · \(visualAlternateKeyName)+1-5 tabs"
     }
   }
 
@@ -136,6 +156,25 @@ struct VisualRootView: View {
       clipboardWrite(text)
       ? "Copied the last reply of '\(focused.title)' to the clipboard."
       : "The terminal does not expose a clipboard; use /copy in the REPL."
+  }
+}
+
+struct RenameConversationSheet: View {
+  let request: ConversationActionRequest
+  @Bindable var workspace: VisualWorkspace
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 1) {
+      Text("Rename '\(request.title)'").bold()
+      TextField("Chat name", text: $workspace.conversationRenameDraft)
+        .onSubmit { workspace.confirmConversationRename(request) }
+      HStack(spacing: 2) {
+        Button("Rename") { workspace.confirmConversationRename(request) }
+        Button("Cancel", role: .cancel) { workspace.cancelConversationRename() }
+      }
+    }
+    .padding(1)
+    .frame(minWidth: 40, maxWidth: 70, alignment: .leading)
   }
 }
 
@@ -155,6 +194,9 @@ struct ApprovalSheet: View {
       HStack(spacing: 2) {
         Button("Approve") {
           workspace.resolveApproval(.approve(arguments: pending.request.call.arguments))
+        }
+        Button("Always (YOLO)") {
+          workspace.resolveApprovalAlways()
         }
         Button("Deny", role: .destructive) {
           workspace.resolveApproval(.deny(reason: "Denied by user."))

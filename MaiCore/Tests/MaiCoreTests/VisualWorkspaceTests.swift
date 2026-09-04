@@ -12,6 +12,14 @@ private let helloProfile = AgentDefinition(
   provider: .hello,
   model: "")
 
+private actor AlwaysApprovalRecorder {
+  private(set) var count = 0
+
+  func record() {
+    count += 1
+  }
+}
+
 @MainActor
 private func makeWorkspace(
   seed: VisualConversationSeed,
@@ -123,12 +131,32 @@ func workspaceSnapshotRoundTrip() async throws {
   #expect(resumed.focusedConversation?.transcript.messages.last?.text == "hey")
   #expect(resumed.conversations[0].transcript.messages.map(\.text) == ["Be brief.", "hi"])
 
+  let renamed = try #require(resumed.focusedConversation)
+  resumed.requestRenameFocusedConversation()
+  #expect(resumed.conversationRenameDraft == renamed.title)
+  let rename = try #require(resumed.pendingConversationRename)
+  resumed.conversationRenameDraft = "Renamed chat"
+  resumed.confirmConversationRename(rename)
+  #expect(renamed.title == "Renamed chat")
+  #expect(resumed.pendingConversationRename == nil)
+
+  let deletedID = resumed.focusedConversation?.id
   resumed.deleteFocusedConversation()
+  #expect(resumed.conversations.count == 2)
+  let deletion = try #require(resumed.pendingConversationDeletion)
+  #expect(deletion.conversationID == deletedID)
+  resumed.cancelConversationDeletion()
+  #expect(resumed.conversations.count == 2)
+
+  resumed.deleteFocusedConversation()
+  resumed.confirmConversationDeletion(try #require(resumed.pendingConversationDeletion))
   #expect(resumed.conversations.count == 1)
+  #expect(resumed.pendingConversationDeletion == nil)
   #expect(resumed.layout.panes.count == 2)
   #expect(resumed.focusedConversation?.id == resumed.conversations[0].id)
   resumed.deleteFocusedConversation()
   #expect(resumed.conversations.count == 1)
+  #expect(resumed.pendingConversationDeletion == nil)
 }
 
 @Test("Registering a provider updates the runtime and the configuration draft")
@@ -174,7 +202,10 @@ func workspaceRegistersProviders() async throws {
 @Test("Approvals raised during a run surface in the workspace and resolve the runtime")
 @MainActor
 func workspaceApprovals() async throws {
-  let approvals = VisualApprovalHandler()
+  let recorder = AlwaysApprovalRecorder()
+  let approvals = VisualApprovalHandler {
+    await recorder.record()
+  }
   let runtime = AgentRuntime(approvalHandler: approvals)
   let workspace = VisualWorkspace(
     launch: VisualLaunch(
@@ -200,6 +231,20 @@ func workspaceApprovals() async throws {
   while workspace.pendingApproval == nil { await Task.yield() }
   await approvals.detach()
   #expect(try await second.value == .deny(reason: "Visual mode ended before the approval."))
+  workspace.approvalSheetDismissed()
+  #expect(workspace.pendingApproval == nil)
+
+  await approvals.attach { pending in await workspace.present(pending) }
+  let third = Task { try await approvals.decide(request) }
+  let fourth = Task { try await approvals.decide(request) }
+  while workspace.pendingApprovalCount < 2 { await Task.yield() }
+  workspace.resolveApprovalAlways()
+  #expect(try await third.value == .approve(arguments: request.call.arguments))
+  #expect(try await fourth.value == .approve(arguments: request.call.arguments))
+  #expect(await recorder.count == 1)
+
+  let automatic = try await approvals.decide(request)
+  #expect(automatic == .approve(arguments: request.call.arguments))
 }
 
 @Test("The root view renders the focused conversation without a terminal")
@@ -219,6 +264,7 @@ func rootViewRenders() async throws {
   #expect(output.contains("planning"))
   #expect(output.contains("Hello from MaiCore: hi"))
   #expect(output.contains("Conversations"))
+  #expect(output.contains("Rename chat"))
   #expect(output.contains("Delete chat"))
   #expect(output.contains("Message (Return sends)"))
 }
