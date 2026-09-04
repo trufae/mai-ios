@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import MaiCore
 import MaiOpenAI
+import MaiPluginHost
 
 private struct CLIOptions {
   var configPath: String?
@@ -13,6 +14,7 @@ private struct CLIOptions {
   var systemOverride: String?
   var stream = true
   var imagePaths: [String] = []
+  var pluginPaths: [String] = []
   var initialPrompt: String?
   var printConfig = false
 
@@ -41,6 +43,8 @@ private struct CLIOptions {
         systemOverride = try Self.value(after: argument, in: arguments, index: &index)
       case "--image":
         imagePaths.append(try Self.value(after: argument, in: arguments, index: &index))
+      case "--plugin":
+        pluginPaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--no-stream":
         stream = false
       case "--print-config":
@@ -63,6 +67,98 @@ private struct CLIOptions {
     guard index < arguments.count else { throw CLIError.missingValue(option) }
     return arguments[index]
   }
+}
+
+private struct MaiCLIPlugin: MaiPlugin {
+  let manifest = PluginManifest(
+    id: "org.mai.cli-builtins",
+    displayName: "Mai CLI tools",
+    version: "1.0.0",
+    capabilities: [.agentTool])
+
+  func register(in registry: PluginRegistry) async throws {
+    try await registry.register(toolFactory: CLIHostToolFactory(), from: manifest.id)
+  }
+}
+
+private struct CLIHostToolFactory: ConfiguredToolFactory {
+  let kind = "cli-builtins"
+
+  func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
+    [
+      ClosureTool(
+        definition: ToolDefinition(
+          name: "echo",
+          description: "Return the supplied text.",
+          inputSchema: cliObjectSchema(
+            properties: ["text": .object(["type": .string("string")])],
+            required: ["text"]),
+          annotations: ToolAnnotations(
+            readOnly: true,
+            idempotent: true,
+            openWorld: false,
+            approval: .automatic))
+      ) { arguments, _ in
+        ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
+      },
+      ClosureTool(
+        definition: ToolDefinition(
+          name: "current_time",
+          description: "Return the current ISO-8601 date and time.",
+          inputSchema: cliObjectSchema(properties: [:], required: []),
+          annotations: ToolAnnotations(
+            readOnly: true,
+            idempotent: false,
+            openWorld: false,
+            approval: .automatic))
+      ) { _, _ in
+        ToolOutput(text: ISO8601DateFormatter().string(from: Date()))
+      },
+      ClosureTool(
+        definition: ToolDefinition(
+          name: "read_text_file",
+          description: "Read a UTF-8 text file from the CLI host.",
+          inputSchema: cliObjectSchema(
+            properties: ["path": .object(["type": .string("string")])],
+            required: ["path"]),
+          annotations: ToolAnnotations(
+            readOnly: true,
+            idempotent: true,
+            openWorld: false,
+            approval: .confirm))
+      ) { arguments, _ in
+        guard let path = arguments.objectValue?["path"]?.stringValue else {
+          return ToolOutput(text: "Missing path.", isError: true)
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
+        guard data.count <= 1_048_576 else {
+          return ToolOutput(text: "File exceeds the 1 MiB CLI tool limit.", isError: true)
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+          return ToolOutput(text: "File is not valid UTF-8.", isError: true)
+        }
+        return ToolOutput(content: [
+          .file(
+            FileContent(
+              name: URL(fileURLWithPath: path).lastPathComponent,
+              mimeType: "text/plain",
+              text: text))
+        ])
+      },
+    ]
+  }
+}
+
+private func cliObjectSchema(
+  properties: [String: JSONValue],
+  required: [String]
+) -> JSONValue {
+  .object([
+    "type": .string("object"),
+    "properties": .object(properties),
+    "required": .array(required.map(JSONValue.string)),
+    "additionalProperties": .bool(false),
+  ])
 }
 
 private enum CLIError: LocalizedError {
@@ -283,7 +379,23 @@ private struct MaiCLI {
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
       try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
-      try await registerHostTools(in: runtime)
+      try await plugins.install(MaiCLIPlugin(), origin: "built-in")
+      let nativePluginHost = NativePluginHost()
+      try await loadNativePlugins(
+        options: options,
+        loadedConfigurationPath: loaded?.path,
+        configuration: configuration,
+        host: nativePluginHost,
+        registry: plugins)
+      try await registerTools(
+        in: runtime,
+        plugins: plugins,
+        configuration: configuration,
+        environment: environment)
+      let ocrProvider = try await configuredOCRProvider(
+        plugins: plugins,
+        configuration: configuration,
+        environment: environment)
       let catalogs = try await configureRuntime(
         runtime,
         plugins: plugins,
@@ -314,6 +426,8 @@ private struct MaiCLI {
       await runREPL(
         session: &session,
         runtime: runtime,
+        plugins: plugins,
+        ocrProvider: ocrProvider,
         configuration: configuration,
         catalogs: catalogs,
         terminal: terminal)
@@ -321,6 +435,77 @@ private struct MaiCLI {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
       Darwin.exit(2)
     }
+  }
+
+  private static func loadNativePlugins(
+    options: CLIOptions,
+    loadedConfigurationPath: String?,
+    configuration: MaiConfiguration?,
+    host: NativePluginHost,
+    registry: PluginRegistry
+  ) async throws {
+    let currentDirectory = URL(
+      fileURLWithPath: FileManager.default.currentDirectoryPath,
+      isDirectory: true)
+    let configDirectory =
+      loadedConfigurationPath.map {
+        URL(fileURLWithPath: $0).deletingLastPathComponent()
+      } ?? currentDirectory
+    let configured =
+      configuration?.plugins.filter(\.enabled).map {
+        (entry: $0, baseURL: configDirectory)
+      } ?? []
+    let commandLine = options.pluginPaths.map {
+      (entry: ConfiguredPlugin(path: $0), baseURL: currentDirectory)
+    }
+
+    for item in configured + commandLine {
+      let expanded = NSString(string: item.entry.path).expandingTildeInPath
+      let url = URL(fileURLWithPath: expanded, relativeTo: item.baseURL).standardizedFileURL
+      do {
+        _ = try await host.loadPlugin(at: url, into: registry)
+      } catch {
+        if item.entry.required { throw error }
+        FileHandle.standardError.write(
+          Data(
+            "warning: optional plugin '\(url.path)' was not loaded: \(error.localizedDescription)\n"
+              .utf8))
+      }
+    }
+  }
+
+  private static func registerTools(
+    in runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: MaiConfiguration?,
+    environment: [String: String]
+  ) async throws {
+    let builtins = try await plugins.makeTools(
+      kind: "cli-builtins",
+      context: PluginFactoryContext(id: "cli-builtins", environment: environment))
+    for tool in builtins { try await runtime.register(tool: tool) }
+
+    for source in configuration?.toolSources ?? [] where source.enabled {
+      let tools = try await plugins.makeTools(
+        kind: source.kind,
+        context: source.context(environment: environment))
+      for tool in tools { try await runtime.register(tool: tool) }
+    }
+  }
+
+  private static func configuredOCRProvider(
+    plugins: PluginRegistry,
+    configuration: MaiConfiguration?,
+    environment: [String: String]
+  ) async throws -> any OCRProvider {
+    if let configured = configuration?.ocrProviders.first(where: \.enabled) {
+      return try await plugins.makeOCRProvider(
+        kind: configured.kind,
+        context: configured.context(environment: environment))
+    }
+    return try await plugins.makeOCRProvider(
+      kind: "vision",
+      context: PluginFactoryContext(id: "vision", environment: environment))
   }
 
   private static func configureRuntime(
@@ -340,8 +525,11 @@ private struct MaiCLI {
       }
       var catalogs: [MCPServerCatalog] = []
       for server in configuration.mcpServers where server.enabled {
-        let client = MCPClient(configuration: try server.resolved(environment: environment))
-        catalogs.append(try await runtime.register(mcp: client))
+        let source = try await plugins.makeMCPToolSource(
+          kind: server.kind,
+          configuration: server,
+          environment: environment)
+        catalogs.append(try await runtime.register(mcp: source))
       }
       let knownTools = Set(await runtime.availableTools().map(\.name))
       for agent in configuration.agents {
@@ -371,70 +559,6 @@ private struct MaiCLI {
             ?? environment["OPENAI_API_KEY"]),
         environment: environment))
     return []
-  }
-
-  private static func registerHostTools(in runtime: AgentRuntime) async throws {
-    try await runtime.register(
-      tool: ClosureTool(
-        definition: ToolDefinition(
-          name: "echo",
-          description: "Return the supplied text.",
-          inputSchema: objectSchema(
-            properties: ["text": .object(["type": .string("string")])],
-            required: ["text"]),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: true,
-            openWorld: false,
-            approval: .automatic))
-      ) { arguments, _ in
-        ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
-      })
-    try await runtime.register(
-      tool: ClosureTool(
-        definition: ToolDefinition(
-          name: "current_time",
-          description: "Return the current ISO-8601 date and time.",
-          inputSchema: objectSchema(properties: [:], required: []),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: false,
-            openWorld: false,
-            approval: .automatic))
-      ) { _, _ in
-        ToolOutput(text: ISO8601DateFormatter().string(from: Date()))
-      })
-    try await runtime.register(
-      tool: ClosureTool(
-        definition: ToolDefinition(
-          name: "read_text_file",
-          description: "Read a UTF-8 text file from the CLI host.",
-          inputSchema: objectSchema(
-            properties: ["path": .object(["type": .string("string")])],
-            required: ["path"]),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: true,
-            openWorld: false,
-            approval: .confirm))
-      ) { arguments, _ in
-        guard let path = arguments.objectValue?["path"]?.stringValue else {
-          return ToolOutput(text: "Missing path.", isError: true)
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
-        guard data.count <= 1_048_576 else {
-          return ToolOutput(text: "File exceeds the 1 MiB CLI tool limit.", isError: true)
-        }
-        guard let text = String(data: data, encoding: .utf8) else {
-          return ToolOutput(text: "File is not valid UTF-8.", isError: true)
-        }
-        return ToolOutput(content: [
-          .file(
-            FileContent(
-              name: URL(fileURLWithPath: path).lastPathComponent, mimeType: "text/plain", text: text
-            ))
-        ])
-      })
   }
 
   private static func selectedProfile(
@@ -468,6 +592,8 @@ private struct MaiCLI {
   private static func runREPL(
     session: inout REPLSession,
     runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    ocrProvider: any OCRProvider,
     configuration: MaiConfiguration?,
     catalogs: [MCPServerCatalog],
     terminal: TerminalWriter
@@ -488,6 +614,8 @@ private struct MaiCLI {
           text,
           session: &session,
           runtime: runtime,
+          plugins: plugins,
+          ocrProvider: ocrProvider,
           configuration: configuration,
           catalogs: catalogs,
           terminal: terminal)
@@ -542,6 +670,8 @@ private struct MaiCLI {
     _ input: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    ocrProvider: any OCRProvider,
     configuration: MaiConfiguration?,
     catalogs: [MCPServerCatalog],
     terminal: TerminalWriter
@@ -558,6 +688,14 @@ private struct MaiCLI {
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
         await terminal.line("\(selected) \(provider.id) — \(provider.displayName)")
+      }
+    case "/plugins":
+      for plugin in await plugins.installedPlugins() {
+        let capabilities = plugin.manifest.capabilities.map(\.rawValue).sorted().joined(
+          separator: ", ")
+        let origin = plugin.origin.map { " — \($0)" } ?? ""
+        await terminal.line(
+          "\(plugin.manifest.id) \(plugin.manifest.version) [\(capabilities)]\(origin)")
       }
     case "/models":
       let providerID = argument.isEmpty ? session.profile.provider : ProviderID(argument)
@@ -650,7 +788,8 @@ private struct MaiCLI {
       }
       do {
         let path = imageArguments[1].trimmingCharacters(in: .whitespacesAndNewlines)
-        session.pendingContent.append(try await imageContent(path: path, mode: mode))
+        session.pendingContent.append(
+          try await imageContent(path: path, mode: mode, ocrProvider: ocrProvider))
         if mode == .ocr {
           let markdownName = (path as NSString).lastPathComponent
           await terminal.line(
@@ -885,7 +1024,8 @@ private struct MaiCLI {
 
   private static func imageContent(
     path: String,
-    mode: ImageAttachmentMode
+    mode: ImageAttachmentMode,
+    ocrProvider: any OCRProvider
   ) async throws -> ContentPart {
     let loaded = try loadImage(path: path)
     return try await ImageAttachmentImporter.content(
@@ -893,7 +1033,7 @@ private struct MaiCLI {
       mimeType: loaded.mimeType,
       filename: loaded.url.lastPathComponent,
       mode: mode,
-      ocrProvider: mode == .ocr ? VisionOCRProvider() : nil)
+      ocrProvider: mode == .ocr ? ocrProvider : nil)
   }
 
   private static func loadImage(path: String) throws -> (data: Data, url: URL, mimeType: String) {
@@ -913,21 +1053,12 @@ private struct MaiCLI {
     return (data, url, mimeType)
   }
 
-  private static func objectSchema(
-    properties: [String: JSONValue],
-    required: [String]
-  ) -> JSONValue {
-    .object([
-      "type": .string("object"),
-      "properties": .object(properties),
-      "required": .array(required.map(JSONValue.string)),
-      "additionalProperties": .bool(false),
-    ])
-  }
-
   private static func sampleConfiguration() -> MaiConfiguration {
     MaiConfiguration(
       defaultAgent: "hello",
+      plugins: [
+        ConfiguredPlugin(path: "./plugins/example.dylib", enabled: false)
+      ],
       providers: [
         ConfiguredProvider(id: "hello", kind: .hello),
         ConfiguredProvider(
@@ -935,6 +1066,12 @@ private struct MaiCLI {
           kind: .openAICompatible,
           baseURL: URL(string: "https://api.openai.com/v1"),
           apiKeyEnvironment: "OPENAI_API_KEY"),
+      ],
+      toolSources: [
+        ConfiguredToolSource(id: "example-tools", kind: "example", enabled: false)
+      ],
+      ocrProviders: [
+        ConfiguredOCRProvider(id: "vision", kind: "vision")
       ],
       mcpServers: [
         ConfiguredMCPServer(
@@ -970,6 +1107,7 @@ private struct MaiCLI {
   }
 
   private static let replHelp = """
+    /plugins            List statically and dynamically loaded plugins
     /providers          List registered providers
     /models [PROVIDER]  List models from the current or named provider
     /provider ID        Select a provider
@@ -1006,7 +1144,8 @@ private struct MaiCLI {
         mai [options] [message]
 
       Options:
-        --config PATH       load providers, MCPs, agents, and approvals from JSON
+        --config PATH       load plugins, providers, tools, MCPs, agents, and approvals
+        --plugin PATH       load a native .dylib plugin (repeatable)
         --print-config      print a complete example configuration
         --agent ID          select a configured agent
         --provider ID       override the selected provider

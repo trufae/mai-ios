@@ -44,7 +44,7 @@ public struct MCPResourceDescriptor: Codable, Equatable, Identifiable, Sendable 
   }
 }
 
-public struct MCPServerCatalog: Equatable, Sendable {
+public struct MCPServerCatalog: Codable, Equatable, Sendable {
   public var serverID: String
   public var serverName: String?
   public var protocolVersion: String

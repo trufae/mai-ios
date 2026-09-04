@@ -32,7 +32,7 @@ public struct OCRProviderDescriptor: Codable, Equatable, Sendable {
   }
 }
 
-public struct OCRRequest: Equatable, Sendable {
+public struct OCRRequest: Codable, Equatable, Sendable {
   public var imageData: Data
   public var mimeType: String
   public var filename: String
@@ -44,7 +44,7 @@ public struct OCRRequest: Equatable, Sendable {
   }
 }
 
-public struct OCRResult: Equatable, Sendable {
+public struct OCRResult: Codable, Equatable, Sendable {
   public var markdown: String
 
   public init(markdown: String) {

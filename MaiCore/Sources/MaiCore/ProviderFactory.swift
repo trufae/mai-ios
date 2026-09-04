@@ -34,7 +34,7 @@ public struct MaiCoreBuiltinsPlugin: MaiPlugin {
     id: "org.mai.core-builtins",
     displayName: "MaiCore built-ins",
     version: "1.0.0",
-    capabilities: [.chatProvider])
+    capabilities: [.chatProvider, .ocrProvider, .mcpToolSource])
 
   public init() {}
 
@@ -42,5 +42,34 @@ public struct MaiCoreBuiltinsPlugin: MaiPlugin {
     try await registry.register(
       providerFactory: HelloConfiguredProviderFactory(),
       from: manifest.id)
+    try await registry.register(
+      ocrFactory: VisionConfiguredOCRProviderFactory(),
+      from: manifest.id)
+    try await registry.register(
+      mcpFactory: StreamableHTTPMCPFactory(),
+      from: manifest.id)
+  }
+}
+
+public struct VisionConfiguredOCRProviderFactory: ConfiguredOCRProviderFactory {
+  public let kind = "vision"
+
+  public init() {}
+
+  public func makeOCRProvider(context: PluginFactoryContext) throws -> any OCRProvider {
+    VisionOCRProvider()
+  }
+}
+
+public struct StreamableHTTPMCPFactory: ConfiguredMCPToolSourceFactory {
+  public let kind = "streamable-http"
+
+  public init() {}
+
+  public func makeMCPToolSource(
+    from configuration: ConfiguredMCPServer,
+    environment: [String: String]
+  ) throws -> any MCPToolSource {
+    MCPClient(configuration: try configuration.resolved(environment: environment))
   }
 }

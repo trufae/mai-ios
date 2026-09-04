@@ -51,6 +51,14 @@ The CLI currently injects the on-device `VisionOCRProvider`. Other hosts can
 provide a different OCR implementation without coupling it to their chat/model
 provider; PocketMai does this to preserve its layout-aware Markdown OCR.
 
+The CLI also loads trusted native plugins from repeated `--plugin PATH` options
+or from the configuration's `plugins` array. Relative config paths are resolved
+from the config file's directory. `/plugins` shows built-in, statically linked,
+and dynamically loaded plugins with their capabilities and origins. A plugin's
+provider, tool-source, OCR, and MCP factory kinds are selected by the matching
+`kind` fields in `providers`, `toolSources`, `ocrProviders`, and `mcpServers`.
+See [PLUGIN_API.md](PLUGIN_API.md) for the versioned ABI and fixture command.
+
 Custom model providers implement `ChatProvider` and register directly with
 `AgentRuntime`. Configuration-backed hosts can additionally implement
 `ConfiguredProviderFactory` and expose it from a `MaiPlugin` installed in the
@@ -67,7 +75,8 @@ of being stored directly in JSON.
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
 list the tools and child agents they are allowed to use. The built-in CLI host
-tools are `echo`, `current_time`, and `read_text_file`.
+tools are `echo`, `current_time`, and `read_text_file`; they register through
+the same plugin registry as external tools.
 
 The example MCP entry is disabled so the example remains safe to inspect. Set
 its URL, enable it, discover its tools with `/tools`, and add the names you want

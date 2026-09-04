@@ -88,7 +88,7 @@ private struct FixtureProviderFactory: ConfiguredProviderFactory {
 private struct FixtureToolFactory: ConfiguredToolFactory {
   let kind = "fixture"
 
-  func makeTools(context: PluginFactoryContext) throws -> [any AgentTool] {
+  func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
     [
       ClosureTool(
         definition: ToolDefinition(name: "fixture_echo", description: "Fixture"),
