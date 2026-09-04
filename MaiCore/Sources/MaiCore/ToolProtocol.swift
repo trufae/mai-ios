@@ -1,4 +1,3 @@
-import CoreFoundation
 import Foundation
 
 /// Selects the wire format used when a model cannot call tools natively.
@@ -55,104 +54,7 @@ public enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendab
   }
 }
 
-public enum AgentToolArgumentValue: Sendable {
-  case string(String)
-  case bool(Bool)
-  case int(Int)
-  case double(Double)
-  case object([String: AgentToolArgumentValue])
-  case array([AgentToolArgumentValue])
-  case null
-
-  public init(json: Any) {
-    switch json {
-    case let bool as Bool:
-      self = .bool(bool)
-    case let int as Int:
-      self = .int(int)
-    case let number as NSNumber:
-      if CFGetTypeID(number) == CFBooleanGetTypeID() {
-        self = .bool(number.boolValue)
-      } else {
-        let double = number.doubleValue
-        self = double.rounded() == double ? .int(number.intValue) : .double(double)
-      }
-    case let double as Double:
-      self = double.rounded() == double ? .int(Int(double)) : .double(double)
-    case let string as String:
-      self = .string(string)
-    case let object as [String: Any]:
-      self = .object(object.mapValues { AgentToolArgumentValue(json: $0) })
-    case let array as [Any]:
-      self = .array(array.map { AgentToolArgumentValue(json: $0) })
-    default:
-      self = .null
-    }
-  }
-
-  public var stringValue: String {
-    switch self {
-    case .string(let value): return value
-    case .bool(let value): return value ? "true" : "false"
-    case .int(let value): return String(value)
-    case .double(let value): return String(value)
-    case .object, .array:
-      guard
-        let data = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys]),
-        let string = String(data: data, encoding: .utf8)
-      else { return "" }
-      return string
-    case .null: return ""
-    }
-  }
-
-  public var numberValue: Double? {
-    switch self {
-    case .int(let value): return Double(value)
-    case .double(let value): return value
-    case .string(let value): return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
-    default: return nil
-    }
-  }
-
-  public var boolValue: Bool? {
-    switch self {
-    case .bool(let value): return value
-    case .int(let value) where value == 0 || value == 1: return value == 1
-    case .string(let value):
-      switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-      case "true", "1", "yes": return true
-      case "false", "0", "no": return false
-      default: return nil
-      }
-    default: return nil
-    }
-  }
-
-  public var jsonObject: Any {
-    switch self {
-    case .string(let value): return value
-    case .bool(let value): return value
-    case .int(let value): return value
-    case .double(let value): return value
-    case .object(let value): return value.mapValues(\.jsonObject)
-    case .array(let value): return value.map(\.jsonObject)
-    case .null: return NSNull()
-    }
-  }
-
-  public var jsonValue: JSONValue {
-    switch self {
-    case .string(let value): .string(value)
-    case .bool(let value): .bool(value)
-    case .int(let value): .integer(value)
-    case .double(let value): .number(value)
-    case .object(let value): .object(value.mapValues(\.jsonValue))
-    case .array(let value): .array(value.map(\.jsonValue))
-    case .null: .null
-    }
-  }
-}
+public typealias AgentToolArgumentValue = JSONValue
 
 public struct ParsedToolCall: Identifiable, Sendable {
   public let id = UUID()
@@ -176,7 +78,7 @@ public struct ParsedToolCall: Identifiable, Sendable {
     self.name = name
     let values = argumentValues ?? arguments.mapValues { AgentToolArgumentValue.string($0) }
     self.argumentValues = values
-    self.arguments = values.mapValues(\.stringValue)
+    self.arguments = values.mapValues(\.coercedStringValue)
     self.rawBlock = rawBlock
     self.argsJSON = argsJSON ?? AgentTooling.compactJSON(values)
     self.toolCallID = toolCallID
@@ -842,9 +744,9 @@ public enum AgentTooling {
     case "bool", "boolean":
       return .bool(true)
     case "int", "integer":
-      return .int(1)
+      return .integer(1)
     case "number", "float", "double":
-      return .double(1)
+      return .number(1)
     case "array", "list":
       return .array([])
     case "object", "dictionary", "map":
@@ -872,7 +774,8 @@ public enum AgentTooling {
   public static func normalizeArguments(_ arguments: [String: String], for tool: ToolDefinition?)
     -> [String: String]
   {
-    normalizeArguments(arguments.mapValues { .string($0) }, for: tool).mapValues(\.stringValue)
+    normalizeArguments(arguments.mapValues { .string($0) }, for: tool)
+      .mapValues(\.coercedStringValue)
   }
 
   public static func parameters(fromSchemaJSON schemaJSON: String) -> [ToolParameterDef] {
@@ -906,7 +809,7 @@ public enum AgentTooling {
       var lines = ["TOOL_CALL", "tool: \(call.name)"]
       for key in call.argumentValues.keys.sorted() {
         guard let value = call.argumentValues[key] else { continue }
-        lines.append("\(key): \(value.stringValue)")
+        lines.append("\(key): \(value.coercedStringValue)")
       }
       lines.append("END_TOOL_CALL")
       return lines.joined(separator: "\n")
@@ -1028,22 +931,23 @@ public enum AgentTooling {
     if case .null = value { return nil }
     switch parameter.type.lowercased() {
     case "integer", "int":
-      if case .int = value { return value }
-      if let number = value.numberValue, number.rounded() == number {
-        return .int(Int(number))
+      if case .integer = value { return value }
+      if let number = value.coercedNumberValue, number.rounded() == number {
+        return .integer(Int(number))
       }
       return parameter.required ? value : nil
     case "number":
-      if case .int = value { return value }
-      if let number = value.numberValue {
-        return number.rounded() == number ? .int(Int(number)) : .double(number)
+      if case .integer = value { return value }
+      if let number = value.coercedNumberValue {
+        return number.rounded() == number ? .integer(Int(number)) : .number(number)
       }
       return parameter.required ? value : nil
     case "boolean", "bool":
-      return value.boolValue.map(AgentToolArgumentValue.bool) ?? (parameter.required ? value : nil)
+      return value.coercedBoolValue.map(AgentToolArgumentValue.bool)
+        ?? (parameter.required ? value : nil)
     case "string":
       if case .string = value { return value }
-      return parameter.required ? .string(value.stringValue) : nil
+      return parameter.required ? .string(value.coercedStringValue) : nil
     default:
       return value
     }
@@ -1058,10 +962,10 @@ public enum AgentTooling {
       return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     case .bool(let bool):
       return !bool
-    case .int(let int):
+    case .integer(let int):
       let description = parameter.description.lowercased()
       return description.contains("default: \(int)") || description.contains("default \(int)")
-    case .double(let double):
+    case .number(let double):
       let description = parameter.description.lowercased()
       return description.contains("default: \(double)") || description.contains("default \(double)")
     default:
@@ -1091,7 +995,7 @@ public enum AgentTooling {
     return AgentNativeToolCall(
       id: id ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
       name: name,
-      arguments: args.mapValues(\.stringValue),
+      arguments: args.mapValues(\.coercedStringValue),
       argumentValues: args,
       rawArguments: rawArguments.isEmpty ? "{}" : rawArguments)
   }

@@ -49,7 +49,7 @@ final class PlainTextToolCallParsingTests: XCTestCase {
     XCTAssertEqual(normalized.name, ToolProxy.callName)
     XCTAssertEqual(normalized.argumentValues["name"]?.stringValue, "read_wiki_structure")
     XCTAssertEqual(
-      normalized.argumentValues["arguments"]?.stringValue.contains("trufae/mai"), true)
+      normalized.argumentValues["arguments"]?.coercedStringValue.contains("trufae/mai"), true)
   }
 
   @MainActor

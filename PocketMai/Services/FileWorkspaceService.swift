@@ -727,7 +727,7 @@ enum FileWorkspaceService {
       guard let contentValue = arguments["content"] ?? arguments["text"] else {
         return "Error: content is required."
       }
-      let content = contentValue.stringValue
+      let content = contentValue.coercedStringValue
       guard let data = content.data(using: .utf8) else {
         return "Error: content must be UTF-8 text."
       }

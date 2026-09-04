@@ -93,6 +93,17 @@ public enum JSONValue: Codable, Equatable, Sendable {
   case bool(Bool)
   case null
 
+  public init(json: Any) {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: json, options: [.fragmentsAllowed]),
+      let value = try? JSONDecoder().decode(JSONValue.self, from: data)
+    else {
+      self = .null
+      return
+    }
+    self = value
+  }
+
   public init(from decoder: Decoder) throws {
     let container = try decoder.singleValueContainer()
     if container.decodeNil() {
@@ -166,6 +177,46 @@ public enum JSONValue: Codable, Equatable, Sendable {
     case .integer(let value): Double(value)
     case .number(let value): value
     default: nil
+    }
+  }
+
+  public var coercedStringValue: String {
+    switch self {
+    case .string(let value): value
+    case .integer(let value): String(value)
+    case .number(let value): String(value)
+    case .bool(let value): value ? "true" : "false"
+    case .object, .array: compactJSONString
+    case .null: ""
+    }
+  }
+
+  public var coercedNumberValue: Double? {
+    numberValue ?? stringValue.flatMap {
+      Double($0.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+  }
+
+  public var coercedBoolValue: Bool? {
+    if let boolValue { return boolValue }
+    if intValue == 0 { return false }
+    if intValue == 1 { return true }
+    switch stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "true", "1", "yes", "on": return true
+    case "false", "0", "no", "off": return false
+    default: return nil
+    }
+  }
+
+  public var jsonObject: Any {
+    switch self {
+    case .object(let value): value.mapValues(\.jsonObject)
+    case .array(let value): value.map(\.jsonObject)
+    case .string(let value): value
+    case .integer(let value): value
+    case .number(let value): value
+    case .bool(let value): value
+    case .null: NSNull()
     }
   }
 

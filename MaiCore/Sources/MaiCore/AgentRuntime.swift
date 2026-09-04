@@ -551,7 +551,7 @@ public actor AgentRuntime {
     return ToolCall(
       id: parsed.toolCallID ?? "text_\(UUID().uuidString)",
       name: name,
-      arguments: .object(arguments.mapValues(\.jsonValue)))
+      arguments: .object(arguments))
   }
 }
 
