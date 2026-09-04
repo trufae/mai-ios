@@ -15,9 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            name: Linux
-            artifact: pmai-linux
+          - os: ubuntu-24.04
+            name: Linux x64
+            artifact: pmai-linux-x64
+          - os: ubuntu-24.04-arm
+            name: Linux arm64
+            artifact: pmai-linux-arm64
           - os: macos-latest
             name: macOS
             artifact: pmai-macos
