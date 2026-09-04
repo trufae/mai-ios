@@ -23,15 +23,69 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
   public init() {}
 
   public func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
-    let tools: [any AgentTool] = [
-      MaiEchoTool(),
-      MaiCurrentTimeTool(),
-      MaiCalculatorTool(),
-      MaiReadTextFileTool(),
-    ]
+    let webSearchProvider =
+      context.options["webSearchProvider"]?.stringValue
+      .flatMap(MaiWebSearchProvider.init(rawValue:)) ?? .exa
+    let latitude = context.options["weatherLatitude"]?.numberValue
+    let longitude = context.options["weatherLongitude"]?.numberValue
+    let coordinate = latitude.flatMap { latitude in
+      longitude.map { MaiCoordinate(latitude: latitude, longitude: $0) }
+    }
+    let tools: [any AgentTool] =
+      [
+        MaiEchoTool(),
+        MaiCurrentTimeTool(),
+        MaiCalculatorTool(),
+        MaiReadTextFileTool(),
+        MaiWeatherTool(
+          configuration: MaiWeatherConfiguration(
+            location: context.string("weatherLocation", environment: "MAI_WEATHER_LOCATION"),
+            coordinate: coordinate)),
+        MaiWebSearchTool(
+          configuration: MaiWebSearchConfiguration(
+            provider: webSearchProvider,
+            searXNGURL: context.string("searXNGURL", environment: "SEARXNG_URL"),
+            searXNGUsername: context.string(
+              "searXNGUsername", environment: "SEARXNG_USERNAME"),
+            searXNGPassword: context.secret(
+              "searXNGPassword", environmentOption: "searXNGPasswordEnvironment",
+              defaultEnvironment: "SEARXNG_PASSWORD"),
+            ollamaAPIKey: context.secret(
+              "ollamaAPIKey", environmentOption: "ollamaAPIKeyEnvironment",
+              defaultEnvironment: "OLLAMA_API_KEY"))),
+        MaiWebFetchTool(),
+        MaiMastodonTool(
+          configuration: MaiMastodonConfiguration(
+            instance: context.string(
+              "mastodonInstance", environment: "MASTODON_INSTANCE", default: "mastodon.social"),
+            apiKey: context.secret(
+              "mastodonAPIKey", environmentOption: "mastodonAPIKeyEnvironment",
+              defaultEnvironment: "MASTODON_API_KEY"),
+            writeEnabled: context.options["mastodonWriteEnabled"]?.boolValue ?? false)),
+      ]
+      + MaiGitHubTool.makeTools()
     guard let names = context.options["tools"]?.arrayValue else { return tools }
     let enabled = Set(names.compactMap(\.stringValue))
     return tools.filter { enabled.contains($0.definition.name) }
+  }
+}
+
+extension PluginFactoryContext {
+  fileprivate func string(
+    _ option: String,
+    environment name: String,
+    default defaultValue: String = ""
+  ) -> String {
+    options[option]?.stringValue ?? environment[name] ?? defaultValue
+  }
+
+  fileprivate func secret(
+    _ option: String,
+    environmentOption: String,
+    defaultEnvironment: String
+  ) -> String {
+    let environmentName = options[environmentOption]?.stringValue ?? defaultEnvironment
+    return environment[environmentName] ?? options[option]?.stringValue ?? ""
   }
 }
 
