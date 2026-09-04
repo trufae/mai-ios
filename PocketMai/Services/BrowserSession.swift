@@ -25,6 +25,8 @@ final class BrowserSession: NSObject, ObservableObject {
   @Published private(set) var canGoForward = false
   /// The expanded, hand-operated presentation is open.
   @Published var isExpanded = false
+  /// What the model last did with the page, shown under the card.
+  @Published private(set) var lastActivity = ""
 
   /// Last navigation failure, reported once by the next tool call.
   private var pendingLoadError: String?
@@ -65,6 +67,11 @@ final class BrowserSession: NSObject, ObservableObject {
 
   var displayHost: String {
     currentURL?.host ?? (title.isEmpty ? "Browser" : title)
+  }
+
+  func noteActivity(_ text: String) {
+    let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    lastActivity = collapsed.count > 48 ? String(collapsed.prefix(48)) + "…" : collapsed
   }
 
   // MARK: - Navigation

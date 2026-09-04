@@ -7,13 +7,24 @@ import WebKit
 struct BrowserWebViewHost: UIViewRepresentable {
   let session: BrowserSession
   let interactive: Bool
+  /// Mirrors `session.isExpanded`. SwiftUI only calls `updateUIView` when a
+  /// field changed, and this is the change that moves the page between hosts.
+  let isExpanded: Bool
 
   func makeUIView(context: Context) -> BrowserHostView {
     BrowserHostView()
   }
 
   func updateUIView(_ view: BrowserHostView, context: Context) {
+    // Exactly one host owns the page at a time: the expanded view while it is
+    // open, the card otherwise. The other host leaves the view alone so they
+    // do not keep stealing it from each other on every re-render.
+    guard interactive == isExpanded else { return }
     view.adopt(session.webView, viewportSize: session.viewportSize, interactive: interactive)
+  }
+
+  static func dismantleUIView(_ view: BrowserHostView, coordinator: ()) {
+    view.release()
   }
 }
 
@@ -27,14 +38,23 @@ final class BrowserHostView: UIView {
       addSubview(webView)
     }
     self.webView = webView
+    webView.isHidden = false
     webView.isUserInteractionEnabled = interactive
     clipsToBounds = true
     setNeedsLayout()
   }
 
+  /// Lets go of the page when this host disappears so a torn-down view
+  /// hierarchy never keeps it; the surviving host re-adopts it.
+  func release() {
+    guard let webView, webView.superview === self else { return }
+    webView.removeFromSuperview()
+  }
+
   override func layoutSubviews() {
     super.layoutSubviews()
-    guard let webView, viewportSize.width > 0, viewportSize.height > 0,
+    guard let webView, webView.superview === self,
+      viewportSize.width > 0, viewportSize.height > 0,
       bounds.width > 0, bounds.height > 0
     else {
       return
@@ -61,7 +81,7 @@ struct BrowserPiPCard: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      BrowserWebViewHost(session: session, interactive: false)
+      BrowserWebViewHost(session: session, interactive: false, isExpanded: session.isExpanded)
         .frame(width: cardSize.width, height: cardSize.height - captionHeight)
         .allowsHitTesting(false)
       HStack(spacing: 5) {
@@ -73,7 +93,7 @@ struct BrowserPiPCard: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
         }
-        Text(session.displayHost)
+        Text(session.lastActivity.isEmpty ? session.displayHost : session.lastActivity)
           .font(.caption2)
           .lineLimit(1)
         Spacer(minLength: 0)
@@ -142,7 +162,7 @@ struct BrowserExpandedView: View {
 
   var body: some View {
     NavigationStack {
-      BrowserWebViewHost(session: session, interactive: true)
+      BrowserWebViewHost(session: session, interactive: true, isExpanded: session.isExpanded)
         .background(Color(uiColor: .systemBackground))
         .safeAreaInset(edge: .top, spacing: 0) {
           addressBar

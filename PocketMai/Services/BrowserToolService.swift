@@ -96,6 +96,7 @@ enum BrowserTool {
     store: AppStore
   ) async -> String {
     let session = store.ensureBrowserSession()
+    session.noteActivity(activitySummary(name: name, arguments: arguments))
     switch name {
     case openName:
       return await open(arguments, session: session)
@@ -288,6 +289,35 @@ enum BrowserTool {
   }
 
   // MARK: - Result shaping
+
+  private static func activitySummary(name: String, arguments: [String: AgentToolArgumentValue])
+    -> String
+  {
+    switch name {
+    case openName:
+      let host =
+        BrowserSession.url(from: string(arguments["url"]))?.host ?? string(arguments["url"])
+      return "open \(host)"
+    case readName:
+      let what = string(arguments["what"]).lowercased()
+      return "read \(what.isEmpty ? "text" : what)"
+    case actName:
+      let action = string(arguments["action"]).lowercased()
+      let target = string(arguments["target"])
+      switch action {
+      case "type":
+        return target.isEmpty ? "type" : "type into \(target)"
+      case "scroll":
+        return "scroll \(string(arguments["direction"]).lowercased() == "up" ? "up" : "down")"
+      default:
+        return target.isEmpty ? action : "\(action) \(target)"
+      }
+    case evalName:
+      return "eval \(string(arguments["script"]))"
+    default:
+      return name
+    }
+  }
 
   private static func header(session: BrowserSession) -> String {
     let url = session.currentURL?.absoluteString ?? "about:blank"
