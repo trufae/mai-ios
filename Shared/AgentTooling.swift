@@ -8,3 +8,4 @@ typealias AgentNativeToolCall = MaiCore.AgentNativeToolCall
 typealias AgentToolNameResolver = MaiCore.AgentToolNameResolver
 typealias AgentTooling = MaiCore.AgentTooling
 typealias ToolCallingMode = MaiCore.ToolCallingMode
+typealias ToolProxy = MaiCore.ToolProxy

@@ -344,11 +344,17 @@ enum ToolAgentRegistry {
         return ToolProxy.listTools(
           arguments: visibleCall.argumentValues, definitions: fullDefinitions)
       case ToolProxy.callName:
-        return await ToolProxy.callTool(
+        let resolved = ToolProxy.resolveCall(
           arguments: visibleCall.argumentValues,
-          definitions: fullDefinitions,
+          definitions: fullDefinitions)
+        guard let call = resolved.call else {
+          return resolved.error ?? "Error: invalid proxied tool call."
+        }
+        return await executeConcrete(
+          call: call,
           conversation: conversation,
-          store: store)
+          store: store,
+          definitions: fullDefinitions)
       default:
         return
           "Error: proxy mode only exposes '\(ToolProxy.listName)' and '\(ToolProxy.callName)'. Use '\(ToolProxy.callName)' to call enabled tools."
@@ -536,150 +542,6 @@ enum MCPResourceTool {
     return serverName.lowercased()
       .split { !$0.isLetter && !$0.isNumber && $0 != "+" && $0 != "." && $0 != "-" }
       .contains { $0 == scheme }
-  }
-}
-
-@MainActor
-enum ToolProxy {
-  static let listName = "list-tools"
-  static let callName = "call-tool"
-
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: listName,
-      description:
-        "Search enabled tools by capability, tool name, or argument name.",
-      parameters: [
-        ToolParameterDef(
-          name: "keywords", type: "string",
-          description: "Space-separated task, tool, capability, or argument keywords.",
-          required: true)
-      ]
-    ),
-    ToolDefinition(
-      name: callName,
-      description:
-        "Call one enabled tool by exact name with JSON arguments.",
-      parameters: [
-        ToolParameterDef(
-          name: "name", type: "string",
-          description: "Exact tool name returned by list-tools.",
-          required: true),
-        ToolParameterDef(
-          name: "arguments", type: "object",
-          description: "JSON object with arguments for the selected tool. Use {} when none.",
-          required: true),
-      ]
-    ),
-  ]
-
-  static func listTools(
-    arguments: [String: AgentToolArgumentValue], definitions: [ToolDefinition]
-  ) -> String {
-    let keywords =
-      arguments["keywords"]?.stringValue ?? arguments["query"]?.stringValue
-      ?? arguments["filter"]?.stringValue ?? ""
-    let terms =
-      keywords
-      .lowercased()
-      .split { $0.isWhitespace || $0 == "," }
-      .map(String.init)
-
-    let matches = definitions.compactMap {
-      definition -> (definition: ToolDefinition, score: Int)? in
-      guard !terms.isEmpty else { return (definition, 0) }
-      let searchable = searchableText(for: definition)
-      let score = terms.reduce(0) { count, term in
-        searchable.contains(term) ? count + 1 : count
-      }
-      return score > 0 ? (definition, score) : nil
-    }
-    .sorted {
-      if $0.score != $1.score { return $0.score > $1.score }
-      return $0.definition.name < $1.definition.name
-    }
-
-    guard !matches.isEmpty else {
-      let suffix =
-        keywords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        ? "" : " matching '\(keywords)'"
-      return "No enabled tools\(suffix). Try broader keywords."
-    }
-
-    return matches.map { match in
-      toolSummary(match.definition)
-    }.joined(separator: "\n")
-  }
-
-  static func callTool(
-    arguments: [String: AgentToolArgumentValue],
-    definitions: [ToolDefinition],
-    conversation: Conversation,
-    store: AppStore
-  ) async -> String {
-    let requestedName =
-      arguments["name"]?.stringValue ?? arguments["tool_name"]?.stringValue
-      ?? arguments["tool"]?.stringValue ?? ""
-    let resolver = AgentToolNameResolver(tools: definitions)
-    guard let canonicalName = resolver.canonicalName(for: requestedName) else {
-      return
-        "Error: unknown tool '\(requestedName)'. Call \(listName) first with relevant keywords."
-    }
-    guard let targetDefinition = definitions.first(where: { $0.name == canonicalName }) else {
-      return "Error: unknown tool '\(requestedName)'."
-    }
-    let toolArguments = argumentsObject(from: arguments["arguments"])
-    let normalizedArguments = AgentTooling.normalizeArguments(toolArguments, for: targetDefinition)
-    let targetCall = ParsedToolCall(
-      name: canonicalName,
-      arguments: [:],
-      argumentValues: normalizedArguments,
-      rawBlock: ""
-    )
-    return await ToolAgentRegistry.executeConcrete(
-      call: targetCall,
-      conversation: conversation,
-      store: store,
-      definitions: definitions)
-  }
-
-  private static func searchableText(for definition: ToolDefinition) -> String {
-    ([definition.name, definition.description]
-      + definition.parameters.flatMap { [$0.name, $0.type, $0.description] })
-      .joined(separator: " ")
-      .lowercased()
-  }
-
-  private static func toolSummary(_ definition: ToolDefinition) -> String {
-    let arguments: String
-    if definition.parameters.isEmpty {
-      arguments = "no arguments"
-    } else {
-      arguments = definition.parameters.map { parameter in
-        let required = parameter.required ? "required" : "optional"
-        let description = parameter.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let suffix = description.isEmpty ? "" : " - \(description)"
-        return "\(parameter.name) (\(parameter.type), \(required))\(suffix)"
-      }.joined(separator: "; ")
-    }
-    return "- \(definition.name): \(definition.description) Arguments: \(arguments)."
-  }
-
-  private static func argumentsObject(
-    from value: AgentToolArgumentValue?
-  ) -> [String: AgentToolArgumentValue] {
-    guard let value else { return [:] }
-    switch value {
-    case .object(let object):
-      return object
-    case .string(let string):
-      guard let data = string.data(using: .utf8),
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-      else { return [:] }
-      return AgentTooling.argumentValues(object)
-    default:
-      return [:]
-    }
   }
 }
 

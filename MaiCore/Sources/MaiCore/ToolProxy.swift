@@ -1,0 +1,123 @@
+import Foundation
+
+/// Reduces a large tool catalog to two stable tools. Hosts remain responsible
+/// for executing the concrete call returned by `resolveCall`.
+public enum ToolProxy {
+  public static let listName = "list-tools"
+  public static let callName = "call-tool"
+
+  public static let definitions: [ToolDefinition] = [
+    ToolDefinition(
+      name: listName,
+      description: "Search enabled tools by capability, tool name, or argument name.",
+      parameters: [
+        ToolParameterDef(
+          name: "keywords",
+          type: "string",
+          description: "Space-separated task, tool, capability, or argument keywords.",
+          required: true)
+      ]),
+    ToolDefinition(
+      name: callName,
+      description: "Call one enabled tool by exact name with JSON arguments.",
+      parameters: [
+        ToolParameterDef(
+          name: "name",
+          type: "string",
+          description: "Exact tool name returned by list-tools.",
+          required: true),
+        ToolParameterDef(
+          name: "arguments",
+          type: "object",
+          description: "JSON object with arguments for the selected tool. Use {} when none.",
+          required: true),
+      ]),
+  ]
+
+  public static func listTools(
+    arguments: [String: AgentToolArgumentValue],
+    definitions: [ToolDefinition]
+  ) -> String {
+    let keywords =
+      arguments["keywords"]?.stringValue ?? arguments["query"]?.stringValue
+      ?? arguments["filter"]?.stringValue ?? ""
+    let terms = keywords.lowercased().split { $0.isWhitespace || $0 == "," }.map(String.init)
+    let matches = definitions.compactMap { definition -> (ToolDefinition, Int)? in
+      guard !terms.isEmpty else { return (definition, 0) }
+      let searchable = searchableText(for: definition)
+      let score = terms.count(where: searchable.contains)
+      return score > 0 ? (definition, score) : nil
+    }.sorted {
+      $0.1 == $1.1 ? $0.0.name < $1.0.name : $0.1 > $1.1
+    }
+
+    guard !matches.isEmpty else {
+      let suffix =
+        keywords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? "" : " matching '\(keywords)'"
+      return "No enabled tools\(suffix). Try broader keywords."
+    }
+    return matches.map { summary(for: $0.0) }.joined(separator: "\n")
+  }
+
+  public static func resolveCall(
+    arguments: [String: AgentToolArgumentValue],
+    definitions: [ToolDefinition]
+  ) -> (call: ParsedToolCall?, error: String?) {
+    let requestedName =
+      arguments["name"]?.stringValue ?? arguments["tool_name"]?.stringValue
+      ?? arguments["tool"]?.stringValue ?? ""
+    let resolver = AgentToolNameResolver(tools: definitions)
+    guard let canonicalName = resolver.canonicalName(for: requestedName) else {
+      return (
+        nil,
+        "Error: unknown tool '\(requestedName)'. Call \(listName) first with relevant keywords."
+      )
+    }
+    guard let definition = definitions.first(where: { $0.name == canonicalName }) else {
+      return (nil, "Error: unknown tool '\(requestedName)'.")
+    }
+    let normalized = AgentTooling.normalizeArguments(
+      argumentObject(from: arguments["arguments"]),
+      for: definition)
+    return (
+      ParsedToolCall(
+        name: canonicalName,
+        arguments: [:],
+        argumentValues: normalized,
+        rawBlock: ""),
+      nil
+    )
+  }
+
+  private static func searchableText(for definition: ToolDefinition) -> String {
+    ([definition.name, definition.description]
+      + definition.parameters.flatMap { [$0.name, $0.type, $0.description] })
+      .joined(separator: " ")
+      .lowercased()
+  }
+
+  private static func summary(for definition: ToolDefinition) -> String {
+    let arguments =
+      definition.parameters.isEmpty
+      ? "no arguments"
+      : definition.parameters.map { parameter in
+        let required = parameter.required ? "required" : "optional"
+        let detail = parameter.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(parameter.name) (\(parameter.type), \(required))"
+          + (detail.isEmpty ? "" : " - \(detail)")
+      }.joined(separator: "; ")
+    return "- \(definition.name): \(definition.description) Arguments: \(arguments)."
+  }
+
+  private static func argumentObject(
+    from value: AgentToolArgumentValue?
+  ) -> [String: AgentToolArgumentValue] {
+    if let object = value?.objectValue { return object }
+    guard let string = value?.stringValue,
+      let data = string.data(using: .utf8),
+      let decoded = try? JSONDecoder().decode(JSONValue.self, from: data)
+    else { return [:] }
+    return decoded.objectValue ?? [:]
+  }
+}
