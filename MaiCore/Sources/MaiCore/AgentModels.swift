@@ -48,11 +48,39 @@ public struct ModelDescriptor: Codable, Equatable, Identifiable, Sendable {
   public var id: String
   public var displayName: String
   public var ownedBy: String?
+  public var capabilities: ProviderCapabilities
+  /// Modalities explicitly declared by the model catalog. Nil means unknown.
+  public var inputModalities: Set<String>?
 
-  public init(id: String, displayName: String? = nil, ownedBy: String? = nil) {
+  public init(
+    id: String,
+    displayName: String? = nil,
+    ownedBy: String? = nil,
+    capabilities: ProviderCapabilities = [],
+    inputModalities: Set<String>? = nil
+  ) {
     self.id = id
     self.displayName = displayName ?? id
     self.ownedBy = ownedBy
+    self.capabilities = capabilities
+    self.inputModalities = inputModalities
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, displayName, ownedBy, capabilities, inputModalities
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let id = try container.decode(String.self, forKey: .id)
+    self.init(
+      id: id,
+      displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
+      ownedBy: try container.decodeIfPresent(String.self, forKey: .ownedBy),
+      capabilities: try container.decodeIfPresent(
+        ProviderCapabilities.self, forKey: .capabilities) ?? [],
+      inputModalities: try container.decodeIfPresent(
+        Set<String>.self, forKey: .inputModalities))
   }
 }
 
@@ -519,22 +547,25 @@ public struct GenerationOptions: Codable, Equatable, Sendable {
   public var temperature: Double?
   public var maxOutputTokens: Int?
   public var reasoningEffort: String?
+  public var includeStreamUsage: Bool
   public var additional: [String: JSONValue]
 
   public init(
     temperature: Double? = nil,
     maxOutputTokens: Int? = nil,
     reasoningEffort: String? = nil,
+    includeStreamUsage: Bool = true,
     additional: [String: JSONValue] = [:]
   ) {
     self.temperature = temperature
     self.maxOutputTokens = maxOutputTokens
     self.reasoningEffort = reasoningEffort
+    self.includeStreamUsage = includeStreamUsage
     self.additional = additional
   }
 
   private enum CodingKeys: String, CodingKey {
-    case temperature, maxOutputTokens, reasoningEffort, additional
+    case temperature, maxOutputTokens, reasoningEffort, includeStreamUsage, additional
   }
 
   public init(from decoder: Decoder) throws {
@@ -543,6 +574,8 @@ public struct GenerationOptions: Codable, Equatable, Sendable {
       temperature: try container.decodeIfPresent(Double.self, forKey: .temperature),
       maxOutputTokens: try container.decodeIfPresent(Int.self, forKey: .maxOutputTokens),
       reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
+      includeStreamUsage: try container.decodeIfPresent(Bool.self, forKey: .includeStreamUsage)
+        ?? true,
       additional: try container.decodeIfPresent(
         [String: JSONValue].self,
         forKey: .additional) ?? [:])

@@ -1,7 +1,8 @@
 # MaiCore
 
 MaiCore is the UI-independent agent runtime shared by the `mai` command-line
-client and, after the API stabilizes, PocketMai. It supports structured message
+client and PocketMai. PocketMai's OpenAI-compatible chat transport and model
+catalog now use this package instead of maintaining a second implementation. It supports structured message
 content, multimodal OpenAI-compatible requests, native tool calls, approvals,
 MCP Streamable HTTP servers, and bounded child agents.
 
@@ -34,6 +35,20 @@ changed at any point with `/chat edit N TEXT`, `/chat remove N`, `/chat undo
 [N]`, `/chat trim N`, and `/chat clear`. Trimming keeps messages through `N`;
 linked tool-call transactions are kept structurally valid when removing or
 trimming messages.
+
+`/image` always takes a mode and a path. `tiny`, `small`, `medium`, and `big`
+cap the longest edge at 100, 320, 640, and 1024 pixels; `full` preserves the
+source image. `ocr` runs the separately injected `OCRProvider` and queues its
+recognized text as a Markdown attachment:
+
+```text
+/image medium ./diagram.png
+/image ocr ./receipt.jpg
+```
+
+The CLI currently injects the on-device `VisionOCRProvider`. Other hosts can
+provide a different OCR implementation without coupling it to their chat/model
+provider; PocketMai does this to preserve its layout-aware Markdown OCR.
 
 Configuration is discovered in this order: `--config`, `MAI_CONFIG`,
 `./mai.json`, and `~/.config/mai/config.json`. Secrets should normally use
