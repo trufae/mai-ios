@@ -7,7 +7,7 @@ final class PocketMaiPluginHostTests: XCTestCase {
     let plugins = try await PocketMaiPluginHost.shared.installedPlugins()
     XCTAssertEqual(
       Set(plugins.map(\.manifest.id.rawValue)),
-      ["org.mai.openai", "org.mai.pocketmai-platform"])
+      ["org.mai.openai", "org.mai.pocketmai-platform", "org.mai.standard-tools"])
 
     let endpointID = UUID()
     let provider = try await PocketMaiPluginHost.shared.makeOpenAIProvider(
