@@ -404,6 +404,8 @@ final class AppStore: ObservableObject {
   lazy var locationService = LocationService()
   lazy var webxdcHub = WebXDCUpdateHub()
   @Published var activeWebXDCSession: WebXDCRunningSession?
+  /// The in-app browser page behind the browser tools; nil until first used.
+  @Published var browserSession: BrowserSession?
   private let responseHaptics = ResponseHaptics()
   private let openAPIServer = OpenAPIServer()
   private let persistence: PersistenceStore
@@ -5632,6 +5634,7 @@ final class AppStoreViewObservation: ObservableObject {
       observe(store.$pendingLaunchAction)
       observe(store.$composerFocusRequestID)
       observe(store.$pendingMessageNavigation)
+      observe(store.$browserSession)
     case .sidebar:
       observe(store.$conversationSummaries)
       observe(store.$messageBookmarks)

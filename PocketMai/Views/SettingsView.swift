@@ -1663,6 +1663,18 @@ struct SettingsView: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+    case .browser:
+      Text(
+        "Opens web pages in a small in-app browser card. The model can read the page, click, type, scroll, and run JavaScript; tap the card to enlarge it and take over by hand, for example to sign in, then tell the model to continue. Website data such as cookies stays on this device. Calls ask for confirmation."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      Button("Clear Website Data") {
+        Task {
+          await BrowserSession.clearWebsiteData()
+          toastMessage = "Website data cleared"
+        }
+      }
     case .mastodon:
       Text(
         "Connects to one Mastodon instance for searching posts, reading a user's recent posts, and posting or replying. Search is public where the instance allows it; posting requires an API key. Calls ask for confirmation."

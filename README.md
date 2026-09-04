@@ -13,7 +13,8 @@ This app, comes after [MAI](https://github.com/trufae/mai), a cli agent with foc
 ## Features
 
 - **Providers**: Apple Intelligence (on-device) and any OpenAI-compatible API (OpenAI, Ollama, llama.cpp, vLLM, OpenRouter, ...).
-- **Tools**: datetime, location, weather, web search, todo, text-to-speech, files, memory — invokable by the model via native tool-calling or a text-protocol fallback.
+- **Tools**: datetime, location, weather, web search, browser, todo, text-to-speech, files, memory — invokable by the model via native tool-calling or a text-protocol fallback.
+- **Browser**: the model can open pages in an in-app WebKit view shown as a picture-in-picture card, read the text, DOM, links, or an on-device text-recognition pass over the screen, click, type, scroll, and run JavaScript. Tap the card to enlarge it and take over by hand for sign-ins and other steps only a person can do.
 - **MCP**: configure remote MCP servers and surface them to the model.
 - **Multiple system prompts**, persistent conversations, export to Markdown / plain text / JSON / ePUB / Word (docx).
 - **Attachments**: text, Markdown, Word (docx) and PDF files. Word and PDF are converted to Markdown on device (PDFs can also be attached as one image per page, and scanned pages are read with Vision OCR).

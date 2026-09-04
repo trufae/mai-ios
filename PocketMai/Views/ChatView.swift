@@ -261,6 +261,19 @@ struct ChatView: View {
     store.conversationSummaries.contains(where: \.isUnread)
   }
 
+  /// The browser tool's picture-in-picture card. One page for the whole
+  /// app, so it follows the user across conversations.
+  @ViewBuilder
+  private var browserCardOverlay: some View {
+    if let session = store.browserSession {
+      BrowserPiPCard(session: session) {
+        store.closeBrowserSession()
+      }
+      .padding(.trailing, 12)
+      .padding(.bottom, 12)
+    }
+  }
+
   private var chatLayout: some View {
     VStack(spacing: 0) {
       if let providerStatus {
@@ -273,6 +286,9 @@ struct ChatView: View {
         webxdcSessionBar(session)
       }
       messages
+        .overlay(alignment: .bottomTrailing) {
+          browserCardOverlay
+        }
       bottomControls
     }
   }

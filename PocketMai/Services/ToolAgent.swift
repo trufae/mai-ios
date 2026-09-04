@@ -84,6 +84,10 @@ enum BuiltInToolCatalog {
       toolNames: [MastodonTool.name],
       approvalKind: .confirm),
     BuiltInToolCatalogEntry(
+      id: .browser,
+      toolNames: BrowserTool.toolNames,
+      approvalKind: .confirm),
+    BuiltInToolCatalogEntry(
       id: .memory,
       toolNames: ConversationSearchTool.toolNames,
       approvalKind: .confirm),
@@ -200,6 +204,11 @@ enum BuiltInToolCatalog {
       }
       return await MastodonTool.execute(
         arguments: call.argumentValues, settings: store.settings.toolSettings)
+    case let name where BrowserTool.toolNames.contains(name):
+      guard !store.settings.airplaneModeEnabled else {
+        return "Error: the browser is disabled while Airplane Mode is enabled."
+      }
+      return await BrowserTool.execute(name: name, arguments: call.argumentValues, store: store)
     case let name where ConversationSearchTool.toolNames.contains(name):
       return ConversationSearchTool.execute(
         name: name,
@@ -314,6 +323,8 @@ enum BuiltInToolCatalog {
       return GitHubTool.definitions
     case .mastodon:
       return MastodonTool.definitions
+    case .browser:
+      return BrowserTool.definitions
     case .memory:
       guard settings.toolSettings.conversationSearchScope != .none else { return [] }
       return ConversationSearchTool.definitions
