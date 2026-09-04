@@ -1590,12 +1590,12 @@ struct OpenAIFunctionSchema: Encodable, Sendable {
   var type: String = "object"
   var properties: [String: OpenAIPropertySpec]
   var required: [String]
-  var rawSchema: OpenAIJSONValue?
+  var rawSchema: MaiCore.JSONValue?
 
   init(
     properties: [String: OpenAIPropertySpec],
     required: [String],
-    rawSchema: OpenAIJSONValue? = nil
+    rawSchema: MaiCore.JSONValue? = nil
   ) {
     self.properties = properties
     self.required = required
@@ -1611,7 +1611,12 @@ struct OpenAIFunctionSchema: Encodable, Sendable {
         )
       })
     let required = parameters.filter(\.required).map(\.name)
-    let rawSchema = OpenAIJSONValue.object(fromJSON: inputSchemaJSON)
+    let rawSchema = inputSchemaJSON.data(using: .utf8).flatMap { data -> MaiCore.JSONValue? in
+      guard let value = try? JSONDecoder().decode(MaiCore.JSONValue.self, from: data),
+        value.objectValue?.isEmpty == false
+      else { return nil }
+      return value
+    }
     self.init(properties: properties, required: required, rawSchema: rawSchema)
   }
 
@@ -1634,101 +1639,6 @@ struct OpenAIFunctionSchema: Encodable, Sendable {
 struct OpenAIPropertySpec: Encodable, Sendable {
   var type: String
   var description: String
-}
-
-enum OpenAIJSONValue: Encodable, Sendable {
-  case object([String: OpenAIJSONValue])
-  case array([OpenAIJSONValue])
-  case string(String)
-  case bool(Bool)
-  case int(Int)
-  case double(Double)
-  case null
-
-  static func object(fromJSON json: String) -> OpenAIJSONValue? {
-    guard !json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      let data = json.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      !object.isEmpty
-    else { return nil }
-    return OpenAIJSONValue(any: object)
-  }
-
-  init?(any: Any) {
-    switch any {
-    case let value as [String: Any]:
-      self = .object(value.compactMapValues { OpenAIJSONValue(any: $0) })
-    case let value as [Any]:
-      self = .array(value.compactMap { OpenAIJSONValue(any: $0) })
-    case let value as String:
-      self = .string(value)
-    case let value as Bool:
-      self = .bool(value)
-    case let value as Int:
-      self = .int(value)
-    case let value as NSNumber:
-      if CFGetTypeID(value) == CFBooleanGetTypeID() {
-        self = .bool(value.boolValue)
-      } else {
-        let double = value.doubleValue
-        self = double.rounded() == double ? .int(value.intValue) : .double(double)
-      }
-    case let value as Double:
-      self = value.rounded() == value ? .int(Int(value)) : .double(value)
-    case _ as NSNull:
-      self = .null
-    default:
-      return nil
-    }
-  }
-
-  func encode(to encoder: Encoder) throws {
-    switch self {
-    case .object(let object):
-      var container = encoder.container(keyedBy: DynamicCodingKey.self)
-      for (key, value) in object {
-        try container.encode(value, forKey: DynamicCodingKey(key))
-      }
-    case .array(let array):
-      var container = encoder.unkeyedContainer()
-      for value in array {
-        try container.encode(value)
-      }
-    case .string(let string):
-      var container = encoder.singleValueContainer()
-      try container.encode(string)
-    case .bool(let bool):
-      var container = encoder.singleValueContainer()
-      try container.encode(bool)
-    case .int(let int):
-      var container = encoder.singleValueContainer()
-      try container.encode(int)
-    case .double(let double):
-      var container = encoder.singleValueContainer()
-      try container.encode(double)
-    case .null:
-      var container = encoder.singleValueContainer()
-      try container.encodeNil()
-    }
-  }
-}
-
-struct DynamicCodingKey: CodingKey {
-  var stringValue: String
-  var intValue: Int?
-
-  init(_ stringValue: String) {
-    self.stringValue = stringValue
-  }
-
-  init?(stringValue: String) {
-    self.stringValue = stringValue
-  }
-
-  init?(intValue: Int) {
-    self.stringValue = String(intValue)
-    self.intValue = intValue
-  }
 }
 
 private struct OpenAIErrorResponse: Decodable {
