@@ -45,6 +45,7 @@ struct ConversationSidebar: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       Divider()
       Button("New chat") { workspace.newConversationInFocusedPane() }
+      Button("Rename chat") { workspace.requestRenameFocusedConversation() }
       Button("Clear chat") { workspace.clearFocusedConversation() }
       Button("Delete chat", role: .destructive) { workspace.deleteFocusedConversation() }
         .disabled(workspace.conversations.count <= 1)
@@ -142,7 +143,8 @@ struct ConversationPaneView: View {
       HStack(spacing: 1) {
         Text(conversation.isRunning ? "…" : ">").foregroundStyle(.tint)
         TextField(
-          conversation.isRunning ? "Replying; Alt+K cancels" : "Message (Return sends)",
+          conversation.isRunning
+            ? "Replying; \(visualAlternateKeyName)+K cancels" : "Message (Return sends)",
           text: $conversation.draft
         )
         .focused(focusedInput, equals: pane)

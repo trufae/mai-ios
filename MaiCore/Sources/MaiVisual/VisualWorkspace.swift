@@ -2,6 +2,12 @@ import Foundation
 import MaiCore
 import Observation
 
+#if os(macOS)
+  let visualAlternateKeyName = "Option"
+#else
+  let visualAlternateKeyName = "Alt"
+#endif
+
 public struct ProviderForm: Equatable, Sendable {
   public var id = ""
   public var kind = ConfiguredProviderKind.openAICompatible.rawValue
@@ -58,6 +64,18 @@ public enum VisualWorkspaceError: LocalizedError, Equatable, Sendable {
   }
 }
 
+public struct ConversationActionRequest: Identifiable, Equatable, Sendable {
+  public let conversationID: UUID
+  public let title: String
+
+  public var id: UUID { conversationID }
+
+  public init(conversationID: UUID, title: String) {
+    self.conversationID = conversationID
+    self.title = title
+  }
+}
+
 /// The state behind the visual workspace: conversations, the pane layout, the
 /// registries mirrored from the runtime, and the configuration draft edited by
 /// the panels. Registration actions update the live runtime immediately and the
@@ -81,12 +99,19 @@ public final class VisualWorkspace {
   public private(set) var tools: [ToolDefinition] = []
   public private(set) var agents: [AgentDefinition] = []
   public var pendingApproval: VisualApprovalHandler.Pending?
+  public var pendingConversationDeletion: ConversationActionRequest?
+  public var pendingConversationRename: ConversationActionRequest?
+  public var conversationRenameDraft = ""
   public private(set) var modelCatalog: [ModelDescriptor] = []
   public private(set) var modelCatalogProvider: ProviderID?
   public private(set) var isFetchingModels = false
   private var approvalQueue: [VisualApprovalHandler.Pending] = []
   private var presentedApprovalID: UUID?
   private var conversationCounter: Int
+
+  public var pendingApprovalCount: Int {
+    (pendingApproval == nil ? 0 : 1) + approvalQueue.count
+  }
 
   public init(
     launch: VisualLaunch,
@@ -101,7 +126,7 @@ public final class VisualWorkspace {
     configuration = launch.configuration ?? MaiConfiguration()
     configurationPath =
       launch.configurationPath
-      ?? NSString(string: "~/.config/mai/config.json").expandingTildeInPath
+      ?? NSString(string: "~/.config/pmai/config.json").expandingTildeInPath
     catalogs = launch.catalogs
 
     if let snapshot = launch.snapshot, !snapshot.conversations.isEmpty {
@@ -190,7 +215,7 @@ public final class VisualWorkspace {
     if !layout.closeFocusedPane() { status = "The last pane cannot be closed." }
   }
 
-  public func deleteConversation(_ conversation: VisualConversation) {
+  private func deleteConversation(_ conversation: VisualConversation) {
     guard conversations.count > 1,
       let index = conversations.firstIndex(where: { $0.id == conversation.id })
     else {
@@ -201,10 +226,60 @@ public final class VisualWorkspace {
     conversations.remove(at: index)
     let fallback = conversations[min(index, conversations.count - 1)]
     layout.replaceConversation(conversation.id, with: fallback.id)
+    status = "Deleted '\(conversation.title)'."
   }
 
   public func deleteFocusedConversation() {
-    if let focused = focusedConversation { deleteConversation(focused) }
+    guard conversations.count > 1, let focused = focusedConversation else {
+      status = "The last conversation cannot be deleted."
+      return
+    }
+    pendingConversationDeletion = ConversationActionRequest(
+      conversationID: focused.id,
+      title: focused.title)
+  }
+
+  public func confirmConversationDeletion(_ request: ConversationActionRequest) {
+    guard pendingConversationDeletion?.id == request.id else { return }
+    pendingConversationDeletion = nil
+    guard let conversation = conversations.first(where: { $0.id == request.conversationID }) else {
+      return
+    }
+    deleteConversation(conversation)
+  }
+
+  public func cancelConversationDeletion() {
+    pendingConversationDeletion = nil
+  }
+
+  public func requestRenameFocusedConversation() {
+    guard let focused = focusedConversation else { return }
+    conversationRenameDraft = focused.title
+    pendingConversationRename = ConversationActionRequest(
+      conversationID: focused.id,
+      title: focused.title)
+  }
+
+  public func confirmConversationRename(_ request: ConversationActionRequest) {
+    guard pendingConversationRename?.id == request.id else { return }
+    let title = conversationRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else {
+      status = "A chat name is required."
+      return
+    }
+    guard let conversation = conversations.first(where: { $0.id == request.conversationID }) else {
+      pendingConversationRename = nil
+      return
+    }
+    conversation.rename(to: title)
+    pendingConversationRename = nil
+    conversationRenameDraft = ""
+    status = "Renamed chat to '\(title)'."
+  }
+
+  public func cancelConversationRename() {
+    pendingConversationRename = nil
+    conversationRenameDraft = ""
   }
 
   public func clearFocusedConversation() {
@@ -221,7 +296,7 @@ public final class VisualWorkspace {
     let text = conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     guard !conversation.isRunning else {
-      status = "'\(conversation.title)' is still replying; Alt+K cancels it."
+      status = "'\(conversation.title)' is still replying; \(visualAlternateKeyName)+K cancels it."
       return
     }
     conversation.draft = ""
@@ -429,6 +504,17 @@ public final class VisualWorkspace {
     Task { await approvals.resolve(id, with: decision) }
     status = nil
     presentNextApproval()
+  }
+
+  public func resolveApprovalAlways() {
+    let pending = [pendingApproval].compactMap { $0 } + approvalQueue
+    guard !pending.isEmpty else { return }
+    presentedApprovalID = nil
+    pendingApproval = nil
+    approvalQueue.removeAll()
+    let approvals = approvals
+    Task { await approvals.resolveAlways(pending) }
+    status = "YOLO mode enabled; all tool calls are permitted for this session."
   }
 
   /// Called when the approval sheet closes without a decision, for example on Escape.

@@ -63,6 +63,11 @@ public final class VisualConversation: Identifiable {
     resetTranscript()
   }
 
+  public func rename(to title: String) {
+    self.title = title
+    hasCustomTitle = true
+  }
+
   public func replace(with seed: VisualConversationSeed) {
     cancelRun()
     title = seed.title

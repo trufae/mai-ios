@@ -28,7 +28,7 @@ private struct CLIOptions {
   var printConfig = false
 
   init(arguments: [String], environment: [String: String]) throws {
-    configPath = environment["MAI_CONFIG"]
+    configPath = environment["PMAI_CONFIG"]
     var positional: [String] = []
     var index = 0
     while index < arguments.count {
@@ -954,7 +954,9 @@ private struct MaiCLI {
       configurationPath: visual.configurationPath,
       catalogs: catalogs,
       environment: ProcessInfo.processInfo.environment)
-    let approvals = VisualApprovalHandler()
+    let approvals = VisualApprovalHandler {
+      await visual.approvalHandler.setYOLOEnabled(true)
+    }
     await visual.approvalHandler.setDelegate(approvals)
     do {
       let outcome = try await VisualMode.run(
@@ -1171,8 +1173,8 @@ private struct MaiCLI {
       return (try MaiConfiguration.load(from: URL(fileURLWithPath: expanded)), expanded)
     }
     let candidates = [
-      FileManager.default.currentDirectoryPath + "/mai.json",
-      NSString(string: "~/.config/mai/config.json").expandingTildeInPath,
+      FileManager.default.currentDirectoryPath + "/pmai.json",
+      NSString(string: "~/.config/pmai/config.json").expandingTildeInPath,
     ]
     for path in candidates where FileManager.default.fileExists(atPath: path) {
       return (try MaiConfiguration.load(from: URL(fileURLWithPath: path)), path)
@@ -1351,7 +1353,7 @@ private struct MaiCLI {
         -h, --help          show this help
 
       Config discovery:
-        --config, MAI_CONFIG, ./mai.json, ~/.config/mai/config.json
+        --config, PMAI_CONFIG, ./pmai.json, ~/.config/pmai/config.json
 
       Without a config file, the offline hello and OpenAI-compatible providers
       are registered as before.
