@@ -494,6 +494,21 @@ struct SidebarView: View {
   private func defaultFloatingActions(compact: Bool) -> some View {
     Menu {
       Button {
+        showBookmarks()
+      } label: {
+        if isShowingBookmarks {
+          Label("Bookmarks", systemImage: "checkmark")
+        } else {
+          Label("Bookmarks", systemImage: "bookmark")
+        }
+      }
+      Button {
+        showingGallery = true
+      } label: {
+        Label("Gallery", systemImage: "photo.on.rectangle.angled")
+      }
+      Divider()
+      Button {
         showConversationFolder(ConversationFolder.defaultID)
       } label: {
         folderPickerLabel(for: ConversationFolder.defaultFolder)
@@ -517,20 +532,6 @@ struct SidebarView: View {
         }
       }
       Divider()
-      Button {
-        showBookmarks()
-      } label: {
-        if isShowingBookmarks {
-          Label("Bookmarks", systemImage: "checkmark")
-        } else {
-          Label("Bookmarks", systemImage: "bookmark")
-        }
-      }
-      Button {
-        showingGallery = true
-      } label: {
-        Label("Gallery", systemImage: "photo.on.rectangle.angled")
-      }
       Button {
         showingFolderManager = true
       } label: {
