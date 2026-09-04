@@ -139,7 +139,7 @@ struct ChatCompletionRequest: Sendable {
   var assistantMessageID: UUID
   /// User-authored tokens for the initial request of this assistant turn.
   var userInputTokens: Int? = nil
-  var nativeTools: [OpenAITool]? = nil
+  var nativeTools: [ToolDefinition]? = nil
   var nativeContinuationMessages: [OpenAIMessage] = []
   var hasToolCalling: Bool = false
   var toolPrompt: String = ""
@@ -1575,72 +1575,6 @@ private enum ReasoningCompatibility {
   }
 }
 
-struct OpenAITool: Encodable, Sendable {
-  var type: String = "function"
-  var function: OpenAIFunctionSpec
-}
-
-struct OpenAIFunctionSpec: Encodable, Sendable {
-  var name: String
-  var description: String
-  var parameters: OpenAIFunctionSchema
-}
-
-struct OpenAIFunctionSchema: Encodable, Sendable {
-  var type: String = "object"
-  var properties: [String: OpenAIPropertySpec]
-  var required: [String]
-  var rawSchema: MaiCore.JSONValue?
-
-  init(
-    properties: [String: OpenAIPropertySpec],
-    required: [String],
-    rawSchema: MaiCore.JSONValue? = nil
-  ) {
-    self.properties = properties
-    self.required = required
-    self.rawSchema = rawSchema
-  }
-
-  init(inputSchemaJSON: String, parameters: [ToolParameterDef]) {
-    let properties = Dictionary(
-      uniqueKeysWithValues: parameters.map { parameter in
-        (
-          parameter.name,
-          OpenAIPropertySpec(type: parameter.type, description: parameter.description)
-        )
-      })
-    let required = parameters.filter(\.required).map(\.name)
-    let rawSchema = inputSchemaJSON.data(using: .utf8).flatMap { data -> MaiCore.JSONValue? in
-      guard let value = try? JSONDecoder().decode(MaiCore.JSONValue.self, from: data),
-        value.objectValue?.isEmpty == false
-      else { return nil }
-      return value
-    }
-    self.init(properties: properties, required: required, rawSchema: rawSchema)
-  }
-
-  func encode(to encoder: Encoder) throws {
-    if let rawSchema {
-      try rawSchema.encode(to: encoder)
-      return
-    }
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(type, forKey: .type)
-    try container.encode(properties, forKey: .properties)
-    try container.encode(required, forKey: .required)
-  }
-
-  enum CodingKeys: String, CodingKey {
-    case type, properties, required
-  }
-}
-
-struct OpenAIPropertySpec: Encodable, Sendable {
-  var type: String
-  var description: String
-}
-
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
     let provider = try await coreProvider(endpoint: endpoint)
@@ -1724,7 +1658,7 @@ enum OpenAICompatibleProvider {
         messageLimitOverride: request.messageLimitOverride
       )
       let coreMessages = try messages.map(coreMessage)
-      let coreTools = try (request.nativeTools ?? []).map(coreTool)
+      let coreTools = request.nativeTools ?? []
       let coreOptions = try coreGenerationOptions(
         level: request.conversation.reasoningLevel,
         model: model,
@@ -1883,16 +1817,6 @@ enum OpenAICompatibleProvider {
             arguments: arguments)))
     }
     return MaiCore.AgentMessage(role: role, content: parts)
-  }
-
-  private static func coreTool(_ tool: OpenAITool) throws -> MaiCore.ToolDefinition {
-    let encoded = try JSONEncoder().encode(tool.function.parameters)
-    let schema = try JSONDecoder().decode(MaiCore.JSONValue.self, from: encoded)
-    return MaiCore.ToolDefinition(
-      name: tool.function.name,
-      providerName: tool.function.name,
-      description: tool.function.description,
-      inputSchema: schema)
   }
 
   private static func coreGenerationOptions(

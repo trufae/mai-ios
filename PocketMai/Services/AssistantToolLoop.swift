@@ -16,7 +16,7 @@ enum AssistantToolLoop {
 
   private struct RequestState {
     let definitions: [ToolDefinition]
-    let nativeTools: [OpenAITool]?
+    let nativeTools: [ToolDefinition]?
     let activeMode: ToolCallingMode
     let context: String
     let toolPrompt: String
@@ -1266,7 +1266,7 @@ enum AssistantToolLoop {
     conversation: Conversation,
     settings: AppSettings,
     definitions: [ToolDefinition]
-  ) -> [OpenAITool]? {
+  ) -> [ToolDefinition]? {
     guard
       settings.toolCallingMode == .native,
       conversation.provider.supportsNativeToolCalling,
@@ -1276,17 +1276,14 @@ enum AssistantToolLoop {
     }
 
     let resolver = AgentToolNameResolver(tools: definitions)
-    return definitions.map { def in
-      OpenAITool(
-        function: OpenAIFunctionSpec(
-          name: resolver.apiName(for: def.name),
-          description:
-            def.description
-            + (resolver.apiName(for: def.name) == def.name
-              ? "" : " Original tool name: \(def.name)."),
-          parameters: OpenAIFunctionSchema(
-            inputSchemaJSON: def.inputSchemaJSON,
-            parameters: def.parameters)))
+    return definitions.map { definition in
+      var native = definition
+      let apiName = resolver.apiName(for: definition.name)
+      native.providerName = apiName
+      if apiName != definition.name {
+        native.description += " Original tool name: \(definition.name)."
+      }
+      return native
     }
   }
 
@@ -1371,7 +1368,7 @@ enum AssistantToolLoop {
         hasTools: !requestState.definitions.isEmpty),
       requestContext: requestState.context,
       toolPrompt: requestState.toolPrompt,
-      nativeToolNames: requestState.nativeTools?.map { $0.function.name } ?? [],
+      nativeToolNames: requestState.nativeTools?.map { $0.providerName ?? $0.name } ?? [],
       visibleToolDefinitions: requestState.definitions.map(debugDefinition),
       promptMessages: promptMessages,
       rawModelResponse: response,

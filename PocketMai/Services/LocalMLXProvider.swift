@@ -380,31 +380,31 @@ actor LocalMLXProvider {
     return messages
   }
 
-  private static func mlxToolSpecs(from tools: [OpenAITool]?) -> [ToolSpec]? {
+  private static func mlxToolSpecs(from tools: [ToolDefinition]?) -> [ToolSpec]? {
     guard let tools, !tools.isEmpty else { return nil }
     return tools.map { tool in
       let properties: [String: any Sendable] = Dictionary(
-        uniqueKeysWithValues: tool.function.parameters.properties.map { name, property in
+        uniqueKeysWithValues: tool.parameters.map { parameter in
           (
-            name,
+            parameter.name,
             [
-              "type": property.type,
-              "description": property.description,
+              "type": parameter.type,
+              "description": parameter.description,
             ] as [String: any Sendable]
           )
         })
       let parameters: [String: any Sendable] = [
-        "type": tool.function.parameters.type,
+        "type": "object",
         "properties": properties,
-        "required": tool.function.parameters.required,
+        "required": tool.parameters.filter(\.required).map(\.name),
       ]
       let function: [String: any Sendable] = [
-        "name": tool.function.name,
-        "description": tool.function.description,
+        "name": tool.providerName ?? tool.name,
+        "description": tool.description,
         "parameters": parameters,
       ]
       return [
-        "type": tool.type,
+        "type": "function",
         "function": function,
       ] as ToolSpec
     }
