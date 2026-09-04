@@ -1,6 +1,7 @@
 import Foundation
 import FoundationModels
 import MaiCore
+import MaiOpenAI
 
 enum LongRunningOperationDecision: Sendable {
   case interrupt
@@ -1975,11 +1976,11 @@ enum OpenAICompatibleProvider {
   private static func coreProvider(
     endpoint: OpenAIEndpoint,
     requestTimeout: TimeInterval = 600
-  ) throws -> MaiCore.OpenAICompatibleProvider {
+  ) throws -> MaiOpenAI.OpenAICompatibleProvider {
     guard let baseURL = URL(string: endpoint.baseURL) else {
       throw ChatProviderError.invalidEndpoint(endpoint.baseURL)
     }
-    return MaiCore.OpenAICompatibleProvider(
+    return MaiOpenAI.OpenAICompatibleProvider(
       configuration: .init(
         id: MaiCore.ProviderID(endpoint.id.uuidString),
         displayName: endpoint.name,
@@ -2089,7 +2090,7 @@ enum OpenAICompatibleProvider {
   }
 
   private static func mapCoreError(_ error: Error) -> ChatProviderError {
-    guard let error = error as? MaiCore.OpenAICompatibleProviderError else {
+    guard let error = error as? MaiOpenAI.OpenAICompatibleProviderError else {
       return .providerRequestFailed(error.localizedDescription)
     }
     switch error {

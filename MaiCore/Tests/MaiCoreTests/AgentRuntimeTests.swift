@@ -5,6 +5,7 @@ import Testing
 import UniformTypeIdentifiers
 
 @testable import MaiCore
+@testable import MaiOpenAI
 
 @Test("Image attachment modes resize images and preserve their metadata")
 func imageAttachmentResize() async throws {
@@ -603,7 +604,7 @@ func subagentRun() async throws {
 }
 
 @Test("Configuration loads providers, agents, secrets, and defaults")
-func configurationLoading() throws {
+func configurationLoading() async throws {
   let data = Data(
     """
     {
@@ -637,7 +638,10 @@ func configurationLoading() throws {
   #expect(configuration.agents[0].limits == AgentRunLimits())
   #expect(configuration.agents[0].toolCallingStrategy == .json)
   #expect(configuration.agents[0].options.maxOutputTokens == 100)
-  let provider = try configuration.providers[0].makeProvider(
+  let plugins = PluginRegistry()
+  try await plugins.install(MaiOpenAIPlugin())
+  let provider = try await plugins.makeProvider(
+    from: configuration.providers[0],
     environment: ["TEST_API_KEY": "secret"])
   #expect(provider.descriptor.id == "local")
 }
@@ -656,9 +660,9 @@ func customProviderFactory() async throws {
   #expect(configured.kind == ConfiguredProviderKind("fixture"))
   #expect(configured.options["prefix"] == .string("Configured extension"))
 
-  var factories = ProviderFactoryRegistry(includeStandardFactories: false)
-  try factories.register(FixtureConfiguredProviderFactory())
-  let provider = try configured.makeProvider(environment: [:], factories: factories)
+  let plugins = PluginRegistry()
+  try await plugins.install(FixtureProviderPlugin())
+  let provider = try await plugins.makeProvider(from: configured, environment: [:])
   let response = try await provider.complete(
     ProviderRequest(model: "fixture", messages: [.user("works")], stream: false))
 
@@ -767,6 +771,20 @@ private struct FixtureConfiguredProviderFactory: ConfiguredProviderFactory {
       id: ProviderID(configuration.id),
       displayName: configuration.displayName ?? "Fixture",
       prefix: configuration.options["prefix"]?.stringValue ?? "Fixture")
+  }
+}
+
+private struct FixtureProviderPlugin: MaiPlugin {
+  let manifest = PluginManifest(
+    id: "fixture-provider-plugin",
+    displayName: "Fixture provider",
+    version: "1.0.0",
+    capabilities: [.chatProvider])
+
+  func register(in registry: PluginRegistry) async throws {
+    try await registry.register(
+      providerFactory: FixtureConfiguredProviderFactory(),
+      from: manifest.id)
   }
 }
 

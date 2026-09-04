@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 
 public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
   public struct Configuration: Sendable {

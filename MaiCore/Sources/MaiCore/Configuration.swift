@@ -85,18 +85,6 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
       options: try container.decodeIfPresent([String: JSONValue].self, forKey: .options) ?? [:])
   }
 
-  public func makeProvider(environment: [String: String]) throws -> any ChatProvider {
-    try ProviderFactoryRegistry().makeProvider(from: self, environment: environment)
-  }
-
-  /// Constructs this provider through a host-supplied factory registry.
-  public func makeProvider(
-    environment: [String: String],
-    factories: ProviderFactoryRegistry
-  ) throws -> any ChatProvider {
-    try factories.makeProvider(from: self, environment: environment)
-  }
-
   public func resolvedHeaders(environment: [String: String]) throws -> [String: String] {
     var resolved = headers
     for (header, environmentName) in headerEnvironment {
@@ -343,8 +331,6 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
   case missingEnvironmentVariable(String)
-  case providerFactoryAlreadyRegistered(String)
-  case providerFactoryNotRegistered(String)
 
   public var errorDescription: String? {
     switch self {
@@ -366,10 +352,6 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "Agent '\(agent)' references unknown tool '\(tool)'."
     case .missingEnvironmentVariable(let name):
       "Required environment variable '\(name)' is not set."
-    case .providerFactoryAlreadyRegistered(let kind):
-      "A provider factory for '\(kind)' is already registered."
-    case .providerFactoryNotRegistered(let kind):
-      "No provider factory is registered for configuration kind '\(kind)'."
     }
   }
 }

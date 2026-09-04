@@ -63,15 +63,15 @@ enum ProviderRedirectPolicy {
   }
 }
 
-final class ProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+public final class ProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
   private let originalRequest: URLRequest
   private let redirectCounter = ProviderRedirectCounter()
 
-  init(originalRequest: URLRequest) {
+  public init(originalRequest: URLRequest) {
     self.originalRequest = originalRequest
   }
 
-  func urlSession(
+  public func urlSession(
     _ session: URLSession,
     task: URLSessionTask,
     willPerformHTTPRedirection response: HTTPURLResponse,
