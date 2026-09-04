@@ -1210,6 +1210,7 @@ private struct MaiCLI {
           model: "your-model",
           toolNames: Set(
             [
+              MaiCalculatorTool.name,
               MaiCurrentTimeTool.name,
               MaiEchoTool.name,
               MaiReadTextFileTool.name,
