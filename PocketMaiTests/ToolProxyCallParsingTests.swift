@@ -27,13 +27,13 @@ final class ToolProxyCallParsingTests: XCTestCase {
     let block =
       #"<tool_call id="call_00_ckST6CkbeQRTWCb7OUZh2132" api_name="call_tool">{"arguments":{"arguments":{"repoName":"trufae\/mai"},"name":"read_wiki_structure"},"name":"call_tool"}</tool_call>"#
 
-    let calls = ToolAgentRegistry.parseCalls(in: block, definitions: definitions, mode: .native)
+    let calls = AgentTooling.parseCalls(in: block, tools: definitions, mode: .native)
     XCTAssertEqual(calls.count, 1)
     guard let call = calls.first else { return }
 
-    let normalized = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+    let normalized = AgentTooling.normalized(call: call, tools: definitions)
     XCTAssertEqual(normalized.name, ToolProxy.callName)
-    XCTAssertTrue(ToolAgentRegistry.definitionExists(named: normalized.name, in: definitions))
+    XCTAssertTrue(AgentTooling.containsDefinition(named: normalized.name, in: definitions))
     XCTAssertEqual(normalized.argumentValues["name"]?.stringValue, "read_wiki_structure")
     guard case .object(let nested)? = normalized.argumentValues["arguments"] else {
       XCTFail("call-tool arguments must remain a nested object")
@@ -47,8 +47,8 @@ final class ToolProxyCallParsingTests: XCTestCase {
     let block =
       #"<tool_call>{"name":"tool_call","arguments":{"name":"search","arguments":{"query":"radare2"}}}</tool_call>"#
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [searchDefinition], mode: .native)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [searchDefinition], mode: .native)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "search")
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "radare2")
@@ -59,8 +59,8 @@ final class ToolProxyCallParsingTests: XCTestCase {
     let block =
       #"<tool_call>{"name":"invoke","arguments":{"name":"search","arguments":{"query":"radare2"}}}</tool_call>"#
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [searchDefinition], mode: .native)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [searchDefinition], mode: .native)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "search")
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "radare2")
@@ -71,8 +71,8 @@ final class ToolProxyCallParsingTests: XCTestCase {
     let block =
       #"<tool_call>{"name":"search","arguments":{"name":"search","arguments":{"query":"radare2"}}}</tool_call>"#
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [searchDefinition], mode: .native)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [searchDefinition], mode: .native)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "search")
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "radare2")
@@ -92,7 +92,7 @@ final class ToolProxyCallParsingTests: XCTestCase {
       ])
     let block = #"<tool_call>{"name":"webxdc_create","arguments":{"name":"myapp"}}</tool_call>"#
 
-    let calls = ToolAgentRegistry.parseCalls(in: block, definitions: [definition], mode: .native)
+    let calls = AgentTooling.parseCalls(in: block, tools: [definition], mode: .native)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "webxdc_create")
     XCTAssertEqual(calls.first?.argumentValues["name"]?.stringValue, "myapp")

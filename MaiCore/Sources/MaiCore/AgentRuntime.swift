@@ -544,14 +544,12 @@ public actor AgentRuntime {
   ) -> ToolCall? {
     guard let parsed = AgentTooling.parseCalls(in: response, tools: definitions, mode: mode).first
     else { return nil }
-    let resolver = AgentToolNameResolver(tools: definitions)
-    let name = resolver.canonicalName(for: parsed.name) ?? parsed.name
-    guard let definition = definitions.first(where: { $0.name == name }) else { return nil }
-    let arguments = AgentTooling.normalizeArguments(parsed.argumentValues, for: definition)
+    let call = AgentTooling.normalized(call: parsed, tools: definitions)
+    guard AgentTooling.containsDefinition(named: call.name, in: definitions) else { return nil }
     return ToolCall(
-      id: parsed.toolCallID ?? "text_\(UUID().uuidString)",
-      name: name,
-      arguments: .object(arguments))
+      id: call.toolCallID ?? "text_\(UUID().uuidString)",
+      name: call.name,
+      arguments: .object(call.argumentValues))
   }
 }
 

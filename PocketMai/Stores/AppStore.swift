@@ -3548,7 +3548,7 @@ final class AppStore: ObservableObject {
   ) async -> ToolCallApprovalDecision {
     guard !settings.yoloModeEnabled else { return .approved(call) }
 
-    let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
+    let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
     let requestID = UUID()
     let originalText = AgentTooling.editableToolCallText(for: normalizedCall, mode: mode)
 
@@ -3630,16 +3630,16 @@ final class AppStore: ObservableObject {
       return .failure("Tool call text must contain only one tool call.")
     }
 
-    let normalizedCall = ToolAgentRegistry.normalized(
+    let normalizedCall = AgentTooling.normalized(
       call: calls[0],
-      definitions: request.definitions
+      tools: request.definitions
     )
     guard request.definitions.contains(where: { $0.name == normalizedCall.name }) else {
       return .failure("Unknown tool '\(normalizedCall.name)'.")
     }
-    if let error = ToolAgentRegistry.requiredArgumentsError(
+    if let error = AgentTooling.requiredArgumentsError(
       call: normalizedCall,
-      definitions: request.definitions)
+      tools: request.definitions)
     {
       return .failure(error)
     }
@@ -3650,9 +3650,9 @@ final class AppStore: ObservableObject {
     in text: String,
     request: ToolCallApprovalRequest
   ) -> [ParsedToolCall] {
-    ToolAgentRegistry.parseCalls(
+    AgentTooling.parseCalls(
       in: text,
-      definitions: request.definitions,
+      tools: request.definitions,
       mode: request.mode
     )
   }
@@ -4762,7 +4762,7 @@ final class AppStore: ObservableObject {
       : settings.toolCallingMode.textProtocolFallback(for: conversation.provider)
     let textToolPrompt =
       providerNativeToolCalling
-      ? "" : ToolAgentRegistry.promptDescription(for: visibleDefinitions, mode: effectiveMode)
+      ? "" : AgentTooling.promptDescription(for: visibleDefinitions, mode: effectiveMode)
     let toolPrompt = textToolPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let toolPromptInContext = !providerNativeToolCalling && !toolPrompt.isEmpty
     let nativeToolNames: [String] = {

@@ -43,9 +43,9 @@ final class ReasoningResponseFilteringTests: XCTestCase {
       """
     let actionable = MessageContentFilter.removingReasoningSections(from: response)
 
-    let calls = ToolAgentRegistry.parseCalls(
+    let calls = AgentTooling.parseCalls(
       in: actionable,
-      definitions: [definition],
+      tools: [definition],
       mode: .text)
 
     XCTAssertEqual(calls.count, 1)

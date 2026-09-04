@@ -5,7 +5,7 @@ import XCTest
 /// Duplicate tool names used to crash the app: MCP tools are registered under
 /// their raw names, so two servers exposing the same tool name (or a tool
 /// named like a built-in) produced duplicate definitions, and the by-name
-/// dictionary in ToolAgentRegistry.normalized trapped on the duplicate key.
+/// dictionary in AgentTooling.normalized trapped on the duplicate key.
 /// The catalog now keeps the first definition per name — built-ins, then
 /// servers in settings order — matching dispatch resolution order.
 final class ToolCatalogDuplicateNameTests: XCTestCase {
@@ -67,7 +67,7 @@ final class ToolCatalogDuplicateNameTests: XCTestCase {
     // This lookup trapped on the duplicate definition before deduplication.
     let call = ParsedToolCall(name: "search", arguments: ["query": "x"], rawBlock: "")
     XCTAssertEqual(
-      ToolAgentRegistry.normalized(call: call, definitions: definitions).name, "search")
+      AgentTooling.normalized(call: call, tools: definitions).name, "search")
   }
 
   @MainActor
@@ -116,7 +116,7 @@ final class ToolCatalogDuplicateNameTests: XCTestCase {
     ]
     let call = ParsedToolCall(name: "search", arguments: ["query": "x"], rawBlock: "")
 
-    let normalized = ToolAgentRegistry.normalized(call: call, definitions: duplicates)
+    let normalized = AgentTooling.normalized(call: call, tools: duplicates)
     XCTAssertEqual(normalized.name, "search")
     XCTAssertEqual(normalized.argumentValues["query"]?.stringValue, "x")
   }
