@@ -642,6 +642,30 @@ func configurationLoading() throws {
   #expect(provider.descriptor.id == "local")
 }
 
+@Test("Configuration accepts host-defined provider kinds and factories")
+func customProviderFactory() async throws {
+  let data = Data(
+    """
+    {
+      "id": "fixture-provider",
+      "kind": "fixture",
+      "options": {"prefix": "Configured extension"}
+    }
+    """.utf8)
+  let configured = try JSONDecoder().decode(ConfiguredProvider.self, from: data)
+  #expect(configured.kind == ConfiguredProviderKind("fixture"))
+  #expect(configured.options["prefix"] == .string("Configured extension"))
+
+  var factories = ProviderFactoryRegistry(includeStandardFactories: false)
+  try factories.register(FixtureConfiguredProviderFactory())
+  let provider = try configured.makeProvider(environment: [:], factories: factories)
+  let response = try await provider.complete(
+    ProviderRequest(model: "fixture", messages: [.user("works")], stream: false))
+
+  #expect(provider.descriptor.id == "fixture-provider")
+  #expect(response.message.text == "Configured extension: works")
+}
+
 @Test("MCP client negotiates, catalogs, and preserves structured tool content")
 func mcpClient() async throws {
   let recorder = MethodRecorder()
@@ -729,6 +753,20 @@ private struct FixtureOCRProvider: OCRProvider {
     #expect(request.filename == "receipt.jpg")
     #expect(request.mimeType == "image/jpeg")
     return OCRResult(markdown: "# Recognized\n\nHello from OCR")
+  }
+}
+
+private struct FixtureConfiguredProviderFactory: ConfiguredProviderFactory {
+  let kind = ConfiguredProviderKind("fixture")
+
+  func makeProvider(
+    from configuration: ConfiguredProvider,
+    environment: [String: String]
+  ) throws -> any ChatProvider {
+    HelloProvider(
+      id: ProviderID(configuration.id),
+      displayName: configuration.displayName ?? "Fixture",
+      prefix: configuration.options["prefix"]?.stringValue ?? "Fixture")
   }
 }
 

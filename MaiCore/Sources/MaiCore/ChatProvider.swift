@@ -1,8 +1,18 @@
+/// The transport boundary between MaiCore's agent runtime and a model backend.
+///
+/// Implementations translate the provider-neutral request and event types into
+/// their native protocol. They must not depend on a UI, conversation store, or
+/// host-specific settings model.
 public protocol ChatProvider: Sendable {
+  /// Stable identity and features used by the runtime for capability routing.
   var descriptor: ProviderDescriptor { get }
 
+  /// Returns the provider's current model catalog, or an empty list when the
+  /// backend cannot enumerate models.
   func availableModels() async throws -> [ModelDescriptor]
 
+  /// Completes one provider turn. Streaming implementations emit incremental
+  /// events while the returned response remains the authoritative final value.
   func complete(
     _ request: ProviderRequest,
     emit: @escaping ProviderEventHandler

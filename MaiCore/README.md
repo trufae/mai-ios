@@ -2,9 +2,10 @@
 
 MaiCore is the UI-independent agent runtime shared by the `mai` command-line
 client and PocketMai. PocketMai's OpenAI-compatible chat transport and model
-catalog now use this package instead of maintaining a second implementation. It supports structured message
-content, multimodal OpenAI-compatible requests, native tool calls, approvals,
-MCP Streamable HTTP servers, and bounded child agents.
+catalog now use this package instead of maintaining a second implementation. It
+supports structured message content, multimodal OpenAI-compatible requests,
+native tool calls, approvals, MCP Streamable HTTP servers, and bounded child
+agents.
 
 Run the offline REPL from the repository root:
 
@@ -49,6 +50,14 @@ recognized text as a Markdown attachment:
 The CLI currently injects the on-device `VisionOCRProvider`. Other hosts can
 provide a different OCR implementation without coupling it to their chat/model
 provider; PocketMai does this to preserve its layout-aware Markdown OCR.
+
+Custom model providers implement `ChatProvider` and register directly with
+`AgentRuntime`. Configuration-backed hosts can additionally implement
+`ConfiguredProviderFactory` and add it to `ProviderFactoryRegistry`; provider
+kind identifiers and the `options` object are open-ended, so adding a backend
+does not require a new MaiCore enum case. UI settings remain host-owned and are
+translated into `ProviderRequest`, `GenerationOptions`, and provider-specific
+configuration at the boundary.
 
 Configuration is discovered in this order: `--config`, `MAI_CONFIG`,
 `./mai.json`, and `~/.config/mai/config.json`. Secrets should normally use
