@@ -38,6 +38,16 @@ enum AssistantToolLoop {
     let result: String
   }
 
+  private enum ToolRunHost {
+    case live(assistantID: UUID, baselineText: String, conversationID: UUID)
+    case isolated(
+      conversation: Conversation,
+      settings: AppSettings,
+      mcpTools: [UUID: [MCPToolDescriptor]],
+      mcpResources: [UUID: [MCPResourceDescriptor]],
+      mcpStatuses: [UUID: EndpointConnectionState])
+  }
+
   private struct SkippedModelResponse: Error {
     let partialText: String
   }
@@ -635,9 +645,10 @@ enum AssistantToolLoop {
       remainingToolCalls: remainingToolCalls,
       parseDefinitions: parseDefinitions,
       mode: requestState.activeMode,
-      assistantID: assistantID,
-      baselineText: baselineText,
-      conversationID: conversationID,
+      host: .live(
+        assistantID: assistantID,
+        baselineText: baselineText,
+        conversationID: conversationID),
       store: store)
     return .toolRun(output)
   }
@@ -684,11 +695,12 @@ enum AssistantToolLoop {
       remainingToolCalls: remainingToolCalls,
       parseDefinitions: parseDefinitions,
       mode: requestState.activeMode,
-      conversation: conversation,
-      settings: settings,
-      mcpTools: mcpTools,
-      mcpResources: mcpResources,
-      mcpStatuses: mcpStatuses,
+      host: .isolated(
+        conversation: conversation,
+        settings: settings,
+        mcpTools: mcpTools,
+        mcpResources: mcpResources,
+        mcpStatuses: mcpStatuses),
       store: store)
     return .toolRun(output)
   }
@@ -699,35 +711,38 @@ enum AssistantToolLoop {
     remainingToolCalls: Int,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
-    assistantID: UUID,
-    baselineText: String,
-    conversationID: UUID,
+    host: ToolRunHost,
     store: AppStore
   ) async throws -> RunOutput {
-    publishPendingToolRuns(
-      response: response,
-      calls: calls,
-      remainingToolCalls: remainingToolCalls,
-      parseDefinitions: parseDefinitions,
-      assistantID: assistantID,
-      baselineText: baselineText,
-      store: store)
+    if case .live(let assistantID, let baselineText, _) = host {
+      publishPendingToolRuns(
+        response: response,
+        calls: calls,
+        remainingToolCalls: remainingToolCalls,
+        parseDefinitions: parseDefinitions,
+        assistantID: assistantID,
+        baselineText: baselineText,
+        store: store)
+    }
 
     var transcriptText = response
     var assistantContent = response
     var appendedRunBlocks: [String] = []
     var results: [CallResult] = []
     var completedRuns: [(key: ToolCallKey, result: String)] = []
-    var executedCount = 0
 
     for call in calls {
       try Task.checkCancellation()
       // Feedback queued after this provider response takes precedence over
       // tool calls that have not started yet. Already-running tools finish,
       // then the loop injects the feedback before asking the model again.
-      guard !store.hasQueuedUserMessages(in: conversationID) else { break }
+      if case .live(_, _, let conversationID) = host,
+        store.hasQueuedUserMessages(in: conversationID)
+      {
+        break
+      }
       replaceFirstOccurrence(of: call.rawBlock, in: &assistantContent, with: "")
-      guard executedCount < remainingToolCalls else {
+      guard results.count < remainingToolCalls else {
         replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
         continue
       }
@@ -735,8 +750,7 @@ enum AssistantToolLoop {
         call,
         parseDefinitions: parseDefinitions,
         mode: mode,
-        assistantID: assistantID,
-        conversationID: conversationID,
+        host: host,
         store: store)
       let runBlock = AgentTooling.makeRunBlock(call: result.call, result: result.result)
       if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
@@ -744,23 +758,34 @@ enum AssistantToolLoop {
       }
       results.append(result)
       completedRuns.append((ToolCallKey(result.call), result.result))
-      executedCount += 1
-      publishToolRunProgress(
-        transcriptText: transcriptText,
-        appendedRunBlocks: appendedRunBlocks,
-        pendingCalls: Array(calls.dropFirst(executedCount)),
-        remainingToolCalls: max(0, remainingToolCalls - executedCount),
-        parseDefinitions: parseDefinitions,
-        assistantID: assistantID,
-        baselineText: baselineText,
-        store: store)
+      if case .live(let assistantID, let baselineText, _) = host {
+        publishToolRunProgress(
+          transcriptText: transcriptText,
+          appendedRunBlocks: appendedRunBlocks,
+          pendingCalls: Array(calls.dropFirst(results.count)),
+          remainingToolCalls: max(0, remainingToolCalls - results.count),
+          parseDefinitions: parseDefinitions,
+          assistantID: assistantID,
+          baselineText: baselineText,
+          store: store)
+      }
     }
 
     let text =
-      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
-      + appendedRunBlocks)
+      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)] + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
+    let echoReasoningContent: Bool
+    switch host {
+    case .live(_, _, let conversationID):
+      echoReasoningContent = shouldEchoReasoningContent(
+        conversationID: conversationID,
+        store: store)
+    case .isolated(let conversation, let settings, _, _, _):
+      echoReasoningContent = shouldEchoReasoningContent(
+        conversation: conversation,
+        settings: settings)
+    }
     return RunOutput(
       text: text,
       nativeMessages: nativeMessages(
@@ -768,9 +793,7 @@ enum AssistantToolLoop {
         results: results,
         definitions: parseDefinitions,
         mode: mode,
-        echoReasoningContent: shouldEchoReasoningContent(
-          conversationID: conversationID,
-          store: store)),
+        echoReasoningContent: echoReasoningContent),
       completedRuns: completedRuns,
       parsedCalls: calls,
       results: results)
@@ -856,83 +879,14 @@ enum AssistantToolLoop {
       .joined(separator: "\n\n")
   }
 
-  private static func runToolCalls(
-    response: String,
-    calls: [ParsedToolCall],
-    remainingToolCalls: Int,
-    parseDefinitions: [ToolDefinition],
-    mode: ToolCallingMode,
-    conversation: Conversation,
-    settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]],
-    mcpStatuses: [UUID: EndpointConnectionState],
-    store: AppStore
-  ) async throws -> RunOutput {
-    var transcriptText = response
-    var assistantContent = response
-    var appendedRunBlocks: [String] = []
-    var results: [CallResult] = []
-    var completedRuns: [(key: ToolCallKey, result: String)] = []
-    var executedCount = 0
-
-    for call in calls {
-      try Task.checkCancellation()
-      replaceFirstOccurrence(of: call.rawBlock, in: &assistantContent, with: "")
-      guard executedCount < remainingToolCalls else {
-        replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
-        continue
-      }
-      let result = try await runToolCall(
-        call,
-        parseDefinitions: parseDefinitions,
-        mode: mode,
-        conversation: conversation,
-        settings: settings,
-        mcpTools: mcpTools,
-        mcpResources: mcpResources,
-        mcpStatuses: mcpStatuses,
-        store: store)
-      let runBlock = AgentTooling.makeRunBlock(call: result.call, result: result.result)
-      if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
-        appendedRunBlocks.append(runBlock)
-      }
-      results.append(result)
-      completedRuns.append((ToolCallKey(result.call), result.result))
-      executedCount += 1
-    }
-
-    let text =
-      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
-      + appendedRunBlocks)
-      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-      .joined(separator: "\n\n")
-    return RunOutput(
-      text: text,
-      nativeMessages: nativeMessages(
-        assistantContent: assistantContent,
-        results: results,
-        definitions: parseDefinitions,
-        mode: mode,
-        echoReasoningContent: shouldEchoReasoningContent(
-          conversation: conversation,
-          settings: settings)),
-      completedRuns: completedRuns,
-      parsedCalls: calls,
-      results: results)
-  }
-
   private static func runToolCall(
     _ call: ParsedToolCall,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
-    assistantID: UUID,
-    conversationID: UUID,
+    host: ToolRunHost,
     store: AppStore
   ) async throws -> CallResult {
-    let currentDefinitions = currentVisibleDefinitions(
-      conversationID: conversationID,
-      store: store)
+    let currentDefinitions = currentVisibleDefinitions(for: host, store: store)
     let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
     guard let normalizedCall = AgentTooling.availableCall(call, tools: currentDefinitions) else {
       return CallResult(
@@ -942,12 +896,22 @@ enum AssistantToolLoop {
 
     let approvedCall: ParsedToolCall
     let shouldExecute: Bool
-    switch await store.requestToolCallApproval(
-      call: normalizedCall,
-      definitions: currentDefinitions,
-      mode: mode,
-      conversationID: conversationID)
-    {
+    let approval: ToolCallApprovalDecision
+    switch host {
+    case .live(_, _, let conversationID):
+      approval = await store.requestToolCallApproval(
+        call: normalizedCall,
+        definitions: currentDefinitions,
+        mode: mode,
+        conversationID: conversationID)
+    case .isolated(let conversation, _, _, _, _):
+      approval = await store.requestToolCallApproval(
+        call: normalizedCall,
+        definitions: currentDefinitions,
+        mode: mode,
+        conversationTitle: conversation.displayTitle)
+    }
+    switch approval {
     case .approved(let call):
       approvedCall = call
       shouldExecute = true
@@ -962,15 +926,15 @@ enum AssistantToolLoop {
     guard shouldExecute else {
       return CallResult(call: approvedCall, result: "Error: tool call cancelled by user.")
     }
-    if store.hasQueuedUserMessages(in: conversationID) {
+    if case .live(_, _, let conversationID) = host,
+      store.hasQueuedUserMessages(in: conversationID)
+    {
       return CallResult(
         call: approvedCall,
         result: "Error: tool call skipped because the user queued new instructions.")
     }
 
-    let executionDefinitions = currentVisibleDefinitions(
-      conversationID: conversationID,
-      store: store)
+    let executionDefinitions = currentVisibleDefinitions(for: host, store: store)
     guard let executableCall = AgentTooling.availableCall(approvedCall, tools: executionDefinitions)
     else {
       let unavailableCall = AgentTooling.normalized(
@@ -987,28 +951,47 @@ enum AssistantToolLoop {
       return CallResult(call: executableCall, result: validationError)
     }
 
-    store.activityPhaseChanged(
-      conversationID: conversationID,
-      phase: .runningTool,
-      detail: executableCall.name)
-    let timeout = store.settings.mcpRequestTimeoutInterval
-    let context = LongRunningOperationContext(
-      kind: .toolCall,
-      conversationID: conversationID,
-      assistantMessageID: assistantID,
-      operationName: executableCall.name,
-      conversationTitle: store.conversation(withID: conversationID)?.displayTitle,
-      timeoutInterval: timeout)
+    let context: LongRunningOperationContext
+    switch host {
+    case .live(let assistantID, _, let conversationID):
+      store.activityPhaseChanged(
+        conversationID: conversationID,
+        phase: .runningTool,
+        detail: executableCall.name)
+      context = LongRunningOperationContext(
+        kind: .toolCall,
+        conversationID: conversationID,
+        assistantMessageID: assistantID,
+        operationName: executableCall.name,
+        conversationTitle: store.conversation(withID: conversationID)?.displayTitle,
+        timeoutInterval: store.settings.mcpRequestTimeoutInterval)
+    case .isolated(let conversation, let settings, _, _, _):
+      context = LongRunningOperationContext(
+        kind: .toolCall,
+        conversationID: conversation.id,
+        assistantMessageID: nil,
+        operationName: executableCall.name,
+        conversationTitle: conversation.displayTitle,
+        timeoutInterval: settings.mcpRequestTimeoutInterval)
+    }
     do {
       let result = try await InteractiveOperationTimeout.run(
-        seconds: timeout,
+        seconds: context.timeoutInterval,
         context: context,
         onTimeout: timeoutHandler(store: store)
       ) {
-        await ToolAgentRegistry.execute(
-          call: executableCall,
-          conversationID: conversationID,
-          store: store)
+        switch host {
+        case .live(_, _, let conversationID):
+          await ToolAgentRegistry.execute(
+            call: executableCall,
+            conversationID: conversationID,
+            store: store)
+        case .isolated(let conversation, _, _, _, _):
+          await ToolAgentRegistry.execute(
+            call: executableCall,
+            conversation: conversation,
+            store: store)
+        }
       }
       return CallResult(call: executableCall, result: result)
     } catch is LongRunningOperationSkipped {
@@ -1018,99 +1001,21 @@ enum AssistantToolLoop {
     }
   }
 
-  private static func runToolCall(
-    _ call: ParsedToolCall,
-    parseDefinitions: [ToolDefinition],
-    mode: ToolCallingMode,
-    conversation: Conversation,
-    settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]],
-    mcpStatuses: [UUID: EndpointConnectionState],
+  private static func currentVisibleDefinitions(
+    for host: ToolRunHost,
     store: AppStore
-  ) async throws -> CallResult {
-    let currentDefinitions = currentVisibleDefinitions(
-      conversation: conversation,
-      settings: settings,
-      mcpTools: mcpTools,
-      mcpResources: mcpResources,
-      mcpStatuses: mcpStatuses)
-    let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
-    guard let normalizedCall = AgentTooling.availableCall(call, tools: currentDefinitions) else {
-      return CallResult(
-        call: fallbackCall,
-        result: AgentTooling.unavailableToolError(name: fallbackCall.name))
-    }
-
-    let approvedCall: ParsedToolCall
-    let shouldExecute: Bool
-    switch await store.requestToolCallApproval(
-      call: normalizedCall,
-      definitions: currentDefinitions,
-      mode: mode,
-      conversationTitle: conversation.displayTitle)
-    {
-    case .approved(let call):
-      approvedCall = call
-      shouldExecute = true
-    case .cancelled:
-      approvedCall = normalizedCall
-      shouldExecute = false
-    case .interrupted:
-      throw CancellationError()
-    }
-
-    try Task.checkCancellation()
-    guard shouldExecute else {
-      return CallResult(call: approvedCall, result: "Error: tool call cancelled by user.")
-    }
-
-    let executionDefinitions = currentVisibleDefinitions(
-      conversation: conversation,
-      settings: settings,
-      mcpTools: mcpTools,
-      mcpResources: mcpResources,
-      mcpStatuses: mcpStatuses)
-    guard let executableCall = AgentTooling.availableCall(approvedCall, tools: executionDefinitions)
-    else {
-      let unavailableCall = AgentTooling.normalized(
-        call: approvedCall,
-        tools: currentDefinitions)
-      return CallResult(
-        call: unavailableCall,
-        result: AgentTooling.unavailableToolError(name: unavailableCall.name))
-    }
-    if let validationError = AgentTooling.requiredArgumentsError(
-      call: executableCall,
-      tools: executionDefinitions)
-    {
-      return CallResult(call: executableCall, result: validationError)
-    }
-
-    let timeout = settings.mcpRequestTimeoutInterval
-    let context = LongRunningOperationContext(
-      kind: .toolCall,
-      conversationID: conversation.id,
-      assistantMessageID: nil,
-      operationName: executableCall.name,
-      conversationTitle: conversation.displayTitle,
-      timeoutInterval: timeout)
-    do {
-      let result = try await InteractiveOperationTimeout.run(
-        seconds: timeout,
-        context: context,
-        onTimeout: timeoutHandler(store: store)
-      ) {
-        await ToolAgentRegistry.execute(
-          call: executableCall,
-          conversation: conversation,
-          store: store)
-      }
-      return CallResult(call: executableCall, result: result)
-    } catch is LongRunningOperationSkipped {
-      return CallResult(
-        call: executableCall,
-        result: "Error: tool call skipped by user after timeout.")
+  ) -> [ToolDefinition] {
+    switch host {
+    case .live(_, _, let conversationID):
+      return currentVisibleDefinitions(conversationID: conversationID, store: store)
+    case .isolated(
+      let conversation, let settings, let mcpTools, let mcpResources, let mcpStatuses):
+      return currentVisibleDefinitions(
+        conversation: conversation,
+        settings: settings,
+        mcpTools: mcpTools,
+        mcpResources: mcpResources,
+        mcpStatuses: mcpStatuses)
     }
   }
 
