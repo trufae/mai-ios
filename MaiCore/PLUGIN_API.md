@@ -5,6 +5,11 @@ and dynamically loaded macOS libraries. PocketMai installs signed Swift package
 modules at composition time. The CLI can additionally load trusted `.dylib`
 files.
 
+The bundled integrations demonstrate static composition: `MaiOpenAIPlugin`,
+`MaiMCPPlugin`, and `MaiVisionOCRPlugin` are separate Swift targets. `MaiCore`
+keeps only the contracts, configuration records, structured content, runtime,
+and transcript state needed by every host.
+
 Native plugins must export this C symbol:
 
 ```c

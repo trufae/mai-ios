@@ -94,8 +94,6 @@ public protocol MCPToolSource: Sendable {
   func close() async
 }
 
-extension MCPClient: MCPToolSource {}
-
 public protocol ConfiguredMCPToolSourceFactory: Sendable {
   var kind: String { get }
   func makeMCPToolSource(
