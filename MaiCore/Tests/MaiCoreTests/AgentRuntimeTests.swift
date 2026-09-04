@@ -60,7 +60,7 @@ func imageAttachmentOCR() async throws {
 
 @Test("Structured messages preserve multimodal and tool content")
 func structuredMessageRoundTrip() throws {
-  let message = AgentMessage(
+  var message = AgentMessage(
     id: "message-1",
     role: .user,
     content: [
@@ -73,9 +73,12 @@ func structuredMessageRoundTrip() throws {
       .file(FileContent(name: "notes.txt", mimeType: "text/plain", text: "notes")),
       .toolResult(ToolResult(callID: "call-1", text: "done")),
     ])
+  message.appendText("more context")
 
   let data = try JSONEncoder().encode(message)
   #expect(try JSONDecoder().decode(AgentMessage.self, from: data) == message)
+  #expect(message.text == "inspect\n\nmore context\nnotes")
+  #expect(message.imageInputCount == 1)
 }
 
 @Test("Transcripts edit rich messages and preserve valid tool transactions")

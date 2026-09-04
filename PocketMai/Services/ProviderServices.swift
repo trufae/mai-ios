@@ -140,7 +140,7 @@ struct ChatCompletionRequest: Sendable {
   /// User-authored tokens for the initial request of this assistant turn.
   var userInputTokens: Int? = nil
   var nativeTools: [ToolDefinition]? = nil
-  var nativeContinuationMessages: [OpenAIMessage] = []
+  var nativeContinuationMessages: [AgentMessage] = []
   var hasToolCalling: Bool = false
   var toolPrompt: String = ""
   var toolPromptInContext: Bool = false
@@ -545,17 +545,17 @@ enum PromptComposer {
     model: String,
     endpoint: OpenAIEndpoint,
     excludingMessageID: UUID? = nil,
-    nativeContinuationMessages: [OpenAIMessage] = [],
+    nativeContinuationMessages: [AgentMessage] = [],
     toolPrompt: String = "",
     toolPromptInContext: Bool = false,
     messageLimitOverride: Int? = nil
-  ) -> [OpenAIMessage] {
+  ) -> [AgentMessage] {
     let baseSystem = systemPrompt(settings: settings, conversation: conversation)
     let systemContent =
       context.isEmpty
       ? baseSystem
       : "\(baseSystem)\n\n## Context\n\(context)"
-    var messages = [OpenAIMessage(role: "system", content: systemContent)]
+    var messages = [AgentMessage(role: .system, content: systemContent)]
     let effectiveLimit = messageLimitOverride ?? settings.contextWindowMode.messageLimit
     let limited = contextMessages(
       from: conversation,
@@ -568,7 +568,7 @@ enum PromptComposer {
       model: model, endpoint: endpoint)
     let latestUserMessageID = limited.last(where: { $0.role == .user })?.id
     messages.append(
-      contentsOf: limited.flatMap { message -> [OpenAIMessage] in
+      contentsOf: limited.flatMap { message -> [AgentMessage] in
         return openAIHistoryMessages(
           from: message,
           includeAssistantResponses: settings.includeAssistantResponsesInContext,
@@ -583,11 +583,11 @@ enum PromptComposer {
       toolPrompt: toolPrompt,
       includeToolPrompt: !toolPromptInContext)
     {
-      messages.append(OpenAIMessage(role: "user", content: reminder))
+      messages.append(AgentMessage(role: .user, content: reminder))
     }
     if let directive = ReasoningCompatibility.promptDirective(
       level: conversation.reasoningLevel, model: model, endpoint: endpoint),
-      let lastUserIndex = messages.lastIndex(where: { $0.role == "user" })
+      let lastUserIndex = messages.lastIndex(where: { $0.role == .user })
     {
       messages[lastUserIndex].appendText(directive)
     }
@@ -619,7 +619,7 @@ enum PromptComposer {
     echoReasoningContent: Bool,
     includeImageAttachments: Bool = false,
     includeReasoning: Bool = false
-  ) -> [OpenAIMessage] {
+  ) -> [AgentMessage] {
     let content = promptText(
       from: message,
       includeImageFallbacks: !includeImageAttachments,
@@ -644,9 +644,9 @@ enum PromptComposer {
         echoReasoningContent: echoReasoningContent,
         includeReasoning: includeReasoning)
     case .system:
-      return [OpenAIMessage(role: "system", content: content)]
+      return [AgentMessage(role: .system, content: content)]
     case .tool:
-      return [OpenAIMessage(role: "user", content: content)]
+      return [AgentMessage(role: .user, content: content)]
     case .error:
       return []
     }
@@ -702,11 +702,11 @@ enum PromptComposer {
     content: String,
     attachments: [ChatAttachment],
     includeImageAttachments: Bool
-  ) -> OpenAIMessage {
+  ) -> AgentMessage {
     guard includeImageAttachments else {
-      return OpenAIMessage(role: "user", content: content)
+      return AgentMessage(role: .user, content: content)
     }
-    var parts: [OpenAIMessageContentPart] = []
+    var parts: [ContentPart] = []
     let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
     if !text.isEmpty {
       parts.append(.text(text))
@@ -714,12 +714,22 @@ enum PromptComposer {
       parts.append(.text("Please use the attached image."))
     }
     for attachment in attachments where attachment.kind == .image {
-      guard let dataURL = attachment.dataURL else { continue }
-      parts.append(.imageURL(dataURL, detail: "auto"))
+      guard let encoded = attachment.dataBase64,
+        let data = Data(base64Encoded: encoded)
+      else { continue }
+      parts.append(
+        .image(
+          ImageContent(
+            source: .data(data),
+            mimeType: attachment.mimeType,
+            name: attachment.displayName,
+            width: attachment.width,
+            height: attachment.height,
+            detail: .automatic)))
     }
     return parts.isEmpty
-      ? OpenAIMessage(role: "user", content: content)
-      : OpenAIMessage(role: "user", content: .parts(parts))
+      ? AgentMessage(role: .user, content: content)
+      : AgentMessage(role: .user, content: parts)
   }
 
   private static func assistantHistoryMessages(
@@ -728,13 +738,13 @@ enum PromptComposer {
     includeAssistantResponses: Bool,
     echoReasoningContent: Bool,
     includeReasoning: Bool
-  ) -> [OpenAIMessage] {
+  ) -> [AgentMessage] {
     let rendered = MessageContentFilter.render(safeContent)
     var messages = rendered.hiddenSections
       .filter { $0.tag.caseInsensitiveCompare("tool_run") == .orderedSame }
       .filter { isCompletedToolRunContent($0.content) }
       .map { section in
-        OpenAIMessage(role: "user", content: wrappedToolRunContent(section.content))
+        AgentMessage(role: .user, content: wrappedToolRunContent(section.content))
       }
 
     guard includeAssistantResponses else { return messages }
@@ -745,13 +755,17 @@ enum PromptComposer {
     let reasoning = includeReasoning && !echoReasoningContent ? reasoningText(in: rendered) : ""
     let content = assistantContextContent(visible: visible, reasoning: reasoning)
     if !content.isEmpty {
+      var parts: [ContentPart] = [.text(content)]
+      if let reasoning = reasoningContent(
+        from: rawText,
+        echoReasoningContent: echoReasoningContent)
+      {
+        parts.append(.reasoning(reasoning))
+      }
       messages.append(
-        OpenAIMessage(
-          role: "assistant",
-          content: content,
-          reasoningContent: reasoningContent(
-            from: rawText,
-            echoReasoningContent: echoReasoningContent)))
+        AgentMessage(
+          role: .assistant,
+          content: parts))
     }
     return messages
   }
@@ -1207,153 +1221,6 @@ enum AppleFoundationProvider {
   }
 }
 
-enum OpenAIMessageContent: Encodable, Sendable {
-  case text(String)
-  case parts([OpenAIMessageContentPart])
-
-  var containsImageInput: Bool {
-    guard case .parts(let parts) = self else { return false }
-    return parts.contains { $0.imageURL != nil }
-  }
-
-  var imageInputCount: Int {
-    guard case .parts(let parts) = self else { return 0 }
-    return parts.filter { $0.imageURL != nil }.count
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.singleValueContainer()
-    switch self {
-    case .text(let text):
-      try container.encode(text)
-    case .parts(let parts):
-      try container.encode(parts)
-    }
-  }
-
-  var textValue: String {
-    switch self {
-    case .text(let text):
-      return text
-    case .parts(let parts):
-      return parts.compactMap(\.text).joined(separator: "\n")
-    }
-  }
-
-  mutating func appendText(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    switch self {
-    case .text(let existing):
-      self = .text(existing.isEmpty ? trimmed : "\(existing)\n\n\(trimmed)")
-    case .parts(var parts):
-      if let index = parts.firstIndex(where: { $0.type == "text" }) {
-        let existing = parts[index].text ?? ""
-        parts[index].text = existing.isEmpty ? trimmed : "\(existing)\n\n\(trimmed)"
-      } else {
-        parts.insert(.text(trimmed), at: 0)
-      }
-      self = .parts(parts)
-    }
-  }
-}
-
-struct OpenAIMessageContentPart: Encodable, Sendable {
-  var type: String
-  var text: String?
-  var imageURL: OpenAIImageURL?
-
-  enum CodingKeys: String, CodingKey {
-    case type, text
-    case imageURL = "image_url"
-  }
-
-  static func text(_ text: String) -> OpenAIMessageContentPart {
-    OpenAIMessageContentPart(type: "text", text: text)
-  }
-
-  static func imageURL(_ url: String, detail: String? = nil) -> OpenAIMessageContentPart {
-    OpenAIMessageContentPart(
-      type: "image_url",
-      imageURL: OpenAIImageURL(url: url, detail: detail))
-  }
-}
-
-struct OpenAIImageURL: Encodable, Sendable {
-  var url: String
-  var detail: String?
-}
-
-struct OpenAIMessage: Encodable, Sendable {
-  var role: String
-  var content: OpenAIMessageContent?
-  var reasoningContent: String? = nil
-  var toolCalls: [OpenAIMessageToolCall]?
-  var toolCallID: String?
-
-  enum CodingKeys: String, CodingKey {
-    case role, content
-    case reasoningContent = "reasoning_content"
-    case toolCalls = "tool_calls"
-    case toolCallID = "tool_call_id"
-  }
-
-  init(
-    role: String,
-    content: String?,
-    reasoningContent: String? = nil,
-    toolCalls: [OpenAIMessageToolCall]? = nil,
-    toolCallID: String? = nil
-  ) {
-    self.role = role
-    self.content = content.map(OpenAIMessageContent.text)
-    self.reasoningContent = reasoningContent
-    self.toolCalls = toolCalls
-    self.toolCallID = toolCallID
-  }
-
-  init(
-    role: String,
-    content: OpenAIMessageContent?,
-    reasoningContent: String? = nil,
-    toolCalls: [OpenAIMessageToolCall]? = nil,
-    toolCallID: String? = nil
-  ) {
-    self.role = role
-    self.content = content
-    self.reasoningContent = reasoningContent
-    self.toolCalls = toolCalls
-    self.toolCallID = toolCallID
-  }
-
-  var textContent: String {
-    content?.textValue ?? ""
-  }
-
-  var imageInputCount: Int {
-    content?.imageInputCount ?? 0
-  }
-
-  mutating func appendText(_ text: String) {
-    if content == nil {
-      content = .text(text)
-      return
-    }
-    content?.appendText(text)
-  }
-}
-
-struct OpenAIMessageToolCall: Encodable, Sendable {
-  var id: String
-  var type: String = "function"
-  var function: OpenAIMessageToolCallFunction
-}
-
-struct OpenAIMessageToolCallFunction: Encodable, Sendable {
-  var name: String
-  var arguments: String
-}
-
 private struct OpenAIReasoningConfig: Encodable {
   var effort: String?
   var enabled: Bool?
@@ -1657,7 +1524,7 @@ enum OpenAICompatibleProvider {
         toolPromptInContext: request.toolPromptInContext,
         messageLimitOverride: request.messageLimitOverride
       )
-      let coreMessages = try messages.map(coreMessage)
+      let coreMessages = messages
       let coreTools = request.nativeTools ?? []
       let coreOptions = try coreGenerationOptions(
         level: request.conversation.reasoningLevel,
@@ -1752,73 +1619,6 @@ enum OpenAICompatibleProvider {
       requestTimeout: requestTimeout)
   }
 
-  private static func coreMessage(_ message: OpenAIMessage) throws -> MaiCore.AgentMessage {
-    let role = MaiCore.AgentRole(rawValue: message.role) ?? .user
-    if role == .tool {
-      guard let callID = message.toolCallID, !callID.isEmpty else {
-        throw ChatProviderError.providerRequestFailed(
-          "A tool result is missing its tool-call identifier.")
-      }
-      return MaiCore.AgentMessage(
-        role: .tool,
-        content: [
-          .toolResult(
-            MaiCore.ToolResult(callID: callID, text: message.textContent))
-        ])
-    }
-
-    var parts: [MaiCore.ContentPart] = []
-    switch message.content {
-    case .text(let text):
-      parts.append(.text(text))
-    case .parts(let contentParts):
-      for part in contentParts {
-        if let text = part.text {
-          parts.append(.text(text))
-        }
-        if let image = part.imageURL {
-          guard let url = URL(string: image.url) else {
-            throw ChatProviderError.providerRequestFailed("An image attachment has an invalid URL.")
-          }
-          let detail: MaiCore.ImageDetail
-          switch image.detail?.lowercased() {
-          case "low": detail = .low
-          case "high": detail = .high
-          default: detail = .automatic
-          }
-          parts.append(
-            .image(
-              MaiCore.ImageContent(
-                source: .url(url),
-                mimeType: imageMIMEType(from: image.url),
-                detail: detail)))
-        }
-      }
-    case nil:
-      break
-    }
-    if let reasoning = message.reasoningContent, !reasoning.isEmpty {
-      parts.append(.reasoning(reasoning))
-    }
-    for call in message.toolCalls ?? [] {
-      let raw = call.function.arguments.isEmpty ? "{}" : call.function.arguments
-      guard let data = raw.data(using: .utf8),
-        let arguments = try? JSONDecoder().decode(MaiCore.JSONValue.self, from: data),
-        arguments.objectValue != nil
-      else {
-        throw ChatProviderError.providerRequestFailed(
-          "Tool '\(call.function.name)' has invalid JSON arguments.")
-      }
-      parts.append(
-        .toolCall(
-          MaiCore.ToolCall(
-            id: call.id,
-            name: call.function.name,
-            arguments: arguments)))
-    }
-    return MaiCore.AgentMessage(role: role, content: parts)
-  }
-
   private static func coreGenerationOptions(
     level: ReasoningLevel,
     model: String,
@@ -1832,14 +1632,6 @@ enum OpenAICompatibleProvider {
     return MaiCore.GenerationOptions(
       includeStreamUsage: includeStreamUsage,
       additional: additional)
-  }
-
-  private static func imageMIMEType(from value: String) -> String {
-    guard value.hasPrefix("data:"), let separator = value.firstIndex(of: ";") else {
-      return "image/jpeg"
-    }
-    let mime = String(value[value.index(value.startIndex, offsetBy: 5)..<separator])
-    return mime.isEmpty ? "image/jpeg" : mime
   }
 
   private static func mapCoreError(_ error: Error) -> ChatProviderError {

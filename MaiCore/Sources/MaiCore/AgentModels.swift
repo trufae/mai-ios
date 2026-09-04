@@ -192,9 +192,10 @@ public enum JSONValue: Codable, Equatable, Sendable {
   }
 
   public var coercedNumberValue: Double? {
-    numberValue ?? stringValue.flatMap {
-      Double($0.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
+    numberValue
+      ?? stringValue.flatMap {
+        Double($0.trimmingCharacters(in: .whitespacesAndNewlines))
+      }
   }
 
   public var coercedBoolValue: Bool? {
@@ -438,6 +439,12 @@ public struct AgentMessage: Codable, Equatable, Identifiable, Sendable {
     }.joined()
   }
 
+  public var imageInputCount: Int {
+    content.reduce(0) { count, part in
+      if case .image = part { count + 1 } else { count }
+    }
+  }
+
   public var toolCalls: [ToolCall] {
     content.compactMap { part in
       guard case .toolCall(let value) = part else { return nil }
@@ -449,6 +456,18 @@ public struct AgentMessage: Codable, Equatable, Identifiable, Sendable {
     content.compactMap { part in
       guard case .toolResult(let value) = part else { return nil }
       return value
+    }
+  }
+
+  public mutating func appendText(_ text: String) {
+    let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return }
+    if let index = content.firstIndex(where: { if case .text = $0 { true } else { false } }),
+      case .text(let existing) = content[index]
+    {
+      content[index] = .text(existing.isEmpty ? value : "\(existing)\n\n\(value)")
+    } else {
+      content.insert(.text(value), at: 0)
     }
   }
 }
