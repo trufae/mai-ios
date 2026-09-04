@@ -166,6 +166,7 @@ public actor AgentRuntime {
     var localModelTurns = 0
     var localToolCalls = 0
     var fingerprints = Set<ToolCallKey>()
+    var completedToolRuns: [ToolCallKey: String] = [:]
 
     await emit(.started(context, provider.descriptor))
     while localModelTurns < request.limits.maxModelTurns {
@@ -201,36 +202,51 @@ public actor AgentRuntime {
         await emit(.provider(context, event))
       }
       try Task.checkCancellation()
-      if let textToolMode,
-        let call = textToolCall(
-          in: providerResponse.message.text,
-          definitions: definitions,
-          mode: textToolMode)
-      {
-        var content = providerResponse.message.content.filter {
-          if case .reasoning = $0 { return true }
-          return false
-        }
-        content.append(.toolCall(call))
-        providerResponse.message.content = content
-        providerResponse.stopReason = .toolCall
-        await emit(
-          .provider(
-            context,
-            .toolCallDelta(
-              ToolCallDelta(
-                index: 0,
-                id: call.id,
-                name: call.name,
-                argumentsFragment: call.arguments.compactJSONString))))
-      } else if usesTextToolProtocol, !providerResponse.message.text.isEmpty {
-        await emit(.provider(context, .textDelta(providerResponse.message.text)))
-      }
       totalUsage = totalUsage.merging(providerResponse.usage)
       if let usage = providerResponse.usage,
         !(await budget.record(tokens: usage.totalTokens))
       {
         throw AgentRuntimeError.limitExceeded("token budget")
+      }
+
+      if let textToolMode {
+        let decision = AgentToolLoopPolicy.evaluate(
+          response: providerResponse.message.text,
+          tools: definitions,
+          mode: textToolMode,
+          completedToolRuns: completedToolRuns,
+          remainingToolCalls: request.limits.maxToolCalls - localToolCalls)
+        switch decision {
+        case .final(let text):
+          if text != providerResponse.message.text {
+            providerResponse.message = replacingText(in: providerResponse.message, with: text)
+          }
+          if !text.isEmpty { await emit(.provider(context, .textDelta(text))) }
+        case .repair(let feedback):
+          providerResponse.message = .assistant(feedback)
+          transcript.append(providerResponse.message)
+          continue
+        case .execute(let parsedCalls):
+          let calls = parsedCalls.map(toolCall)
+          var content = providerResponse.message.content.filter {
+            if case .reasoning = $0 { return true }
+            return false
+          }
+          content.append(contentsOf: calls.map(ContentPart.toolCall))
+          providerResponse.message.content = content
+          providerResponse.stopReason = .toolCall
+          for (index, call) in calls.enumerated() {
+            await emit(
+              .provider(
+                context,
+                .toolCallDelta(
+                  ToolCallDelta(
+                    index: index,
+                    id: call.id,
+                    name: call.name,
+                    argumentsFragment: call.arguments.compactJSONString))))
+          }
+        }
       }
       transcript.append(providerResponse.message)
 
@@ -276,6 +292,7 @@ public actor AgentRuntime {
             isError: true)
           await emit(.toolFinished(context, result))
         }
+        if !result.isError { completedToolRuns[ToolCallKey(call)] = result.text }
         transcript.append(
           AgentMessage(role: .tool, content: [.toolResult(result)]))
       }
@@ -576,22 +593,26 @@ public actor AgentRuntime {
     mode: ToolCallingMode
   ) -> String {
     "Tools are available through a \(mode.displayName.uppercased()) fallback protocol.\n\n"
-      + AgentTooling.promptDescription(for: definitions, mode: mode)
+      + AgentTooling.promptDescription(
+        for: AgentToolLoopPolicy.definitions(includingResponseTool: definitions), mode: mode)
   }
 
-  private func textToolCall(
-    in response: String,
-    definitions: [ToolDefinition],
-    mode: ToolCallingMode
-  ) -> ToolCall? {
-    guard let parsed = AgentTooling.parseCalls(in: response, tools: definitions, mode: mode).first
-    else { return nil }
-    let call = AgentTooling.normalized(call: parsed, tools: definitions)
-    guard AgentTooling.containsDefinition(named: call.name, in: definitions) else { return nil }
+  private func toolCall(_ call: ParsedToolCall) -> ToolCall {
     return ToolCall(
       id: call.toolCallID ?? "text_\(UUID().uuidString)",
       name: call.name,
       arguments: .object(call.argumentValues))
+  }
+
+  private func replacingText(in message: AgentMessage, with text: String) -> AgentMessage {
+    var message = message
+    message.content.removeAll {
+      if case .text = $0 { return true }
+      if case .toolCall = $0 { return true }
+      return false
+    }
+    if !text.isEmpty { message.content.append(.text(text)) }
+    return message
   }
 }
 

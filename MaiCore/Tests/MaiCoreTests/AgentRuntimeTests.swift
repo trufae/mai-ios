@@ -634,6 +634,84 @@ func textToolFallback() async throws {
   #expect(!leakedProtocol)
 }
 
+@Test("Text fallback executes every tool call emitted in one model turn")
+func multipleTextToolCalls() async throws {
+  let provider = ScriptedProvider(
+    responses: [
+      ProviderResponse(
+        message: .assistant(
+          """
+          {"name":"echo","arguments":{"text":"one"}}
+          {"name":"echo","arguments":{"text":"two"}}
+          """),
+        stopReason: .stop),
+      ProviderResponse(message: .assistant("Both calls completed."), stopReason: .stop),
+    ],
+    capabilities: [.streaming])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "echo",
+        description: "Echo",
+        inputSchema: objectSchema(required: ["text"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("echo twice")],
+      toolNames: ["echo"],
+      toolCallingStrategy: .json))
+
+  #expect(result.response.text == "Both calls completed.")
+  #expect(result.toolCalls == 2)
+  #expect(result.transcript.flatMap(\.toolResults).map(\.text) == ["one", "two"])
+}
+
+@Test("Text fallback repairs malformed turns and resolves respond without host execution")
+func textToolRepairAndRespond() async throws {
+  let provider = ScriptedProvider(
+    responses: [
+      ProviderResponse(
+        message: .assistant(#"{"name":"echo","arguments":{"text":"unfinished"}"#),
+        stopReason: .stop),
+      ProviderResponse(
+        message: .assistant(
+          #"{"name":"respond","arguments":{"action":"final","content":"Recovered."}}"#),
+        stopReason: .stop),
+    ],
+    capabilities: [.streaming])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(name: "echo", description: "Echo")
+    ) { _, _ in
+      Issue.record("Repair and respond turns must not execute a host tool")
+      return ToolOutput(text: "unexpected")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("recover")],
+      toolNames: ["echo"],
+      toolCallingStrategy: .json))
+
+  #expect(result.response.text == "Recovered.")
+  #expect(result.modelTurns == 2)
+  #expect(result.toolCalls == 0)
+  #expect(result.transcript.contains { $0.text.contains("Error:") })
+  #expect(await provider.requests.first?.messages.contains { $0.text.contains("respond") } == true)
+}
+
 @Test("Token budgets are shared and enforced")
 func tokenBudget() async throws {
   let provider = ScriptedProvider(responses: [
