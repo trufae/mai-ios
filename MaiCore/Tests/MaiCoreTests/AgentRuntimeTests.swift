@@ -542,6 +542,50 @@ func deniedApproval() async throws {
   #expect(toolResult.text.contains("test policy"))
 }
 
+@Test("Agent runtime resolves proxied calls before approval and execution")
+func proxiedToolLoop() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(
+      message: AgentMessage(
+        role: .assistant,
+        content: [
+          .toolCall(
+            ToolCall(
+              id: "proxy-1",
+              name: ToolProxy.callName,
+              arguments: .object([
+                "name": .string("uppercase"),
+                "arguments": .object(["text": .string("hello")]),
+              ])))
+        ]),
+      stopReason: .toolCall),
+    ProviderResponse(message: .assistant("Proxied result received."), stopReason: .stop),
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "uppercase",
+        description: "Uppercase text",
+        inputSchema: objectSchema(required: ["text"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      ToolOutput(text: arguments.objectValue?["text"]?.stringValue?.uppercased() ?? "")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("uppercase hello")],
+      toolNames: ["uppercase"],
+      useToolProxy: true))
+
+  #expect(result.transcript.flatMap(\.toolResults).first?.text == "HELLO")
+  #expect(await provider.requests.first?.tools == ToolProxy.definitions)
+}
+
 @Test("Providers without native tools use the JSON fallback without leaking protocol text")
 func textToolFallback() async throws {
   let provider = ScriptedProvider(
@@ -684,6 +728,7 @@ func configurationLoading() async throws {
         "provider": "local",
         "model": "model",
         "toolCallingStrategy": "json",
+        "useToolProxy": true,
         "options": {"temperature": 0.2, "maxOutputTokens": 100},
         "subagentNames": ["helper"]
       }, {
@@ -700,6 +745,7 @@ func configurationLoading() async throws {
   #expect(configuration.approvals.confirm == .allow)
   #expect(configuration.agents[0].limits == AgentRunLimits())
   #expect(configuration.agents[0].toolCallingStrategy == .json)
+  #expect(configuration.agents[0].useToolProxy)
   #expect(configuration.agents[0].options.maxOutputTokens == 100)
   let plugins = PluginRegistry()
   try await plugins.install(MaiOpenAIPlugin())

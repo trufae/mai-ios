@@ -139,7 +139,10 @@ public actor AgentRuntime {
       parentRunID: parentRunID,
       agentID: request.agentID,
       depth: depth)
-    let definitions = try visibleDefinitions(for: request)
+    let concreteDefinitions = try visibleDefinitions(for: request)
+    let definitions =
+      request.useToolProxy && !concreteDefinitions.isEmpty
+      ? ToolProxy.definitions : concreteDefinitions
     let supportsNativeTools = provider.descriptor.capabilities.contains(.nativeToolCalling)
     if request.toolCallingStrategy == .native, !definitions.isEmpty, !supportsNativeTools {
       throw AgentRuntimeError.nativeToolCallingUnavailable(request.provider)
@@ -260,7 +263,7 @@ public actor AgentRuntime {
         if fingerprints.insert(fingerprint).inserted {
           result = try await execute(
             call,
-            definitions: definitions,
+            definitions: concreteDefinitions,
             request: request,
             context: context,
             modelTurn: localModelTurns,
@@ -291,20 +294,58 @@ public actor AgentRuntime {
     budget: RunBudget,
     emit: @escaping AgentEventHandler
   ) async throws -> ToolResult {
-    guard let definition = definitions.first(where: { $0.name == call.name }) else {
+    if request.useToolProxy,
+      call.name != ToolProxy.listName && call.name != ToolProxy.callName
+    {
       let result = ToolResult(
         callID: call.id,
-        text: "Error: tool '\(call.name)' is not available to this agent.",
+        text: "Error: proxy mode does not expose tool '\(call.name)'.",
+        isError: true)
+      await emit(.toolFinished(context, result))
+      return result
+    }
+    if request.useToolProxy, call.name == ToolProxy.listName {
+      await emit(.toolStarted(context, call))
+      let result = ToolResult(
+        callID: call.id,
+        text: ToolProxy.listTools(
+          arguments: call.arguments.objectValue ?? [:], definitions: definitions))
+      await emit(.toolFinished(context, result))
+      return result
+    }
+
+    let resolvedCall: ToolCall
+    if request.useToolProxy, call.name == ToolProxy.callName {
+      let resolved = ToolProxy.resolveCall(
+        arguments: call.arguments.objectValue ?? [:], definitions: definitions)
+      guard let target = resolved.call else {
+        let result = ToolResult(
+          callID: call.id,
+          text: resolved.error ?? "Error: invalid proxied tool call.",
+          isError: true)
+        await emit(.toolFinished(context, result))
+        return result
+      }
+      resolvedCall = ToolCall(
+        id: call.id, name: target.name, arguments: .object(target.argumentValues))
+    } else {
+      resolvedCall = call
+    }
+
+    guard let definition = definitions.first(where: { $0.name == resolvedCall.name }) else {
+      let result = ToolResult(
+        callID: resolvedCall.id,
+        text: "Error: tool '\(resolvedCall.name)' is not available to this agent.",
         isError: true)
       await emit(.toolFinished(context, result))
       return result
     }
     if let validationError = ToolSchemaValidator.validate(
-      arguments: call.arguments,
+      arguments: resolvedCall.arguments,
       definition: definition)
     {
       let result = ToolResult(
-        callID: call.id,
+        callID: resolvedCall.id,
         text: "Error: \(validationError).",
         isError: true)
       await emit(.toolFinished(context, result))
@@ -313,15 +354,16 @@ public actor AgentRuntime {
 
     let approvedCall: ToolCall
     if definition.annotations.approval == .automatic {
-      approvedCall = call
+      approvedCall = resolvedCall
     } else {
-      let approval = ApprovalRequest(run: context, tool: definition, call: call)
+      let approval = ApprovalRequest(run: context, tool: definition, call: resolvedCall)
       await emit(.approvalRequested(context, approval))
       let decision = try await approvalHandler.decide(approval)
       await emit(.approvalDecided(context, decision))
       switch decision {
       case .approve(let arguments):
-        approvedCall = ToolCall(id: call.id, name: call.name, arguments: arguments)
+        approvedCall = ToolCall(
+          id: resolvedCall.id, name: resolvedCall.name, arguments: arguments)
       case .deny(let reason):
         let result = ToolResult(
           callID: call.id,
@@ -346,7 +388,7 @@ public actor AgentRuntime {
       return result
     }
     await emit(.toolStarted(context, approvedCall))
-    if call.name == Self.subagentToolName {
+    if resolvedCall.name == Self.subagentToolName {
       return try await executeSubagent(
         approvedCall,
         allowedAgentNames: request.subagentNames,
@@ -355,10 +397,10 @@ public actor AgentRuntime {
         budget: budget,
         emit: emit)
     }
-    guard let tool = tools[call.name] else {
+    guard let tool = tools[resolvedCall.name] else {
       let result = ToolResult(
-        callID: call.id,
-        text: "Error: tool '\(call.name)' is not registered.",
+        callID: resolvedCall.id,
+        text: "Error: tool '\(resolvedCall.name)' is not registered.",
         isError: true)
       await emit(.toolFinished(context, result))
       return result
@@ -526,7 +568,8 @@ public actor AgentRuntime {
       options: definition.options,
       limits: definition.limits,
       stream: definition.stream,
-      toolCallingStrategy: definition.toolCallingStrategy)
+      toolCallingStrategy: definition.toolCallingStrategy,
+      useToolProxy: definition.useToolProxy)
   }
 
   private func textToolPrompt(

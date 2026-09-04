@@ -16,7 +16,9 @@ public enum ToolProxy {
           type: "string",
           description: "Space-separated task, tool, capability, or argument keywords.",
           required: true)
-      ]),
+      ],
+      annotations: ToolAnnotations(
+        readOnly: true, idempotent: true, openWorld: false, approval: .automatic)),
     ToolDefinition(
       name: callName,
       description: "Call one enabled tool by exact name with JSON arguments.",
@@ -31,7 +33,8 @@ public enum ToolProxy {
           type: "object",
           description: "JSON object with arguments for the selected tool. Use {} when none.",
           required: true),
-      ]),
+      ],
+      annotations: ToolAnnotations(approval: .automatic)),
   ]
 
   public static func listTools(

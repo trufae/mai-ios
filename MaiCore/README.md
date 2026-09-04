@@ -83,4 +83,5 @@ dependency of the core runtime.
 
 The example MCP entry is disabled so the example remains safe to inspect. Set
 its URL, enable it, discover its tools with `/tools`, and add the names you want
-to an agent's `toolNames` list.
+to an agent's `toolNames` list. Set `useToolProxy` on an agent when models should
+see only MaiCore's shared `list-tools` and `call-tool` interface.
