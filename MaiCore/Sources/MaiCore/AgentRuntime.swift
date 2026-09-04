@@ -58,11 +58,11 @@ public actor AgentRuntime {
 
   @discardableResult
   public func register(
-    mcp client: MCPClient,
+    mcp source: any MCPToolSource,
     replacingExistingTools: Bool = false
   ) async throws -> MCPServerCatalog {
-    let catalog = try await client.connect()
-    for tool in try await client.agentTools() {
+    let catalog = try await source.connect()
+    for tool in try await source.agentTools() {
       try register(tool: tool, replacingExisting: replacingExistingTools)
     }
     return catalog
