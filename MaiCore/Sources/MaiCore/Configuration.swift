@@ -1,8 +1,28 @@
 import Foundation
 
-public enum ConfiguredProviderKind: String, Codable, Sendable {
-  case hello
-  case openAICompatible
+/// An open-ended configuration discriminator. MaiCore reserves the static
+/// values below for its built-in factories; hosts may define any other value.
+public struct ConfiguredProviderKind: RawRepresentable, Codable, Hashable, Sendable,
+  ExpressibleByStringLiteral, CustomStringConvertible
+{
+  public var rawValue: String
+
+  public init(rawValue: String) { self.rawValue = rawValue }
+  public init(_ rawValue: String) { self.init(rawValue: rawValue) }
+  public init(stringLiteral value: String) { self.init(value) }
+  public var description: String { rawValue }
+
+  public init(from decoder: Decoder) throws {
+    rawValue = try decoder.singleValueContainer().decode(String.self)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+
+  public static let hello: ConfiguredProviderKind = "hello"
+  public static let openAICompatible: ConfiguredProviderKind = "openAICompatible"
 }
 
 public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
@@ -15,6 +35,8 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
   public var headers: [String: String]
   public var headerEnvironment: [String: String]
   public var timeout: TimeInterval?
+  /// Provider-specific settings preserved by the shared configuration format.
+  public var options: [String: JSONValue]
 
   public init(
     id: String,
@@ -25,7 +47,8 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
     apiKeyEnvironment: String? = nil,
     headers: [String: String] = [:],
     headerEnvironment: [String: String] = [:],
-    timeout: TimeInterval? = nil
+    timeout: TimeInterval? = nil,
+    options: [String: JSONValue] = [:]
   ) {
     self.id = id
     self.kind = kind
@@ -36,11 +59,13 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
     self.headers = headers
     self.headerEnvironment = headerEnvironment
     self.timeout = timeout
+    self.options = options
   }
 
   private enum CodingKeys: String, CodingKey {
     case id, kind, displayName, baseURL, apiKey, apiKeyEnvironment, headers, headerEnvironment,
       timeout
+    case options
   }
 
   public init(from decoder: Decoder) throws {
@@ -56,39 +81,36 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
       headerEnvironment: try container.decodeIfPresent(
         [String: String].self,
         forKey: .headerEnvironment) ?? [:],
-      timeout: try container.decodeIfPresent(TimeInterval.self, forKey: .timeout))
+      timeout: try container.decodeIfPresent(TimeInterval.self, forKey: .timeout),
+      options: try container.decodeIfPresent([String: JSONValue].self, forKey: .options) ?? [:])
   }
 
   public func makeProvider(environment: [String: String]) throws -> any ChatProvider {
-    switch kind {
-    case .hello:
-      return HelloProvider(
-        id: ProviderID(id),
-        displayName: displayName ?? "MaiCore Hello")
-    case .openAICompatible:
-      guard let baseURL else { throw MaiConfigurationError.providerMissingBaseURL(id) }
-      var resolvedHeaders = headers
-      for (header, environmentName) in headerEnvironment {
-        guard let value = environment[environmentName], !value.isEmpty else {
-          throw MaiConfigurationError.missingEnvironmentVariable(environmentName)
-        }
-        resolvedHeaders[header] = value
+    try ProviderFactoryRegistry().makeProvider(from: self, environment: environment)
+  }
+
+  /// Constructs this provider through a host-supplied factory registry.
+  public func makeProvider(
+    environment: [String: String],
+    factories: ProviderFactoryRegistry
+  ) throws -> any ChatProvider {
+    try factories.makeProvider(from: self, environment: environment)
+  }
+
+  public func resolvedHeaders(environment: [String: String]) throws -> [String: String] {
+    var resolved = headers
+    for (header, environmentName) in headerEnvironment {
+      guard let value = environment[environmentName], !value.isEmpty else {
+        throw MaiConfigurationError.missingEnvironmentVariable(environmentName)
       }
-      let resolvedKey: String?
-      if let apiKeyEnvironment, !apiKeyEnvironment.isEmpty {
-        resolvedKey = environment[apiKeyEnvironment].flatMap { $0.isEmpty ? nil : $0 } ?? apiKey
-      } else {
-        resolvedKey = apiKey
-      }
-      return OpenAICompatibleProvider(
-        configuration: .init(
-          id: ProviderID(id),
-          displayName: displayName ?? "OpenAI-compatible",
-          baseURL: baseURL,
-          apiKey: resolvedKey,
-          additionalHeaders: resolvedHeaders,
-          requestTimeout: timeout ?? 600))
+      resolved[header] = value
     }
+    return resolved
+  }
+
+  public func resolvedAPIKey(environment: [String: String]) -> String? {
+    guard let apiKeyEnvironment, !apiKeyEnvironment.isEmpty else { return apiKey }
+    return environment[apiKeyEnvironment].flatMap { $0.isEmpty ? nil : $0 } ?? apiKey
   }
 }
 
@@ -321,6 +343,8 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
   case missingEnvironmentVariable(String)
+  case providerFactoryAlreadyRegistered(String)
+  case providerFactoryNotRegistered(String)
 
   public var errorDescription: String? {
     switch self {
@@ -342,6 +366,10 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "Agent '\(agent)' references unknown tool '\(tool)'."
     case .missingEnvironmentVariable(let name):
       "Required environment variable '\(name)' is not set."
+    case .providerFactoryAlreadyRegistered(let kind):
+      "A provider factory for '\(kind)' is already registered."
+    case .providerFactoryNotRegistered(let kind):
+      "No provider factory is registered for configuration kind '\(kind)'."
     }
   }
 }

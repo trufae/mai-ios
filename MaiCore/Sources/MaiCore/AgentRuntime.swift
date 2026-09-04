@@ -1,5 +1,8 @@
 import Foundation
 
+/// UI-independent orchestration for providers, tools, approvals, MCP tools,
+/// and bounded child-agent runs. Hosts own presentation and persistence and
+/// observe work through `AgentEvent` values.
 public actor AgentRuntime {
   public static let subagentToolName = "spawn_agent"
 
@@ -12,6 +15,7 @@ public actor AgentRuntime {
     self.approvalHandler = approvalHandler
   }
 
+  /// Adds any provider implementation to the runtime by its descriptor ID.
   public func register(
     _ provider: any ChatProvider,
     replacingExisting: Bool = false
