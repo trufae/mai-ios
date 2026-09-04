@@ -415,71 +415,6 @@ enum ToolAgentRegistry {
     return cleaned.isEmpty ? fallback : cleaned
   }
 
-  static func promptDescription(
-    for definitions: [ToolDefinition],
-    mode: ToolCallingMode
-  ) -> String {
-    AgentTooling.promptDescription(for: definitions, mode: mode)
-  }
-
-  static func parseCalls(
-    in text: String,
-    definitions: [ToolDefinition],
-    mode: ToolCallingMode
-  ) -> [ParsedToolCall] {
-    guard !definitions.isEmpty else { return [] }
-    return AgentTooling.parseCalls(in: text, tools: definitions, mode: mode)
-  }
-
-  static func shouldEnterAgentLoop(for prompt: String, definitions: [ToolDefinition]) -> Bool {
-    !definitions.isEmpty
-  }
-
-  static func normalized(call: ParsedToolCall, definitions: [ToolDefinition]) -> ParsedToolCall {
-    let resolver = AgentToolNameResolver(tools: definitions)
-    let canonicalName = resolver.canonicalName(for: call.name) ?? call.name
-    let definitionByName = Dictionary(
-      definitions.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    let normalizedArguments = AgentTooling.normalizeArguments(
-      call.argumentValues, for: definitionByName[canonicalName])
-    return ParsedToolCall(
-      name: canonicalName,
-      arguments: [:],
-      argumentValues: normalizedArguments,
-      rawBlock: call.rawBlock,
-      toolCallID: call.toolCallID,
-      apiName: call.apiName)
-  }
-
-  static func requiredArgumentsError(
-    call: ParsedToolCall,
-    definitions: [ToolDefinition]
-  ) -> String? {
-    guard let definition = definitions.first(where: { $0.name == call.name }) else {
-      return nil
-    }
-    let missing = definition.parameters
-      .filter(\.required)
-      .filter { requiredArgumentIsMissing(call.argumentValues[$0.name]) }
-      .map(\.name)
-    guard !missing.isEmpty else { return nil }
-    let names = missing.map { "'\($0)'" }.joined(separator: ", ")
-    let noun = missing.count == 1 ? "argument" : "arguments"
-    return "Error: missing required \(noun) \(names) for tool '\(call.name)'."
-  }
-
-  private static func requiredArgumentIsMissing(_ value: AgentToolArgumentValue?) -> Bool {
-    guard let value else { return true }
-    switch value {
-    case .null:
-      return true
-    case .string(let string):
-      return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    default:
-      return false
-    }
-  }
-
   static func execute(
     call: ParsedToolCall,
     conversationID: UUID,
@@ -508,9 +443,9 @@ enum ToolAgentRegistry {
       mcpTools: store.mcpTools,
       mcpResources: store.mcpResources,
       mcpStatuses: store.mcpStatuses)
-    let visibleCall = normalized(call: call, definitions: visibleDefinitions)
-    guard definitionExists(named: visibleCall.name, in: visibleDefinitions) else {
-      return unavailableToolError(name: visibleCall.name)
+    let visibleCall = AgentTooling.normalized(call: call, tools: visibleDefinitions)
+    guard AgentTooling.containsDefinition(named: visibleCall.name, in: visibleDefinitions) else {
+      return AgentTooling.unavailableToolError(name: visibleCall.name)
     }
 
     if store.settings.useToolProxy && !fullDefinitions.isEmpty {
@@ -543,9 +478,9 @@ enum ToolAgentRegistry {
     store: AppStore,
     definitions: [ToolDefinition]
   ) async -> String {
-    let normalizedCall = normalized(call: call, definitions: definitions)
-    guard definitionExists(named: normalizedCall.name, in: definitions) else {
-      return unavailableToolError(name: normalizedCall.name)
+    let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
+    guard AgentTooling.containsDefinition(named: normalizedCall.name, in: definitions) else {
+      return AgentTooling.unavailableToolError(name: normalizedCall.name)
     }
     if let result = await BuiltInToolCatalog.execute(
       call: normalizedCall,
@@ -596,17 +531,6 @@ enum ToolAgentRegistry {
     return "Error: unknown tool '\(call.name)'. Refresh MCP tools in Settings if you expect it."
   }
 
-  static func definitionExists(named name: String, in definitions: [ToolDefinition]) -> Bool {
-    definitions.contains { $0.name == name }
-  }
-
-  static func unavailableToolError(name: String) -> String {
-    "Error: tool '\(name)' is not available. It may be unknown or disabled for this conversation."
-  }
-
-  static func makeRunBlock(call: ParsedToolCall, result: String) -> String {
-    AgentTooling.makeRunBlock(toolName: call.name, argumentsJSON: call.argsJSON, result: result)
-  }
 }
 
 @MainActor

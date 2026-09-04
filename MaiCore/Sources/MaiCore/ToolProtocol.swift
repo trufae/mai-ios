@@ -778,6 +778,65 @@ public enum AgentTooling {
       .mapValues(\.coercedStringValue)
   }
 
+  /// Resolves provider aliases and coerces arguments according to the matching schema.
+  public static func normalized(
+    call: ParsedToolCall,
+    tools: [ToolDefinition]
+  ) -> ParsedToolCall {
+    let resolver = AgentToolNameResolver(tools: tools)
+    let canonicalName = resolver.canonicalName(for: call.name) ?? call.name
+    let definition = definition(named: canonicalName, in: tools)
+    return ParsedToolCall(
+      name: canonicalName,
+      arguments: [:],
+      argumentValues: normalizeArguments(call.argumentValues, for: definition),
+      rawBlock: call.rawBlock,
+      toolCallID: call.toolCallID,
+      apiName: call.apiName)
+  }
+
+  public static func definition(
+    named name: String,
+    in tools: [ToolDefinition]
+  ) -> ToolDefinition? {
+    tools.first { $0.name == name }
+  }
+
+  public static func containsDefinition(
+    named name: String,
+    in tools: [ToolDefinition]
+  ) -> Bool {
+    definition(named: name, in: tools) != nil
+  }
+
+  /// Returns the host-facing validation message used before an approved call executes.
+  public static func requiredArgumentsError(
+    call: ParsedToolCall,
+    tools: [ToolDefinition]
+  ) -> String? {
+    guard let definition = definition(named: call.name, in: tools) else { return nil }
+    let missing = definition.parameters
+      .filter(\.required)
+      .filter { requiredArgumentIsMissing(call.argumentValues[$0.name]) }
+      .map(\.name)
+    guard !missing.isEmpty else { return nil }
+    let names = missing.map { "'\($0)'" }.joined(separator: ", ")
+    let noun = missing.count == 1 ? "argument" : "arguments"
+    return "Error: missing required \(noun) \(names) for tool '\(call.name)'."
+  }
+
+  public static func unavailableToolError(name: String) -> String {
+    "Error: tool '\(name)' is not available. It may be unknown or disabled for this conversation."
+  }
+
+  private static func requiredArgumentIsMissing(_ value: AgentToolArgumentValue?) -> Bool {
+    guard let value else { return true }
+    if case .string(let string) = value {
+      return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    return value == .null
+  }
+
   public static func parameters(fromSchemaJSON schemaJSON: String) -> [ToolParameterDef] {
     guard !schemaJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       let data = schemaJSON.data(using: .utf8),
@@ -798,6 +857,10 @@ public enum AgentTooling {
   public static func makeRunBlock(toolName: String, argumentsJSON: String, result: String) -> String {
     let body = result.trimmingCharacters(in: .whitespacesAndNewlines)
     return "<tool_run>\n\(toolName) tool (\(argumentsJSON)):\n\(body)\n</tool_run>"
+  }
+
+  public static func makeRunBlock(call: ParsedToolCall, result: String) -> String {
+    makeRunBlock(toolName: call.name, argumentsJSON: call.argsJSON, result: result)
   }
 
   public static func editableToolCallText(for call: ParsedToolCall, mode: ToolCallingMode) -> String {

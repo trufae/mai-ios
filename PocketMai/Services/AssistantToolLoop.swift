@@ -658,9 +658,9 @@ enum AssistantToolLoop {
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
-    let calls = ToolAgentRegistry.parseCalls(
+    let calls = AgentTooling.parseCalls(
       in: actionableResponse,
-      definitions: parseDefinitions,
+      tools: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
@@ -730,9 +730,9 @@ enum AssistantToolLoop {
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let parseDefinitions = toolLoopDefinitions(for: hostDefinitions)
     let actionableResponse = MessageContentFilter.removingReasoningSections(from: response)
-    let calls = ToolAgentRegistry.parseCalls(
+    let calls = AgentTooling.parseCalls(
       in: actionableResponse,
-      definitions: parseDefinitions,
+      tools: parseDefinitions,
       mode: requestState.activeMode)
 
     guard !calls.isEmpty else {
@@ -825,7 +825,7 @@ enum AssistantToolLoop {
         assistantID: assistantID,
         conversationID: conversationID,
         store: store)
-      let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
+      let runBlock = AgentTooling.makeRunBlock(call: result.call, result: result.result)
       if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
         appendedRunBlocks.append(runBlock)
       }
@@ -926,8 +926,8 @@ enum AssistantToolLoop {
         replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: "")
         continue
       }
-      let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
-      let runBlock = ToolAgentRegistry.makeRunBlock(
+      let normalizedCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
+      let runBlock = AgentTooling.makeRunBlock(
         call: normalizedCall,
         result: "Waiting for host tool result.")
       if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
@@ -978,7 +978,7 @@ enum AssistantToolLoop {
         mcpResources: mcpResources,
         mcpStatuses: mcpStatuses,
         store: store)
-      let runBlock = ToolAgentRegistry.makeRunBlock(call: result.call, result: result.result)
+      let runBlock = AgentTooling.makeRunBlock(call: result.call, result: result.result)
       if !replaceFirstOccurrence(of: call.rawBlock, in: &transcriptText, with: runBlock) {
         appendedRunBlocks.append(runBlock)
       }
@@ -1017,11 +1017,11 @@ enum AssistantToolLoop {
     let currentDefinitions = currentVisibleDefinitions(
       conversationID: conversationID,
       store: store)
-    let fallbackCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
+    let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
     guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
       return CallResult(
         call: fallbackCall,
-        result: ToolAgentRegistry.unavailableToolError(name: fallbackCall.name))
+        result: AgentTooling.unavailableToolError(name: fallbackCall.name))
     }
 
     let approvedCall: ParsedToolCall
@@ -1057,16 +1057,16 @@ enum AssistantToolLoop {
       store: store)
     guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
     else {
-      let unavailableCall = ToolAgentRegistry.normalized(
+      let unavailableCall = AgentTooling.normalized(
         call: approvedCall,
-        definitions: currentDefinitions)
+        tools: currentDefinitions)
       return CallResult(
         call: unavailableCall,
-        result: ToolAgentRegistry.unavailableToolError(name: unavailableCall.name))
+        result: AgentTooling.unavailableToolError(name: unavailableCall.name))
     }
-    if let validationError = ToolAgentRegistry.requiredArgumentsError(
+    if let validationError = AgentTooling.requiredArgumentsError(
       call: executableCall,
-      definitions: executionDefinitions)
+      tools: executionDefinitions)
     {
       return CallResult(call: executableCall, result: validationError)
     }
@@ -1119,11 +1119,11 @@ enum AssistantToolLoop {
       mcpTools: mcpTools,
       mcpResources: mcpResources,
       mcpStatuses: mcpStatuses)
-    let fallbackCall = ToolAgentRegistry.normalized(call: call, definitions: parseDefinitions)
+    let fallbackCall = AgentTooling.normalized(call: call, tools: parseDefinitions)
     guard let normalizedCall = availableCall(call, definitions: currentDefinitions) else {
       return CallResult(
         call: fallbackCall,
-        result: ToolAgentRegistry.unavailableToolError(name: fallbackCall.name))
+        result: AgentTooling.unavailableToolError(name: fallbackCall.name))
     }
 
     let approvedCall: ParsedToolCall
@@ -1157,16 +1157,16 @@ enum AssistantToolLoop {
       mcpStatuses: mcpStatuses)
     guard let executableCall = availableCall(approvedCall, definitions: executionDefinitions)
     else {
-      let unavailableCall = ToolAgentRegistry.normalized(
+      let unavailableCall = AgentTooling.normalized(
         call: approvedCall,
-        definitions: currentDefinitions)
+        tools: currentDefinitions)
       return CallResult(
         call: unavailableCall,
-        result: ToolAgentRegistry.unavailableToolError(name: unavailableCall.name))
+        result: AgentTooling.unavailableToolError(name: unavailableCall.name))
     }
-    if let validationError = ToolAgentRegistry.requiredArgumentsError(
+    if let validationError = AgentTooling.requiredArgumentsError(
       call: executableCall,
-      definitions: executionDefinitions)
+      tools: executionDefinitions)
     {
       return CallResult(call: executableCall, result: validationError)
     }
@@ -1237,7 +1237,7 @@ enum AssistantToolLoop {
       : .native
     let toolPrompt =
       nativeTools == nil
-      ? ToolAgentRegistry.promptDescription(for: loopDefinitions, mode: activeMode)
+      ? AgentTooling.promptDescription(for: loopDefinitions, mode: activeMode)
       : nativeToolLoopPrompt()
     let requestContext = [baseContext, toolPrompt]
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1529,8 +1529,8 @@ enum AssistantToolLoop {
     _ call: ParsedToolCall,
     definitions: [ToolDefinition]
   ) -> ParsedToolCall? {
-    let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
-    guard ToolAgentRegistry.definitionExists(named: normalizedCall.name, in: definitions) else {
+    let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
+    guard AgentTooling.containsDefinition(named: normalizedCall.name, in: definitions) else {
       return nil
     }
     return normalizedCall
@@ -1543,8 +1543,8 @@ enum AssistantToolLoop {
   ) -> String? {
     guard !calls.isEmpty, !completedToolRuns.isEmpty else { return nil }
     let results = calls.compactMap { call -> String? in
-      let normalizedCall = ToolAgentRegistry.normalized(call: call, definitions: definitions)
-      guard ToolAgentRegistry.definitionExists(named: normalizedCall.name, in: definitions) else {
+      let normalizedCall = AgentTooling.normalized(call: call, tools: definitions)
+      guard AgentTooling.containsDefinition(named: normalizedCall.name, in: definitions) else {
         return nil
       }
       return completedToolRuns[toolCallFingerprint(normalizedCall)]
@@ -1600,7 +1600,7 @@ enum AssistantToolLoop {
     mode: ToolCallingMode
   ) -> Outcome? {
     let normalizedCalls = calls.map {
-      ToolAgentRegistry.normalized(call: $0, definitions: definitions)
+      AgentTooling.normalized(call: $0, tools: definitions)
     }
     guard normalizedCalls.contains(where: { $0.name == ToolLoopResponseTool.name }) else {
       return nil

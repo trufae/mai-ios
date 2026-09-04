@@ -40,12 +40,12 @@ final class PlainTextToolCallParsingTests: XCTestCase {
       END_TOOL_CALL
       """
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: ToolProxy.definitions, mode: .text)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: ToolProxy.definitions, mode: .text)
     XCTAssertEqual(calls.count, 1)
     guard let call = calls.first else { return }
 
-    let normalized = ToolAgentRegistry.normalized(call: call, definitions: ToolProxy.definitions)
+    let normalized = AgentTooling.normalized(call: call, tools: ToolProxy.definitions)
     XCTAssertEqual(normalized.name, ToolProxy.callName)
     XCTAssertEqual(normalized.argumentValues["name"]?.stringValue, "read_wiki_structure")
     XCTAssertEqual(
@@ -62,12 +62,12 @@ final class PlainTextToolCallParsingTests: XCTestCase {
       END_TOOL_CALL
       """
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: ToolProxy.definitions, mode: .text)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: ToolProxy.definitions, mode: .text)
     XCTAssertEqual(calls.count, 1)
     guard let call = calls.first else { return }
 
-    let normalized = ToolAgentRegistry.normalized(call: call, definitions: ToolProxy.definitions)
+    let normalized = AgentTooling.normalized(call: call, tools: ToolProxy.definitions)
     XCTAssertEqual(normalized.name, ToolProxy.callName)
     XCTAssertEqual(normalized.argumentValues["name"]?.stringValue, "read_wiki_structure")
   }
@@ -81,8 +81,8 @@ final class PlainTextToolCallParsingTests: XCTestCase {
       END_TOOL_CALL
       """
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [createDefinition], mode: .text)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [createDefinition], mode: .text)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "webxdc_create")
     XCTAssertEqual(calls.first?.argumentValues["name"]?.stringValue, "myapp")
@@ -97,8 +97,8 @@ final class PlainTextToolCallParsingTests: XCTestCase {
       END_TOOL_CALL
       """
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [searchDefinition], mode: .text)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [searchDefinition], mode: .text)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "search")
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "radare2")
@@ -114,8 +114,8 @@ final class PlainTextToolCallParsingTests: XCTestCase {
       END_TOOL_CALL
       """
 
-    let calls = ToolAgentRegistry.parseCalls(
-      in: block, definitions: [searchDefinition], mode: .text)
+    let calls = AgentTooling.parseCalls(
+      in: block, tools: [searchDefinition], mode: .text)
     XCTAssertEqual(calls.count, 1)
     XCTAssertEqual(calls.first?.name, "search")
     XCTAssertEqual(calls.first?.argumentValues["query"]?.stringValue, "radare2")
