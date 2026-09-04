@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A20000000000000000000001 /* MaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000011 /* MaiCore */; };
+		A20000000000000000000002 /* MaiOpenAI in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000012 /* MaiOpenAI */; };
 		A10000000000000000000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000011 /* MLX */; };
 		A10000000000000000000002 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000012 /* MLXLLM */; };
 		A10000000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* MLXLMCommon */; };
@@ -111,6 +112,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A20000000000000000000001 /* MaiCore in Frameworks */,
+				A20000000000000000000002 /* MaiOpenAI in Frameworks */,
 				A10000000000000000000001 /* MLX in Frameworks */,
 				A10000000000000000000002 /* MLXLLM in Frameworks */,
 				A10000000000000000000003 /* MLXLMCommon in Frameworks */,
@@ -184,6 +186,7 @@
 			name = PocketMai;
 			packageProductDependencies = (
 				A20000000000000000000011 /* MaiCore */,
+				A20000000000000000000012 /* MaiOpenAI */,
 				A10000000000000000000011 /* MLX */,
 				A10000000000000000000012 /* MLXLLM */,
 				A10000000000000000000013 /* MLXLMCommon */,
@@ -710,6 +713,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */;
 			productName = MaiCore;
+		};
+		A20000000000000000000012 /* MaiOpenAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */;
+			productName = MaiOpenAI;
 		};
 		A10000000000000000000011 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;

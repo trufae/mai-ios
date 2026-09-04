@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MaiCore
+import MaiOpenAI
 
 private struct CLIOptions {
   var configPath: String?
@@ -279,9 +280,13 @@ private struct MaiCLI {
       let approvalHandler = TerminalApprovalHandler(
         configuration: configuration?.approvals ?? .init())
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
+      let plugins = PluginRegistry()
+      try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
+      try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
       try await registerHostTools(in: runtime)
       let catalogs = try await configureRuntime(
         runtime,
+        plugins: plugins,
         configuration: configuration,
         options: options,
         environment: environment)
@@ -320,13 +325,15 @@ private struct MaiCLI {
 
   private static func configureRuntime(
     _ runtime: AgentRuntime,
+    plugins: PluginRegistry,
     configuration: MaiConfiguration?,
     options: CLIOptions,
     environment: [String: String]
   ) async throws -> [MCPServerCatalog] {
     if let configuration {
       for provider in configuration.providers {
-        try await runtime.register(provider.makeProvider(environment: environment))
+        try await runtime.register(
+          plugins.makeProvider(from: provider, environment: environment))
       }
       for agent in configuration.agents {
         try await runtime.register(agent: agent)
@@ -345,18 +352,24 @@ private struct MaiCLI {
       return catalogs
     }
 
-    try await runtime.register(HelloProvider())
+    try await runtime.register(
+      plugins.makeProvider(
+        from: ConfiguredProvider(id: "hello", kind: .hello),
+        environment: environment))
     let rawBaseURL =
       options.baseURLOverride?.absoluteString
       ?? environment["MAI_BASE_URL"] ?? environment["OPENAI_BASE_URL"]
       ?? "https://api.openai.com/v1"
     guard let baseURL = URL(string: rawBaseURL) else { throw CLIError.invalidURL(rawBaseURL) }
     try await runtime.register(
-      OpenAICompatibleProvider(
-        configuration: .init(
+      plugins.makeProvider(
+        from: ConfiguredProvider(
+          id: ProviderID.openAI.rawValue,
+          kind: .openAICompatible,
           baseURL: baseURL,
           apiKey: options.apiKeyOverride ?? environment["MAI_API_KEY"]
-            ?? environment["OPENAI_API_KEY"])))
+            ?? environment["OPENAI_API_KEY"]),
+        environment: environment))
     return []
   }
 

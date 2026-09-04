@@ -55,11 +55,11 @@ public struct ToolDefinition: Codable, Equatable, Identifiable, Sendable {
   }
 }
 
-struct ToolNameResolver: Sendable {
+public struct ToolNameResolver: Sendable {
   private let canonicalToProvider: [String: String]
   private let providerToCanonical: [String: String]
 
-  init(definitions: [ToolDefinition]) {
+  public init(definitions: [ToolDefinition]) {
     var forward: [String: String] = [:]
     var reverse: [String: String] = [:]
     var used = Set<String>()
@@ -82,11 +82,11 @@ struct ToolNameResolver: Sendable {
     providerToCanonical = reverse
   }
 
-  func providerName(for canonicalName: String) -> String {
+  public func providerName(for canonicalName: String) -> String {
     canonicalToProvider[canonicalName] ?? Self.sanitize(canonicalName)
   }
 
-  func canonicalName(for providerName: String) -> String? {
+  public func canonicalName(for providerName: String) -> String? {
     providerToCanonical[providerName]
   }
 
