@@ -661,44 +661,7 @@ enum BuiltInToolID: String, Codable, CaseIterable, Identifiable, Sendable {
 
 }
 
-enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
-  case text
-  case xml
-  case json
-  case native
-
-  var id: String { rawValue }
-
-  var displayName: String {
-    switch self {
-    case .text: "Text"
-    case .xml: "XML"
-    case .json: "JSON"
-    case .native: "Native"
-    }
-  }
-
-  var summary: String {
-    switch self {
-    case .text:
-      return
-        "Default. Uses a plain TOOL_CALL block with one argument per line. Most portable for small or local models."
-    case .xml:
-      return
-        "Uses <tool_call> XML blocks with one <arg> element per argument. More structured, but more fragile for small models."
-    case .json:
-      return
-        "Uses one JSON object with name and arguments. Compact and easy to parse when the model emits strict JSON."
-    case .native:
-      return
-        "Uses provider-native structured tools for OpenAI-compatible requests. MLX falls back to JSON; Apple Intelligence falls back to Text."
-    }
-  }
-
-  var textProtocolFallback: ToolCallingMode {
-    self == .native ? .text : self
-  }
-
+extension ToolCallingMode {
   func textProtocolFallback(for provider: ProviderKind) -> ToolCallingMode {
     if self == .native, provider == .mlx {
       return .json

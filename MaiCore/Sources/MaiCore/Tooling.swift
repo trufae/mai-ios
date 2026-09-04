@@ -31,6 +31,25 @@ public struct ToolAnnotations: Codable, Equatable, Sendable {
   }
 }
 
+/// A compact, presentation-friendly view of one object-schema property.
+///
+/// Hosts that already have a full JSON Schema should use `ToolDefinition.inputSchema`.
+/// This type exists for tools, configuration files, and UIs that define the common
+/// flat object-schema shape.
+public struct ToolParameterDef: Codable, Equatable, Sendable {
+  public var name: String
+  public var type: String
+  public var description: String
+  public var required: Bool
+
+  public init(name: String, type: String, description: String, required: Bool) {
+    self.name = name
+    self.type = type
+    self.description = description
+    self.required = required
+  }
+}
+
 public struct ToolDefinition: Codable, Equatable, Identifiable, Sendable {
   public var name: String
   public var providerName: String?
@@ -53,60 +72,56 @@ public struct ToolDefinition: Codable, Equatable, Identifiable, Sendable {
     self.inputSchema = inputSchema
     self.annotations = annotations
   }
-}
 
-public struct ToolNameResolver: Sendable {
-  private let canonicalToProvider: [String: String]
-  private let providerToCanonical: [String: String]
-
-  public init(definitions: [ToolDefinition]) {
-    var forward: [String: String] = [:]
-    var reverse: [String: String] = [:]
-    var used = Set<String>()
-    for definition in definitions {
-      let requested = definition.providerName?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let base = Self.sanitize(requested?.isEmpty == false ? requested! : definition.name)
-      var candidate = base
-      var suffix = 2
-      while used.contains(candidate) {
-        let suffixText = "_\(suffix)"
-        candidate = String(base.prefix(max(1, 64 - suffixText.count))) + suffixText
-        suffix += 1
-      }
-      used.insert(candidate)
-      forward[definition.name] = candidate
-      reverse[candidate] = definition.name
-      reverse[definition.name] = definition.name
+  /// Convenience initializer for hosts that describe tools as a flat parameter list.
+  /// A non-empty raw schema takes precedence and preserves nested JSON Schema features.
+  public init(
+    name: String,
+    description: String,
+    parameters: [ToolParameterDef],
+    inputSchemaJSON: String = ""
+  ) {
+    let rawSchema = inputSchemaJSON.data(using: .utf8).flatMap {
+      try? JSONDecoder().decode(JSONValue.self, from: $0)
     }
-    canonicalToProvider = forward
-    providerToCanonical = reverse
+    let schema = rawSchema?.objectValue == nil ? Self.schema(for: parameters) : rawSchema
+    self.init(name: name, description: description, inputSchema: schema ?? .object([:]))
   }
 
-  public func providerName(for canonicalName: String) -> String {
-    canonicalToProvider[canonicalName] ?? Self.sanitize(canonicalName)
-  }
-
-  public func canonicalName(for providerName: String) -> String? {
-    providerToCanonical[providerName]
-  }
-
-  private static func sanitize(_ name: String) -> String {
-    var result = ""
-    var previousUnderscore = false
-    for scalar in name.unicodeScalars {
-      let allowed = CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-"
-      if allowed {
-        result.unicodeScalars.append(scalar)
-        previousUnderscore = false
-      } else if !previousUnderscore {
-        result.append("_")
-        previousUnderscore = true
-      }
+  /// The flat properties exposed by this tool's object schema.
+  public var parameters: [ToolParameterDef] {
+    guard let schema = inputSchema.objectValue,
+      let properties = schema["properties"]?.objectValue
+    else { return [] }
+    let required = Set(schema["required"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+    return properties.keys.sorted().map { name in
+      let property = properties[name]?.objectValue ?? [:]
+      return ToolParameterDef(
+        name: name,
+        type: property["type"]?.stringValue ?? "string",
+        description: property["description"]?.stringValue ?? "",
+        required: required.contains(name))
     }
-    result = result.trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
-    if result.isEmpty { result = "tool" }
-    if result.first?.isNumber == true { result = "tool_\(result)" }
-    return String(result.prefix(64))
+  }
+
+  /// A compact JSON representation for APIs that accept raw JSON Schema strings.
+  public var inputSchemaJSON: String { inputSchema.compactJSONString }
+
+  private static func schema(for parameters: [ToolParameterDef]) -> JSONValue {
+    .object([
+      "type": .string("object"),
+      "properties": .object(
+        Dictionary(uniqueKeysWithValues: parameters.map { parameter in
+          (
+            parameter.name,
+            .object([
+              "type": .string(parameter.type),
+              "description": .string(parameter.description),
+            ])
+          )
+        })),
+      "required": .array(parameters.filter(\.required).map { .string($0.name) }),
+    ])
   }
 }
 

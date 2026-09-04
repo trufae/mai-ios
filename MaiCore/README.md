@@ -1,6 +1,6 @@
 # MaiCore
 
-MaiCore is the provider-neutral agent runtime shared by the `mai` command-line
+MaiCore is the provider-neutral agent runtime shared by the `pmai` command-line
 client and PocketMai. Concrete integrations are separate products:
 `MaiOpenAI`, `MaiMCP`, and `MaiVisionOCR`. Each registers through the same plugin
 API available to third-party providers. Together they support structured
