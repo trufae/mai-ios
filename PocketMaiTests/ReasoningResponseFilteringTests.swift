@@ -94,6 +94,116 @@ final class ReasoningResponseFilteringTests: XCTestCase {
     XCTAssertEqual(MessageContentFilter.textWithoutReasoning(from: response), response)
   }
 
+  func testReasoningClosedWithoutOpeningTagIsHidden() {
+    // Qwen 3.5+/3.8 and DeepSeek templates pre-fill `<think>`, so leaked reasoning
+    // arrives as prose followed by a bare closing tag.
+    let response = """
+      I’m Qwen, an AI assistant here to help you. How can I help today?
+      </think>
+
+      I’m Qwen — what would you like to work on?
+      """
+
+    let rendered = MessageContentFilter.render(response)
+
+    XCTAssertEqual(rendered.visibleText, "I’m Qwen — what would you like to work on?")
+    XCTAssertEqual(rendered.hiddenSections.map(\.tag), ["think"])
+    XCTAssertEqual(
+      rendered.hiddenSections.first?.content,
+      "I’m Qwen, an AI assistant here to help you. How can I help today?")
+    XCTAssertEqual(
+      MessageContentFilter.textWithoutReasoning(from: response),
+      "I’m Qwen — what would you like to work on?")
+  }
+
+  func testUnopenedReasoningStaysOutOfTheModelContext() {
+    let message = ChatMessage(role: .assistant, text: "Draft answer.\n</think>\n\nFinal answer.")
+
+    let messages = PromptComposer.openAIHistoryMessages(
+      from: message,
+      includeAssistantResponses: true,
+      echoReasoningContent: false)
+
+    XCTAssertEqual(messages.map(\.textContent), ["Final answer."])
+  }
+
+  func testEveryReasoningBlockAroundToolRunsIsHidden() {
+    let response = """
+      <think>
+      Need the todo tool first.
+      </think>
+
+      <tool_run>
+      tool(todo_add): Added todo
+      </tool_run>
+
+      Just answer now.
+      </think>
+
+      Done: added the todo, and 12 × 12 = 144.
+      """
+
+    let rendered = MessageContentFilter.render(response)
+
+    XCTAssertEqual(rendered.visibleText, "Done: added the todo, and 12 × 12 = 144.")
+    XCTAssertEqual(rendered.hiddenSections.map(\.tag), ["think", "tool_run", "think"])
+    XCTAssertEqual(rendered.hiddenSections.first?.content, "Need the todo tool first.")
+    XCTAssertEqual(rendered.hiddenSections.last?.content, "Just answer now.")
+  }
+
+  func testReasoningBlocksBetweenProseAreEachHidden() {
+    let response = """
+      <think>
+      First thought.
+      </think>
+
+      Part one.
+
+      <think>
+      Second thought.
+      </think>
+
+      Part two.
+      """
+
+    let rendered = MessageContentFilter.render(response)
+
+    XCTAssertEqual(rendered.visibleText, "Part one.\n\nPart two.")
+    XCTAssertEqual(rendered.hiddenSections.map(\.content), ["First thought.", "Second thought."])
+  }
+
+  func testClosingThinkTagInsideCodeFenceIsLeftAlone() {
+    let response = "Use this:\n\n```\n</think>\n```\n\nDone."
+
+    let rendered = MessageContentFilter.render(response)
+
+    XCTAssertEqual(rendered.visibleText, response)
+    XCTAssertTrue(rendered.hiddenSections.isEmpty)
+  }
+
+  func testInlineClosingThinkTagIsNotTreatedAsReasoning() {
+    let response = "Models end reasoning with </think> before answering."
+
+    XCTAssertEqual(MessageContentFilter.render(response).visibleText, response)
+  }
+
+  func testEditingKeepsUnopenedReasoning() {
+    let response = "Draft.\n</think>\n\nFinal."
+
+    let edited = MessageContentFilter.replacingVisibleText(in: response, with: "Edited.")
+
+    XCTAssertEqual(edited, "Draft.\n</think>\n\nEdited.")
+    XCTAssertEqual(MessageContentFilter.render(edited).visibleText, "Edited.")
+  }
+
+  func testBeginsWithUnopenedReasoning() {
+    XCTAssertTrue(
+      MessageContentFilter.beginsWithUnopenedReasoning("More thoughts.\n</think>\n\nAnswer."))
+    XCTAssertFalse(
+      MessageContentFilter.beginsWithUnopenedReasoning("<think>\nThoughts.\n</think>\n\nAnswer."))
+    XCTAssertFalse(MessageContentFilter.beginsWithUnopenedReasoning("Answer without reasoning."))
+  }
+
   func testSpuriousToolCallFilterIgnoresMarkersInsideReasoning() {
     let response = """
       <think>

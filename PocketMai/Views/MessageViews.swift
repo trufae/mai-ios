@@ -2234,15 +2234,18 @@ private enum MessageRenderCache {
       return entry.content
     }
 
+    // Reasoning closed by a bare `</think>` reaches back into the prefix that was
+    // already shown as prose, so that case re-parses the whole message instead.
     if let entry = preparedEntries[messageID],
       let baseContent = entry.incrementalBaseContent,
       !entry.incrementalBaseText.isEmpty,
-      text.hasPrefix(entry.incrementalBaseText)
-    {
-      let suffix = substring(
+      text.hasPrefix(entry.incrementalBaseText),
+      case let suffix = substring(
         text,
         fromUTF16Offset: entry.incrementalBaseText.utf16.count,
-        toUTF16Offset: text.utf16.count)
+        toUTF16Offset: text.utf16.count),
+      !MessageContentFilter.beginsWithUnopenedReasoning(suffix)
+    {
       let suffixContent = buildPreparedContent(
         text: suffix,
         partIDOffset: baseContent.parts.count)

@@ -118,21 +118,19 @@ enum MessageContentFilter {
     guard text.contains("<") else { return [] }
     var spans: [Range<String.Index>] = []
     var cursor = text.startIndex
-    while let opening = nextOpening(in: text, from: cursor, hiding: tags) {
-      if opening.isSelfClosing {
-        spans.append(opening.range)
-        cursor = opening.range.upperBound
-        continue
-      }
-      if let closing = matchingClose(for: opening, in: text) {
-        spans.append(opening.range.lowerBound..<closing.range.upperBound)
-        cursor = closing.range.upperBound
-      } else {
-        spans.append(opening.range.lowerBound..<text.endIndex)
-        cursor = text.endIndex
-      }
+    while let block = nextHiddenBlock(in: text, from: cursor, hiding: tags) {
+      spans.append(block.range)
+      cursor = block.range.upperBound
     }
     return spans
+  }
+
+  /// True when `text` opens with reasoning that is only delimited by a bare `</think>`,
+  /// the opening tag never having been emitted. Incremental renderers use it to notice
+  /// that a prefix they already showed as prose has just turned into reasoning.
+  static func beginsWithUnopenedReasoning(_ text: String) -> Bool {
+    guard text.contains("<") else { return false }
+    return nextHiddenBlock(in: text, from: text.startIndex, hiding: ["think"])?.isUnopened == true
   }
 
   static func markdownPlainText(from text: String) -> String {
@@ -152,34 +150,20 @@ enum MessageContentFilter {
     var hiddenSections: [HiddenMessageSection] = []
     var parts: [RenderedMessagePart] = []
 
-    while let opening = nextOpening(in: text, from: cursor, hiding: tags) {
+    while let block = nextHiddenBlock(in: text, from: cursor, hiding: tags) {
       appendVisibleSegment(
-        text[cursor..<opening.range.lowerBound],
+        text[cursor..<block.range.lowerBound],
         visible: &visible,
         parts: &parts)
-      if opening.isSelfClosing {
-        cursor = opening.range.upperBound
-        continue
+      if let content = block.content,
+        let section = appendHiddenSection(
+          tag: block.tag,
+          content: String(text[content]),
+          hiddenSections: &hiddenSections)
+      {
+        appendHiddenPart(section, parts: &parts)
       }
-      if let closing = matchingClose(for: opening, in: text) {
-        if let section = appendHiddenSection(
-          tag: opening.tag,
-          content: String(text[opening.range.upperBound..<closing.range.lowerBound]),
-          hiddenSections: &hiddenSections
-        ) {
-          appendHiddenPart(section, parts: &parts)
-        }
-        cursor = closing.range.upperBound
-      } else {
-        if let section = appendHiddenSection(
-          tag: opening.tag,
-          content: String(text[opening.range.upperBound..<text.endIndex]),
-          hiddenSections: &hiddenSections
-        ) {
-          appendHiddenPart(section, parts: &parts)
-        }
-        cursor = text.endIndex
-      }
+      cursor = block.range.upperBound
     }
 
     appendVisibleSegment(text[cursor..<text.endIndex], visible: &visible, parts: &parts)
@@ -197,18 +181,53 @@ enum MessageContentFilter {
     let range: Range<String.Index>
   }
 
-  private static func nextOpening(
+  /// One hidden block: the tag, its whole span (tags included) and the inner content
+  /// span, which is nil for self-closing tags. `isUnopened` marks reasoning that only
+  /// has a closing tag.
+  private struct HiddenBlock {
+    let tag: String
+    let range: Range<String.Index>
+    let content: Range<String.Index>?
+    var isUnopened = false
+  }
+
+  private static func nextHiddenBlock(
     in text: String,
-    from start: String.Index,
+    from cursor: String.Index,
     hiding tags: Set<String>
-  ) -> TagToken? {
-    var searchStart = start
+  ) -> HiddenBlock? {
+    var searchStart = cursor
+    var sawThinkOpening = false
     while let token = nextTagToken(in: text, from: searchStart, matching: tags) {
       searchStart = token.range.upperBound
-      if token.isClosing || !isStructuralOpening(token, in: text) {
+      if token.isClosing {
+        // Chat templates that pre-fill `<think>` (Qwen 3.5+, DeepSeek) make the model
+        // emit its reasoning followed by a bare `</think>`, so a closing tag with no
+        // opening before it ends a reasoning block that started at the cursor.
+        if token.tag == "think", !sawThinkOpening, isUnopenedClosing(token, in: text) {
+          return HiddenBlock(
+            tag: "think",
+            range: cursor..<token.range.upperBound,
+            content: cursor..<token.range.lowerBound,
+            isUnopened: true)
+        }
         continue
       }
-      return token
+      if token.tag == "think" { sawThinkOpening = true }
+      guard isStructuralOpening(token, in: text) else { continue }
+      if token.isSelfClosing {
+        return HiddenBlock(tag: token.tag, range: token.range, content: nil)
+      }
+      if let closing = matchingClose(for: token, in: text) {
+        return HiddenBlock(
+          tag: token.tag,
+          range: token.range.lowerBound..<closing.range.upperBound,
+          content: token.range.upperBound..<closing.range.lowerBound)
+      }
+      return HiddenBlock(
+        tag: token.tag,
+        range: token.range.lowerBound..<text.endIndex,
+        content: token.range.upperBound..<text.endIndex)
     }
     return nil
   }
@@ -374,6 +393,12 @@ enum MessageContentFilter {
     guard token.tag == "think" else { return true }
     return isLinePrefixWhitespace(in: text, before: token.range.lowerBound)
       || isSameLine(in: text, from: opening.range.lowerBound, to: token.range.lowerBound)
+      || (isImmediatelyAfterNonWhitespace(in: text, at: token.range.lowerBound)
+        && isLineSuffixWhitespace(in: text, after: token.range.upperBound))
+  }
+
+  private static func isUnopenedClosing(_ token: TagToken, in text: String) -> Bool {
+    isLinePrefixWhitespace(in: text, before: token.range.lowerBound)
       || (isImmediatelyAfterNonWhitespace(in: text, at: token.range.lowerBound)
         && isLineSuffixWhitespace(in: text, after: token.range.upperBound))
   }

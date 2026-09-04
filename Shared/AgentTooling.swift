@@ -1533,7 +1533,9 @@ enum AgentTooling {
   }
 
   private static func stripThinkBlocks(from text: String) -> String {
-    let pattern = "<think>[\\s\\S]*?</think>"
+    // Also drops reasoning that only ends in `</think>`, which is what models whose
+    // chat template pre-fills the opening tag produce.
+    let pattern = "<think>[\\s\\S]*?</think>|\\A(?:(?!<think>)[\\s\\S])*?</think>"
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     else { return text }
     let range = NSRange(location: 0, length: (text as NSString).length)
