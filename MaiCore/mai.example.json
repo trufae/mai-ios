@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "defaultAgent": "hello",
+  "providers": [
+    {
+      "id": "hello",
+      "kind": "hello"
+    },
+    {
+      "id": "openai",
+      "kind": "openAICompatible",
+      "displayName": "OpenAI",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKeyEnvironment": "OPENAI_API_KEY"
+    },
+    {
+      "id": "local",
+      "kind": "openAICompatible",
+      "displayName": "Local OpenAI-compatible server",
+      "baseURL": "http://127.0.0.1:8080/v1"
+    }
+  ],
+  "mcpServers": [
+    {
+      "id": "remote",
+      "enabled": false,
+      "displayName": "Example MCP",
+      "url": "https://your-mcp.example/mcp",
+      "bearerTokenEnvironment": "MCP_API_KEY",
+      "toolNamePrefix": "remote",
+      "defaultApproval": "confirm"
+    }
+  ],
+  "agents": [
+    {
+      "id": "hello",
+      "displayName": "Offline hello",
+      "instructions": "Exercise the offline MaiCore provider.",
+      "provider": "hello",
+      "model": ""
+    },
+    {
+      "id": "main",
+      "displayName": "Main agent",
+      "instructions": "You are a helpful assistant. Use tools when needed.",
+      "provider": "openai",
+      "model": "your-model",
+      "toolNames": [
+        "current_time",
+        "echo",
+        "read_text_file"
+      ],
+      "subagentNames": [
+        "researcher"
+      ],
+      "limits": {
+        "maxModelTurns": 12,
+        "maxToolCalls": 20,
+        "maxSubagents": 4,
+        "maxSubagentDepth": 2
+      }
+    },
+    {
+      "id": "researcher",
+      "displayName": "Researcher",
+      "instructions": "Investigate the delegated task and return a concise result.",
+      "provider": "openai",
+      "model": "your-model",
+      "toolNames": [
+        "current_time"
+      ]
+    }
+  ],
+  "approvals": {
+    "confirm": "ask",
+    "dangerous": "ask"
+  }
+}

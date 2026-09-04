@@ -9,7 +9,7 @@ DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
 
-.PHONY: all build test list run fmt clean check-shared-tooling aitest-build
+.PHONY: all build test list run repl fmt clean check-shared-tooling aitest-build
 
 all: build
 
@@ -64,8 +64,11 @@ run:
 	xcrun devicectl device install app --device "$$device" "$$app_bundle"; \
 	xcrun devicectl device process launch --terminate-existing --device "$$device" "$(BUNDLE_ID)"
 
+repl:
+	swift run --package-path MaiCore mai $(ARGS)
+
 fmt:
-	xcrun swift-format format -i -r PocketMai Shared PocketMaiLiveActivityExtension
+	xcrun swift-format format -i -r PocketMai Shared PocketMaiLiveActivityExtension MaiCore/Sources MaiCore/Tests MaiCore/Package.swift
 
 check-shared-tooling:
 	test "$$(readlink aitest/Sources/aitest/AgentTooling.swift)" = "../../../Shared/AgentTooling.swift"
