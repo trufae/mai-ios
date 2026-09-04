@@ -41,17 +41,19 @@ enum BuiltInToolCatalog {
       return await PocketMaiPluginHost.shared.callStandardTool(
         name: call.name,
         arguments: call.argumentValues)
-    case WebSearchTool.name:
+    case MaiWebSearchTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: web search is disabled while Airplane Mode is enabled."
       }
-      return await WebSearchTool.search(
-        arguments: call.argumentValues, settings: store.settings)
-    case WebSearchTool.fetchName:
+      return await PocketMaiPluginHost.shared.call(
+        tool: MaiWebSearchTool(configuration: store.settings.maiWebSearchConfiguration),
+        arguments: call.argumentValues)
+    case MaiWebFetchTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: web fetch is disabled while Airplane Mode is enabled."
       }
-      return await WebSearchTool.fetch(arguments: call.argumentValues)
+      return await PocketMaiPluginHost.shared.call(
+        tool: MaiWebFetchTool(), arguments: call.argumentValues)
     case TextToSpeechTool.name:
       return TextToSpeechTool.speak(
         arguments: call.argumentValues,
@@ -59,13 +61,15 @@ enum BuiltInToolCatalog {
         skipTechnicalContent: store.effectiveConversationSettings(for: conversation)
           .skipTechnicalContentInTTS,
         openAIEndpoints: store.settings.airplaneModeEnabled ? [] : store.settings.openAIEndpoints)
-    case WeatherTool.name:
+    case MaiWeatherTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: weather is disabled while Airplane Mode is enabled."
       }
-      return await WeatherTool.run(
+      let tool = await PocketMaiNetworkTools.weatherTool(
         arguments: call.argumentValues,
         settings: store.settings.toolSettings, locationService: { store.locationService })
+      return await PocketMaiPluginHost.shared.call(
+        tool: tool, arguments: call.argumentValues)
     case FileWorkspaceTool.listName, FileWorkspaceTool.readName,
       FileWorkspaceTool.readDocumentName, FileWorkspaceTool.readIndexName,
       FileWorkspaceTool.readRangeName, FileWorkspaceTool.replaceRangeName,
@@ -94,17 +98,21 @@ enum BuiltInToolCatalog {
     case let name where WebXDCTool.toolNames.contains(name):
       return WebXDCTool.execute(
         name: name, arguments: call.argumentValues, hub: store.webxdcHub)
-    case let name where GitHubTool.toolNames.contains(name):
+    case let name where MaiGitHubTool.toolNames.contains(name):
       guard !store.settings.airplaneModeEnabled else {
         return "Error: GitHub tools are disabled while Airplane Mode is enabled."
       }
-      return await GitHubTool.execute(name: name, arguments: call.argumentValues)
-    case MastodonTool.name:
+      guard let tool = MaiGitHubTool(name: name) else {
+        return "Error: GitHub tool '\(name)' is not registered."
+      }
+      return await PocketMaiPluginHost.shared.call(tool: tool, arguments: call.argumentValues)
+    case MaiMastodonTool.name:
       guard !store.settings.airplaneModeEnabled else {
         return "Error: Mastodon is disabled while Airplane Mode is enabled."
       }
-      return await MastodonTool.execute(
-        arguments: call.argumentValues, settings: store.settings.toolSettings)
+      return await PocketMaiPluginHost.shared.call(
+        tool: MaiMastodonTool(configuration: store.settings.toolSettings.maiMastodonConfiguration),
+        arguments: call.argumentValues)
     case let name where BrowserTool.toolNames.contains(name):
       guard !store.settings.airplaneModeEnabled else {
         return "Error: the browser is disabled while Airplane Mode is enabled."
@@ -194,9 +202,11 @@ enum BuiltInToolCatalog {
     case .datetime, .language, .location:
       return []
     case .weather:
-      return WeatherTool.definitions
+      return [MaiWeatherTool.toolDefinition]
     case .webSearch:
-      return WebSearchTool.definitions(settings: settings.toolSettings)
+      return [MaiWebSearchTool.toolDefinition]
+        + (settings.toolSettings.webSearchFetchingEnabled
+          ? [MaiWebFetchTool.toolDefinition] : [])
     case .todo:
       return TodoTool.definitions
     case .calculator:
@@ -217,9 +227,9 @@ enum BuiltInToolCatalog {
     case .webxdc:
       return WebXDCTool.definitions
     case .github:
-      return GitHubTool.definitions
+      return MaiGitHubTool.definitions
     case .mastodon:
-      return MastodonTool.definitions
+      return [MaiMastodonTool.toolDefinition]
     case .browser:
       return BrowserTool.definitions
     case .memory:
@@ -897,64 +907,6 @@ enum ClipboardTool {
 }
 
 @MainActor
-enum WebSearchTool {
-  static let name = "web_search"
-  static let fetchName = "web_fetch"
-
-  static func definitions(settings: NativeToolSettings) -> [ToolDefinition] {
-    var definitions = [
-      ToolDefinition(
-        name: name,
-        description:
-          "Search the web for current or external information.",
-        parameters: [
-          ToolParameterDef(
-            name: "query", type: "string",
-            description: "Focused search query without unrelated chat history.",
-            required: true)
-        ])
-    ]
-    if settings.webSearchFetchingEnabled {
-      definitions.append(
-        ToolDefinition(
-          name: fetchName,
-          description:
-            "Fetch one HTTP or HTTPS URL and return cleaned page text.",
-          parameters: [
-            ToolParameterDef(
-              name: "url", type: "string",
-              description: "Full HTTP or HTTPS URL.",
-              required: true)
-          ]))
-    }
-    return definitions
-  }
-
-  static func search(arguments: [String: AgentToolArgumentValue], settings: AppSettings) async
-    -> String
-  {
-    let query = (arguments["query"]?.stringValue ?? arguments["q"]?.stringValue ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else { return "Error: query is required." }
-    let provider = settings.toolSettings.webSearchProvider
-    guard
-      let result = await WebSearchService.searchContext(
-        query: query, provider: provider, settings: settings)
-    else {
-      return "No web results for '\(query)'."
-    }
-    return result
-  }
-
-  static func fetch(arguments: [String: AgentToolArgumentValue]) async -> String {
-    let url = (arguments["url"]?.stringValue ?? arguments["uri"]?.stringValue ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !url.isEmpty else { return "Error: url is required." }
-    return await WebFetchService.fetchContext(urlString: url)
-  }
-}
-
-@MainActor
 enum TodoTool {
   static let listName = "todo_list"
   static let addName = "todo_add"
@@ -1116,45 +1068,5 @@ enum TextToSpeechTool {
       skipTechnicalContent: skipTechnicalContent,
       interrupt: interrupt)
     return "Speaking \(text.count) character\(text.count == 1 ? "" : "s")."
-  }
-}
-
-@MainActor
-enum WeatherTool {
-  static let name = "weather"
-
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: name,
-      description:
-        "Return current weather and 7-day forecast. Use location when the user asks about a specific city or place; omit it for the configured/current location.",
-      parameters: [
-        ToolParameterDef(
-          name: "location",
-          type: "string",
-          description:
-            "City, place, or latitude/longitude requested by the user, such as Madrid or 40.4168,-3.7038. Omit for the configured/current location.",
-          required: false)
-      ]
-    )
-  ]
-
-  static func run(
-    arguments: [String: AgentToolArgumentValue],
-    settings: NativeToolSettings,
-    locationService: @MainActor () -> LocationService
-  ) async -> String {
-    let requestedLocation =
-      arguments["location"]?.stringValue ?? arguments["city"]?.stringValue
-      ?? arguments["place"]?.stringValue ?? arguments["query"]?.stringValue
-      ?? arguments["q"]?.stringValue
-    if let report = await WeatherService.report(
-      requestedLocation: requestedLocation,
-      settings: settings,
-      locationService: locationService)
-    {
-      return report
-    }
-    return "Weather unavailable."
   }
 }

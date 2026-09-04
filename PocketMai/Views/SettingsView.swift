@@ -1069,8 +1069,7 @@ struct SettingsView: View {
 
   /// Like `settingsBinding`, but turning a notification on also asks the system
   /// for permission so the toggle is not silently ineffective.
-  private func notificationBinding(_ keyPath: WritableKeyPath<AppSettings, Bool>) -> Binding<Bool>
-  {
+  private func notificationBinding(_ keyPath: WritableKeyPath<AppSettings, Bool>) -> Binding<Bool> {
     Binding(
       get: { store.settings[keyPath: keyPath] },
       set: { enabled in
@@ -1510,7 +1509,7 @@ struct SettingsView: View {
       TextField("Weather location", text: settingsBinding(\.toolSettings.weatherLocation))
     case .webSearch:
       Picker("Provider", selection: settingsBinding(\.toolSettings.webSearchProvider)) {
-        ForEach(availableWebSearchProviders) { provider in
+        ForEach(availableWebSearchProviders, id: \.rawValue) { provider in
           Text(provider.displayName).tag(provider)
         }
       }
@@ -2287,7 +2286,7 @@ struct SettingsView: View {
   }
 
   private var availableWebSearchProviders: [WebSearchProvider] {
-    let hasOllama = WebSearchService.ollamaEndpoint(in: store.settings) != nil
+    let hasOllama = store.settings.hasOllamaWebSearchConfiguration
     return WebSearchProvider.allCases.filter { provider in
       provider != .ollama || hasOllama
     }

@@ -490,7 +490,10 @@ public struct MaiWebSearchTool: AgentTool {
   }
 
   public func call(arguments: JSONValue, context: ToolExecutionContext) async throws -> ToolOutput {
-    let query = arguments.objectValue?["query"]?.coercedStringValue ?? ""
+    let arguments = arguments.objectValue ?? [:]
+    let query =
+      arguments["query"]?.coercedStringValue
+      ?? arguments["q"]?.coercedStringValue ?? ""
     guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       return ToolOutput(text: "Error: query is required.", isError: true)
     }

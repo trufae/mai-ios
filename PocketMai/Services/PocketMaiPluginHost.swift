@@ -68,6 +68,17 @@ actor PocketMaiPluginHost {
       guard let tool = standardTools?[name] else {
         return "Error: standard tool '\(name)' is not registered."
       }
+      return await call(tool: tool, arguments: arguments)
+    } catch {
+      return "Error: \(error.localizedDescription)"
+    }
+  }
+
+  func call(
+    tool: any AgentTool,
+    arguments: [String: JSONValue]
+  ) async -> String {
+    do {
       let context = ToolExecutionContext(
         run: AgentEventContext(
           runID: UUID(), parentRunID: nil, agentID: "pocketmai", depth: 0),
