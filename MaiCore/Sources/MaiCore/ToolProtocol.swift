@@ -530,7 +530,8 @@ public enum AgentTooling {
         }
         fallthrough
       case .json:
-        let visible = stripThinkBlocks(from: stripMarkdownFence(from: text))
+        let visible = MessageContentFilter.removingReasoningSections(
+          from: stripMarkdownFence(from: text))
           .trimmingCharacters(in: .whitespacesAndNewlines)
         let candidates = jsonObjects(in: visible)
         for candidate in candidates {
@@ -573,7 +574,8 @@ public enum AgentTooling {
     tools: [ToolDefinition]
   ) -> Bool {
     let visible = stripMarkdownFence(
-      from: stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+      from: MessageContentFilter.removingReasoningSections(from: text)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     )
     .trimmingCharacters(in: .whitespacesAndNewlines)
     let statusKeys = Set([
@@ -1423,7 +1425,8 @@ public enum AgentTooling {
 
   private static func parseJSONCalls(in text: String, tools: [ToolDefinition]) -> [ParsedToolCall] {
     let visible = stripMarkdownFence(
-      from: stripThinkBlocks(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
+      from: MessageContentFilter.removingReasoningSections(from: text)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     )
     .trimmingCharacters(in: .whitespacesAndNewlines)
     var calls: [ParsedToolCall] = []
@@ -1564,16 +1567,6 @@ public enum AgentTooling {
         of: #""\#(NSRegularExpression.escapedPattern(for: key))"\s*:"#,
         options: [.regularExpression]) != nil
     }
-  }
-
-  private static func stripThinkBlocks(from text: String) -> String {
-    // Also drops reasoning that only ends in `</think>`, which is what models whose
-    // chat template pre-fills the opening tag produce.
-    let pattern = "<think>[\\s\\S]*?</think>|\\A(?:(?!<think>)[\\s\\S])*?</think>"
-    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-    else { return text }
-    let range = NSRange(location: 0, length: (text as NSString).length)
-    return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
   }
 
   private static func argumentsObject(from value: Any?) -> [String: Any] {

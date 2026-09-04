@@ -77,7 +77,8 @@ public enum AgentToolLoopPolicy {
   ) -> AgentToolLoopDecision {
     guard !tools.isEmpty else { return .final(response) }
     let parseTools = definitions(includingResponseTool: tools)
-    let actionable = actionableResponse ?? response
+    let actionable =
+      actionableResponse ?? MessageContentFilter.removingReasoningSections(from: response)
     let calls = AgentTooling.parseCalls(in: actionable, tools: parseTools, mode: mode)
 
     guard !calls.isEmpty else {
@@ -93,7 +94,7 @@ public enum AgentToolLoopPolicy {
             from: actionable, mode: mode, tools: parseTools
           ).trimmingCharacters(in: .whitespacesAndNewlines))
       }
-      let visible = visibleText ?? actionable
+      let visible = visibleText ?? MessageContentFilter.render(actionable).visibleText
       if !completedToolRuns.isEmpty,
         visible.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
         remainingToolCalls > 0
