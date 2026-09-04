@@ -795,6 +795,15 @@ public enum AgentTooling {
       apiName: call.apiName)
   }
 
+  /// Normalizes a provider-facing call and returns it only when the host exposes that tool.
+  public static func availableCall(
+    _ call: ParsedToolCall,
+    tools: [ToolDefinition]
+  ) -> ParsedToolCall? {
+    let call = normalized(call: call, tools: tools)
+    return containsDefinition(named: call.name, in: tools) ? call : nil
+  }
+
   public static func definition(
     named name: String,
     in tools: [ToolDefinition]
