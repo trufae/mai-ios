@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import MaiCore
 
 enum ContextBuilder {
   struct Output {
