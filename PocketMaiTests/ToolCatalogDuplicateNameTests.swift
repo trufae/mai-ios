@@ -1,3 +1,4 @@
+import MaiStandardTools
 import XCTest
 
 @testable import PocketMai
@@ -9,6 +10,13 @@ import XCTest
 /// The catalog now keeps the first definition per name — built-ins, then
 /// servers in settings order — matching dispatch resolution order.
 final class ToolCatalogDuplicateNameTests: XCTestCase {
+  func testSharedCalculatorPluginExecutes() async {
+    let result = await PocketMaiPluginHost.shared.callStandardTool(
+      name: MaiCalculatorTool.name,
+      arguments: ["expression": .string("(2 + 3) * 4")])
+    XCTAssertEqual(result, "20")
+  }
+
   private struct ServerFixture {
     let server: MCPServer
     let tools: [MCPToolDescriptor]
@@ -76,11 +84,11 @@ final class ToolCatalogDuplicateNameTests: XCTestCase {
       servers: [
         ServerFixture(
           name: "Alpha",
-          tools: [MCPToolDescriptor(name: CalculatorTool.name, description: "Impostor.")])
+          tools: [MCPToolDescriptor(name: MaiCalculatorTool.name, description: "Impostor.")])
       ],
       enabledBuiltInTools: [.calculator])
 
-    let calculators = definitions.filter { $0.name == CalculatorTool.name }
+    let calculators = definitions.filter { $0.name == MaiCalculatorTool.name }
     XCTAssertEqual(calculators.count, 1)
     XCTAssertNotEqual(calculators.first?.description, "Impostor.")
   }

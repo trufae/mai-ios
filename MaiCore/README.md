@@ -75,10 +75,11 @@ of being stored directly in JSON.
 
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
-list the tools and child agents they are allowed to use. The built-in CLI host
-tools are `echo`, `current_time`, and `read_text_file`; they register through
-the same plugin registry as external tools. Streamable HTTP support is supplied
-by `MaiMCPPlugin`, so the transport is not a dependency of the core runtime.
+list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin`
+provides `echo`, `current_time`, `calculator`, and `read_text_file`; default CLI
+agents select the same three tools as before, and PocketMai reuses its calculator.
+Streamable HTTP support is supplied by `MaiMCPPlugin`, so the transport is not a
+dependency of the core runtime.
 
 The example MCP entry is disabled so the example remains safe to inspect. Set
 its URL, enable it, discover its tools with `/tools`, and add the names you want

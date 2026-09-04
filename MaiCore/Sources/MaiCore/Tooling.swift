@@ -162,6 +162,10 @@ public struct ToolOutput: Codable, Equatable, Sendable {
   public init(text: String, isError: Bool = false) {
     self.init(content: [.text(text)], isError: isError)
   }
+
+  public var text: String {
+    content.compactMap(\.textValue).joined(separator: "\n")
+  }
 }
 
 public struct ClosureTool: AgentTool {

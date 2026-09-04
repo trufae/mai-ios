@@ -3,18 +3,31 @@ import Testing
 
 @testable import MaiCore
 @testable import MaiMCP
+@testable import MaiStandardTools
 @testable import MaiVisionOCR
 
 @Test("Bundled integrations install independently of MaiCore built-ins")
 func installsBundledIntegrationPlugins() async throws {
   let registry = PluginRegistry()
   try await registry.install(MaiMCPPlugin())
+  try await registry.install(MaiStandardToolsPlugin())
   try await registry.install(MaiVisionOCRPlugin())
 
   #expect(
     await registry.installedPlugins().map(\.manifest.id) == [
-      "org.mai.mcp", "org.mai.vision-ocr",
+      "org.mai.mcp", "org.mai.standard-tools", "org.mai.vision-ocr",
     ])
+  let tools = try await registry.makeTools(
+    kind: MaiStandardToolsPlugin.factoryKind,
+    context: PluginFactoryContext(
+      id: "standard", options: ["tools": .array([.string(MaiCalculatorTool.name)])]))
+  let calculator = try #require(tools.first)
+  let output = try await calculator.call(
+    arguments: .object(["expression": .string("(2 + 3) * 4")]),
+    context: ToolExecutionContext(
+      run: AgentEventContext(runID: UUID(), parentRunID: nil, agentID: "test", depth: 0),
+      modelTurn: 1))
+  #expect(output.text == "20")
   let ocr = try await registry.makeOCRProvider(
     kind: "vision",
     context: PluginFactoryContext(id: "vision"))

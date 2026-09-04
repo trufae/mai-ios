@@ -10,6 +10,7 @@
 		A20000000000000000000001 /* MaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000011 /* MaiCore */; };
 		A20000000000000000000002 /* MaiOpenAI in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000012 /* MaiOpenAI */; };
 		A20000000000000000000003 /* MaiMCP in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000013 /* MaiMCP */; };
+		A20000000000000000000004 /* MaiStandardTools in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000014 /* MaiStandardTools */; };
 		A10000000000000000000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000011 /* MLX */; };
 		A10000000000000000000002 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000012 /* MLXLLM */; };
 		A10000000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* MLXLMCommon */; };
@@ -115,6 +116,7 @@
 				A20000000000000000000001 /* MaiCore in Frameworks */,
 				A20000000000000000000002 /* MaiOpenAI in Frameworks */,
 				A20000000000000000000003 /* MaiMCP in Frameworks */,
+				A20000000000000000000004 /* MaiStandardTools in Frameworks */,
 				A10000000000000000000001 /* MLX in Frameworks */,
 				A10000000000000000000002 /* MLXLLM in Frameworks */,
 				A10000000000000000000003 /* MLXLMCommon in Frameworks */,
@@ -190,6 +192,7 @@
 				A20000000000000000000011 /* MaiCore */,
 				A20000000000000000000012 /* MaiOpenAI */,
 				A20000000000000000000013 /* MaiMCP */,
+				A20000000000000000000014 /* MaiStandardTools */,
 				A10000000000000000000011 /* MLX */,
 				A10000000000000000000012 /* MLXLLM */,
 				A10000000000000000000013 /* MLXLMCommon */,
@@ -726,6 +729,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */;
 			productName = MaiMCP;
+		};
+		A20000000000000000000014 /* MaiStandardTools */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */;
+			productName = MaiStandardTools;
 		};
 		A10000000000000000000011 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;

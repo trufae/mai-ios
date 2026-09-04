@@ -8,6 +8,7 @@ import MaiCore
 import MaiMCP
 import MaiOpenAI
 import MaiPluginHost
+import MaiStandardTools
 import MaiVisionOCR
 
 private struct CLIOptions {
@@ -75,98 +76,6 @@ private struct CLIOptions {
   }
 }
 
-private struct MaiCLIPlugin: MaiPlugin {
-  let manifest = PluginManifest(
-    id: "org.mai.cli-builtins",
-    displayName: "Mai CLI tools",
-    version: "1.0.0",
-    capabilities: [.agentTool])
-
-  func register(in registry: PluginRegistry) async throws {
-    try await registry.register(toolFactory: CLIHostToolFactory(), from: manifest.id)
-  }
-}
-
-private struct CLIHostToolFactory: ConfiguredToolFactory {
-  let kind = "cli-builtins"
-
-  func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
-    [
-      ClosureTool(
-        definition: ToolDefinition(
-          name: "echo",
-          description: "Return the supplied text.",
-          inputSchema: cliObjectSchema(
-            properties: ["text": .object(["type": .string("string")])],
-            required: ["text"]),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: true,
-            openWorld: false,
-            approval: .automatic))
-      ) { arguments, _ in
-        ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
-      },
-      ClosureTool(
-        definition: ToolDefinition(
-          name: "current_time",
-          description: "Return the current ISO-8601 date and time.",
-          inputSchema: cliObjectSchema(properties: [:], required: []),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: false,
-            openWorld: false,
-            approval: .automatic))
-      ) { _, _ in
-        ToolOutput(text: ISO8601DateFormatter().string(from: Date()))
-      },
-      ClosureTool(
-        definition: ToolDefinition(
-          name: "read_text_file",
-          description: "Read a UTF-8 text file from the CLI host.",
-          inputSchema: cliObjectSchema(
-            properties: ["path": .object(["type": .string("string")])],
-            required: ["path"]),
-          annotations: ToolAnnotations(
-            readOnly: true,
-            idempotent: true,
-            openWorld: false,
-            approval: .confirm))
-      ) { arguments, _ in
-        guard let path = arguments.objectValue?["path"]?.stringValue else {
-          return ToolOutput(text: "Missing path.", isError: true)
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
-        guard data.count <= 1_048_576 else {
-          return ToolOutput(text: "File exceeds the 1 MiB CLI tool limit.", isError: true)
-        }
-        guard let text = String(data: data, encoding: .utf8) else {
-          return ToolOutput(text: "File is not valid UTF-8.", isError: true)
-        }
-        return ToolOutput(content: [
-          .file(
-            FileContent(
-              name: URL(fileURLWithPath: path).lastPathComponent,
-              mimeType: "text/plain",
-              text: text))
-        ])
-      },
-    ]
-  }
-}
-
-private func cliObjectSchema(
-  properties: [String: JSONValue],
-  required: [String]
-) -> JSONValue {
-  .object([
-    "type": .string("object"),
-    "properties": .object(properties),
-    "required": .array(required.map(JSONValue.string)),
-    "additionalProperties": .bool(false),
-  ])
-}
-
 private enum CLIError: LocalizedError {
   case invalidURL(String)
   case missingValue(String)
@@ -221,7 +130,7 @@ private struct SessionProfile {
     self.provider = provider
     self.model = model
     self.instructions = instructions
-    toolNames = ["echo", "current_time", "read_text_file"]
+    toolNames = [MaiEchoTool.name, MaiCurrentTimeTool.name, MaiReadTextFileTool.name]
     subagentNames = []
     self.stream = stream
     limits = .init()
@@ -387,7 +296,7 @@ private struct MaiCLI {
       try await plugins.install(MaiMCPPlugin(), origin: "built-in")
       try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
       try await plugins.install(MaiVisionOCRPlugin(), origin: "built-in")
-      try await plugins.install(MaiCLIPlugin(), origin: "built-in")
+      try await plugins.install(MaiStandardToolsPlugin(), origin: "built-in")
       let nativePluginHost = NativePluginHost()
       try await loadNativePlugins(
         options: options,
@@ -489,8 +398,8 @@ private struct MaiCLI {
     environment: [String: String]
   ) async throws {
     let builtins = try await plugins.makeTools(
-      kind: "cli-builtins",
-      context: PluginFactoryContext(id: "cli-builtins", environment: environment))
+      kind: MaiStandardToolsPlugin.factoryKind,
+      context: PluginFactoryContext(id: "standard-tools", environment: environment))
     for tool in builtins { try await runtime.register(tool: tool) }
 
     for source in configuration?.toolSources ?? [] where source.enabled {
@@ -1102,14 +1011,14 @@ private struct MaiCLI {
           instructions: "You are a helpful assistant. Use tools when needed.",
           provider: "openai",
           model: "your-model",
-          toolNames: ["current_time", "echo", "read_text_file"],
+          toolNames: [MaiCurrentTimeTool.name, MaiEchoTool.name, MaiReadTextFileTool.name],
           subagentNames: ["researcher"]),
         AgentDefinition(
           id: "researcher",
           instructions: "Investigate the delegated task and return a concise result.",
           provider: "openai",
           model: "your-model",
-          toolNames: ["current_time"]),
+          toolNames: [MaiCurrentTimeTool.name]),
       ],
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
