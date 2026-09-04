@@ -1641,52 +1641,6 @@ struct OpenAIPropertySpec: Encodable, Sendable {
   var description: String
 }
 
-private struct OpenAIErrorResponse: Decodable {
-  struct APIError: Decodable {
-    var message: String?
-    var type: String?
-    var code: String?
-  }
-
-  var error: APIError
-}
-
-private struct OpenAIVoicesResponse: Decodable {
-  struct Voice: Decodable {
-    var id: String
-
-    init(from decoder: Decoder) throws {
-      if let value = try? decoder.singleValueContainer().decode(String.self) {
-        id = value
-        return
-      }
-      let c = try decoder.container(keyedBy: CodingKeys.self)
-      id =
-        (try? c.decode(String.self, forKey: .id))
-        ?? (try? c.decode(String.self, forKey: .name))
-        ?? ""
-    }
-
-    enum CodingKeys: String, CodingKey {
-      case id, name
-    }
-  }
-
-  var data: [Voice]
-}
-
-private struct OpenAISpeechRequest: Encodable {
-  var input: String
-  var voice: String
-  var responseFormat: String
-  var model: String?
-
-  enum CodingKeys: String, CodingKey {
-    case input, voice, model
-    case responseFormat = "response_format"
-  }
-}
-
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
     let provider = try await coreProvider(endpoint: endpoint)
@@ -1720,18 +1674,11 @@ enum OpenAICompatibleProvider {
   }
 
   static func fetchVoices(endpoint: OpenAIEndpoint) async throws -> [String] {
-    let request = try endpointRequest(endpoint: endpoint, url: voicesURL(from: endpoint.baseURL))
-    let (data, response) = try await data(for: request)
-    try validateHTTPResponse(response, data: data)
-    let decoded = try JSONDecoder().decode(OpenAIVoicesResponse.self, from: data)
-    let voices = decoded.data
-      .map(\.id)
-      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-      .sorted()
-    if voices.isEmpty {
-      throw ChatProviderError.providerRequestFailed("The endpoint returned no voices.")
+    do {
+      return try await coreProvider(endpoint: endpoint).availableVoices()
+    } catch {
+      throw mapCoreError(error)
     }
-    return voices
   }
 
   static func synthesizeSpeechAudio(
@@ -1741,35 +1688,14 @@ enum OpenAICompatibleProvider {
     responseFormat: String = "wav"
   ) async throws -> Data {
     let model = endpoint.defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
-    let body = try JSONEncoder().encode(
-      OpenAISpeechRequest(
+    do {
+      return try await coreProvider(endpoint: endpoint).synthesizeSpeech(
         input: input,
         voice: voice,
         responseFormat: responseFormat,
-        model: model.isEmpty ? nil : model))
-    let request = try endpointRequest(
-      endpoint: endpoint,
-      url: speechURL(from: endpoint.baseURL),
-      method: "POST",
-      contentType: "application/json",
-      accept: speechAcceptHeader(for: responseFormat),
-      body: body)
-    let (data, response) = try await data(for: request)
-    try validateHTTPResponse(response, data: data)
-    if data.isEmpty {
-      throw ChatProviderError.emptyResponse
-    }
-    return data
-  }
-
-  private static func speechAcceptHeader(for responseFormat: String) -> String {
-    switch responseFormat.lowercased() {
-    case "aac": return "audio/aac"
-    case "mp3": return "audio/mpeg"
-    case "wav": return "audio/wav"
-    case "opus", "ogg": return "audio/ogg"
-    case "flac": return "audio/flac"
-    default: return "*/*"
+        model: model.isEmpty ? nil : model)
+    } catch {
+      throw mapCoreError(error)
     }
   }
 
@@ -1886,7 +1812,7 @@ enum OpenAICompatibleProvider {
   private static func coreProvider(
     endpoint: OpenAIEndpoint,
     requestTimeout: TimeInterval = 600
-  ) async throws -> any MaiCore.ChatProvider {
+  ) async throws -> MaiOpenAI.OpenAICompatibleProvider {
     try await PocketMaiPluginHost.shared.makeOpenAIProvider(
       endpoint: endpoint,
       requestTimeout: requestTimeout)
@@ -2047,70 +1973,6 @@ enum OpenAICompatibleProvider {
     selectedEndpoint(for: request.conversation, settings: request.settings)
   }
 
-  private static func voicesURL(from baseURL: String) throws -> URL {
-    try endpointURL(from: baseURL, appending: ["voices"])
-  }
-
-  private static func speechURL(from baseURL: String) throws -> URL {
-    try endpointURL(from: baseURL, appending: ["audio", "speech"])
-  }
-
-  private static func endpointURL(from baseURL: String, appending suffix: [String]) throws -> URL {
-    guard var components = URLComponents(string: baseURL),
-      ["http", "https"].contains(components.scheme?.lowercased() ?? "")
-    else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
-    }
-
-    var pathComponents = components.path.split(separator: "/").map(String.init)
-    for removable in [["chat", "completions"], ["models"], ["voices"], ["audio", "speech"]] {
-      if pathComponents.suffix(removable.count) == removable[...] {
-        pathComponents.removeLast(removable.count)
-      }
-    }
-    pathComponents.append(contentsOf: suffix)
-    components.path = "/" + pathComponents.joined(separator: "/")
-    components.query = nil
-
-    guard let url = components.url else {
-      throw ChatProviderError.invalidEndpoint(baseURL)
-    }
-    return url
-  }
-
-  private static func endpointRequest(
-    endpoint: OpenAIEndpoint,
-    url: URL,
-    method: String = "GET",
-    contentType: String? = nil,
-    accept: String? = nil,
-    body: Data? = nil
-  ) -> URLRequest {
-    var request = URLRequest(url: url)
-    request.httpMethod = method
-    if let contentType {
-      request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-    }
-    if let accept {
-      request.setValue(accept, forHTTPHeaderField: "Accept")
-    }
-    if let authorization = authorizationHeader(for: endpoint) {
-      request.setValue(authorization, forHTTPHeaderField: "Authorization")
-    }
-    request.httpBody = body
-    return request
-  }
-
-  private static func authorizationHeader(for endpoint: OpenAIEndpoint) -> String? {
-    let key = endpoint.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    return key.isEmpty ? nil : "Bearer \(key)"
-  }
-
-  private static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-    let delegate = ProviderRedirectDelegate(originalRequest: request)
-    return try await URLSession.shared.data(for: request, delegate: delegate)
-  }
-
   private struct UsageRecordingContext: Sendable {
     var providerLabel: String
     var modelID: String
@@ -2194,30 +2056,6 @@ enum OpenAICompatibleProvider {
       firstTokenSeconds: resolved.firstTokenSeconds,
       tokensEstimated: usage == nil)
     await UsageStatsStore.record(stats, assistantMessageID: context.assistantMessageID)
-  }
-
-  private static func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
-    guard let statusCode = (response as? HTTPURLResponse)?.statusCode,
-      !(200..<300).contains(statusCode)
-    else {
-      return
-    }
-    throw providerHTTPError(statusCode: statusCode, data: data)
-  }
-
-  private static func providerHTTPError(statusCode: Int, data: Data) -> ChatProviderError {
-    if let error = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
-      let message = error.error.message ?? "Request failed"
-      let type = error.error.type.map { " (\($0))" } ?? ""
-      return .providerHTTPError(statusCode: statusCode, message: "\(message)\(type)")
-    }
-    let body =
-      String(data: data, encoding: .utf8)?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if body.isEmpty {
-      return .providerHTTPError(statusCode: statusCode, message: "")
-    }
-    return .providerHTTPError(statusCode: statusCode, message: String(body.prefix(500)))
   }
 
   private static func responseText(content: String, reasoning: String) -> String {
