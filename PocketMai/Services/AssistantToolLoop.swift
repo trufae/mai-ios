@@ -194,6 +194,7 @@ enum AssistantToolLoop {
         state: state,
         assistantID: activeAssistantID,
         store: store)
+      store.activityPhaseChanged(conversationID: conversationID, phase: .thinking)
       let response: String
       do {
         response = try await requestModelResponse(
@@ -1070,6 +1071,10 @@ enum AssistantToolLoop {
       return CallResult(call: executableCall, result: validationError)
     }
 
+    store.activityPhaseChanged(
+      conversationID: conversationID,
+      phase: .runningTool,
+      detail: executableCall.name)
     let timeout = store.settings.mcpRequestTimeoutInterval
     let context = LongRunningOperationContext(
       kind: .toolCall,

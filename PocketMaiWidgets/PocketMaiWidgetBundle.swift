@@ -6,5 +6,6 @@ struct PocketMaiWidgetBundle: WidgetBundle {
   var body: some Widget {
     PromptWidget()
     VoiceWidget()
+    AssistantActivityWidget()
   }
 }

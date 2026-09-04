@@ -17,6 +17,7 @@ This app, comes after [MAI](https://github.com/trufae/mai), a cli agent with foc
 - **MCP**: configure remote MCP servers and surface them to the model.
 - **Multiple system prompts**, persistent conversations, export to Markdown / plain text / JSON / ePUB / Word (docx).
 - **Attachments**: text, Markdown, Word (docx) and PDF files. Word and PDF are converted to Markdown on device (PDFs can also be attached as one image per page, and scanned pages are read with Vision OCR).
+- **Background replies**: a Live Activity on the Lock Screen and in the Dynamic Island follows running replies and tool calls, and a local notification tells you when a reply finishes, fails, or needs a tool approval while the app is in the background. An optional "Keep working when locked" mode keeps long replies running after the screen locks.
 
 ## Build
 

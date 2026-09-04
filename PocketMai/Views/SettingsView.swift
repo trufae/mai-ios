@@ -3,6 +3,7 @@ import Speech
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import UserNotifications
 
 enum DefaultProviderSelection: Hashable {
   case apple
@@ -306,6 +307,7 @@ struct SettingsView: View {
   @State private var newTodoTitle = ""
   @State private var showingClearMemoryConfirmation = false
   @State private var showingBackgroundVoiceConfirmation = false
+  @State private var notificationAuthorizationStatus: UNAuthorizationStatus?
   @State private var pendingDeletion: PendingSettingsDeletion?
   @State private var navigationPath: [SettingsRoute] = []
   @State private var draftEndpoint: OpenAIEndpoint?
@@ -735,9 +737,50 @@ struct SettingsView: View {
       } label: {
         Label("Conversation", systemImage: "mic.badge.plus")
       }
+
+      SettingsLazyDisclosureGroup {
+        backgroundActivityContent
+      } label: {
+        Label("Background & Notifications", systemImage: "bell.badge")
+      }
     } header: {
       Text("Look and Feel")
     }
+  }
+
+  @ViewBuilder
+  private var backgroundActivityContent: some View {
+    Toggle("Live Activity", isOn: settingsBinding(\.background.liveActivityEnabled))
+      .task { await refreshNotificationAuthorizationStatus() }
+    Text("Follow running replies from the Lock Screen and the Dynamic Island.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    Toggle(
+      "Notify when a reply finishes",
+      isOn: notificationBinding(\.background.notifyWhenResponseFinishes))
+    Toggle(
+      "Notify when a tool needs approval",
+      isOn: notificationBinding(\.background.notifyWhenApprovalNeeded))
+    if notificationAuthorizationStatus == .denied {
+      Button("Allow Notifications in Settings") {
+        openSystemSettings()
+      }
+      Text("Notifications are turned off for PocketMai in the system Settings.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    } else {
+      Text("Sent only while PocketMai is in the background or the device is locked.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    Toggle(
+      "Keep working when locked",
+      isOn: settingsBinding(\.background.extendedBackgroundProcessing))
+    Text(
+      "Plays silence in the background so long replies and tool runs keep going after the screen locks. Uses more battery."
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   @ViewBuilder
@@ -1022,6 +1065,33 @@ struct SettingsView: View {
         showingBackgroundVoiceConfirmation = true
       }
     )
+  }
+
+  /// Like `settingsBinding`, but turning a notification on also asks the system
+  /// for permission so the toggle is not silently ineffective.
+  private func notificationBinding(_ keyPath: WritableKeyPath<AppSettings, Bool>) -> Binding<Bool>
+  {
+    Binding(
+      get: { store.settings[keyPath: keyPath] },
+      set: { enabled in
+        store.settings[keyPath: keyPath] = enabled
+        store.saveSettings()
+        guard enabled else { return }
+        Task {
+          await ResponseNotificationService.shared.requestAuthorizationIfNeeded()
+          await refreshNotificationAuthorizationStatus()
+        }
+      }
+    )
+  }
+
+  private func refreshNotificationAuthorizationStatus() async {
+    notificationAuthorizationStatus = await ResponseNotificationService.shared.authorizationStatus()
+  }
+
+  private func openSystemSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    UIApplication.shared.open(url)
   }
 
   private func enableBackgroundVoiceListening() {

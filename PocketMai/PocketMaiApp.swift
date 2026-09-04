@@ -7,6 +7,7 @@ struct PocketMaiApp: App {
 
   init() {
     SystemLanguageSupport.preload()
+    ResponseNotificationService.shared.installDelegate()
   }
 
   var body: some Scene {

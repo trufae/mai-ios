@@ -1304,6 +1304,8 @@ struct ChatView: View {
       }
       guard !liveVoiceSession.isActive else { return }
       liveVoiceSession.start(store: store, ttsPlayer: ttsPlayer)
+    case .openConversation(let id):
+      await store.selectConversation(id: id)
     }
   }
 

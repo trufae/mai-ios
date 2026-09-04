@@ -148,6 +148,7 @@ struct ContentView: View {
       store.drainPendingSharedLaunchCommand()
     }
     .onChange(of: scenePhase) { _, phase in
+      store.handleScenePhaseChange(phase)
       if phase == .active {
         store.refreshAppleIntelligenceAvailabilityInBackground()
         store.refreshLocalMLXModelsInBackground()

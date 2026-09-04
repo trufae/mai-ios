@@ -215,6 +215,11 @@ final class AppStore: ObservableObject {
   private var followUpTasks: [UUID: Task<Void, Never>] = [:]
   private var followUpTaskTokens: [UUID: UUID] = [:]
   private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
+  let assistantActivity = AssistantActivityController()
+  let backgroundKeepAlive = BackgroundKeepAlive()
+  /// Recorded by the turn runner so the finish hook can tell a failed or
+  /// stopped reply from a completed one.
+  var responseOutcomes: [UUID: AssistantActivityTask.Phase] = [:]
   private var cancelledToolCallApprovalIDs: Set<UUID> = []
   private var cancelledLongRunningOperationTimeoutIDs: Set<UUID> = []
   private var toolCallingDebugIterations: [UUID: [ConversationDebugToolIteration]] = [:]
@@ -320,6 +325,7 @@ final class AppStore: ObservableObject {
     respondingConversationIDs.remove(conversationID)
     endResponseBackgroundTask(for: conversationID)
     clearFollowUpSuggestions(in: conversationID)
+    activityTurnAbandoned(conversationID: conversationID)
   }
 
   func followUpSuggestions(
@@ -438,6 +444,9 @@ final class AppStore: ObservableObject {
     appleAvailabilityReport = .checking
     appleAvailabilityMessage = nil
     startFreshConversationForLaunch()
+    ResponseNotificationService.shared.openConversationHandler = { [weak self] conversationID in
+      self?.handleLaunchCommand(.openConversation(id: conversationID))
+    }
     Task { await loadStartupData() }
   }
 
@@ -953,6 +962,7 @@ final class AppStore: ObservableObject {
       self.pendingRememberedConversationIDBeforeSettingsLoad = nil
     }
     hasLoadedPersistedSettings = true
+    applyBackgroundActivitySettings()
     refreshLaunchPlaceholderDefaultsIfNeeded()
     if pendingSettingsSave {
       pendingSettingsSave = false
@@ -1193,6 +1203,7 @@ final class AppStore: ObservableObject {
     }
     setSelectedConversationID(id)
     selectConversationFolder(conversations[index].folderID)
+    ResponseNotificationService.shared.clearNotifications(for: id)
     if previousID != id, discardDisposableConversation(id: previousID) {
       saveConversations()
     }
@@ -1360,6 +1371,7 @@ final class AppStore: ObservableObject {
 
   func markConversationRead(id: UUID) {
     updateConversationUnreadState(id: id, isUnread: false)
+    ResponseNotificationService.shared.clearNotifications(for: id)
   }
 
   private func updateConversationUnreadState(id: UUID, isUnread: Bool) {
@@ -1574,6 +1586,7 @@ final class AppStore: ObservableObject {
       responseTaskTokens[id] = nil
       endResponseBackgroundTask(for: id)
       respondingConversationIDs.remove(id)
+      activityTurnAbandoned(conversationID: id)
     }
     clearAllFollowUpSuggestions()
     conversationDrafts.removeAll()
@@ -1607,6 +1620,9 @@ final class AppStore: ObservableObject {
     responseTaskTokens.removeAll()
     clearAllFollowUpSuggestions()
     endAllResponseBackgroundTasks()
+    for id in respondingConversationIDs {
+      activityTurnAbandoned(conversationID: id)
+    }
     respondingConversationIDs.removeAll()
     queuedUserMessagesByConversationID.removeAll()
     conversationDrafts.removeAll()
@@ -2708,6 +2724,9 @@ final class AppStore: ObservableObject {
     let responseTaskToken = UUID()
     respondingConversationIDs.insert(conversationID)
     responseTaskTokens[conversationID] = responseTaskToken
+    activityTurnStarted(conversationID: conversationID)
+    prepareNotificationsForResponse()
+    refreshBackgroundKeepAlive()
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
       guard responseTaskTokens[conversationID] == responseTaskToken else { return }
@@ -2720,6 +2739,7 @@ final class AppStore: ObservableObject {
           responseTaskTokens[conversationID] = nil
           endResponseBackgroundTask(for: conversationID)
           saveConversations()
+          activityTurnFinished(conversationID: conversationID)
         }
       }
       if let conversation = conversation(withID: conversationID), conversation.provider == .mlx {
@@ -2727,6 +2747,7 @@ final class AppStore: ObservableObject {
           conversation: conversation, settings: settings)
         if !modelID.isEmpty {
           loadingLocalModelConversationIDs.insert(conversationID)
+          activityPhaseChanged(conversationID: conversationID, phase: .loadingModel)
           defer { loadingLocalModelConversationIDs.remove(conversationID) }
           // Settings may have preloaded this exact shared container. If not,
           // load it before the assistant turn so the chat can report progress.
@@ -2838,6 +2859,22 @@ final class AppStore: ObservableObject {
     // Expiration only ends the extra background execution allowance. Cancelling
     // here used to discard an otherwise resumable in-progress assistant turn.
     endResponseBackgroundTask(for: conversationID)
+    guard respondingConversationIDs.contains(conversationID) else { return }
+    if backgroundKeepAlive.isActive, UIApplication.shared.backgroundTimeRemaining > 30 {
+      // The silent audio session keeps the process alive; a fresh finite task
+      // keeps the turn at foreground priority for as long as the system allows.
+      beginResponseBackgroundTask(for: conversationID)
+      return
+    }
+    // The process is about to be suspended mid-reply. Keep what streamed so far
+    // and tell the Lock Screen card why nothing moves until the app reopens.
+    if let messageID = latestAssistantMessageID(in: conversationID) {
+      checkpointStreamingAssistantMessage(id: messageID)
+    }
+    activityPhaseChanged(
+      conversationID: conversationID,
+      phase: .paused,
+      detail: "Open PocketMai to continue")
   }
 
   private func endResponseBackgroundTask(for conversationID: UUID) {
@@ -2875,6 +2912,7 @@ final class AppStore: ObservableObject {
   }
 
   func markLatestAssistantStopped(in conversationID: UUID, fallbackID: UUID) {
+    responseOutcomes[conversationID] = .stopped
     markAssistantStopped(id: latestAssistantMessageID(in: conversationID) ?? fallbackID)
   }
 
@@ -2883,6 +2921,7 @@ final class AppStore: ObservableObject {
     fallbackID: UUID,
     message: String
   ) {
+    responseOutcomes[conversationID] = .failed
     let id = latestAssistantMessageID(in: conversationID) ?? fallbackID
     let current = currentTextOfMessage(id: id)
     let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2906,6 +2945,7 @@ final class AppStore: ObservableObject {
   /// per-token handlers here so they share one throttled fan-out.
   func receiveStreamingAssistantText(_ text: String, for id: UUID, vibrate: Bool) {
     setAssistantMessage(id: id, text: text, role: .assistant, touch: false, streaming: true)
+    activityStreamingText(text, messageID: id)
     guard vibrate, settings.appearance.hapticsEnabled else {
       return
     }
@@ -3401,6 +3441,7 @@ final class AppStore: ObservableObject {
     if !settings.followUps.isEnabled {
       clearAllFollowUpSuggestions()
     }
+    applyBackgroundActivitySettings()
     guard hasLoadedPersistedSettings else {
       pendingSettingsSave = true
       return
@@ -3479,11 +3520,22 @@ final class AppStore: ObservableObject {
     mode: ToolCallingMode,
     conversationID: UUID
   ) async -> ToolCallApprovalDecision {
-    await requestToolCallApproval(
+    let needsApproval = !settings.yoloModeEnabled
+    if needsApproval {
+      activityApprovalRequested(conversationID: conversationID, toolName: call.name)
+    }
+    let decision = await requestToolCallApproval(
       call: call,
       definitions: definitions,
       mode: mode,
       conversationTitle: conversation(withID: conversationID)?.displayTitle)
+    if needsApproval {
+      activityApprovalResolved(
+        conversationID: conversationID,
+        toolName: call.name,
+        decision: decision)
+    }
+    return decision
   }
 
   func requestToolCallApproval(
@@ -4273,6 +4325,7 @@ final class AppStore: ObservableObject {
     responseTaskTokens[removedID] = nil
     endResponseBackgroundTask(for: removedID)
     respondingConversationIDs.remove(removedID)
+    activityTurnAbandoned(conversationID: removedID)
     clearFollowUpSuggestions(in: removedID)
     queuedUserMessagesByConversationID[removedID] = nil
     if conversationDrafts.removeValue(forKey: removedID) != nil {

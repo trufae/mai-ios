@@ -8,6 +8,9 @@ enum LaunchCommand: Codable, Equatable, Sendable {
   case newPrompt(text: String?)
   /// Open the app directly into voice-conversation mode.
   case voice
+  /// Jump to an existing chat, e.g. from a Live Activity or a finished-reply
+  /// notification.
+  case openConversation(id: UUID)
 }
 
 /// Builds and parses the `pocketmai://` deep links used by the home/lock-screen
@@ -16,6 +19,7 @@ enum PocketMaiDeepLink {
   static let scheme = "pocketmai"
   static let promptHost = "prompt"
   static let voiceHost = "voice"
+  static let conversationHost = "conversation"
 
   static func url(for command: LaunchCommand) -> URL {
     var components = URLComponents()
@@ -28,6 +32,9 @@ enum PocketMaiDeepLink {
       }
     case .voice:
       components.host = voiceHost
+    case .openConversation(let id):
+      components.host = conversationHost
+      components.path = "/\(id.uuidString)"
     }
     return components.url ?? URL(string: "\(scheme)://\(promptHost)").unsafelyUnwrapped
   }
@@ -43,6 +50,9 @@ enum PocketMaiDeepLink {
       return .newPrompt(text: text)
     case voiceHost:
       return .voice
+    case conversationHost:
+      guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
+      return .openConversation(id: id)
     default:
       return nil
     }

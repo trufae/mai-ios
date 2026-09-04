@@ -3185,6 +3185,42 @@ struct FollowUpSettings: Codable, Equatable, Sendable {
   }
 }
 
+struct BackgroundActivitySettings: Codable, Equatable, Sendable {
+  /// Mirror running replies into a Live Activity (Lock Screen and Dynamic Island).
+  var liveActivityEnabled: Bool = true
+  /// Local notification when a reply finishes or fails while the app is not on screen.
+  var notifyWhenResponseFinishes: Bool = true
+  /// Local notification when a tool call waits for approval while the app is not on screen.
+  var notifyWhenApprovalNeeded: Bool = true
+  /// Keep the process alive with a silent audio session while a reply runs in the background.
+  var extendedBackgroundProcessing: Bool = false
+
+  static let defaults = BackgroundActivitySettings()
+
+  init() {}
+
+  enum CodingKeys: String, CodingKey {
+    case liveActivityEnabled, notifyWhenResponseFinishes, notifyWhenApprovalNeeded,
+      extendedBackgroundProcessing
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let defaults = BackgroundActivitySettings.defaults
+    liveActivityEnabled =
+      (try? c.decode(Bool.self, forKey: .liveActivityEnabled)) ?? defaults.liveActivityEnabled
+    notifyWhenResponseFinishes =
+      (try? c.decode(Bool.self, forKey: .notifyWhenResponseFinishes))
+      ?? defaults.notifyWhenResponseFinishes
+    notifyWhenApprovalNeeded =
+      (try? c.decode(Bool.self, forKey: .notifyWhenApprovalNeeded))
+      ?? defaults.notifyWhenApprovalNeeded
+    extendedBackgroundProcessing =
+      (try? c.decode(Bool.self, forKey: .extendedBackgroundProcessing))
+      ?? defaults.extendedBackgroundProcessing
+  }
+}
+
 struct AppSettings: Codable, Equatable, Sendable {
   static let currentSettingsVersion = 1
   static let currentStockPromptsVersion = 4
@@ -3291,6 +3327,7 @@ struct AppSettings: Codable, Equatable, Sendable {
   var includeAssistantResponsesInContext: Bool = true
   var includeReasoningContentInContext: Bool = false
   var followUps: FollowUpSettings = .defaults
+  var background: BackgroundActivitySettings = .defaults
   var appearance: AppearanceSettings = .defaults
   var conversation: ConversationSettings = .defaults
   var renderMarkdownInChat: Bool = true
@@ -3445,7 +3482,7 @@ struct AppSettings: Codable, Equatable, Sendable {
       maxToolCallsPerTurn
     case yoloModeEnabled, useToolProxy, contextWindowMode
     case includeAssistantResponsesInContext, includeReasoningContentInContext
-    case followUps
+    case followUps, background
     case appearance, conversation, renderMarkdownInChat, renderMarkdownImagesInChat
     case airplaneModeEnabled, attachmentImageSize
     case mlxMaxKVSize, mlxAutoCompact
@@ -3546,6 +3583,8 @@ struct AppSettings: Codable, Equatable, Sendable {
       (try? c.decode(Bool.self, forKey: .includeReasoningContentInContext)) ?? false
     followUps =
       (try? c.decode(FollowUpSettings.self, forKey: .followUps)) ?? .defaults
+    background =
+      (try? c.decode(BackgroundActivitySettings.self, forKey: .background)) ?? .defaults
     appearance =
       (try? c.decode(AppearanceSettings.self, forKey: .appearance)) ?? .defaults
     conversation =
