@@ -285,6 +285,7 @@ private actor TerminalWriter {
 private actor TerminalApprovalHandler: ApprovalHandler {
   private let configuration: ConfiguredApprovals
   private var delegate: (any ApprovalHandler)?
+  private var yoloEnabled = false
 
   init(configuration: ConfiguredApprovals) {
     self.configuration = configuration
@@ -295,7 +296,18 @@ private actor TerminalApprovalHandler: ApprovalHandler {
     delegate = handler
   }
 
+  func setYOLOEnabled(_ enabled: Bool) {
+    yoloEnabled = enabled
+  }
+
+  func isYOLOEnabled() -> Bool {
+    yoloEnabled
+  }
+
   func decide(_ request: ApprovalRequest) async throws -> ApprovalDecision {
+    if yoloEnabled {
+      return .approve(arguments: request.call.arguments)
+    }
     let mode =
       request.tool.annotations.approval == .dangerous
       ? configuration.dangerous : configuration.confirm
@@ -311,12 +323,15 @@ private actor TerminalApprovalHandler: ApprovalHandler {
       }
       FileHandle.standardError.write(
         Data(
-          "Approve \(request.tool.annotations.approval.rawValue) tool '\(request.tool.name)'?\nArguments: \(request.call.arguments.compactJSONString)\n[y]es/[n]o/[e]dit/[c]ancel run: "
+          "Approve \(request.tool.annotations.approval.rawValue) tool '\(request.tool.name)'?\nArguments: \(request.call.arguments.compactJSONString)\n[y]es/[a]lways/[n]o/[e]dit/[c]ancel run: "
             .utf8))
       guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       else { return .deny(reason: "No approval response.") }
       switch answer {
       case "y", "yes":
+        return .approve(arguments: request.call.arguments)
+      case "a", "always":
+        yoloEnabled = true
         return .approve(arguments: request.call.arguments)
       case "e", "edit":
         FileHandle.standardError.write(Data("Replacement JSON arguments: ".utf8))
@@ -694,6 +709,11 @@ private struct MaiCLI {
       return true
     case "/help":
       await terminal.line(replHelp)
+    case "/set":
+      await handleSetCommand(
+        argument,
+        approvalHandler: visual.approvalHandler,
+        terminal: terminal)
     case "/providers":
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
@@ -844,6 +864,49 @@ private struct MaiCLI {
       await terminal.line("Unknown command. Type /help.")
     }
     return false
+  }
+
+  private static func handleSetCommand(
+    _ argument: String,
+    approvalHandler: TerminalApprovalHandler,
+    terminal: TerminalWriter
+  ) async {
+    let parts = argument.replacingOccurrences(of: "=", with: " ")
+      .split(whereSeparator: \Character.isWhitespace)
+      .map(String.init)
+    guard !parts.isEmpty else {
+      let enabled = await approvalHandler.isYOLOEnabled()
+      await terminal.line("yolo = \(enabled ? "on" : "off")")
+      await terminal.line("Usage: /set yolo <on|off>")
+      return
+    }
+    guard parts[0].lowercased() == "yolo" else {
+      await terminal.line("Unknown setting '\(parts[0])'. Available settings: yolo")
+      return
+    }
+    guard parts.count > 1 else {
+      let enabled = await approvalHandler.isYOLOEnabled()
+      await terminal.line("yolo = \(enabled ? "on" : "off")")
+      return
+    }
+    guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
+      await terminal.line("Usage: /set yolo <on|off>")
+      return
+    }
+    await approvalHandler.setYOLOEnabled(enabled)
+    if enabled {
+      await terminal.line("YOLO mode enabled for this session; all tool calls are permitted.")
+    } else {
+      await terminal.line("YOLO mode disabled; configured approval rules restored.")
+    }
+  }
+
+  private static func booleanSetting(_ value: String) -> Bool? {
+    switch value.lowercased() {
+    case "1", "true", "yes", "on": true
+    case "0", "false", "no", "off": false
+    default: nil
+    }
   }
 
   private static func copyToClipboard(
@@ -1182,7 +1245,7 @@ private struct MaiCLI {
             "mastodonAPIKeyEnvironment": .string("MASTODON_API_KEY"),
             "mastodonWriteEnabled": .bool(false),
           ]),
-        ConfiguredToolSource(id: "example-tools", kind: "example", enabled: false)
+        ConfiguredToolSource(id: "example-tools", kind: "example", enabled: false),
       ],
       ocrProviders: [
         ConfiguredOCRProvider(id: "vision", kind: "vision")
@@ -1232,6 +1295,8 @@ private struct MaiCLI {
   }
 
   private static let replHelp = """
+    /set                List mutable session settings
+    /set yolo BOOL      Permit all tool calls for this session (on/off)
     /plugins            List statically and dynamically loaded plugins
     /providers          List registered providers
     /models [PROVIDER]  List models from the current or named provider
