@@ -150,7 +150,10 @@ public struct MaiWebFetchTool: AgentTool {
   public init() {}
 
   public func call(arguments: JSONValue, context: ToolExecutionContext) async throws -> ToolOutput {
-    let url = arguments.objectValue?["url"]?.coercedStringValue ?? ""
+    let arguments = arguments.objectValue ?? [:]
+    let url =
+      arguments["url"]?.coercedStringValue
+      ?? arguments["uri"]?.coercedStringValue ?? ""
     let result = await MaiWebFetchService.fetchContext(urlString: url)
     return ToolOutput(text: result, isError: result.hasPrefix("Error:"))
   }

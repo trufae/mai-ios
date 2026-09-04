@@ -1,5 +1,6 @@
 import Foundation
 import MaiCore
+import MaiStandardTools
 
 enum ChatRole: String, Codable, CaseIterable, Identifiable, Sendable {
   case user
@@ -909,16 +910,9 @@ enum AttachmentImageSize: String, Codable, CaseIterable, Identifiable, Sendable 
   }
 }
 
-enum WebSearchProvider: String, Codable, CaseIterable, Identifiable, Sendable {
-  case duckDuckGo
-  case wikipedia
-  case exa
-  case searXNG
-  case ollama
-  case all
+typealias WebSearchProvider = MaiWebSearchProvider
 
-  var id: String { rawValue }
-
+extension MaiWebSearchProvider {
   var displayName: String {
     switch self {
     case .duckDuckGo: "DuckDuckGo"
