@@ -3818,11 +3818,11 @@ private struct ChatComposer: View {
     Task {
       var attachments: [ChatAttachment] = []
       var unreadableCount = 0
-      let ocrProvider = PocketMaiOCRProvider()
+      let ocrProvider = try? await PocketMaiPluginHost.shared.makeOCRProvider()
       for item in items {
         let imageData = item.image.jpegData(compressionQuality: 0.95)
         let markdown: String?
-        if let imageData {
+        if let imageData, let ocrProvider {
           markdown = try? await ocrProvider.recognize(
             MaiCore.OCRRequest(
               imageData: imageData,

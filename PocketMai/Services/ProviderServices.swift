@@ -1779,7 +1779,7 @@ private struct OpenAISpeechRequest: Encodable {
 
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
-    let provider = try coreProvider(endpoint: endpoint)
+    let provider = try await coreProvider(endpoint: endpoint)
     let decoded: [MaiCore.ModelDescriptor]
     do {
       decoded = try await provider.availableModels()
@@ -1894,7 +1894,7 @@ enum OpenAICompatibleProvider {
         model: model,
         endpoint: endpoint,
         includeStreamUsage: includeStreamUsage)
-      let provider = try coreProvider(
+      let provider = try await coreProvider(
         endpoint: endpoint,
         requestTimeout: request.transportTimeoutInterval)
 
@@ -1976,17 +1976,10 @@ enum OpenAICompatibleProvider {
   private static func coreProvider(
     endpoint: OpenAIEndpoint,
     requestTimeout: TimeInterval = 600
-  ) throws -> MaiOpenAI.OpenAICompatibleProvider {
-    guard let baseURL = URL(string: endpoint.baseURL) else {
-      throw ChatProviderError.invalidEndpoint(endpoint.baseURL)
-    }
-    return MaiOpenAI.OpenAICompatibleProvider(
-      configuration: .init(
-        id: MaiCore.ProviderID(endpoint.id.uuidString),
-        displayName: endpoint.name,
-        baseURL: baseURL,
-        apiKey: endpoint.apiKey,
-        requestTimeout: requestTimeout))
+  ) async throws -> any MaiCore.ChatProvider {
+    try await PocketMaiPluginHost.shared.makeOpenAIProvider(
+      endpoint: endpoint,
+      requestTimeout: requestTimeout)
   }
 
   private static func coreMessage(_ message: OpenAIMessage) throws -> MaiCore.AgentMessage {
