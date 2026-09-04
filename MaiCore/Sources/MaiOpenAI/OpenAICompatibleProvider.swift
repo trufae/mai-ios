@@ -69,8 +69,7 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     request.timeoutInterval = max(1, configuration.requestTimeout)
     applyHeaders(to: &request)
 
-    let delegate = ProviderRedirectDelegate(originalRequest: request)
-    let (data, response) = try await session.data(for: request, delegate: delegate)
+    let (data, response) = try await data(for: request)
     try validate(response: response, data: data)
     let root = try decodeRoot(data)
     if let message = providerError(in: root) {
@@ -118,6 +117,61 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     }.sorted {
       $0.id.localizedStandardCompare($1.id) == .orderedAscending
     }
+  }
+
+  /// Lists voices exposed by OpenAI-compatible `/voices` endpoints.
+  public func availableVoices() async throws -> [String] {
+    var request = URLRequest(url: try endpointURL("voices"))
+    request.httpMethod = "GET"
+    request.timeoutInterval = max(1, configuration.requestTimeout)
+    applyHeaders(to: &request)
+
+    let (data, response) = try await data(for: request)
+    try validate(response: response, data: data)
+    let root = try decodeRoot(data)
+    if let message = providerError(in: root) {
+      throw OpenAICompatibleProviderError.providerFailure(message)
+    }
+    let voices = (root["data"]?.arrayValue ?? []).compactMap { value in
+      value.stringValue
+        ?? value.objectValue?["id"]?.stringValue
+        ?? value.objectValue?["name"]?.stringValue
+    }
+    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    .sorted()
+    guard !voices.isEmpty else {
+      throw OpenAICompatibleProviderError.invalidResponse("The endpoint returned no voices.")
+    }
+    return voices
+  }
+
+  /// Synthesizes speech through an OpenAI-compatible `/audio/speech` endpoint.
+  public func synthesizeSpeech(
+    input: String,
+    voice: String,
+    responseFormat: String = "wav",
+    model: String? = nil
+  ) async throws -> Data {
+    var body: [String: JSONValue] = [
+      "input": .string(input),
+      "voice": .string(voice),
+      "response_format": .string(responseFormat),
+    ]
+    if let model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      body["model"] = .string(model)
+    }
+    var request = URLRequest(url: try endpointURL("audio/speech"))
+    request.httpMethod = "POST"
+    request.timeoutInterval = max(1, configuration.requestTimeout)
+    request.httpBody = try JSONEncoder().encode(JSONValue.object(body))
+    applyHeaders(to: &request)
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(Self.speechAcceptHeader(responseFormat), forHTTPHeaderField: "Accept")
+
+    let (data, response) = try await data(for: request)
+    try validate(response: response, data: data)
+    guard !data.isEmpty else { throw OpenAICompatibleProviderError.emptyResponse }
+    return data
   }
 
   func makeURLRequest(_ request: ProviderRequest, model: String) throws -> URLRequest {
@@ -190,7 +244,9 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
 
     var path = components.path
     while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
-    for suffix in ["/chat/completions", "/models"] where path.hasSuffix(suffix) {
+    for suffix in ["/chat/completions", "/audio/speech", "/models", "/voices"]
+    where path.hasSuffix(suffix)
+    {
       path.removeLast(suffix.count)
       break
     }
@@ -210,8 +266,7 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     resolver: ToolNameResolver,
     emit: @escaping ProviderEventHandler
   ) async throws -> ProviderResponse {
-    let delegate = ProviderRedirectDelegate(originalRequest: request)
-    let (data, response) = try await session.data(for: request, delegate: delegate)
+    let (data, response) = try await data(for: request)
     try validate(response: response, data: data)
     return try await decodedResponse(data, resolver: resolver, emit: emit)
   }
@@ -593,6 +648,22 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
 
   private func providerError(in root: [String: JSONValue]) -> String? {
     root["error"]?.objectValue?["message"]?.stringValue
+  }
+
+  private func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+    let delegate = ProviderRedirectDelegate(originalRequest: request)
+    return try await session.data(for: request, delegate: delegate)
+  }
+
+  private static func speechAcceptHeader(_ responseFormat: String) -> String {
+    switch responseFormat.lowercased() {
+    case "aac": "audio/aac"
+    case "mp3": "audio/mpeg"
+    case "wav": "audio/wav"
+    case "opus", "ogg": "audio/ogg"
+    case "flac": "audio/flac"
+    default: "*/*"
+    }
   }
 
   private func tokenUsage(_ value: JSONValue?) -> TokenUsage? {

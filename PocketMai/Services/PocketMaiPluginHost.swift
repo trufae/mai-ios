@@ -18,12 +18,12 @@ actor PocketMaiPluginHost {
   func makeOpenAIProvider(
     endpoint: OpenAIEndpoint,
     requestTimeout: TimeInterval = 600
-  ) async throws -> any ChatProvider {
+  ) async throws -> MaiOpenAI.OpenAICompatibleProvider {
     try await prepare()
     guard let baseURL = URL(string: endpoint.baseURL) else {
       throw ChatProviderError.invalidEndpoint(endpoint.baseURL)
     }
-    return try await registry.makeProvider(
+    let provider = try await registry.makeProvider(
       from: ConfiguredProvider(
         id: endpoint.id.uuidString,
         kind: .openAICompatible,
@@ -32,6 +32,11 @@ actor PocketMaiPluginHost {
         apiKey: endpoint.apiKey,
         timeout: requestTimeout),
       environment: [:])
+    guard let provider = provider as? MaiOpenAI.OpenAICompatibleProvider else {
+      throw ChatProviderError.providerRequestFailed(
+        "The OpenAI plugin returned an incompatible provider.")
+    }
+    return provider
   }
 
   func makeOCRProvider() async throws -> any OCRProvider {

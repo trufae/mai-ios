@@ -323,6 +323,43 @@ func openAIModelCatalog() async throws {
   #expect(request.value(forHTTPHeaderField: "X-Workspace") == "test")
 }
 
+@Test("OpenAI-compatible provider lists voices and synthesizes speech")
+func openAISpeech() async throws {
+  let recorder = URLRequestRecorder()
+  StubURLProtocol.install(forHost: "speech.example.test") { request in
+    recorder.record(request, body: try requestBodyData(request))
+    if request.url?.path.hasSuffix("/voices") == true {
+      return try httpResponse(
+        request,
+        contentType: "application/json",
+        body: #"{"data":["voice-z",{"id":"voice-a"},{"name":"voice-b"}]}"#)
+    }
+    return try httpResponse(request, contentType: "audio/wav", body: "RIFF")
+  }
+  defer { StubURLProtocol.reset(host: "speech.example.test") }
+
+  let provider = OpenAICompatibleProvider(
+    configuration: .init(
+      baseURL: try #require(URL(string: "https://speech.example.test/v1/voices")),
+      apiKey: "secret"),
+    session: stubSession())
+  #expect(try await provider.availableVoices() == ["voice-a", "voice-b", "voice-z"])
+  #expect(recorder.request?.url?.absoluteString == "https://speech.example.test/v1/voices")
+
+  let audio = try await provider.synthesizeSpeech(
+    input: "hello", voice: "voice-a", responseFormat: "wav", model: "tts-model")
+  #expect(audio == Data("RIFF".utf8))
+  let request = try #require(recorder.request)
+  let body = try jsonObject(try #require(recorder.body))
+  #expect(request.url?.absoluteString == "https://speech.example.test/v1/audio/speech")
+  #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+  #expect(request.value(forHTTPHeaderField: "Accept") == "audio/wav")
+  #expect(body["input"] as? String == "hello")
+  #expect(body["voice"] as? String == "voice-a")
+  #expect(body["response_format"] as? String == "wav")
+  #expect(body["model"] as? String == "tts-model")
+}
+
 @Test("Streaming requests accept providers that return one-shot JSON")
 func openAIStreamingJSONFallback() async throws {
   StubURLProtocol.install(forHost: "buffered.example.test") { request in
