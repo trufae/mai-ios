@@ -1,8 +1,10 @@
 import Darwin
 import Foundation
 import MaiCore
+import MaiMCP
 import MaiOpenAI
 import MaiPluginHost
+import MaiVisionOCR
 
 private struct CLIOptions {
   var configPath: String?
@@ -378,7 +380,9 @@ private struct MaiCLI {
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
+      try await plugins.install(MaiMCPPlugin(), origin: "built-in")
       try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
+      try await plugins.install(MaiVisionOCRPlugin(), origin: "built-in")
       try await plugins.install(MaiCLIPlugin(), origin: "built-in")
       let nativePluginHost = NativePluginHost()
       try await loadNativePlugins(

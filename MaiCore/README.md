@@ -1,11 +1,11 @@
 # MaiCore
 
 MaiCore is the provider-neutral agent runtime shared by the `mai` command-line
-client and PocketMai. The concrete OpenAI-compatible transport lives in the
-separate `MaiOpenAI` product and registers through the same plugin API available
-to third-party providers. Together they support structured message content,
-multimodal requests, native tool calls, approvals, MCP Streamable HTTP servers,
-and bounded child agents.
+client and PocketMai. Concrete integrations are separate products:
+`MaiOpenAI`, `MaiMCP`, and `MaiVisionOCR`. Each registers through the same plugin
+API available to third-party providers. Together they support structured
+message content, multimodal requests, native tool calls, approvals, MCP
+Streamable HTTP servers, and bounded child agents.
 
 Run the offline REPL from the repository root:
 
@@ -47,9 +47,10 @@ recognized text as a Markdown attachment:
 /image ocr ./receipt.jpg
 ```
 
-The CLI currently injects the on-device `VisionOCRProvider`. Other hosts can
-provide a different OCR implementation without coupling it to their chat/model
-provider; PocketMai does this to preserve its layout-aware Markdown OCR.
+The CLI installs `MaiVisionOCRPlugin`, whose on-device `VisionOCRProvider` is
+selected with `kind: "vision"`. Other hosts can omit that module or provide a
+different OCR implementation without coupling it to their chat/model provider;
+PocketMai does this to preserve its layout-aware Markdown OCR.
 
 The CLI also loads trusted native plugins from repeated `--plugin PATH` options
 or from the configuration's `plugins` array. Relative config paths are resolved
@@ -76,7 +77,8 @@ MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
 list the tools and child agents they are allowed to use. The built-in CLI host
 tools are `echo`, `current_time`, and `read_text_file`; they register through
-the same plugin registry as external tools.
+the same plugin registry as external tools. Streamable HTTP support is supplied
+by `MaiMCPPlugin`, so the transport is not a dependency of the core runtime.
 
 The example MCP entry is disabled so the example remains safe to inspect. Set
 its URL, enable it, discover its tools with `/tools`, and add the names you want

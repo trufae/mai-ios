@@ -2,6 +2,31 @@ import Foundation
 import Testing
 
 @testable import MaiCore
+@testable import MaiMCP
+@testable import MaiVisionOCR
+
+@Test("Bundled integrations install independently of MaiCore built-ins")
+func installsBundledIntegrationPlugins() async throws {
+  let registry = PluginRegistry()
+  try await registry.install(MaiMCPPlugin())
+  try await registry.install(MaiVisionOCRPlugin())
+
+  #expect(
+    await registry.installedPlugins().map(\.manifest.id) == [
+      "org.mai.mcp", "org.mai.vision-ocr",
+    ])
+  let ocr = try await registry.makeOCRProvider(
+    kind: "vision",
+    context: PluginFactoryContext(id: "vision"))
+  #expect(ocr.descriptor.id == "vision")
+  let mcp = try await registry.makeMCPToolSource(
+    kind: "streamable-http",
+    configuration: ConfiguredMCPServer(
+      id: "fixture",
+      url: URL(string: "https://example.com/mcp")!),
+    environment: [:])
+  #expect(mcp is MCPClient)
+}
 
 @Test("A plugin installs all declared capability factories")
 func installsPluginCapabilities() async throws {

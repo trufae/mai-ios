@@ -5,6 +5,7 @@ import Testing
 import UniformTypeIdentifiers
 
 @testable import MaiCore
+@testable import MaiMCP
 @testable import MaiOpenAI
 
 @Test("Image attachment modes resize images and preserve their metadata")
