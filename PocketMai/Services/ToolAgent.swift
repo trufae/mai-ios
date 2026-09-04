@@ -288,12 +288,9 @@ enum ToolAgentRegistry {
         let description = cleanedToolDescription(
           tool.description,
           fallback: "MCP tool from \(server.name).")
-        defs.append(
-          ToolDefinition(
-            name: tool.name,
-            description: description,
-            parameters: AgentTooling.parameters(fromSchemaJSON: tool.parametersJSON),
-            inputSchemaJSON: tool.parametersJSON))
+        var definition = tool
+        definition.description = description
+        defs.append(definition)
       }
       enabledResourceServers.append((server, mcpResources[server.id] ?? []))
     }
