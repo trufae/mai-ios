@@ -124,7 +124,7 @@ final class ReasoningResponseFilteringTests: XCTestCase {
       includeAssistantResponses: true,
       echoReasoningContent: false)
 
-    XCTAssertEqual(messages.map(\.textContent), ["Final answer."])
+    XCTAssertEqual(messages.map(\.text), ["Final answer."])
   }
 
   func testEveryReasoningBlockAroundToolRunsIsHidden() {

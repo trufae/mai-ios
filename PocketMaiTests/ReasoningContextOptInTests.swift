@@ -28,8 +28,8 @@ final class ReasoningContextOptInTests: XCTestCase {
       echoReasoningContent: false)
 
     XCTAssertEqual(messages.count, 1)
-    XCTAssertEqual(messages.first?.textContent, "Visible answer.")
-    XCTAssertNil(messages.first?.reasoningContent)
+    XCTAssertEqual(messages.first?.text, "Visible answer.")
+    XCTAssertEqual(messages.first?.reasoning, "")
   }
 
   func testAssistantHistoryKeepsReasoningWhenOptedIn() {
@@ -42,7 +42,7 @@ final class ReasoningContextOptInTests: XCTestCase {
 
     XCTAssertEqual(messages.count, 1)
     XCTAssertEqual(
-      messages.first?.textContent,
+      messages.first?.text,
       "<think>\nHidden chain of thought.\n</think>\n\nVisible answer.")
   }
 
@@ -55,8 +55,8 @@ final class ReasoningContextOptInTests: XCTestCase {
       includeReasoning: true)
 
     XCTAssertEqual(messages.count, 1)
-    XCTAssertEqual(messages.first?.textContent, "Visible answer.")
-    XCTAssertEqual(messages.first?.reasoningContent, "Hidden chain of thought.")
+    XCTAssertEqual(messages.first?.text, "Visible answer.")
+    XCTAssertEqual(messages.first?.reasoning, "Hidden chain of thought.")
   }
 
   func testTranscriptContextFollowsTheSetting() {

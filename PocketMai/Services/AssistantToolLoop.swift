@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 
 @MainActor
 enum AssistantToolLoop {
@@ -26,7 +27,7 @@ enum AssistantToolLoop {
 
   private struct RunOutput {
     let text: String
-    let nativeMessages: [OpenAIMessage]
+    let nativeMessages: [AgentMessage]
     let completedRuns: [(fingerprint: String, result: String)]
     let parsedCalls: [ParsedToolCall]
     let results: [CallResult]
@@ -43,7 +44,7 @@ enum AssistantToolLoop {
 
   private struct State {
     var assistantText = ""
-    var nativeContinuationMessages: [OpenAIMessage] = []
+    var nativeContinuationMessages: [AgentMessage] = []
     var completedToolRuns: [String: String] = [:]
     var provisionalText = ""
     var debugRoundIndex = 0
@@ -77,7 +78,7 @@ enum AssistantToolLoop {
     }
 
     mutating func applyNativeContinuation(
-      _ messages: [OpenAIMessage],
+      _ messages: [AgentMessage],
       conversation: Conversation,
       requestState: RequestState
     ) {
@@ -93,7 +94,7 @@ enum AssistantToolLoop {
     func nativeContinuation(
       conversation: Conversation,
       requestState: RequestState
-    ) -> [OpenAIMessage] {
+    ) -> [AgentMessage] {
       Self.shouldUseNativeContinuation(conversation: conversation, requestState: requestState)
         ? nativeContinuationMessages : []
     }
@@ -515,7 +516,8 @@ enum AssistantToolLoop {
       guard requestState.usesTextProtocol else { return "" }
       return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
     }()
-    let userInputTokens = state.toolCallCount == 0 && state.repairTurnCount == 0
+    let userInputTokens =
+      state.toolCallCount == 0 && state.repairTurnCount == 0
       ? userInputTokenEstimate(in: conversation, before: assistantID)
       : nil
     let request = ChatCompletionRequest(
@@ -622,10 +624,13 @@ enum AssistantToolLoop {
 
   /// Counts only the user messages that started this assistant turn, excluding
   /// prior context, tool output, and the generated system prompt.
-  private static func userInputTokenEstimate(in conversation: Conversation, before assistantID: UUID)
+  private static func userInputTokenEstimate(
+    in conversation: Conversation, before assistantID: UUID
+  )
     -> Int?
   {
-    guard let assistantIndex = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
+    guard let assistantIndex = conversation.messages.firstIndex(where: { $0.id == assistantID })
+    else {
       return nil
     }
     let turnMessages = conversation.messages[..<assistantIndex]
@@ -843,7 +848,8 @@ enum AssistantToolLoop {
         store: store)
     }
 
-    let text = ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+    let text =
+      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
       + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
@@ -935,7 +941,8 @@ enum AssistantToolLoop {
       }
       pendingCount += 1
     }
-    return ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+    return
+      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
       + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
@@ -987,7 +994,8 @@ enum AssistantToolLoop {
       executedCount += 1
     }
 
-    let text = ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
+    let text =
+      ([transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)]
       + appendedRunBlocks)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: "\n\n")
@@ -1293,31 +1301,32 @@ enum AssistantToolLoop {
     definitions: [ToolDefinition],
     mode: ToolCallingMode,
     echoReasoningContent: Bool
-  ) -> [OpenAIMessage] {
+  ) -> [AgentMessage] {
     guard mode == .native, !results.isEmpty else { return [] }
     let resolver = AgentToolNameResolver(tools: definitions)
-    let toolCalls = results.compactMap { item -> OpenAIMessageToolCall? in
+    let toolCalls = results.compactMap { item -> ToolCall? in
       guard let id = item.call.toolCallID else { return nil }
       let canonical = resolver.canonicalName(for: item.call.name) ?? item.call.name
-      let apiName = item.call.apiName ?? resolver.apiName(for: canonical)
-      return OpenAIMessageToolCall(
-        id: id,
-        function: OpenAIMessageToolCallFunction(name: apiName, arguments: item.call.argsJSON))
+      return ToolCall(id: id, name: canonical, arguments: .object(item.call.argumentValues))
     }
     guard toolCalls.count == results.count else { return [] }
 
     let content = MessageContentFilter.conversationContextText(from: assistantContent)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    let assistant = OpenAIMessage(
-      role: "assistant",
-      content: content,
-      reasoningContent: PromptComposer.reasoningContent(
-        from: assistantContent,
-        echoReasoningContent: echoReasoningContent),
-      toolCalls: toolCalls)
-    let toolMessages = results.compactMap { item -> OpenAIMessage? in
+    var assistantParts: [ContentPart] = [.text(content)]
+    if let reasoning = PromptComposer.reasoningContent(
+      from: assistantContent,
+      echoReasoningContent: echoReasoningContent)
+    {
+      assistantParts.append(.reasoning(reasoning))
+    }
+    assistantParts.append(contentsOf: toolCalls.map(ContentPart.toolCall))
+    let assistant = AgentMessage(role: .assistant, content: assistantParts)
+    let toolMessages = results.compactMap { item -> AgentMessage? in
       guard let id = item.call.toolCallID else { return nil }
-      return OpenAIMessage(role: "tool", content: item.result, toolCallID: id)
+      return AgentMessage(
+        role: .tool,
+        content: [.toolResult(ToolResult(callID: id, text: item.result))])
     }
     return [assistant] + toolMessages
   }
@@ -1464,11 +1473,11 @@ enum AssistantToolLoop {
   }
 
   private static func debugPromptMessage(
-    from message: OpenAIMessage
+    from message: AgentMessage
   ) -> ConversationDebugPromptMessage {
     let toolCallsJSON: String?
-    if let toolCalls = message.toolCalls,
-      let data = try? JSONEncoder().encode(toolCalls),
+    if !message.toolCalls.isEmpty,
+      let data = try? JSONEncoder().encode(message.toolCalls),
       let json = String(data: data, encoding: .utf8)
     {
       toolCallsJSON = json
@@ -1476,11 +1485,11 @@ enum AssistantToolLoop {
       toolCallsJSON = nil
     }
     return ConversationDebugPromptMessage(
-      role: message.role,
-      content: message.textContent,
-      reasoningContent: message.reasoningContent,
+      role: message.role.rawValue,
+      content: message.text,
+      reasoningContent: message.reasoning.isEmpty ? nil : message.reasoning,
       toolCallsJSON: toolCallsJSON,
-      toolCallID: message.toolCallID)
+      toolCallID: message.toolResults.first?.callID)
   }
 
   private static func debugRole(displayName: String) -> String {
