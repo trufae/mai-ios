@@ -750,6 +750,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var responseFormat: ResponseFormat
   public var options: GenerationOptions
   public var toolCallingStrategy: ToolCallingStrategy
+  public var useToolProxy: Bool
 
   public init(
     id: String,
@@ -764,7 +765,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     toolChoice: ToolChoice = .automatic,
     responseFormat: ResponseFormat = .text,
     options: GenerationOptions = .init(),
-    toolCallingStrategy: ToolCallingStrategy = .automatic
+    toolCallingStrategy: ToolCallingStrategy = .automatic,
+    useToolProxy: Bool = false
   ) {
     self.id = id
     self.displayName = displayName ?? id
@@ -779,11 +781,12 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.responseFormat = responseFormat
     self.options = options
     self.toolCallingStrategy = toolCallingStrategy
+    self.useToolProxy = useToolProxy
   }
 
   private enum CodingKeys: String, CodingKey {
     case id, displayName, instructions, provider, model, toolNames, subagentNames, stream, limits
-    case toolChoice, responseFormat, options, toolCallingStrategy
+    case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy
   }
 
   public init(from decoder: Decoder) throws {
@@ -805,7 +808,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       options: try container.decodeIfPresent(GenerationOptions.self, forKey: .options) ?? .init(),
       toolCallingStrategy: try container.decodeIfPresent(
         ToolCallingStrategy.self,
-        forKey: .toolCallingStrategy) ?? .automatic)
+        forKey: .toolCallingStrategy) ?? .automatic,
+      useToolProxy: try container.decodeIfPresent(Bool.self, forKey: .useToolProxy) ?? false)
   }
 }
 
@@ -822,6 +826,7 @@ public struct AgentRequest: Sendable {
   public var limits: AgentRunLimits
   public var stream: Bool
   public var toolCallingStrategy: ToolCallingStrategy
+  public var useToolProxy: Bool
 
   public init(
     agentID: String = "main",
@@ -835,7 +840,8 @@ public struct AgentRequest: Sendable {
     options: GenerationOptions = .init(),
     limits: AgentRunLimits = .init(),
     stream: Bool = true,
-    toolCallingStrategy: ToolCallingStrategy = .automatic
+    toolCallingStrategy: ToolCallingStrategy = .automatic,
+    useToolProxy: Bool = false
   ) {
     self.agentID = agentID
     self.provider = provider
@@ -849,6 +855,7 @@ public struct AgentRequest: Sendable {
     self.limits = limits
     self.stream = stream
     self.toolCallingStrategy = toolCallingStrategy
+    self.useToolProxy = useToolProxy
   }
 }
 

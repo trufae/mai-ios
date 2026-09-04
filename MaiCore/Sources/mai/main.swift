@@ -1,8 +1,3 @@
-#if os(Linux)
-import Glibc
-#else
-import Darwin
-#endif
 import Foundation
 import MaiCore
 import MaiMCP
@@ -10,6 +5,12 @@ import MaiOpenAI
 import MaiPluginHost
 import MaiStandardTools
 import MaiVisionOCR
+
+#if os(Linux)
+  import Glibc
+#else
+  import Darwin
+#endif
 
 private struct CLIOptions {
   var configPath: String?
@@ -109,6 +110,7 @@ private struct SessionProfile {
   var responseFormat: ResponseFormat
   var options: GenerationOptions
   var toolCallingStrategy: ToolCallingStrategy
+  var useToolProxy: Bool
 
   init(definition: AgentDefinition) {
     agentID = definition.id
@@ -123,6 +125,7 @@ private struct SessionProfile {
     responseFormat = definition.responseFormat
     options = definition.options
     toolCallingStrategy = definition.toolCallingStrategy
+    useToolProxy = definition.useToolProxy
   }
 
   init(provider: ProviderID, model: String, instructions: String, stream: Bool) {
@@ -138,6 +141,7 @@ private struct SessionProfile {
     responseFormat = .text
     options = .init()
     toolCallingStrategy = .automatic
+    useToolProxy = false
   }
 }
 
@@ -571,7 +575,8 @@ private struct MaiCLI {
           options: profile.options,
           limits: profile.limits,
           stream: profile.stream,
-          toolCallingStrategy: profile.toolCallingStrategy)
+          toolCallingStrategy: profile.toolCallingStrategy,
+          useToolProxy: profile.useToolProxy)
       ) { event in
         await terminal.consume(event)
       }
@@ -674,6 +679,9 @@ private struct MaiCLI {
       session.reset(profile: SessionProfile(definition: definition))
       await terminal.line("Agent: \(argument). Conversation cleared.")
     case "/tools":
+      if session.profile.useToolProxy {
+        await terminal.line("Tool proxy enabled: models see list-tools and call-tool.")
+      }
       let allowed = session.profile.toolNames.union(
         session.profile.subagentNames.isEmpty ? [] : [AgentRuntime.subagentToolName])
       for tool in await runtime.availableTools()
@@ -685,6 +693,19 @@ private struct MaiCLI {
         await terminal.line(
           "\(AgentRuntime.subagentToolName) [confirm] — child agents: \(session.profile.subagentNames.sorted().joined(separator: ", "))"
         )
+      }
+    case "/proxy":
+      switch argument.lowercased() {
+      case "":
+        await terminal.line("Tool proxy: \(session.profile.useToolProxy ? "on" : "off")")
+      case "on":
+        session.profile.useToolProxy = true
+        await terminal.line("Tool proxy enabled.")
+      case "off":
+        session.profile.useToolProxy = false
+        await terminal.line("Tool proxy disabled.")
+      default:
+        await terminal.line("Usage: /proxy [on|off]")
       }
     case "/mcps":
       if catalogs.isEmpty { await terminal.line("No connected MCP servers.") }
@@ -1012,7 +1033,8 @@ private struct MaiCLI {
           provider: "openai",
           model: "your-model",
           toolNames: [MaiCurrentTimeTool.name, MaiEchoTool.name, MaiReadTextFileTool.name],
-          subagentNames: ["researcher"]),
+          subagentNames: ["researcher"],
+          useToolProxy: true),
         AgentDefinition(
           id: "researcher",
           instructions: "Investigate the delegated task and return a concise result.",
@@ -1033,6 +1055,7 @@ private struct MaiCLI {
     /agents             List configured agents
     /agent ID           Select an agent and clear the conversation
     /tools              List tools available to the current agent
+    /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcps               List connected MCP servers
     /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
     /clear              Clear conversation history

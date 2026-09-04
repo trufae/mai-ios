@@ -79,13 +79,18 @@ public struct ToolDefinition: Codable, Equatable, Identifiable, Sendable {
     name: String,
     description: String,
     parameters: [ToolParameterDef],
-    inputSchemaJSON: String = ""
+    inputSchemaJSON: String = "",
+    annotations: ToolAnnotations = .init()
   ) {
     let rawSchema = inputSchemaJSON.data(using: .utf8).flatMap {
       try? JSONDecoder().decode(JSONValue.self, from: $0)
     }
     let schema = rawSchema?.objectValue == nil ? Self.schema(for: parameters) : rawSchema
-    self.init(name: name, description: description, inputSchema: schema ?? .object([:]))
+    self.init(
+      name: name,
+      description: description,
+      inputSchema: schema ?? .object([:]),
+      annotations: annotations)
   }
 
   /// The flat properties exposed by this tool's object schema.
@@ -111,15 +116,16 @@ public struct ToolDefinition: Codable, Equatable, Identifiable, Sendable {
     .object([
       "type": .string("object"),
       "properties": .object(
-        Dictionary(uniqueKeysWithValues: parameters.map { parameter in
-          (
-            parameter.name,
-            .object([
-              "type": .string(parameter.type),
-              "description": .string(parameter.description),
-            ])
-          )
-        })),
+        Dictionary(
+          uniqueKeysWithValues: parameters.map { parameter in
+            (
+              parameter.name,
+              .object([
+                "type": .string(parameter.type),
+                "description": .string(parameter.description),
+              ])
+            )
+          })),
       "required": .array(parameters.filter(\.required).map { .string($0.name) }),
     ])
   }

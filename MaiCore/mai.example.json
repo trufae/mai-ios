@@ -74,6 +74,7 @@
       "subagentNames": [
         "researcher"
       ],
+      "useToolProxy": true,
       "limits": {
         "maxModelTurns": 12,
         "maxToolCalls": 20,
