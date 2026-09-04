@@ -57,7 +57,7 @@ public struct PluginManifest: Codable, Equatable, Identifiable, Sendable {
 
 /// Context shared by configurable tool and OCR factories. Provider and MCP
 /// factories receive their richer typed configurations directly.
-public struct PluginFactoryContext: Equatable, Sendable {
+public struct PluginFactoryContext: Codable, Equatable, Sendable {
   public var id: String
   public var displayName: String?
   public var options: [String: JSONValue]
@@ -78,7 +78,7 @@ public struct PluginFactoryContext: Equatable, Sendable {
 
 public protocol ConfiguredToolFactory: Sendable {
   var kind: String { get }
-  func makeTools(context: PluginFactoryContext) throws -> [any AgentTool]
+  func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool]
 }
 
 public protocol ConfiguredOCRProviderFactory: Sendable {
@@ -222,11 +222,14 @@ public actor PluginRegistry {
     return try registered.value.makeProvider(from: configuration, environment: environment)
   }
 
-  public func makeTools(kind: String, context: PluginFactoryContext) throws -> [any AgentTool] {
+  public func makeTools(
+    kind: String,
+    context: PluginFactoryContext
+  ) async throws -> [any AgentTool] {
     guard let registered = toolFactories[kind] else {
       throw PluginRegistryError.factoryNotRegistered(capability: .agentTool, kind: kind)
     }
-    return try registered.value.makeTools(context: context)
+    return try await registered.value.makeTools(context: context)
   }
 
   public func makeOCRProvider(

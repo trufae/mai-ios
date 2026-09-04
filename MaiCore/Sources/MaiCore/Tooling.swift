@@ -110,7 +110,7 @@ public struct ToolNameResolver: Sendable {
   }
 }
 
-public struct ToolExecutionContext: Equatable, Sendable {
+public struct ToolExecutionContext: Codable, Equatable, Sendable {
   public var run: AgentEventContext
   public var modelTurn: Int
 
@@ -129,7 +129,7 @@ public protocol AgentTool: Sendable {
   ) async throws -> ToolOutput
 }
 
-public struct ToolOutput: Equatable, Sendable {
+public struct ToolOutput: Codable, Equatable, Sendable {
   public var content: [ContentPart]
   public var structuredContent: JSONValue?
   public var isError: Bool

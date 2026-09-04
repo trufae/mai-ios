@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "defaultAgent": "native",
+  "providers": [
+    {
+      "id": "native",
+      "kind": "native-fixture"
+    }
+  ],
+  "toolSources": [
+    {
+      "id": "native-tools",
+      "kind": "native-fixture"
+    }
+  ],
+  "ocrProviders": [
+    {
+      "id": "native-ocr",
+      "kind": "native-fixture"
+    }
+  ],
+  "mcpServers": [
+    {
+      "id": "native-mcp",
+      "kind": "native-fixture",
+      "defaultApproval": "automatic"
+    }
+  ],
+  "agents": [
+    {
+      "id": "native",
+      "provider": "native",
+      "model": "native-hello",
+      "toolNames": [
+        "native_echo",
+        "native-mcp::echo"
+      ]
+    }
+  ]
+}

@@ -424,7 +424,7 @@ public struct TokenUsage: Codable, Equatable, Sendable {
   }
 }
 
-public struct ToolCallDelta: Equatable, Sendable {
+public struct ToolCallDelta: Codable, Equatable, Sendable {
   public var index: Int
   public var id: String?
   public var name: String?
@@ -438,7 +438,7 @@ public struct ToolCallDelta: Equatable, Sendable {
   }
 }
 
-public enum ProviderEvent: Equatable, Sendable {
+public enum ProviderEvent: Codable, Equatable, Sendable {
   case textDelta(String)
   case reasoningDelta(String)
   case toolCallDelta(ToolCallDelta)
@@ -582,7 +582,7 @@ public struct GenerationOptions: Codable, Equatable, Sendable {
   }
 }
 
-public struct ProviderRequest: Sendable {
+public struct ProviderRequest: Codable, Sendable {
   public var model: String
   public var messages: [AgentMessage]
   public var tools: [ToolDefinition]
@@ -610,7 +610,7 @@ public struct ProviderRequest: Sendable {
   }
 }
 
-public struct ProviderResponse: Equatable, Sendable {
+public struct ProviderResponse: Codable, Equatable, Sendable {
   public var message: AgentMessage
   public var usage: TokenUsage?
   public var stopReason: ProviderStopReason
@@ -816,7 +816,7 @@ public struct AgentResult: Equatable, Sendable {
   public var reasoning: String { response.reasoning }
 }
 
-public struct AgentEventContext: Equatable, Sendable {
+public struct AgentEventContext: Codable, Equatable, Sendable {
   public var runID: UUID
   public var parentRunID: UUID?
   public var agentID: String

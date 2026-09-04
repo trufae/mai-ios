@@ -102,11 +102,118 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
   }
 }
 
-public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
+public struct ConfiguredPlugin: Codable, Equatable, Sendable {
+  public var path: String
+  public var enabled: Bool
+  public var required: Bool
+
+  public init(path: String, enabled: Bool = true, required: Bool = true) {
+    self.path = path
+    self.enabled = enabled
+    self.required = required
+  }
+
+  private enum CodingKeys: String, CodingKey { case path, enabled, required }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      path: try container.decode(String.self, forKey: .path),
+      enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+      required: try container.decodeIfPresent(Bool.self, forKey: .required) ?? true)
+  }
+}
+
+public struct ConfiguredToolSource: Codable, Equatable, Identifiable, Sendable {
   public var id: String
+  public var kind: String
   public var enabled: Bool
   public var displayName: String?
-  public var url: URL
+  public var options: [String: JSONValue]
+
+  public init(
+    id: String,
+    kind: String,
+    enabled: Bool = true,
+    displayName: String? = nil,
+    options: [String: JSONValue] = [:]
+  ) {
+    self.id = id
+    self.kind = kind
+    self.enabled = enabled
+    self.displayName = displayName
+    self.options = options
+  }
+
+  private enum CodingKeys: String, CodingKey { case id, kind, enabled, displayName, options }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try container.decode(String.self, forKey: .id),
+      kind: try container.decode(String.self, forKey: .kind),
+      enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+      displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
+      options: try container.decodeIfPresent([String: JSONValue].self, forKey: .options) ?? [:])
+  }
+
+  public func context(environment: [String: String]) -> PluginFactoryContext {
+    PluginFactoryContext(
+      id: id,
+      displayName: displayName,
+      options: options,
+      environment: environment)
+  }
+}
+
+public struct ConfiguredOCRProvider: Codable, Equatable, Identifiable, Sendable {
+  public var id: String
+  public var kind: String
+  public var enabled: Bool
+  public var displayName: String?
+  public var options: [String: JSONValue]
+
+  public init(
+    id: String,
+    kind: String,
+    enabled: Bool = true,
+    displayName: String? = nil,
+    options: [String: JSONValue] = [:]
+  ) {
+    self.id = id
+    self.kind = kind
+    self.enabled = enabled
+    self.displayName = displayName
+    self.options = options
+  }
+
+  private enum CodingKeys: String, CodingKey { case id, kind, enabled, displayName, options }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try container.decode(String.self, forKey: .id),
+      kind: try container.decode(String.self, forKey: .kind),
+      enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+      displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
+      options: try container.decodeIfPresent([String: JSONValue].self, forKey: .options) ?? [:])
+  }
+
+  public func context(environment: [String: String]) -> PluginFactoryContext {
+    PluginFactoryContext(
+      id: id,
+      displayName: displayName,
+      options: options,
+      environment: environment)
+  }
+}
+
+public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
+  public var id: String
+  public var kind: String
+  public var enabled: Bool
+  public var displayName: String?
+  public var url: URL?
   public var headers: [String: String]
   public var headerEnvironment: [String: String]
   public var bearerToken: String?
@@ -114,21 +221,25 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
   public var timeout: TimeInterval?
   public var toolNamePrefix: String?
   public var defaultApproval: ToolApprovalRequirement
+  public var options: [String: JSONValue]
 
   public init(
     id: String,
+    kind: String = "streamable-http",
     enabled: Bool = true,
     displayName: String? = nil,
-    url: URL,
+    url: URL? = nil,
     headers: [String: String] = [:],
     headerEnvironment: [String: String] = [:],
     bearerToken: String? = nil,
     bearerTokenEnvironment: String? = nil,
     timeout: TimeInterval? = nil,
     toolNamePrefix: String? = nil,
-    defaultApproval: ToolApprovalRequirement = .confirm
+    defaultApproval: ToolApprovalRequirement = .confirm,
+    options: [String: JSONValue] = [:]
   ) {
     self.id = id
+    self.kind = kind
     self.enabled = enabled
     self.displayName = displayName
     self.url = url
@@ -139,21 +250,23 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
     self.timeout = timeout
     self.toolNamePrefix = toolNamePrefix
     self.defaultApproval = defaultApproval
+    self.options = options
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, enabled, displayName, url, headers, headerEnvironment, bearerToken
+    case id, kind, enabled, displayName, url, headers, headerEnvironment, bearerToken
     case bearerTokenEnvironment
-    case timeout, toolNamePrefix, defaultApproval
+    case timeout, toolNamePrefix, defaultApproval, options
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
       id: try container.decode(String.self, forKey: .id),
+      kind: try container.decodeIfPresent(String.self, forKey: .kind) ?? "streamable-http",
       enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
       displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
-      url: try container.decode(URL.self, forKey: .url),
+      url: try container.decodeIfPresent(URL.self, forKey: .url),
       headers: try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:],
       headerEnvironment: try container.decodeIfPresent(
         [String: String].self,
@@ -166,10 +279,12 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
       toolNamePrefix: try container.decodeIfPresent(String.self, forKey: .toolNamePrefix),
       defaultApproval: try container.decodeIfPresent(
         ToolApprovalRequirement.self,
-        forKey: .defaultApproval) ?? .confirm)
+        forKey: .defaultApproval) ?? .confirm,
+      options: try container.decodeIfPresent([String: JSONValue].self, forKey: .options) ?? [:])
   }
 
   public func resolved(environment: [String: String]) throws -> MCPServerConfiguration {
+    guard let url else { throw MaiConfigurationError.mcpServerMissingURL(id) }
     var resolvedHeaders = headers
     for (header, environmentName) in headerEnvironment {
       guard let value = environment[environmentName], !value.isEmpty else {
@@ -232,7 +347,10 @@ public struct ConfiguredApprovals: Codable, Equatable, Sendable {
 public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var version: Int
   public var defaultAgent: String?
+  public var plugins: [ConfiguredPlugin]
   public var providers: [ConfiguredProvider]
+  public var toolSources: [ConfiguredToolSource]
+  public var ocrProviders: [ConfiguredOCRProvider]
   public var mcpServers: [ConfiguredMCPServer]
   public var agents: [AgentDefinition]
   public var approvals: ConfiguredApprovals
@@ -240,21 +358,28 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public init(
     version: Int = 1,
     defaultAgent: String? = nil,
+    plugins: [ConfiguredPlugin] = [],
     providers: [ConfiguredProvider] = [],
+    toolSources: [ConfiguredToolSource] = [],
+    ocrProviders: [ConfiguredOCRProvider] = [],
     mcpServers: [ConfiguredMCPServer] = [],
     agents: [AgentDefinition] = [],
     approvals: ConfiguredApprovals = .init()
   ) {
     self.version = version
     self.defaultAgent = defaultAgent
+    self.plugins = plugins
     self.providers = providers
+    self.toolSources = toolSources
+    self.ocrProviders = ocrProviders
     self.mcpServers = mcpServers
     self.agents = agents
     self.approvals = approvals
   }
 
   private enum CodingKeys: String, CodingKey {
-    case version, defaultAgent, providers, mcpServers, agents, approvals
+    case version, defaultAgent, plugins, providers, toolSources, ocrProviders, mcpServers, agents,
+      approvals
   }
 
   public init(from decoder: Decoder) throws {
@@ -262,7 +387,13 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     self.init(
       version: try container.decodeIfPresent(Int.self, forKey: .version) ?? 1,
       defaultAgent: try container.decodeIfPresent(String.self, forKey: .defaultAgent),
+      plugins: try container.decodeIfPresent([ConfiguredPlugin].self, forKey: .plugins) ?? [],
       providers: try container.decodeIfPresent([ConfiguredProvider].self, forKey: .providers) ?? [],
+      toolSources: try container.decodeIfPresent([ConfiguredToolSource].self, forKey: .toolSources)
+        ?? [],
+      ocrProviders: try container.decodeIfPresent(
+        [ConfiguredOCRProvider].self,
+        forKey: .ocrProviders) ?? [],
       mcpServers: try container.decodeIfPresent([ConfiguredMCPServer].self, forKey: .mcpServers)
         ?? [],
       agents: try container.decodeIfPresent([AgentDefinition].self, forKey: .agents) ?? [],
@@ -292,6 +423,8 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public func validate() throws {
     guard version == 1 else { throw MaiConfigurationError.unsupportedVersion(version) }
     try Self.requireUnique(providers.map(\.id), kind: "provider")
+    try Self.requireUnique(toolSources.map(\.id), kind: "tool source")
+    try Self.requireUnique(ocrProviders.map(\.id), kind: "OCR provider")
     try Self.requireUnique(mcpServers.map(\.id), kind: "MCP server")
     try Self.requireUnique(agents.map(\.id), kind: "agent")
     let providerIDs = Set(providers.map(\.id))
@@ -327,6 +460,7 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case emptyIdentifier(String)
   case duplicateIdentifier(kind: String, id: String)
   case providerMissingBaseURL(String)
+  case mcpServerMissingURL(String)
   case unknownProvider(String)
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
@@ -344,6 +478,8 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "Duplicate \(kind) identifier '\(id)'."
     case .providerMissingBaseURL(let id):
       "OpenAI-compatible provider '\(id)' is missing baseURL."
+    case .mcpServerMissingURL(let id):
+      "MCP server '\(id)' is missing a URL."
     case .unknownProvider(let id):
       "Configuration references unknown provider '\(id)'."
     case .unknownAgent(let id):

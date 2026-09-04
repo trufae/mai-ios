@@ -1,6 +1,13 @@
 {
   "version": 1,
   "defaultAgent": "hello",
+  "plugins": [
+    {
+      "path": "./plugins/example.dylib",
+      "enabled": false,
+      "required": false
+    }
+  ],
   "providers": [
     {
       "id": "hello",
@@ -20,9 +27,23 @@
       "baseURL": "http://127.0.0.1:8080/v1"
     }
   ],
+  "toolSources": [
+    {
+      "id": "example-tools",
+      "kind": "example",
+      "enabled": false
+    }
+  ],
+  "ocrProviders": [
+    {
+      "id": "vision",
+      "kind": "vision"
+    }
+  ],
   "mcpServers": [
     {
       "id": "remote",
+      "kind": "streamable-http",
       "enabled": false,
       "displayName": "Example MCP",
       "url": "https://your-mcp.example/mcp",

@@ -9,7 +9,7 @@ DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
 
-.PHONY: all build test list run repl fmt clean check-shared-tooling aitest-build
+.PHONY: all build test list run repl plugin-fixture fmt clean check-shared-tooling aitest-build
 
 all: build
 
@@ -66,6 +66,9 @@ run:
 
 repl:
 	swift run --package-path MaiCore mai $(ARGS)
+
+plugin-fixture:
+	swift build --package-path MaiCore --product MaiFixturePlugin
 
 fmt:
 	xcrun swift-format format -i -r PocketMai Shared PocketMaiLiveActivityExtension MaiCore/Sources MaiCore/Tests MaiCore/Package.swift
