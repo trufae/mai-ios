@@ -1,0 +1,139 @@
+import Foundation
+import Testing
+
+@testable import MaiCore
+
+@Test("A plugin installs all declared capability factories")
+func installsPluginCapabilities() async throws {
+  let registry = PluginRegistry()
+  try await registry.install(FixturePlugin(), origin: "test")
+
+  let installed = await registry.installedPlugins()
+  #expect(installed.map(\.manifest.id) == ["fixture"])
+  #expect(installed.first?.origin == "test")
+
+  let provider = try await registry.makeProvider(
+    from: ConfiguredProvider(id: "fixture-provider", kind: "fixture"),
+    environment: [:])
+  #expect(provider.descriptor.id == "fixture-provider")
+
+  let tools = try await registry.makeTools(
+    kind: "fixture",
+    context: PluginFactoryContext(id: "tools"))
+  #expect(tools.map(\.definition.name) == ["fixture_echo"])
+
+  let ocr = try await registry.makeOCRProvider(
+    kind: "fixture",
+    context: PluginFactoryContext(id: "ocr"))
+  #expect(ocr.descriptor.id == "ocr")
+
+  let mcp = try await registry.makeMCPToolSource(
+    kind: "fixture",
+    configuration: ConfiguredMCPServer(
+      id: "mcp",
+      url: URL(string: "https://example.com/mcp")!),
+    environment: [:])
+  #expect(try await mcp.connect().serverID == "mcp")
+}
+
+@Test("Plugin installation is atomic when registration fails")
+func pluginInstallationRollsBack() async throws {
+  let registry = PluginRegistry()
+  await #expect(throws: PluginRegistryError.self) {
+    try await registry.install(IncompletePlugin())
+  }
+  #expect(await registry.installedPlugins().isEmpty)
+  await #expect(throws: PluginRegistryError.self) {
+    _ = try await registry.makeProvider(
+      from: ConfiguredProvider(id: "missing", kind: "fixture"), environment: [:])
+  }
+}
+
+private struct FixturePlugin: MaiPlugin {
+  let manifest = PluginManifest(
+    id: "fixture",
+    displayName: "Fixture",
+    version: "1.0.0",
+    capabilities: [.chatProvider, .agentTool, .ocrProvider, .mcpToolSource])
+
+  func register(in registry: PluginRegistry) async throws {
+    try await registry.register(providerFactory: FixtureProviderFactory(), from: manifest.id)
+    try await registry.register(toolFactory: FixtureToolFactory(), from: manifest.id)
+    try await registry.register(ocrFactory: FixtureOCRFactory(), from: manifest.id)
+    try await registry.register(mcpFactory: FixtureMCPFactory(), from: manifest.id)
+  }
+}
+
+private struct IncompletePlugin: MaiPlugin {
+  let manifest = PluginManifest(
+    id: "incomplete",
+    displayName: "Incomplete",
+    version: "1.0.0",
+    capabilities: [.chatProvider])
+
+  func register(in registry: PluginRegistry) async throws {}
+}
+
+private struct FixtureProviderFactory: ConfiguredProviderFactory {
+  let kind = ConfiguredProviderKind("fixture")
+
+  func makeProvider(
+    from configuration: ConfiguredProvider,
+    environment: [String: String]
+  ) throws -> any ChatProvider {
+    HelloProvider(id: ProviderID(configuration.id))
+  }
+}
+
+private struct FixtureToolFactory: ConfiguredToolFactory {
+  let kind = "fixture"
+
+  func makeTools(context: PluginFactoryContext) throws -> [any AgentTool] {
+    [
+      ClosureTool(
+        definition: ToolDefinition(name: "fixture_echo", description: "Fixture"),
+        operation: { _, _ in ToolOutput(text: "fixture") })
+    ]
+  }
+}
+
+private struct FixtureOCRFactory: ConfiguredOCRProviderFactory {
+  let kind = "fixture"
+
+  func makeOCRProvider(context: PluginFactoryContext) throws -> any OCRProvider {
+    FixtureOCR(id: context.id)
+  }
+}
+
+private struct FixtureOCR: OCRProvider {
+  var id: String
+  var descriptor: OCRProviderDescriptor { .init(id: id, displayName: "Fixture") }
+  func recognize(_ request: OCRRequest) async throws -> OCRResult { .init(markdown: "fixture") }
+}
+
+private struct FixtureMCPFactory: ConfiguredMCPToolSourceFactory {
+  let kind = "fixture"
+
+  func makeMCPToolSource(
+    from configuration: ConfiguredMCPServer,
+    environment: [String: String]
+  ) throws -> any MCPToolSource {
+    FixtureMCP(id: configuration.id)
+  }
+}
+
+private struct FixtureMCP: MCPToolSource {
+  var id: String
+
+  func connect() async throws -> MCPServerCatalog {
+    MCPServerCatalog(
+      serverID: id,
+      serverName: "Fixture",
+      protocolVersion: "fixture",
+      tools: [],
+      resources: [])
+  }
+
+  func agentTools() async throws -> [any AgentTool] { [] }
+  func close() async {}
+}
