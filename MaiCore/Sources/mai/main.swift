@@ -1,4 +1,8 @@
+#if os(Linux)
+import Glibc
+#else
 import Darwin
+#endif
 import Foundation
 import MaiCore
 import MaiMCP
@@ -424,7 +428,7 @@ private struct MaiCLI {
           session: &session,
           runtime: runtime,
           terminal: terminal)
-        if !succeeded { Darwin.exit(1) }
+        if !succeeded { exit(1) }
         return
       }
       await runREPL(
@@ -437,7 +441,7 @@ private struct MaiCLI {
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
-      Darwin.exit(2)
+      exit(2)
     }
   }
 

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 enum ProviderRedirectPolicy {
   static let maximumRedirectCount = 5

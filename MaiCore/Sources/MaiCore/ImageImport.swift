@@ -1,6 +1,8 @@
 import Foundation
+#if canImport(ImageIO)
 import ImageIO
 import UniformTypeIdentifiers
+#endif
 
 public enum ImageAttachmentMode: String, Codable, CaseIterable, Sendable {
   case tiny
@@ -77,6 +79,7 @@ public enum ImageAttachmentImporter {
       return .file(FileContent(name: name, mimeType: "text/markdown", text: result.markdown))
     }
 
+#if canImport(ImageIO)
     guard let source = CGImageSourceCreateWithData(data as CFData, nil),
       let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
       let originalWidth = properties[kCGImagePropertyPixelWidth] as? NSNumber,
@@ -123,6 +126,13 @@ public enum ImageAttachmentImporter {
         name: (filename as NSString).deletingPathExtension + ".jpg",
         width: thumbnail.width,
         height: thumbnail.height))
+#else
+    // Linux does not ship Apple's ImageIO framework. Preserve the original
+    // attachment rather than attempting platform-specific image resizing.
+    return .image(
+      ImageContent(
+        source: .data(data), mimeType: mimeType, name: filename))
+#endif
   }
 }
 

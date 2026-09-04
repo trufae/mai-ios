@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import MaiCore
 
 public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {

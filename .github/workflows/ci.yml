@@ -9,6 +9,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  cli:
+    name: CLI (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+            artifact: mai-linux
+          - os: macos-latest
+            name: macOS
+            artifact: mai-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build release CLI
+        run: swift build --package-path MaiCore -c release --product mai
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: MaiCore/.build/release/mai
+          if-no-files-found: error
+
   build:
     name: Build (Xcode latest on macOS latest)
     runs-on: macos-latest
