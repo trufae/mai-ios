@@ -38,7 +38,7 @@ enum AssistantToolLoop {
     let result: String
   }
 
-  private enum ToolRunHost {
+  private enum RunHost {
     case live(assistantID: UUID, baselineText: String, conversationID: UUID)
     case isolated(
       conversation: Conversation,
@@ -148,9 +148,14 @@ enum AssistantToolLoop {
     while state.toolCallCount < maxToolCalls && state.repairTurnCount < maxRepairTurns {
       try Task.checkCancellation()
       guard let conversation = store.conversation(withID: conversationID) else { return }
+      let host = RunHost.live(
+        assistantID: activeAssistantID,
+        baselineText: state.displayText,
+        conversationID: conversationID)
       let requestState = makeRequestState(
         conversation: conversation,
         baseContext: baseContext,
+        host: host,
         store: store)
       let promptMessages = debugPromptMessages(
         conversation: conversation,
@@ -166,6 +171,7 @@ enum AssistantToolLoop {
           requestState: requestState,
           state: state,
           assistantID: activeAssistantID,
+          host: host,
           store: store)
       } catch let skipped as SkippedModelResponse {
         state.clearProvisionalText()
@@ -201,11 +207,9 @@ enum AssistantToolLoop {
       let outcome = try await outcome(
         response: response,
         requestState: requestState,
-        conversationID: conversationID,
-        assistantID: activeAssistantID,
+        host: host,
         store: store,
         completedToolRuns: state.completedToolRuns,
-        baselineText: state.displayText,
         remainingToolCalls: maxToolCalls - state.toolCallCount)
 
       switch outcome {
@@ -384,29 +388,29 @@ enum AssistantToolLoop {
 
     while state.toolCallCount < maxToolCalls && state.repairTurnCount < maxRepairTurns {
       try Task.checkCancellation()
-      let requestState = makeRequestState(
+      let host = RunHost.isolated(
         conversation: conversation,
-        baseContext: baseContext,
         settings: settings,
         mcpTools: store.mcpTools,
         mcpResources: store.mcpResources,
         mcpStatuses: store.mcpStatuses)
-      let response = try await requestModelResponseIsolated(
+      let requestState = makeRequestState(
+        conversation: conversation,
+        baseContext: baseContext,
+        host: host,
+        store: store)
+      let response = try await requestModelResponse(
         conversation: conversation,
         requestState: requestState,
         state: state,
         assistantID: assistantID,
-        settings: settings,
+        host: host,
         store: store)
 
-      let outcome = try await isolatedOutcome(
+      let outcome = try await outcome(
         response: response,
         requestState: requestState,
-        conversation: conversation,
-        settings: settings,
-        mcpTools: store.mcpTools,
-        mcpResources: store.mcpResources,
-        mcpStatuses: store.mcpStatuses,
+        host: host,
         store: store,
         completedToolRuns: state.completedToolRuns,
         remainingToolCalls: maxToolCalls - state.toolCallCount)
@@ -471,6 +475,7 @@ enum AssistantToolLoop {
     requestState: RequestState,
     state: State,
     assistantID: UUID,
+    host: RunHost,
     store: AppStore
   ) async throws -> String {
     // In the synthesis round (after a tool has run), suppress the tail reminder that says
@@ -480,13 +485,15 @@ enum AssistantToolLoop {
       guard requestState.usesTextProtocol else { return "" }
       return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
     }()
-    let userInputTokens =
-      state.toolCallCount == 0 && state.repairTurnCount == 0
-      ? userInputTokenEstimate(in: conversation, before: assistantID)
-      : nil
+    let userInputTokens: Int?
+    if case .live = host, state.toolCallCount == 0, state.repairTurnCount == 0 {
+      userInputTokens = userInputTokenEstimate(in: conversation, before: assistantID)
+    } else {
+      userInputTokens = nil
+    }
     let request = ChatCompletionRequest(
       conversation: conversation,
-      settings: store.settings,
+      settings: settings(for: host, store: store),
       context: requestState.context,
       assistantMessageID: assistantID,
       userInputTokens: userInputTokens,
@@ -506,6 +513,7 @@ enum AssistantToolLoop {
         timeoutHandler: timeoutHandler(store: store)
       ) { [weak store] streamed in
         latestStreamedResponse = streamed
+        guard case .live = host else { return }
         let turnText =
           requestState.definitions.isEmpty
           ? AppStore.strippedSpuriousToolCallText(streamed) : streamed
@@ -519,61 +527,21 @@ enum AssistantToolLoop {
         requestState.definitions.isEmpty
         ? AppStore.strippedSpuriousToolCallText(latestStreamedResponse)
         : latestStreamedResponse
-      throw SkippedModelResponse(partialText: partial)
+      switch host {
+      case .live:
+        throw SkippedModelResponse(partialText: partial)
+      case .isolated:
+        return partial.isEmpty
+          ? "[model response skipped by user after timeout]"
+          : "\(partial)\n\n[model response skipped by user after timeout]"
+      }
     }
     try Task.checkCancellation()
-    if let stats = UsageStatsStore.shared.pendingStats(for: assistantID) {
+    if case .live = host,
+      let stats = UsageStatsStore.shared.pendingStats(for: assistantID)
+    {
       store.attachGenerationStats(stats, toMessage: assistantID)
     }
-    return requestState.definitions.isEmpty
-      ? AppStore.strippedSpuriousToolCallText(response)
-      : response
-  }
-
-  private static func requestModelResponseIsolated(
-    conversation: Conversation,
-    requestState: RequestState,
-    state: State,
-    assistantID: UUID,
-    settings: AppSettings,
-    store: AppStore
-  ) async throws -> String {
-    let tailToolPrompt: String = {
-      guard requestState.usesTextProtocol else { return "" }
-      return state.completedToolRuns.isEmpty ? requestState.toolPrompt : ""
-    }()
-    let request = ChatCompletionRequest(
-      conversation: conversation,
-      settings: settings,
-      context: requestState.context,
-      assistantMessageID: assistantID,
-      nativeTools: requestState.nativeTools,
-      nativeContinuationMessages: state.nativeContinuation(
-        conversation: conversation,
-        requestState: requestState),
-      hasToolCalling: !requestState.definitions.isEmpty,
-      toolPrompt: tailToolPrompt,
-      toolPromptInContext: requestState.usesTextProtocol && !requestState.toolPrompt.isEmpty
-    )
-    var latestStreamedResponse = ""
-    let response: String
-    do {
-      response = try await ChatProviderRouter.complete(
-        request: request,
-        timeoutHandler: timeoutHandler(store: store)
-      ) { streamed in
-        latestStreamedResponse = streamed
-      }
-    } catch is LongRunningOperationSkipped {
-      let partial =
-        requestState.definitions.isEmpty
-        ? AppStore.strippedSpuriousToolCallText(latestStreamedResponse)
-        : latestStreamedResponse
-      return partial.isEmpty
-        ? "[model response skipped by user after timeout]"
-        : "\(partial)\n\n[model response skipped by user after timeout]"
-    }
-    try Task.checkCancellation()
     return requestState.definitions.isEmpty
       ? AppStore.strippedSpuriousToolCallText(response)
       : response
@@ -611,18 +579,14 @@ enum AssistantToolLoop {
   private static func outcome(
     response: String,
     requestState: RequestState,
-    conversationID: UUID,
-    assistantID: UUID,
+    host: RunHost,
     store: AppStore,
     completedToolRuns: [ToolCallKey: String],
-    baselineText: String,
     remainingToolCalls: Int
   ) async throws -> Outcome {
     guard !requestState.definitions.isEmpty else { return .final(response) }
 
-    let currentDefinitions = currentVisibleDefinitions(
-      conversationID: conversationID,
-      store: store)
+    let currentDefinitions = currentVisibleDefinitions(for: host, store: store)
     let hostDefinitions =
       currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
     let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
@@ -645,62 +609,7 @@ enum AssistantToolLoop {
       remainingToolCalls: remainingToolCalls,
       parseDefinitions: parseDefinitions,
       mode: requestState.activeMode,
-      host: .live(
-        assistantID: assistantID,
-        baselineText: baselineText,
-        conversationID: conversationID),
-      store: store)
-    return .toolRun(output)
-  }
-
-  private static func isolatedOutcome(
-    response: String,
-    requestState: RequestState,
-    conversation: Conversation,
-    settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]],
-    mcpStatuses: [UUID: EndpointConnectionState],
-    store: AppStore,
-    completedToolRuns: [ToolCallKey: String],
-    remainingToolCalls: Int
-  ) async throws -> Outcome {
-    guard !requestState.definitions.isEmpty else { return .final(response) }
-
-    let currentDefinitions = currentVisibleDefinitions(
-      conversation: conversation,
-      settings: settings,
-      mcpTools: mcpTools,
-      mcpResources: mcpResources,
-      mcpStatuses: mcpStatuses)
-    let hostDefinitions =
-      currentDefinitions.isEmpty ? requestState.definitions : currentDefinitions
-    let parseDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: hostDefinitions)
-    let decision = AgentToolLoopPolicy.evaluate(
-      response: response,
-      tools: hostDefinitions,
-      mode: requestState.activeMode,
-      completedToolRuns: completedToolRuns,
-      remainingToolCalls: remainingToolCalls)
-    let calls: [ParsedToolCall]
-    switch decision {
-    case .final(let text): return .final(text)
-    case .repair(let feedback): return .retry(feedback, provisionalText: nil)
-    case .execute(let parsedCalls): calls = parsedCalls
-    }
-
-    let output = try await runToolCalls(
-      response: response,
-      calls: calls,
-      remainingToolCalls: remainingToolCalls,
-      parseDefinitions: parseDefinitions,
-      mode: requestState.activeMode,
-      host: .isolated(
-        conversation: conversation,
-        settings: settings,
-        mcpTools: mcpTools,
-        mcpResources: mcpResources,
-        mcpStatuses: mcpStatuses),
+      host: host,
       store: store)
     return .toolRun(output)
   }
@@ -711,7 +620,7 @@ enum AssistantToolLoop {
     remainingToolCalls: Int,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
-    host: ToolRunHost,
+    host: RunHost,
     store: AppStore
   ) async throws -> RunOutput {
     if case .live(let assistantID, let baselineText, _) = host {
@@ -883,7 +792,7 @@ enum AssistantToolLoop {
     _ call: ParsedToolCall,
     parseDefinitions: [ToolDefinition],
     mode: ToolCallingMode,
-    host: ToolRunHost,
+    host: RunHost,
     store: AppStore
   ) async throws -> CallResult {
     let currentDefinitions = currentVisibleDefinitions(for: host, store: store)
@@ -1002,7 +911,7 @@ enum AssistantToolLoop {
   }
 
   private static func currentVisibleDefinitions(
-    for host: ToolRunHost,
+    for host: RunHost,
     store: AppStore
   ) -> [ToolDefinition] {
     switch host {
@@ -1019,34 +928,23 @@ enum AssistantToolLoop {
     }
   }
 
-  private static func makeRequestState(
-    conversation: Conversation,
-    baseContext: String,
-    store: AppStore
-  ) -> RequestState {
-    makeRequestState(
-      conversation: conversation,
-      baseContext: baseContext,
-      settings: store.settings,
-      mcpTools: store.mcpTools,
-      mcpResources: store.mcpResources,
-      mcpStatuses: store.mcpStatuses)
+  private static func settings(for host: RunHost, store: AppStore) -> AppSettings {
+    switch host {
+    case .live:
+      return store.settings
+    case .isolated(_, let settings, _, _, _):
+      return settings
+    }
   }
 
   private static func makeRequestState(
     conversation: Conversation,
     baseContext: String,
-    settings: AppSettings,
-    mcpTools: [UUID: [MCPToolDescriptor]],
-    mcpResources: [UUID: [MCPResourceDescriptor]],
-    mcpStatuses: [UUID: EndpointConnectionState]
+    host: RunHost,
+    store: AppStore
   ) -> RequestState {
-    let visibleDefinitions = ToolAgentRegistry.visibleDefinitions(
-      for: conversation,
-      settings: settings,
-      mcpTools: mcpTools,
-      mcpResources: mcpResources,
-      mcpStatuses: mcpStatuses)
+    let settings = settings(for: host, store: store)
+    let visibleDefinitions = currentVisibleDefinitions(for: host, store: store)
     let loopDefinitions = AgentToolLoopPolicy.definitions(includingResponseTool: visibleDefinitions)
     let nativeTools = nativeToolsIfNeeded(
       conversation: conversation,
