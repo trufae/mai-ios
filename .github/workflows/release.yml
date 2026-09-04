@@ -8,8 +8,48 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish IPA
+  cli:
+    name: CLI (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Linux x64
+            target: linux-x64
+            runner_arch: x86_64
+          - os: ubuntu-24.04-arm
+            name: Linux arm64
+            target: linux-arm64
+            runner_arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show Swift version and verify architecture
+        run: |
+          swift --version
+          test "$(uname -m)" = "${{ matrix.runner_arch }}"
+
+      - name: Build release CLI
+        run: swift build --package-path MaiCore -c release --product pmai
+
+      - name: Package CLI
+        run: |
+          asset="pmai-${{ matrix.target }}.tar.gz"
+          tar -czf "$asset" -C MaiCore/.build/release pmai
+          tar -tzf "$asset"
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmai-${{ matrix.target }}
+          path: pmai-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  ipa:
+    name: Build unsigned IPA
     runs-on: macos-26
     steps:
       - name: Checkout
@@ -58,10 +98,29 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$package/Payload" "$asset"
           unzip -tqq "$asset"
 
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketmai-ipa
+          path: PocketMai-*.ipa
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [cli, ipa]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*"
+          merge-multiple: true
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           name: PocketMai ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: PocketMai-*.ipa
+          files: release-assets/*
