@@ -81,6 +81,28 @@ func structuredMessageRoundTrip() throws {
   #expect(message.imageInputCount == 1)
 }
 
+@Test("Tool proxy searches and resolves the shared catalog")
+func toolProxyResolution() throws {
+  let definitions = [
+    ToolDefinition(
+      name: "weather",
+      description: "Look up a forecast.",
+      parameters: [
+        ToolParameterDef(name: "city", type: "string", description: "City name.", required: true)
+      ])
+  ]
+  let listing = ToolProxy.listTools(
+    arguments: ["keywords": .string("forecast")], definitions: definitions)
+  #expect(listing.contains("weather"))
+
+  let resolved = ToolProxy.resolveCall(
+    arguments: ["name": .string("weather"), "arguments": .object(["city": .string("Rome")])],
+    definitions: definitions)
+  #expect(resolved.error == nil)
+  #expect(resolved.call?.name == "weather")
+  #expect(resolved.call?.argumentValues["city"] == .string("Rome"))
+}
+
 @Test("Transcripts edit rich messages and preserve valid tool transactions")
 func transcriptEditing() throws {
   let messages = [
