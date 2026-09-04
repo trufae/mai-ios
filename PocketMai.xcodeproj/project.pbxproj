@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A20000000000000000000001 /* MaiCore in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000011 /* MaiCore */; };
 		A10000000000000000000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000011 /* MLX */; };
 		A10000000000000000000002 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000012 /* MLXLLM */; };
 		A10000000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* MLXLMCommon */; };
@@ -109,6 +110,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A20000000000000000000001 /* MaiCore in Frameworks */,
 				A10000000000000000000001 /* MLX in Frameworks */,
 				A10000000000000000000002 /* MLXLLM in Frameworks */,
 				A10000000000000000000003 /* MLXLMCommon in Frameworks */,
@@ -181,6 +183,7 @@
 			);
 			name = PocketMai;
 			packageProductDependencies = (
+				A20000000000000000000011 /* MaiCore */,
 				A10000000000000000000011 /* MLX */,
 				A10000000000000000000012 /* MLXLLM */,
 				A10000000000000000000013 /* MLXLMCommon */,
@@ -275,6 +278,7 @@
 			mainGroup = A00000000000000000000010;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */,
 				A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				A10000000000000000000022 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				A10000000000000000000023 /* XCRemoteSwiftPackageReference "swift-hf-api-mlx" */,
@@ -651,6 +655,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = MaiCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -695,6 +706,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A20000000000000000000011 /* MaiCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20000000000000000000021 /* XCLocalSwiftPackageReference "MaiCore" */;
+			productName = MaiCore;
+		};
 		A10000000000000000000011 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000021 /* XCRemoteSwiftPackageReference "mlx-swift" */;

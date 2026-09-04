@@ -1,6 +1,29 @@
 import Foundation
+import MaiCore
 import UIKit
 import Vision
+
+/// PocketMai's layout-aware OCR implementation. Keeping this behind MaiCore's
+/// provider protocol lets the CLI use Vision directly while the app preserves
+/// its richer Markdown reconstruction.
+struct PocketMaiOCRProvider: MaiCore.OCRProvider {
+  let descriptor = MaiCore.OCRProviderDescriptor(
+    id: "pocketmai-vision",
+    displayName: "PocketMai Vision OCR")
+
+  func recognize(_ request: MaiCore.OCRRequest) async throws -> MaiCore.OCRResult {
+    try await Task.detached(priority: .userInitiated) {
+      guard let image = UIImage(data: request.imageData) else {
+        throw MaiCore.OCRProviderError.noText
+      }
+      do {
+        return MaiCore.OCRResult(markdown: try ImageOCRImporter.markdown(from: image))
+      } catch {
+        throw MaiCore.OCRProviderError.recognitionFailed(error.localizedDescription)
+      }
+    }.value
+  }
+}
 
 /// Reads the text in a picture with Vision's on-device recogniser and emits
 /// Markdown. The recognised lines are fed through the PDF importer's layout

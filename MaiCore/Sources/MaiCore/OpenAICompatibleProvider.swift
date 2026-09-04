@@ -81,10 +81,36 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
         let id = object["id"]?.stringValue,
         !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else { return nil }
+      var capabilities: ProviderCapabilities = []
+      let architecture = object["architecture"]?.objectValue
+      var declaredModalities =
+        architecture?["input_modalities"]?.arrayValue?.compactMap(\.stringValue)
+        ?? object["input_modalities"]?.arrayValue?.compactMap(\.stringValue)
+      let modality = architecture?["modality"]?.stringValue?.lowercased() ?? ""
+      if declaredModalities == nil, !modality.isEmpty {
+        declaredModalities = modality.split(separator: "-").first.map {
+          $0.split(separator: "+").map(String.init)
+        }
+      }
+      let inputModalities = declaredModalities ?? []
+      if inputModalities.contains(where: { $0.lowercased() == "image" })
+        || modality.split(separator: "-").first?.contains("image") == true
+      {
+        capabilities.insert(.imageInput)
+      }
+      if inputModalities.contains(where: { $0.lowercased() == "audio" })
+        || modality.split(separator: "-").first?.contains("audio") == true
+      {
+        capabilities.insert(.audioInput)
+      }
       return ModelDescriptor(
         id: id,
         displayName: object["display_name"]?.stringValue ?? object["name"]?.stringValue,
-        ownedBy: object["owned_by"]?.stringValue ?? object["ownedBy"]?.stringValue)
+        ownedBy: object["owned_by"]?.stringValue ?? object["ownedBy"]?.stringValue,
+        capabilities: capabilities,
+        inputModalities: declaredModalities.map {
+          Set($0.map { $0.lowercased() })
+        })
     }.sorted {
       $0.id.localizedStandardCompare($1.id) == .orderedAscending
     }
@@ -107,7 +133,7 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     body["messages"] = .array(
       try request.messages.flatMap { try openAIMessages($0, resolver: resolver) })
     body["stream"] = .bool(request.stream)
-    if request.stream {
+    if request.stream && request.options.includeStreamUsage {
       body["stream_options"] = .object(["include_usage": .bool(true)])
     }
     if !request.tools.isEmpty {
@@ -183,6 +209,14 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (data, response) = try await session.data(for: request, delegate: delegate)
     try validate(response: response, data: data)
+    return try await decodedResponse(data, resolver: resolver, emit: emit)
+  }
+
+  private func decodedResponse(
+    _ data: Data,
+    resolver: ToolNameResolver,
+    emit: @escaping ProviderEventHandler
+  ) async throws -> ProviderResponse {
     let root = try decodeRoot(data)
     if let message = providerError(in: root) {
       throw OpenAICompatibleProviderError.providerFailure(message)
@@ -243,14 +277,22 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     var usage: TokenUsage?
     var stopReason = ProviderStopReason.unknown
     var toolCalls: [Int: ToolCallAccumulator] = [:]
+    var rawLines: [String] = []
+    var rawCharacterCount = 0
 
     for try await line in bytes.lines {
       try Task.checkCancellation()
-      guard line.hasPrefix("data:") else { continue }
+      guard line.hasPrefix("data:") else {
+        appendRawLine(line, to: &rawLines, characterCount: &rawCharacterCount)
+        continue
+      }
       let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
       if payload == "[DONE]" { break }
       guard let data = payload.data(using: .utf8) else { continue }
-      let root = try decodeRoot(data)
+      guard let root = try? decodeRoot(data) else {
+        appendRawLine(String(payload), to: &rawLines, characterCount: &rawCharacterCount)
+        continue
+      }
       if let message = providerError(in: root) {
         throw OpenAICompatibleProviderError.providerFailure(message)
       }
@@ -301,6 +343,14 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
       guard let accumulator = toolCalls[index] else { return nil }
       return try accumulator.toolCall(index: index, resolver: resolver)
     }
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      completedCalls.isEmpty,
+      !rawLines.isEmpty,
+      let data = rawLines.joined(separator: "\n").data(using: .utf8),
+      let fallback = try? await decodedResponse(data, resolver: resolver, emit: emit)
+    {
+      return fallback
+    }
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !completedCalls.isEmpty
     else {
       throw OpenAICompatibleProviderError.emptyResponse
@@ -313,6 +363,18 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
       message: AgentMessage(role: .assistant, content: parts),
       usage: usage,
       stopReason: completedCalls.isEmpty ? stopReason : .toolCall)
+  }
+
+  private func appendRawLine(
+    _ line: String,
+    to lines: inout [String],
+    characterCount: inout Int
+  ) {
+    guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      characterCount < 32_000
+    else { return }
+    characterCount += line.count + (lines.isEmpty ? 0 : 1)
+    lines.append(line)
   }
 
   private func openAIMessages(

@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import MaiCore
 
 enum LongRunningOperationDecision: Sendable {
   case interrupt
@@ -1131,7 +1132,8 @@ enum AppleFoundationProvider {
       inputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: promptCharacterCount),
       userInputTokens: request.userInputTokens,
       outputTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
-      receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
+      receivedTextTokens: GenerationStats.estimatedTokenCount(
+        forCharacterCount: outputCharacterCount),
       promptSeconds: 0,
       generationSeconds: max(0, Date().timeIntervalSince(requestStart)),
       firstTokenSeconds: firstTokenSeconds,
@@ -1349,44 +1351,6 @@ struct OpenAIMessageToolCall: Encodable, Sendable {
 struct OpenAIMessageToolCallFunction: Encodable, Sendable {
   var name: String
   var arguments: String
-}
-
-private struct OpenAIChatRequest: Encodable {
-  var model: String
-  var messages: [OpenAIMessage]
-  var stream: Bool
-  var tools: [OpenAITool]?
-  var reasoningLevel: ReasoningLevel
-  var endpoint: OpenAIEndpoint
-  var includeStreamUsage: Bool = false
-
-  enum CodingKeys: String, CodingKey {
-    case model, messages, stream, tools
-    case streamOptions = "stream_options"
-  }
-
-  private struct StreamOptions: Encodable {
-    var includeUsage: Bool
-
-    enum CodingKeys: String, CodingKey {
-      case includeUsage = "include_usage"
-    }
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(model, forKey: .model)
-    try container.encode(messages, forKey: .messages)
-    try container.encode(stream, forKey: .stream)
-    if stream && includeStreamUsage {
-      try container.encode(StreamOptions(includeUsage: true), forKey: .streamOptions)
-    }
-    try container.encodeIfPresent(tools, forKey: .tools)
-
-    let payload = ReasoningCompatibility.payload(
-      level: reasoningLevel, model: model, endpoint: endpoint)
-    try payload.encode(to: encoder)
-  }
 }
 
 private struct OpenAIReasoningConfig: Encodable {
@@ -1766,143 +1730,6 @@ struct DynamicCodingKey: CodingKey {
   }
 }
 
-private struct OpenAIUsage: Decodable {
-  struct PromptTokensDetails: Decodable {
-    var cachedTokens: Int?
-
-    enum CodingKeys: String, CodingKey {
-      case cachedTokens = "cached_tokens"
-    }
-  }
-
-  struct CompletionTokensDetails: Decodable {
-    var reasoningTokens: Int?
-
-    enum CodingKeys: String, CodingKey {
-      case reasoningTokens = "reasoning_tokens"
-    }
-  }
-
-  var promptTokens: Int?
-  var completionTokens: Int?
-  var promptTokensDetails: PromptTokensDetails?
-  var completionTokensDetails: CompletionTokensDetails?
-
-  enum CodingKeys: String, CodingKey {
-    case promptTokens = "prompt_tokens"
-    case completionTokens = "completion_tokens"
-    case promptTokensDetails = "prompt_tokens_details"
-    case completionTokensDetails = "completion_tokens_details"
-  }
-}
-
-private struct OpenAIChatResponse: Decodable {
-  struct Choice: Decodable {
-    var message: OpenAIChoicePayload?
-    var text: String?
-  }
-
-  var choices: [Choice]
-  var outputText: String?
-  var usage: OpenAIUsage?
-
-  enum CodingKeys: String, CodingKey {
-    case choices
-    case usage
-    case outputText = "output_text"
-  }
-}
-
-struct OpenAIToolCall: Decodable, Sendable {
-  struct Function: Decodable, Sendable {
-    var name: String?
-    var arguments: String?
-  }
-  var id: String?
-  var type: String?
-  var function: Function?
-}
-
-private struct OpenAIDecodedChoice<ToolCall: Decodable>: Decodable {
-  var content: OpenAIContent?
-  var reasoningContent: String?
-  var toolCalls: [ToolCall]?
-
-  enum CodingKeys: String, CodingKey {
-    case content
-    case reasoningContent = "reasoning_content"
-    case reasoning
-    case toolCalls = "tool_calls"
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    content = try? c.decode(OpenAIContent.self, forKey: .content)
-    reasoningContent =
-      (try? c.decode(String.self, forKey: .reasoningContent))
-      ?? (try? c.decode(String.self, forKey: .reasoning))
-    toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
-  }
-}
-
-private typealias OpenAIChoicePayload = OpenAIDecodedChoice<OpenAIToolCall>
-private typealias OpenAIStreamDelta = OpenAIDecodedChoice<DeltaToolCall>
-
-private struct OpenAIStreamChunk: Decodable {
-  struct Choice: Decodable {
-    var delta: OpenAIStreamDelta?
-    var message: OpenAIChoicePayload?
-    var text: String?
-  }
-
-  var choices: [Choice]
-  var usage: OpenAIUsage?
-
-  enum CodingKeys: String, CodingKey {
-    case choices, usage
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    // The final usage-only chunk from some providers omits `choices` entirely.
-    choices = (try? c.decode([Choice].self, forKey: .choices)) ?? []
-    usage = try? c.decode(OpenAIUsage.self, forKey: .usage)
-  }
-}
-
-struct DeltaToolCall: Decodable, Sendable {
-  struct Function: Decodable, Sendable {
-    var name: String?
-    var arguments: String?
-  }
-  var index: Int?
-  var id: String?
-  var type: String?
-  var function: Function?
-}
-
-private struct OpenAIContent: Decodable {
-  struct Part: Decodable {
-    var text: String?
-    var content: String?
-  }
-
-  var text: String
-
-  init(from decoder: Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    if container.decodeNil() {
-      text = ""
-    } else if let string = try? container.decode(String.self) {
-      text = string
-    } else if let parts = try? container.decode([Part].self) {
-      text = parts.compactMap { $0.text ?? $0.content }.joined(separator: "\n")
-    } else {
-      text = ""
-    }
-  }
-}
-
 private struct OpenAIErrorResponse: Decodable {
   struct APIError: Decodable {
     var message: String?
@@ -1911,41 +1738,6 @@ private struct OpenAIErrorResponse: Decodable {
   }
 
   var error: APIError
-}
-
-private struct OpenAIModelsResponse: Decodable {
-  struct Architecture: Decodable {
-    var inputModalities: [String]?
-    var outputModalities: [String]?
-    var modality: String?
-
-    enum CodingKeys: String, CodingKey {
-      case inputModalities = "input_modalities"
-      case outputModalities = "output_modalities"
-      case modality
-    }
-  }
-
-  struct Model: Decodable {
-    var id: String
-    var architecture: Architecture?
-
-    // Returns true/false when the response describes input modalities; nil when
-    // the provider doesn't expose that info (we then fall back to heuristics).
-    var supportsImageInput: Bool? {
-      if let modalities = architecture?.inputModalities {
-        return modalities.contains { $0.lowercased() == "image" }
-      }
-      if let modality = architecture?.modality?.lowercased() {
-        // OpenRouter-style strings like "text+image->text".
-        let inputs = modality.split(separator: "-").first.map(String.init) ?? modality
-        return inputs.contains("image")
-      }
-      return nil
-    }
-  }
-
-  var data: [Model]
 }
 
 private struct OpenAIVoicesResponse: Decodable {
@@ -1986,21 +1778,27 @@ private struct OpenAISpeechRequest: Encodable {
 
 enum OpenAICompatibleProvider {
   static func fetchModels(endpoint: OpenAIEndpoint) async throws -> [String] {
-    let request = try endpointRequest(endpoint: endpoint, url: modelsURL(from: endpoint.baseURL))
-    let (data, response) = try await data(for: request)
-    try validateHTTPResponse(response, data: data)
-    let decoded = try JSONDecoder().decode(OpenAIModelsResponse.self, from: data)
+    let provider = try coreProvider(endpoint: endpoint)
+    let decoded: [MaiCore.ModelDescriptor]
+    do {
+      decoded = try await provider.availableModels()
+    } catch {
+      throw mapCoreError(error)
+    }
     // Refresh learned capabilities for this endpoint: drop stale entries and
     // record any modality info the provider chose to expose (OpenRouter does;
     // most others don't, in which case we keep relying on runtime learning).
     ModelCapabilityCache.shared.resetEndpoint(endpoint.id)
-    for model in decoded.data {
-      if let supportsImage = model.supportsImageInput {
+    for model in decoded {
+      if model.inputModalities != nil {
         ModelCapabilityCache.shared.record(
-          supportsImageInput: supportsImage, endpointID: endpoint.id, model: model.id)
+          supportsImageInput: model.capabilities.contains(.imageInput),
+          endpointID: endpoint.id,
+          model: model.id)
       }
     }
-    let models = decoded.data
+    let models =
+      decoded
       .map(\.id)
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .sorted()
@@ -2088,24 +1886,16 @@ enum OpenAICompatibleProvider {
         toolPromptInContext: request.toolPromptInContext,
         messageLimitOverride: request.messageLimitOverride
       )
-      let body = try JSONEncoder().encode(
-        OpenAIChatRequest(
-          model: model,
-          messages: messages,
-          stream: request.conversation.usesStreaming,
-          tools: request.nativeTools,
-          reasoningLevel: request.conversation.reasoningLevel,
-          endpoint: endpoint,
-          includeStreamUsage: includeStreamUsage
-        )
-      )
-      var urlRequest = try endpointRequest(
+      let coreMessages = try messages.map(coreMessage)
+      let coreTools = try (request.nativeTools ?? []).map(coreTool)
+      let coreOptions = try coreGenerationOptions(
+        level: request.conversation.reasoningLevel,
+        model: model,
         endpoint: endpoint,
-        url: chatCompletionsURL(from: endpoint.baseURL),
-        method: "POST",
-        contentType: "application/json",
-        body: body)
-      urlRequest.timeoutInterval = request.transportTimeoutInterval
+        includeStreamUsage: includeStreamUsage)
+      let provider = try coreProvider(
+        endpoint: endpoint,
+        requestTimeout: request.transportTimeoutInterval)
 
       let usageContext = UsageRecordingContext(
         providerLabel: endpoint.name,
@@ -2114,14 +1904,54 @@ enum OpenAICompatibleProvider {
         userInputTokens: request.userInputTokens,
         imageInputCount: messages.reduce(0) { $0 + $1.imageInputCount },
         fallbackInputTokenEstimate: GenerationStats.estimatedTokenCount(
-          forCharacterCount: body.count))
-
-      if request.conversation.usesStreaming {
-        return try await stream(
-          request: urlRequest, usageContext: usageContext, onUpdate: onUpdate)
+          forCharacterCount: coreMessages.reduce(0) { $0 + $1.text.count }))
+      let accumulator = await MainActor.run {
+        CoreProviderEventAccumulator(onUpdate: onUpdate)
       }
-      return try await completeOnce(
-        request: urlRequest, usageContext: usageContext, onUpdate: onUpdate)
+      let response: MaiCore.ProviderResponse
+      do {
+        response = try await provider.complete(
+          MaiCore.ProviderRequest(
+            model: model,
+            messages: coreMessages,
+            tools: coreTools,
+            options: coreOptions,
+            stream: request.conversation.usesStreaming)
+        ) { event in
+          await accumulator.consume(event)
+        }
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        throw mapCoreError(error)
+      }
+
+      let toolCallText = response.message.toolCalls.map { call in
+        AgentTooling.makeNativeToolCall(
+          id: call.id,
+          name: call.name,
+          rawArguments: call.arguments.compactJSONString
+        ).textBlock
+      }.filter { !$0.isEmpty }.joined(separator: "\n")
+      let visibleText: String
+      if toolCallText.isEmpty {
+        visibleText = response.message.text
+      } else if response.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        visibleText = toolCallText
+      } else {
+        visibleText = "\(response.message.text)\n\n\(toolCallText)"
+      }
+      let content = responseText(content: visibleText, reasoning: response.reasoning)
+      guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ChatProviderError.emptyResponse
+      }
+      let timing = await accumulator.finish(with: content)
+      await recordUsage(
+        context: usageContext,
+        usage: response.usage,
+        outputCharacterCount: response.message.text.count,
+        timing: timing)
+      return content
     }
 
     do {
@@ -2139,6 +1969,139 @@ enum OpenAICompatibleProvider {
       return message.lowercased().contains("stream_options")
     default:
       return false
+    }
+  }
+
+  private static func coreProvider(
+    endpoint: OpenAIEndpoint,
+    requestTimeout: TimeInterval = 600
+  ) throws -> MaiCore.OpenAICompatibleProvider {
+    guard let baseURL = URL(string: endpoint.baseURL) else {
+      throw ChatProviderError.invalidEndpoint(endpoint.baseURL)
+    }
+    return MaiCore.OpenAICompatibleProvider(
+      configuration: .init(
+        id: MaiCore.ProviderID(endpoint.id.uuidString),
+        displayName: endpoint.name,
+        baseURL: baseURL,
+        apiKey: endpoint.apiKey,
+        requestTimeout: requestTimeout))
+  }
+
+  private static func coreMessage(_ message: OpenAIMessage) throws -> MaiCore.AgentMessage {
+    let role = MaiCore.AgentRole(rawValue: message.role) ?? .user
+    if role == .tool {
+      guard let callID = message.toolCallID, !callID.isEmpty else {
+        throw ChatProviderError.providerRequestFailed(
+          "A tool result is missing its tool-call identifier.")
+      }
+      return MaiCore.AgentMessage(
+        role: .tool,
+        content: [
+          .toolResult(
+            MaiCore.ToolResult(callID: callID, text: message.textContent))
+        ])
+    }
+
+    var parts: [MaiCore.ContentPart] = []
+    switch message.content {
+    case .text(let text):
+      parts.append(.text(text))
+    case .parts(let contentParts):
+      for part in contentParts {
+        if let text = part.text {
+          parts.append(.text(text))
+        }
+        if let image = part.imageURL {
+          guard let url = URL(string: image.url) else {
+            throw ChatProviderError.providerRequestFailed("An image attachment has an invalid URL.")
+          }
+          let detail: MaiCore.ImageDetail
+          switch image.detail?.lowercased() {
+          case "low": detail = .low
+          case "high": detail = .high
+          default: detail = .automatic
+          }
+          parts.append(
+            .image(
+              MaiCore.ImageContent(
+                source: .url(url),
+                mimeType: imageMIMEType(from: image.url),
+                detail: detail)))
+        }
+      }
+    case nil:
+      break
+    }
+    if let reasoning = message.reasoningContent, !reasoning.isEmpty {
+      parts.append(.reasoning(reasoning))
+    }
+    for call in message.toolCalls ?? [] {
+      let raw = call.function.arguments.isEmpty ? "{}" : call.function.arguments
+      guard let data = raw.data(using: .utf8),
+        let arguments = try? JSONDecoder().decode(MaiCore.JSONValue.self, from: data),
+        arguments.objectValue != nil
+      else {
+        throw ChatProviderError.providerRequestFailed(
+          "Tool '\(call.function.name)' has invalid JSON arguments.")
+      }
+      parts.append(
+        .toolCall(
+          MaiCore.ToolCall(
+            id: call.id,
+            name: call.function.name,
+            arguments: arguments)))
+    }
+    return MaiCore.AgentMessage(role: role, content: parts)
+  }
+
+  private static func coreTool(_ tool: OpenAITool) throws -> MaiCore.ToolDefinition {
+    let encoded = try JSONEncoder().encode(tool.function.parameters)
+    let schema = try JSONDecoder().decode(MaiCore.JSONValue.self, from: encoded)
+    return MaiCore.ToolDefinition(
+      name: tool.function.name,
+      providerName: tool.function.name,
+      description: tool.function.description,
+      inputSchema: schema)
+  }
+
+  private static func coreGenerationOptions(
+    level: ReasoningLevel,
+    model: String,
+    endpoint: OpenAIEndpoint,
+    includeStreamUsage: Bool
+  ) throws -> MaiCore.GenerationOptions {
+    let encoded = try JSONEncoder().encode(
+      ReasoningCompatibility.payload(level: level, model: model, endpoint: endpoint))
+    let additional =
+      try JSONDecoder().decode(MaiCore.JSONValue.self, from: encoded).objectValue ?? [:]
+    return MaiCore.GenerationOptions(
+      includeStreamUsage: includeStreamUsage,
+      additional: additional)
+  }
+
+  private static func imageMIMEType(from value: String) -> String {
+    guard value.hasPrefix("data:"), let separator = value.firstIndex(of: ";") else {
+      return "image/jpeg"
+    }
+    let mime = String(value[value.index(value.startIndex, offsetBy: 5)..<separator])
+    return mime.isEmpty ? "image/jpeg" : mime
+  }
+
+  private static func mapCoreError(_ error: Error) -> ChatProviderError {
+    guard let error = error as? MaiCore.OpenAICompatibleProviderError else {
+      return .providerRequestFailed(error.localizedDescription)
+    }
+    switch error {
+    case .invalidBaseURL(let value):
+      return .invalidEndpoint(value)
+    case .emptyResponse:
+      return .emptyResponse
+    case .httpError(let statusCode, let message):
+      return .providerHTTPError(statusCode: statusCode, message: message)
+    case .missingModel, .invalidResponse, .providerFailure, .invalidToolArguments,
+      .unsupportedContent:
+      return .providerRequestFailed(error.localizedDescription)
     }
   }
 
@@ -2180,10 +2143,6 @@ enum OpenAICompatibleProvider {
     selectedEndpoint(for: request.conversation, settings: request.settings)
   }
 
-  private static func modelsURL(from baseURL: String) throws -> URL {
-    try endpointURL(from: baseURL, appending: ["models"])
-  }
-
   private static func voicesURL(from baseURL: String) throws -> URL {
     try endpointURL(from: baseURL, appending: ["voices"])
   }
@@ -2213,10 +2172,6 @@ enum OpenAICompatibleProvider {
       throw ChatProviderError.invalidEndpoint(baseURL)
     }
     return url
-  }
-
-  private static func chatCompletionsURL(from baseURL: String) throws -> URL {
-    try endpointURL(from: baseURL, appending: ["chat", "completions"])
   }
 
   private static func endpointRequest(
@@ -2261,9 +2216,56 @@ enum OpenAICompatibleProvider {
     var fallbackInputTokenEstimate: Int
   }
 
+  @MainActor
+  private final class CoreProviderEventAccumulator {
+    private let onUpdate: @MainActor (String) -> Void
+    private var content = ""
+    private var reasoning = ""
+    private var timing = StreamTimingObservation(requestStart: Date())
+    private var lastEmit = Date(timeIntervalSince1970: 0)
+    private var dirty = false
+
+    init(onUpdate: @escaping @MainActor (String) -> Void) {
+      self.onUpdate = onUpdate
+    }
+
+    func consume(_ event: MaiCore.ProviderEvent) {
+      switch event {
+      case .textDelta(let delta):
+        content += delta
+        dirty = true
+        timing.noteTokenChunk()
+      case .reasoningDelta(let delta):
+        reasoning += delta
+        dirty = true
+        timing.noteTokenChunk()
+      case .toolCallDelta:
+        timing.noteTokenChunk()
+      case .usage:
+        break
+      }
+      let now = Date()
+      if dirty, now.timeIntervalSince(lastEmit) >= 0.04 {
+        dirty = false
+        lastEmit = now
+        onUpdate(OpenAICompatibleProvider.responseText(content: content, reasoning: reasoning))
+      }
+    }
+
+    func finish(with finalContent: String) -> StreamTimingObservation {
+      if dirty
+        || OpenAICompatibleProvider.responseText(content: content, reasoning: reasoning)
+          != finalContent
+      {
+        onUpdate(finalContent)
+      }
+      return timing
+    }
+  }
+
   private static func recordUsage(
     context: UsageRecordingContext,
-    usage: OpenAIUsage?,
+    usage: MaiCore.TokenUsage?,
     outputCharacterCount: Int,
     timing: StreamTimingObservation
   ) async {
@@ -2274,214 +2276,20 @@ enum OpenAICompatibleProvider {
     let stats = GenerationStats(
       providerLabel: context.providerLabel,
       modelID: context.modelID,
-      inputTokens: usage?.promptTokens ?? context.fallbackInputTokenEstimate,
+      inputTokens: usage?.inputTokens ?? context.fallbackInputTokenEstimate,
       userInputTokens: context.userInputTokens,
-      outputTokens: usage?.completionTokens
+      outputTokens: usage?.outputTokens
         ?? GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
-      receivedTextTokens: GenerationStats.estimatedTokenCount(forCharacterCount: outputCharacterCount),
-      reasoningTokens: usage?.completionTokensDetails?.reasoningTokens,
+      receivedTextTokens: GenerationStats.estimatedTokenCount(
+        forCharacterCount: outputCharacterCount),
+      reasoningTokens: usage?.reasoningTokens,
       imageInputs: context.imageInputCount,
-      cachedTokens: usage?.promptTokensDetails?.cachedTokens ?? 0,
+      cachedTokens: usage?.cachedTokens ?? 0,
       promptSeconds: resolved.promptSeconds,
       generationSeconds: resolved.generationSeconds,
       firstTokenSeconds: resolved.firstTokenSeconds,
-      tokensEstimated: usage?.completionTokens == nil)
+      tokensEstimated: usage == nil)
     await UsageStatsStore.record(stats, assistantMessageID: context.assistantMessageID)
-  }
-
-  private static func completeOnce(
-    request: URLRequest,
-    usageContext: UsageRecordingContext,
-    onUpdate: @escaping @MainActor (String) -> Void
-  ) async throws -> String {
-    let requestStart = Date()
-    let (data, response) = try await data(for: request)
-    try validateHTTPResponse(response, data: data)
-    let content = (try? decodeChatResponseText(from: data)) ?? ""
-    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw emptyResponseError(rawData: data)
-    }
-    await recordUsage(
-      context: usageContext,
-      usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
-      outputCharacterCount: content.count,
-      timing: StreamTimingObservation(requestStart: requestStart))
-    await MainActor.run { onUpdate(content) }
-    return content
-  }
-
-  private static func stream(
-    request: URLRequest,
-    usageContext: UsageRecordingContext,
-    onUpdate: @escaping @MainActor (String) -> Void
-  ) async throws -> String {
-    var timing = StreamTimingObservation(requestStart: Date())
-    var latestUsage: OpenAIUsage?
-    let delegate = ProviderRedirectDelegate(originalRequest: request)
-    let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: delegate)
-    let statusCode = (response as? HTTPURLResponse)?.statusCode
-    var accumulated = ""
-    var reasoning = ""
-    var rawLines = RawLineBuffer()
-    var streamTrace: [String] = []
-    let traceCap = 80
-    var lastEmit = Date(timeIntervalSince1970: 0)
-    let throttleInterval: TimeInterval = 0.04
-    var dirty = false
-    var toolCallAcc: [Int: (id: String?, name: String?, args: String)] = [:]
-    var fullMessageToolCalls: [OpenAIToolCall] = []
-    for try await line in bytes.lines {
-      if streamTrace.count < traceCap {
-        streamTrace.append(line)
-      }
-      if let statusCode, !(200..<300).contains(statusCode) {
-        rawLines.append(line)
-        continue
-      }
-      guard line.hasPrefix("data:") else {
-        rawLines.append(line)
-        continue
-      }
-      let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-      if payload == "[DONE]" { break }
-      guard let data = payload.data(using: .utf8) else { continue }
-
-      if let errorPayload = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data),
-        let message = errorPayload.error.message?
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !message.isEmpty
-      {
-        let type = errorPayload.error.type.map { " (\($0))" } ?? ""
-        throw ChatProviderError.providerRequestFailed("\(message)\(type)")
-      }
-
-      guard let chunk = try? JSONDecoder().decode(OpenAIStreamChunk.self, from: data) else {
-        rawLines.append(line)
-        continue
-      }
-      if let usage = chunk.usage {
-        latestUsage = usage
-      }
-      if let delta = streamDeltaText(from: chunk), !delta.isEmpty {
-        accumulated += delta
-        dirty = true
-        timing.noteTokenChunk()
-      }
-      if let reasoningDelta = streamReasoningText(from: chunk), !reasoningDelta.isEmpty {
-        reasoning += reasoningDelta
-        dirty = true
-        timing.noteTokenChunk()
-      }
-      if let deltas = chunk.choices.first?.delta?.toolCalls, !deltas.isEmpty {
-        // Tool-call arguments stream token by token just like content does.
-        timing.noteTokenChunk()
-        for tc in deltas {
-          let idx = tc.index ?? 0
-          var entry = toolCallAcc[idx] ?? (nil, nil, "")
-          if let id = tc.id { entry.id = id }
-          if let name = tc.function?.name { entry.name = name }
-          if let a = tc.function?.arguments { entry.args += a }
-          toolCallAcc[idx] = entry
-        }
-      }
-      if let messageCalls = chunk.choices.first?.message?.toolCalls {
-        fullMessageToolCalls = messageCalls
-      }
-      if dirty {
-        let now = Date()
-        if now.timeIntervalSince(lastEmit) >= throttleInterval {
-          lastEmit = now
-          dirty = false
-          let snapshot = responseText(content: accumulated, reasoning: reasoning)
-          await MainActor.run { onUpdate(snapshot) }
-        }
-      }
-    }
-    let toolCallText =
-      fullMessageToolCalls.isEmpty
-      ? joinedToolCallBlocks(AgentTooling.nativeToolCalls(from: toolCallAcc).map(\.textBlock))
-      : synthesizeToolCallBlocks(from: fullMessageToolCalls)
-    if !toolCallText.isEmpty {
-      accumulated =
-        accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        ? toolCallText
-        : "\(accumulated)\n\n\(toolCallText)"
-      dirty = true
-    }
-
-    if dirty {
-      let snapshot = responseText(content: accumulated, reasoning: reasoning)
-      await MainActor.run { onUpdate(snapshot) }
-    }
-
-    let rawBody = rawLines.body
-    if let statusCode, !(200..<300).contains(statusCode) {
-      throw providerHTTPError(statusCode: statusCode, data: rawBody.data(using: .utf8) ?? Data())
-    }
-    if accumulated.isEmpty, !rawBody.isEmpty,
-      let data = rawBody.data(using: .utf8),
-      let fallback = try? decodeChatResponseText(from: data),
-      !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    {
-      await recordUsage(
-        context: usageContext,
-        usage: (try? JSONDecoder().decode(OpenAIChatResponse.self, from: data))?.usage,
-        outputCharacterCount: fallback.count,
-        timing: StreamTimingObservation(requestStart: timing.requestStart))
-      await MainActor.run { onUpdate(fallback) }
-      return fallback
-    }
-    let content = responseText(content: accumulated, reasoning: reasoning)
-    if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      let trace = streamTrace.suffix(40).joined(separator: "\n")
-      throw emptyResponseError(streamTrace: trace, rawBody: rawBody)
-    }
-    await recordUsage(
-      context: usageContext,
-      usage: latestUsage,
-      outputCharacterCount: accumulated.count,
-      timing: timing)
-    return content
-  }
-
-  private static func emptyResponseError(rawData: Data) -> ChatProviderError {
-    let body =
-      String(data: rawData, encoding: .utf8)?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if body.isEmpty {
-      return .emptyResponse
-    }
-    let snippet = body.count > 800 ? String(body.prefix(800)) + "…" : body
-    return .providerRequestFailed(
-      "Provider returned no readable text. Raw response:\n\(snippet)")
-  }
-
-  private static func emptyResponseError(streamTrace: String, rawBody: String)
-    -> ChatProviderError
-  {
-    let stoppedEmpty =
-      streamTrace.contains("\"finish_reason\":\"stop\"")
-      && streamTrace.contains("\"content\":\"\"")
-      && !streamTrace.contains("\"tool_calls\"")
-    var pieces: [String] = []
-    if stoppedEmpty {
-      pieces.append(
-        "The model stopped without producing any text or tool calls. If you're using Native tool calling, the provider may not fully support it for this model. Switch Settings → Inference → Advanced Options → Tool Calling to Text and try again."
-      )
-    }
-    if !streamTrace.isEmpty {
-      let trimmed =
-        streamTrace.count > 1200 ? String(streamTrace.prefix(1200)) + "…" : streamTrace
-      pieces.append("Last stream lines:\n\(trimmed)")
-    }
-    if !rawBody.isEmpty {
-      let trimmed = rawBody.count > 600 ? String(rawBody.prefix(600)) + "…" : rawBody
-      pieces.append("Non-data lines:\n\(trimmed)")
-    }
-    if pieces.isEmpty {
-      return .emptyResponse
-    }
-    return .providerRequestFailed(pieces.joined(separator: "\n\n"))
   }
 
   private static func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
@@ -2508,56 +2316,6 @@ enum OpenAICompatibleProvider {
     return .providerHTTPError(statusCode: statusCode, message: String(body.prefix(500)))
   }
 
-  private static func decodeChatResponseText(from data: Data) throws -> String {
-    let response = try JSONDecoder().decode(OpenAIChatResponse.self, from: data)
-    let choice = response.choices.first
-    let baseContent =
-      choice?.message?.content?.text
-      ?? choice?.text
-      ?? response.outputText
-      ?? ""
-    let reasoning = choice?.message?.reasoningContent ?? ""
-    let toolCallText = synthesizeToolCallBlocks(from: choice?.message?.toolCalls)
-    let combined: String
-    if toolCallText.isEmpty {
-      combined = baseContent
-    } else if baseContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      combined = toolCallText
-    } else {
-      combined = "\(baseContent)\n\n\(toolCallText)"
-    }
-    return responseText(content: combined, reasoning: reasoning)
-  }
-
-  static func synthesizeToolCallBlocks(from calls: [OpenAIToolCall]?) -> String {
-    guard let calls, !calls.isEmpty else { return "" }
-    return joinedToolCallBlocks(
-      calls.compactMap { call -> String? in
-        guard let name = call.function?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !name.isEmpty
-        else { return nil }
-        return AgentTooling.makeNativeToolCall(
-          id: call.id, name: name, rawArguments: call.function?.arguments ?? ""
-        ).textBlock
-      })
-  }
-
-  private static func joinedToolCallBlocks(_ blocks: [String]) -> String {
-    blocks.filter { !$0.isEmpty }.joined(separator: "\n")
-  }
-
-  private static func streamDeltaText(from chunk: OpenAIStreamChunk) -> String? {
-    let choice = chunk.choices.first
-    return choice?.delta?.content?.text
-      ?? choice?.message?.content?.text
-      ?? choice?.text
-  }
-
-  private static func streamReasoningText(from chunk: OpenAIStreamChunk) -> String? {
-    let choice = chunk.choices.first
-    return choice?.delta?.reasoningContent ?? choice?.message?.reasoningContent
-  }
-
   private static func responseText(content: String, reasoning: String) -> String {
     let visible = content.trimmingCharacters(in: .whitespacesAndNewlines)
     let hidden = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2570,21 +2328,6 @@ enum OpenAICompatibleProvider {
     return "<think>\n\(hidden)\n</think>\n\n\(visible)"
   }
 
-  private struct RawLineBuffer {
-    private var lines: [String] = []
-    private var count = 0
-
-    var body: String {
-      lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    mutating func append(_ line: String) {
-      guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-      guard count < 32_000 else { return }
-      count += line.count + (lines.isEmpty ? 0 : 1)
-      lines.append(line)
-    }
-  }
 }
 
 final class ProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

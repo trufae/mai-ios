@@ -1,7 +1,60 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 
 @testable import MaiCore
+
+@Test("Image attachment modes resize images and preserve their metadata")
+func imageAttachmentResize() async throws {
+  let original = try pngData(width: 200, height: 100)
+  let part = try await ImageAttachmentImporter.content(
+    data: original,
+    mimeType: "image/png",
+    filename: "fixture.png",
+    mode: .tiny)
+
+  guard case .image(let image) = part else {
+    Issue.record("Expected resized image content")
+    return
+  }
+  #expect(image.mimeType == "image/jpeg")
+  #expect(image.name == "fixture.jpg")
+  #expect(image.width == 100)
+  #expect(image.height == 50)
+  guard case .data(let resized) = image.source else {
+    Issue.record("Expected inline resized image data")
+    return
+  }
+  #expect(resized != original)
+}
+
+@Test("OCR image mode delegates to a separate provider and returns a Markdown file")
+func imageAttachmentOCR() async throws {
+  let part = try await ImageAttachmentImporter.content(
+    data: Data([0x01, 0x02]),
+    mimeType: "image/jpeg",
+    filename: "receipt.jpg",
+    mode: .ocr,
+    ocrProvider: FixtureOCRProvider())
+
+  guard case .file(let file) = part else {
+    Issue.record("Expected OCR Markdown file content")
+    return
+  }
+  #expect(file.name == "receipt.md")
+  #expect(file.mimeType == "text/markdown")
+  #expect(file.text == "# Recognized\n\nHello from OCR")
+
+  await #expect(throws: ImageAttachmentImportError.ocrProviderRequired) {
+    try await ImageAttachmentImporter.content(
+      data: Data([0x01]),
+      mimeType: "image/jpeg",
+      filename: "missing.jpg",
+      mode: .ocr)
+  }
+}
 
 @Test("Structured messages preserve multimodal and tool content")
 func structuredMessageRoundTrip() throws {
@@ -236,7 +289,11 @@ func openAIModelCatalog() async throws {
           "object": "list",
           "data": [
             {"id":"model-z","owned_by":"vendor"},
-            {"id":"model-a","name":"Model A"}
+            {
+              "id":"model-a",
+              "name":"Model A",
+              "architecture":{"input_modalities":["text","image","audio"]}
+            }
           ]
         }
         """)
@@ -253,12 +310,48 @@ func openAIModelCatalog() async throws {
 
   #expect(models.map(\.id) == ["model-a", "model-z"])
   #expect(models.first?.displayName == "Model A")
+  #expect(models.first?.inputModalities == ["text", "image", "audio"])
+  #expect(models.first?.capabilities.contains(.imageInput) == true)
+  #expect(models.first?.capabilities.contains(.audioInput) == true)
   #expect(models.last?.ownedBy == "vendor")
   let request = try #require(recorder.request)
   #expect(request.httpMethod == "GET")
   #expect(request.url?.absoluteString == "https://models.example.test/v1/models")
   #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
   #expect(request.value(forHTTPHeaderField: "X-Workspace") == "test")
+}
+
+@Test("Streaming requests accept providers that return one-shot JSON")
+func openAIStreamingJSONFallback() async throws {
+  StubURLProtocol.install(forHost: "buffered.example.test") { request in
+    try httpResponse(
+      request,
+      contentType: "application/json",
+      body: """
+        {
+          "choices": [{
+            "message": {"content": "buffered response"},
+            "finish_reason": "stop"
+          }],
+          "usage": {"prompt_tokens": 2, "completion_tokens": 3}
+        }
+        """)
+  }
+  defer { StubURLProtocol.reset(host: "buffered.example.test") }
+
+  let provider = OpenAICompatibleProvider(
+    configuration: .init(
+      baseURL: try #require(URL(string: "https://buffered.example.test/v1"))),
+    session: stubSession())
+  let response = try await provider.complete(
+    ProviderRequest(
+      model: "test-model",
+      messages: [.user("hello")],
+      stream: true))
+
+  #expect(response.message.text == "buffered response")
+  #expect(response.usage == TokenUsage(inputTokens: 2, outputTokens: 3))
+  #expect(response.stopReason == .stop)
 }
 
 @Test("OpenAI-compatible provider accumulates streamed tool-call fragments")
@@ -627,6 +720,38 @@ private func objectSchema(required: [String]) -> JSONValue {
       Dictionary(uniqueKeysWithValues: required.map { ($0, .object(["type": .string("string")])) })),
     "required": .array(required.map(JSONValue.string)),
   ])
+}
+
+private struct FixtureOCRProvider: OCRProvider {
+  let descriptor = OCRProviderDescriptor(id: "fixture", displayName: "Fixture OCR")
+
+  func recognize(_ request: OCRRequest) async throws -> OCRResult {
+    #expect(request.filename == "receipt.jpg")
+    #expect(request.mimeType == "image/jpeg")
+    return OCRResult(markdown: "# Recognized\n\nHello from OCR")
+  }
+}
+
+private func pngData(width: Int, height: Int) throws -> Data {
+  let colorSpace = CGColorSpaceCreateDeviceRGB()
+  let context = try #require(
+    CGContext(
+      data: nil,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: width * 4,
+      space: colorSpace,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+  context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+  context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+  let image = try #require(context.makeImage())
+  let data = NSMutableData()
+  let destination = try #require(
+    CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil))
+  CGImageDestinationAddImage(destination, image, nil)
+  try #require(CGImageDestinationFinalize(destination))
+  return data as Data
 }
 
 private func stubSession() -> URLSession {

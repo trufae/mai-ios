@@ -626,13 +626,25 @@ private struct MaiCLI {
         )
       }
     case "/image":
-      guard !argument.isEmpty else {
-        await terminal.line("Usage: /image PATH")
+      let imageArguments = argument.split(
+        maxSplits: 1, whereSeparator: \Character.isWhitespace
+      ).map(String.init)
+      guard imageArguments.count == 2,
+        let mode = ImageAttachmentMode(rawValue: imageArguments[0].lowercased())
+      else {
+        await terminal.line("Usage: /image <tiny|small|medium|big|full|ocr> PATH")
         return false
       }
       do {
-        session.pendingContent.append(try imageContent(path: argument))
-        await terminal.line("Image queued for the next message: \(argument)")
+        let path = imageArguments[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        session.pendingContent.append(try await imageContent(path: path, mode: mode))
+        if mode == .ocr {
+          let markdownName = (path as NSString).lastPathComponent
+          await terminal.line(
+            "OCR text queued as \((markdownName as NSString).deletingPathExtension).md")
+        } else {
+          await terminal.line("Image queued at \(mode.rawValue) size: \(path)")
+        }
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
@@ -850,6 +862,28 @@ private struct MaiCLI {
   }
 
   private static func imageContent(path: String) throws -> ContentPart {
+    let loaded = try loadImage(path: path)
+    return .image(
+      ImageContent(
+        source: .data(loaded.data),
+        mimeType: loaded.mimeType,
+        name: loaded.url.lastPathComponent))
+  }
+
+  private static func imageContent(
+    path: String,
+    mode: ImageAttachmentMode
+  ) async throws -> ContentPart {
+    let loaded = try loadImage(path: path)
+    return try await ImageAttachmentImporter.content(
+      data: loaded.data,
+      mimeType: loaded.mimeType,
+      filename: loaded.url.lastPathComponent,
+      mode: mode,
+      ocrProvider: mode == .ocr ? VisionOCRProvider() : nil)
+  }
+
+  private static func loadImage(path: String) throws -> (data: Data, url: URL, mimeType: String) {
     let expanded = NSString(string: path).expandingTildeInPath
     let url = URL(fileURLWithPath: expanded)
     guard let data = try? Data(contentsOf: url), !data.isEmpty else {
@@ -863,8 +897,7 @@ private struct MaiCLI {
     case "heic", "heif": mimeType = "image/heic"
     default: mimeType = "image/jpeg"
     }
-    return .image(
-      ImageContent(source: .data(data), mimeType: mimeType, name: url.lastPathComponent))
+    return (data, url, mimeType)
   }
 
   private static func objectSchema(
@@ -933,7 +966,7 @@ private struct MaiCLI {
     /agent ID           Select an agent and clear the conversation
     /tools              List tools available to the current agent
     /mcps               List connected MCP servers
-    /image PATH         Attach an image to the next message
+    /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
     /clear              Clear conversation history
     /exit               Exit the REPL
     """

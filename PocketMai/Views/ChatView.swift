@@ -1,3 +1,4 @@
+import MaiCore
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -9,12 +10,12 @@ private struct ConversationTimelineTimestamp: View {
 
   var body: some View {
     Text("\(label) \(ConversationDatePresentation.timestamp(date))")
-    .font(.caption2)
-    .foregroundStyle(.secondary)
-    .multilineTextAlignment(.center)
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 4)
-    .accessibilityElement(children: .combine)
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 4)
+      .accessibilityElement(children: .combine)
   }
 }
 
@@ -130,10 +131,14 @@ struct ChatView: View {
       .onChange(of: chatSearch.query) { _, _ in
         chatSearch.refresh()
       }
-      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
+      .onReceive(
+        NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+      ) {
         updateKeyboardOverlap(from: $0)
       }
-      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) {
+      .onReceive(
+        NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)
+      ) {
         updateKeyboardOverlap(from: $0)
       }
       .alert(
@@ -245,7 +250,8 @@ struct ChatView: View {
           .accessibilityLabel(
             hasUnreadConversations
               ? "Show conversations, unread messages"
-              : "Show conversations")
+              : "Show conversations"
+          )
           .help("Show conversations")
         }
         ToolbarItem(placement: .principal) {
@@ -628,7 +634,7 @@ struct ChatView: View {
           VStack(spacing: 14) {
             if !renderedMessages.isEmpty,
               let startedAt = conversation?.createdAt
-              ?? store.selectedConversationSummary?.createdAt
+                ?? store.selectedConversationSummary?.createdAt
             {
               ConversationTimelineTimestamp(label: "Chat Started", date: startedAt)
             }
@@ -656,7 +662,8 @@ struct ChatView: View {
                     toolSettings: currentToolSettings,
                     openAIEndpoints: store.settings.airplaneModeEnabled
                       ? [] : store.settings.openAIEndpoints,
-                    skipTechnicalContentInTTS: store.settings.conversation.skipTechnicalContentInTTS,
+                    skipTechnicalContentInTTS: store.settings.conversation
+                      .skipTechnicalContentInTTS,
                     appearance: store.settings.appearance,
                     renderMarkdown: store.settings.renderMarkdownInChat,
                     renderImages: store.settings.renderMarkdownImagesInChat,
@@ -678,7 +685,9 @@ struct ChatView: View {
                       : nil,
                     onTrimFromHere: { messagePendingTrimAndResubmit = message },
                     onRestartFresh: { messagePendingRestartFresh = message },
-                    onNewChatWithMessage: { Task { await store.startNewConversation(with: message) } },
+                    onNewChatWithMessage: {
+                      Task { await store.startNewConversation(with: message) }
+                    },
                     onSpeakFromHere: { speakFromHere(message) },
                     onReply: { reply in sendReply(reply) },
                     conversationCreatedAt: conversation?.createdAt
@@ -770,7 +779,7 @@ struct ChatView: View {
             if !renderedMessages.isEmpty,
               lastUpdatedVisibleConversationID == store.selectedConversationID,
               let updatedAt = conversation?.updatedAt
-              ?? store.selectedConversationSummary?.updatedAt
+                ?? store.selectedConversationSummary?.updatedAt
             {
               ConversationTimelineTimestamp(label: "Last Updated", date: updatedAt)
             }
@@ -989,11 +998,13 @@ struct ChatView: View {
     }
     if let destination = userMessageNavigationDestination,
       case .message(let id) = destination,
-      let index = ids.firstIndex(of: id) {
+      let index = ids.firstIndex(of: id)
+    {
       return (index + 1, ids.count)
     }
     if let nextID = userMessageNavigation.nextID,
-      let index = ids.firstIndex(of: nextID) {
+      let index = ids.firstIndex(of: nextID)
+    {
       return (index, ids.count)
     }
     return (ids.count, ids.count)
@@ -1793,7 +1804,8 @@ struct ChatView: View {
   }
 
   private func screenIsLandscape(fallbackSize: CGSize) -> Bool {
-    let screenSize = UIApplication.shared.connectedScenes
+    let screenSize =
+      UIApplication.shared.connectedScenes
       .compactMap { $0 as? UIWindowScene }
       .first { $0.activationState == .foregroundActive }?
       .screen
@@ -1842,7 +1854,8 @@ struct ChatView: View {
     else {
       return 0
     }
-    let screenMaxY = UIApplication.shared.openSessions
+    let screenMaxY =
+      UIApplication.shared.openSessions
       .compactMap { ($0.scene as? UIWindowScene)?.screen }
       .first { $0.bounds.intersects(frame) }?.bounds.maxY
       ?? frame.maxY
@@ -2309,7 +2322,7 @@ struct ReasoningLevelControl: View {
           .animation(.snappy, value: displayLevel)
       }
       sliderTrack
-      .accessibilityValue(displayLevel.displayName)
+        .accessibilityValue(displayLevel.displayName)
     }
   }
 
@@ -2755,7 +2768,8 @@ private struct ChatComposer: View {
       },
       onCancel: {
         pendingImageSizePrompt = nil
-      })
+      }
+    )
     .confirmationDialog(
       "Import PDF",
       isPresented: Binding(
@@ -2790,34 +2804,36 @@ private struct ChatComposer: View {
       HStack(alignment: .bottom, spacing: 10) {
         toolMenu
 
-        TextField(isResponding ? "Queue a message..." : placeholder, text: draftBinding, axis: .vertical)
-          .textFieldStyle(.plain)
-          .lineLimit(1...3)
-          .padding(.vertical, 5)
-          .frame(minHeight: 32, alignment: .center)
-          .focused($composerFocused)
-          .onAppear {
-            guard focusComposerAfterTextFieldRefresh else { return }
-            focusComposerAfterTextFieldRefresh = false
-            composerFocused = true
-          }
-          .id(composerTextFieldRefreshID)
-          .popover(
-            isPresented: promptAutocompleteBinding,
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .bottom
-          ) {
-            promptAutocompletePopover
-              .presentationCompactAdaptation(.popover)
-          }
-          .onKeyPress(.return, phases: .down) { press in
-            // Only hardware keyboards reach onKeyPress, so the on-screen Return
-            // always inserts a newline. With a hardware keyboard, Shift+Return
-            // inserts a newline and a bare Return submits.
-            guard !press.modifiers.contains(.shift) else { return .ignored }
-            submitDraft()
-            return .handled
-          }
+        TextField(
+          isResponding ? "Queue a message..." : placeholder, text: draftBinding, axis: .vertical
+        )
+        .textFieldStyle(.plain)
+        .lineLimit(1...3)
+        .padding(.vertical, 5)
+        .frame(minHeight: 32, alignment: .center)
+        .focused($composerFocused)
+        .onAppear {
+          guard focusComposerAfterTextFieldRefresh else { return }
+          focusComposerAfterTextFieldRefresh = false
+          composerFocused = true
+        }
+        .id(composerTextFieldRefreshID)
+        .popover(
+          isPresented: promptAutocompleteBinding,
+          attachmentAnchor: .rect(.bounds),
+          arrowEdge: .bottom
+        ) {
+          promptAutocompletePopover
+            .presentationCompactAdaptation(.popover)
+        }
+        .onKeyPress(.return, phases: .down) { press in
+          // Only hardware keyboards reach onKeyPress, so the on-screen Return
+          // always inserts a newline. With a hardware keyboard, Shift+Return
+          // inserts a newline and a bare Return submits.
+          guard !press.modifiers.contains(.shift) else { return .ignored }
+          submitDraft()
+          return .handled
+        }
 
         Button {
           if let id = conversationID, isResponding {
@@ -3550,9 +3566,10 @@ private struct ChatComposer: View {
     let enabledMCPTools =
       store.currentConversation?.enabledMCPTools ?? store.settings.defaultEnabledMCPTools
     let mcpToolCount = store.mcpTools.reduce(0) { count, entry in
-      count + entry.value.filter {
-        enabledMCPTools.contains(MCPToolSelection.key(serverID: entry.key, toolName: $0.name))
-      }.count
+      count
+        + entry.value.filter {
+          enabledMCPTools.contains(MCPToolSelection.key(serverID: entry.key, toolName: $0.name))
+        }.count
     }
     return builtInToolCount + mcpToolCount
   }
@@ -3801,11 +3818,20 @@ private struct ChatComposer: View {
     Task {
       var attachments: [ChatAttachment] = []
       var unreadableCount = 0
+      let ocrProvider = PocketMaiOCRProvider()
       for item in items {
-        let image = item.image
-        let markdown = await Task.detached(priority: .userInitiated) {
-          try? ImageOCRImporter.markdown(from: image)
-        }.value
+        let imageData = item.image.jpegData(compressionQuality: 0.95)
+        let markdown: String?
+        if let imageData {
+          markdown = try? await ocrProvider.recognize(
+            MaiCore.OCRRequest(
+              imageData: imageData,
+              mimeType: "image/jpeg",
+              filename: item.filename)
+          ).markdown
+        } else {
+          markdown = nil
+        }
         guard let markdown, markdown.utf8.count <= Self.textAttachmentByteLimit else {
           unreadableCount += 1
           continue
@@ -4257,8 +4283,7 @@ private final class MessageFontPinchSession {
   private func textView(at contentPoint: CGPoint, in scrollView: UIScrollView) -> UITextView? {
     func find(in view: UIView) -> UITextView? {
       for subview in view.subviews.reversed()
-      where !subview.isHidden && subview.alpha > 0.01
-      {
+      where !subview.isHidden && subview.alpha > 0.01 {
         let localPoint = subview.convert(contentPoint, from: scrollView)
         guard subview.bounds.insetBy(dx: -4, dy: -4).contains(localPoint) else { continue }
         if let textView = subview as? UITextView, textView.textStorage.length > 0 {
@@ -4330,8 +4355,8 @@ private final class MessageFontPinchSession {
   }
 }
 
-private extension CGRect {
-  func distance(toY y: CGFloat) -> CGFloat {
+extension CGRect {
+  fileprivate func distance(toY y: CGFloat) -> CGFloat {
     if y < minY { return minY - y }
     if y > maxY { return y - maxY }
     return 0
@@ -4643,7 +4668,8 @@ private struct MessageListPinchBridge: UIViewRepresentable {
       return CGFloat(targetSize / baseSize)
     }
 
-    private func touchMidpoint(of recognizer: UIPinchGestureRecognizer, in view: UIView) -> CGPoint {
+    private func touchMidpoint(of recognizer: UIPinchGestureRecognizer, in view: UIView) -> CGPoint
+    {
       guard recognizer.numberOfTouches >= 2 else { return recognizer.location(in: view) }
       let first = recognizer.location(ofTouch: 0, in: view)
       let second = recognizer.location(ofTouch: 1, in: view)
