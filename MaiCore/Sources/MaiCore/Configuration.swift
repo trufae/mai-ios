@@ -401,15 +401,18 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public var bold: Bool
   /// Render assistant replies as styled markdown in the REPL and visual mode.
   public var markdown: Bool
+  /// Number of leading tool-result lines printed by the text REPL. Zero hides the preview.
+  public var toolResultLines: Int
 
   public init(
-    backgroundLine: String = "blue",
+    backgroundLine: String = "rgb:024",
     foreground: String = "",
     background: String = "",
     promptForeground: String = "yellow",
     promptBackground: String = "",
     bold: Bool = false,
-    markdown: Bool = true
+    markdown: Bool = true,
+    toolResultLines: Int = 3
   ) {
     self.backgroundLine = backgroundLine
     self.foreground = foreground
@@ -418,6 +421,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     self.promptBackground = promptBackground
     self.bold = bold
     self.markdown = markdown
+    self.toolResultLines = max(0, toolResultLines)
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -428,19 +432,21 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     case promptBackground = "bgprompt"
     case bold
     case markdown
+    case toolResultLines
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
-      backgroundLine: try container.decodeIfPresent(String.self, forKey: .backgroundLine) ?? "blue",
+      backgroundLine: try container.decodeIfPresent(String.self, forKey: .backgroundLine) ?? "rgb:024",
       foreground: try container.decodeIfPresent(String.self, forKey: .foreground) ?? "",
       background: try container.decodeIfPresent(String.self, forKey: .background) ?? "",
       promptForeground: try container.decodeIfPresent(String.self, forKey: .promptForeground)
         ?? "yellow",
       promptBackground: try container.decodeIfPresent(String.self, forKey: .promptBackground) ?? "",
       bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false,
-      markdown: try container.decodeIfPresent(Bool.self, forKey: .markdown) ?? true)
+      markdown: try container.decodeIfPresent(Bool.self, forKey: .markdown) ?? true,
+      toolResultLines: try container.decodeIfPresent(Int.self, forKey: .toolResultLines) ?? 3)
   }
 }
 

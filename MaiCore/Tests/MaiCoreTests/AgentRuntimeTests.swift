@@ -103,6 +103,27 @@ func toolProxyResolution() throws {
   #expect(resolved.call?.argumentValues["city"] == .string("Rome"))
 }
 
+@Test("Tool result previews bound lines, line length, and terminal control characters")
+func toolResultPreview() {
+  let result = ToolResult(
+    callID: "preview",
+    text: "first line\nsecond\u{1B}[31m line\nthird line\nfourth line")
+
+  #expect(
+    ToolResultPreview.render(result, maxLines: 2, maxLineLength: 12)
+      == "← tool result\n  first line\n  second [31m …\n  … 2 more lines")
+  #expect(ToolResultPreview.render(result, maxLines: 0) == "← tool done")
+  #expect(
+    ToolResultPreview.render(
+      ToolResult(
+        callID: "structured",
+        content: [],
+        structuredContent: .object(["ok": .bool(true)]),
+        isError: true),
+      maxLines: 1)
+      == "← tool error\n  {\"ok\":true}")
+}
+
 @Test("Transcripts edit rich messages and preserve valid tool transactions")
 func transcriptEditing() throws {
   let messages = [
@@ -209,6 +230,40 @@ func providerRegistration() async throws {
   let result = try await runtime.run(
     AgentRequest(provider: .hello, messages: [.user("works")]))
   #expect(result.response.text == "Replacement: works")
+}
+
+@Test("MCP registration enables all server tools and ignores stale tool references")
+func mcpToolsAreEnabledAsAGroup() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("enabled"), stopReason: .stop),
+    ProviderResponse(message: .assistant("disabled"), stopReason: .stop),
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  let catalog = try await runtime.register(mcp: FixtureMCPSource())
+
+  #expect(Set(catalog.tools.map(\.name)) == ["r2mcp::analyze", "r2mcp::disassemble"])
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("inspect")],
+      toolNames: ["--::obsolete_tool"]))
+
+  let removed = await runtime.unregisterMCP(serverID: "r2mcp")
+  #expect(removed == ["r2mcp::analyze", "r2mcp::disassemble"])
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("inspect again")],
+      toolNames: ["r2mcp::analyze"]))
+
+  let requests = await provider.requests
+  #expect(requests.count == 2)
+  #expect(
+    Set(requests[0].tools.map(\.name)) == ["r2mcp::analyze", "r2mcp::disassemble"])
+  #expect(requests[1].tools.isEmpty)
 }
 
 @Test("OpenAI-compatible provider encodes multimodal native-tool requests")
@@ -459,6 +514,39 @@ func openAIStreamingToolCall() async throws {
   #expect(response.stopReason == .toolCall)
 }
 
+@Test("Cancelling a streamed provider request cancels its URL session task")
+func openAIStreamingCancellation() async throws {
+  HangingURLProtocol.reset()
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.protocolClasses = [HangingURLProtocol.self]
+  let session = URLSession(configuration: configuration)
+  defer { session.invalidateAndCancel() }
+  let provider = OpenAICompatibleProvider(
+    configuration: .init(baseURL: try #require(URL(string: "https://cancel.example.test/v1"))),
+    session: session)
+  let task = Task {
+    try await provider.complete(
+      ProviderRequest(model: "test-model", messages: [.user("wait")], stream: true))
+  }
+
+  for _ in 0..<100 where !HangingURLProtocol.didStart {
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  #expect(HangingURLProtocol.didStart)
+  task.cancel()
+  do {
+    _ = try await task.value
+    Issue.record("The cancelled provider request unexpectedly completed")
+  } catch {
+    let cocoaError = error as NSError
+    #expect(error is CancellationError || cocoaError.code == NSURLErrorCancelled)
+  }
+  for _ in 0..<100 where !HangingURLProtocol.didStop {
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  #expect(HangingURLProtocol.didStop)
+}
+
 @Test("Agent runtime validates, approves, executes, and continues after a tool call")
 func toolLoop() async throws {
   let provider = ScriptedProvider(responses: [
@@ -632,6 +720,62 @@ func textToolFallback() async throws {
     return false
   }
   #expect(!leakedProtocol)
+}
+
+@Test("Text, XML, and JSON strategies force the emulated tool loop")
+func forcedTextToolStrategies() async throws {
+  let cases: [(ToolCallingStrategy, String, String)] = [
+    (
+      .text,
+      """
+      TOOL_CALL
+      tool: echo
+      text: text
+      END_TOOL_CALL
+      """,
+      "text"
+    ),
+    (.xml, #"<tool_call name="echo"><arg name="text">xml</arg></tool_call>"#, "xml"),
+    (.json, #"{"name":"echo","arguments":{"text":"json"}}"#, "json"),
+  ]
+
+  for (strategy, call, expected) in cases {
+    let provider = ScriptedProvider(
+      responses: [
+        ProviderResponse(message: .assistant(call), stopReason: .stop),
+        ProviderResponse(message: .assistant("Finished \(expected)."), stopReason: .stop),
+      ],
+      capabilities: [.streaming, .nativeToolCalling])
+    let runtime = AgentRuntime()
+    try await runtime.register(provider)
+    try await runtime.register(
+      tool: ClosureTool(
+        definition: ToolDefinition(
+          name: "echo",
+          description: "Echo",
+          inputSchema: objectSchema(required: ["text"]),
+          annotations: ToolAnnotations(approval: .automatic))
+      ) { arguments, _ in
+        ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
+      })
+
+    let result = try await runtime.run(
+      AgentRequest(
+        provider: "scripted",
+        model: "fixture",
+        messages: [.user("use echo")],
+        toolNames: ["echo"],
+        toolCallingStrategy: strategy))
+
+    #expect(result.response.text == "Finished \(expected).")
+    #expect(result.transcript.flatMap(\.toolResults).first?.text == expected)
+    let requests = await provider.requests
+    #expect(requests.first?.tools.isEmpty == true)
+    #expect(
+      requests.first?.messages.contains {
+        $0.text.contains("\(strategy.rawValue.uppercased()) fallback protocol")
+      } == true)
+  }
 }
 
 @Test("Text fallback executes every tool call emitted in one model turn")
@@ -934,9 +1078,12 @@ func configurationLoading() async throws {
   #expect(configuration.defaultAgent == "main")
   #expect(configuration.approvals.confirm == .allow)
   #expect(configuration.agents[0].limits == AgentRunLimits())
+  #expect(configuration.agents[0].limits.maxModelTurns == 50)
+  #expect(configuration.agents[0].limits.maxToolCalls == 50)
   #expect(configuration.agents[0].toolCallingStrategy == .json)
   #expect(configuration.agents[0].useToolProxy)
   #expect(configuration.agents[0].options.maxOutputTokens == 100)
+  #expect(configuration.ui.toolResultLines == 3)
   let plugins = PluginRegistry()
   try await plugins.install(MaiOpenAIPlugin())
   let provider = try await plugins.makeProvider(
@@ -1199,6 +1346,33 @@ private actor ScriptedProvider: ChatProvider {
   }
 }
 
+private struct FixtureMCPSource: MCPToolSource {
+  private var definitions: [ToolDefinition] {
+    [
+      ToolDefinition(name: "r2mcp::analyze", description: "Analyze a binary"),
+      ToolDefinition(name: "r2mcp::disassemble", description: "Disassemble a function"),
+    ]
+  }
+
+  func connect() async throws -> MCPServerCatalog {
+    MCPServerCatalog(
+      serverID: "r2mcp",
+      serverName: "r2mcp",
+      protocolVersion: "2025-03-26",
+      tools: definitions,
+      resources: [])
+  }
+
+  func agentTools() async throws -> [any AgentTool] {
+    definitions.map { definition in
+      ClosureTool(definition: definition) { _, _ in ToolOutput(text: "ok") }
+        as any AgentTool
+    }
+  }
+
+  func close() async {}
+}
+
 private actor LaunchedSubagentProvider: ChatProvider {
   nonisolated let descriptor = ProviderDescriptor(
     id: "launched-subagent",
@@ -1340,6 +1514,45 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
   }
 
   override func stopLoading() {}
+}
+
+private final class HangingURLProtocol: URLProtocol, @unchecked Sendable {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var started = false
+  nonisolated(unsafe) private static var stopped = false
+
+  static var didStart: Bool { lock.withLock { started } }
+  static var didStop: Bool { lock.withLock { stopped } }
+
+  static func reset() {
+    lock.withLock {
+      started = false
+      stopped = false
+    }
+  }
+
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.lock.withLock { Self.started = true }
+    guard let url = request.url,
+      let response = HTTPURLResponse(
+        url: url,
+        statusCode: 200,
+        httpVersion: "HTTP/1.1",
+        headerFields: ["Content-Type": "text/event-stream"])
+    else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+      return
+    }
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: Data("data: ".utf8))
+  }
+
+  override func stopLoading() {
+    Self.lock.withLock { Self.stopped = true }
+  }
 }
 
 private enum TestError: Error { case missingResponse }

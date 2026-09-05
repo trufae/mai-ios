@@ -142,10 +142,11 @@
       "subagentNames": [
         "researcher"
       ],
+      "toolCallingStrategy": "automatic",
       "useToolProxy": true,
       "limits": {
-        "maxModelTurns": 12,
-        "maxToolCalls": 20,
+        "maxModelTurns": 50,
+        "maxToolCalls": 50,
         "maxSubagents": 4,
         "maxSubagentDepth": 2
       }
@@ -165,13 +166,14 @@
     }
   ],
   "ui": {
-    "bgline": "blue",
+    "bgline": "rgb:024",
     "fgprompt": "yellow",
     "fgcolor": "",
     "bgcolor": "",
     "bgprompt": "",
     "bold": false,
-    "markdown": true
+    "markdown": true,
+    "toolResultLines": 3
   },
   "approvals": {
     "confirm": "ask",

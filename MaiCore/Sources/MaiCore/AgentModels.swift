@@ -708,8 +708,8 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
   public var maxTotalTokens: Int?
 
   public init(
-    maxModelTurns: Int = 12,
-    maxToolCalls: Int = 20,
+    maxModelTurns: Int = 50,
+    maxToolCalls: Int = 50,
     maxSubagents: Int = 0,
     maxSubagentDepth: Int = 2,
     maxTotalTokens: Int? = nil
@@ -728,8 +728,8 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
-      maxModelTurns: try container.decodeIfPresent(Int.self, forKey: .maxModelTurns) ?? 12,
-      maxToolCalls: try container.decodeIfPresent(Int.self, forKey: .maxToolCalls) ?? 20,
+      maxModelTurns: try container.decodeIfPresent(Int.self, forKey: .maxModelTurns) ?? 50,
+      maxToolCalls: try container.decodeIfPresent(Int.self, forKey: .maxToolCalls) ?? 50,
       maxSubagents: try container.decodeIfPresent(Int.self, forKey: .maxSubagents) ?? 0,
       maxSubagentDepth: try container.decodeIfPresent(Int.self, forKey: .maxSubagentDepth) ?? 2,
       maxTotalTokens: try container.decodeIfPresent(Int.self, forKey: .maxTotalTokens))

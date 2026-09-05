@@ -318,6 +318,20 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
   ) async throws -> ProviderResponse {
     let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
+    let urlTask = bytes.task
+    return try await withTaskCancellationHandler {
+      try await decodedStream(bytes, response: response, resolver: resolver, emit: emit)
+    } onCancel: {
+      urlTask.cancel()
+    }
+  }
+
+  private func decodedStream(
+    _ bytes: URLSession.AsyncBytes,
+    response: URLResponse,
+    resolver: ToolNameResolver,
+    emit: @escaping ProviderEventHandler
+  ) async throws -> ProviderResponse {
     guard let http = response as? HTTPURLResponse else {
       throw OpenAICompatibleProviderError.invalidResponse(
         "The provider returned a non-HTTP response.")

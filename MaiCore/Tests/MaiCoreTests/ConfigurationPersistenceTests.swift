@@ -30,7 +30,8 @@ func configurationSaveRoundTrip() throws {
       backgroundLine: "magenta",
       foreground: "bright-white",
       promptForeground: "cyan",
-      bold: true))
+      bold: true,
+      toolResultLines: 7))
 
   try configuration.save(to: url)
 
