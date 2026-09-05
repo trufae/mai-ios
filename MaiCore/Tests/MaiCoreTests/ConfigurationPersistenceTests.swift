@@ -25,7 +25,12 @@ func configurationSaveRoundTrip() throws {
         instructions: "Be concise.",
         provider: "endpoint",
         model: "local-model")
-    ])
+    ],
+    ui: ConfiguredTerminalUI(
+      backgroundLine: "magenta",
+      foreground: "bright-white",
+      promptForeground: "cyan",
+      bold: true))
 
   try configuration.save(to: url)
 

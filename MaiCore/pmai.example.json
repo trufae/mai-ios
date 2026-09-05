@@ -144,6 +144,14 @@
       ]
     }
   ],
+  "ui": {
+    "bgline": "blue",
+    "fgprompt": "yellow",
+    "fgcolor": "",
+    "bgcolor": "",
+    "bgprompt": "",
+    "bold": false
+  },
   "approvals": {
     "confirm": "ask",
     "dangerous": "ask"

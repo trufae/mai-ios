@@ -66,6 +66,8 @@ run:
 	xcrun devicectl device process launch --terminate-existing --device "$$device" "$(BUNDLE_ID)"
 
 repl:
+	@set -a; \
+	if [ -f ./env.sh ]; then . ./env.sh; fi; \
 	swift run --package-path MaiCore pmai $(ARGS)
 
 repl-install:
