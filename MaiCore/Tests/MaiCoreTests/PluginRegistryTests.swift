@@ -41,6 +41,40 @@ func installsBundledIntegrationPlugins() async throws {
   #expect(mcp is MCPClient)
 }
 
+@Test("Tool factories describe logical groups and their configuration")
+func toolFactoryGroups() async throws {
+  let registry = PluginRegistry()
+  try await registry.install(MaiStandardToolsPlugin())
+
+  let groups = try await registry.toolGroups(
+    kind: MaiStandardToolsPlugin.factoryKind,
+    context: PluginFactoryContext(
+      id: "standard",
+      options: ["webSearchFetchingEnabled": .bool(false)]))
+  let github = try #require(groups.first { $0.id == "github" })
+  #expect(github.sourceID == "standard")
+  #expect(github.toolNames == Set(MaiGitHubTool.toolNames))
+  let mastodon = try #require(groups.first { $0.id == "mastodon" })
+  #expect(mastodon.options.contains { $0.id == "mastodonAPIKeyEnvironment" })
+  #expect(mastodon.options.contains { $0.id == "mastodonWriteEnabled" })
+  let web = try #require(groups.first { $0.id == "web" })
+  #expect(web.toolNames == [MaiWebSearchTool.name])
+}
+
+@Test("Factories without group metadata infer prefix groups")
+func inferredToolFactoryGroups() async throws {
+  let registry = PluginRegistry()
+  try await registry.install(FixturePlugin())
+  let groups = try await registry.toolGroups(
+    kind: "fixture",
+    context: PluginFactoryContext(id: "fixture-source"))
+
+  let group = try #require(groups.first)
+  #expect(group.id == "fixture")
+  #expect(group.sourceID == "fixture-source")
+  #expect(group.toolNames == ["fixture_echo"])
+}
+
 @Test("A plugin installs all declared capability factories")
 func installsPluginCapabilities() async throws {
   let registry = PluginRegistry()

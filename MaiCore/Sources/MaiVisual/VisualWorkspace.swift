@@ -103,6 +103,7 @@ public final class VisualWorkspace {
   public private(set) var exitRequested = false
   public private(set) var providers: [ProviderDescriptor] = []
   public private(set) var tools: [ToolDefinition] = []
+  public private(set) var toolGroups: [ToolGroupDefinition] = []
   public private(set) var agents: [AgentDefinition] = []
   public var pendingApproval: VisualApprovalHandler.Pending?
   public var pendingConversationDeletion: ConversationActionRequest?
@@ -180,6 +181,24 @@ public final class VisualWorkspace {
     providers = await runtime.availableProviders()
     tools = await runtime.availableTools()
     agents = await runtime.availableAgents()
+    var groups: [ToolGroupDefinition] = []
+    for source in configuration.toolSources where source.enabled {
+      do {
+        groups.append(
+          contentsOf: try await plugins.toolGroups(
+            kind: source.kind,
+            context: source.context(environment: environment)))
+      } catch {
+        status = "warning: tool groups for '\(source.id)' are unavailable: \(error.localizedDescription)"
+      }
+    }
+    let groupedNames = Set(groups.flatMap(\.toolNames))
+    var ungrouped = ToolGroupDefinition.inferred(
+      from: tools.filter { !groupedNames.contains($0.name) })
+    for index in ungrouped.indices { ungrouped[index].sourceID = "runtime" }
+    toolGroups = (groups + ungrouped).sorted {
+      $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+    }
   }
 
   @discardableResult
@@ -507,6 +526,93 @@ public final class VisualWorkspace {
       conversation.profile.toolNames.remove(name)
     }
     persistAgentProfile(for: conversation)
+  }
+
+  public func isToolGroupEnabled(
+    _ group: ToolGroupDefinition,
+    for conversation: VisualConversation
+  ) -> Bool {
+    conversation.profile.toolGroupNames.contains(group.id)
+      || group.toolNames.isSubset(of: conversation.profile.toolNames)
+  }
+
+  public func setToolGroup(
+    _ group: ToolGroupDefinition,
+    allowed: Bool,
+    for conversation: VisualConversation
+  ) {
+    if allowed {
+      conversation.profile.toolGroupNames.insert(group.id)
+      conversation.profile.toolNames.formUnion(group.toolNames)
+    } else {
+      conversation.profile.toolGroupNames.remove(group.id)
+      conversation.profile.toolNames.subtract(group.toolNames)
+    }
+    persistAgentProfile(for: conversation)
+  }
+
+  public func configuredToolGroupOptions(_ group: ToolGroupDefinition) -> [String: JSONValue] {
+    guard let source = configuration.toolSources.first(where: { $0.id == group.sourceID }) else {
+      return Dictionary(
+        uniqueKeysWithValues: group.options.compactMap { option in
+          option.defaultValue.map { (option.id, $0) }
+        })
+    }
+    return Dictionary(
+      uniqueKeysWithValues: group.options.compactMap { option in
+        source.options[option.id].map { (option.id, $0) }
+          ?? option.defaultValue.map { (option.id, $0) }
+      })
+  }
+
+  public func configureToolGroup(
+    _ group: ToolGroupDefinition,
+    options: [String: JSONValue]
+  ) async throws {
+    guard let index = configuration.toolSources.firstIndex(where: { $0.id == group.sourceID }) else {
+      throw VisualWorkspaceError.missingField("tool source for \(group.displayName)")
+    }
+    var source = configuration.toolSources[index]
+    for option in group.options {
+      if let value = options[option.id] {
+        source.options[option.id] = value
+      } else {
+        source.options.removeValue(forKey: option.id)
+      }
+    }
+    let context = source.context(environment: environment)
+    let replacementTools = try await plugins.makeTools(kind: source.kind, context: context)
+    let replacementGroups = try await plugins.toolGroups(kind: source.kind, context: context)
+    for tool in replacementTools {
+      try await runtime.register(tool: tool, replacingExisting: true)
+    }
+    let replacement = replacementGroups.first { $0.id == group.id }
+    for index in configuration.agents.indices
+    where configuration.agents[index].toolGroupNames.contains(group.id)
+      || group.toolNames.isSubset(of: configuration.agents[index].toolNames)
+    {
+      configuration.agents[index].toolGroupNames.insert(group.id)
+      configuration.agents[index].toolNames.subtract(group.toolNames)
+      if let replacement {
+        configuration.agents[index].toolNames.formUnion(replacement.toolNames)
+      }
+    }
+    for conversation in conversations where isToolGroupEnabled(group, for: conversation) {
+      conversation.profile.toolGroupNames.insert(group.id)
+      conversation.profile.toolNames.subtract(group.toolNames)
+      if let replacement {
+        conversation.profile.toolNames.formUnion(replacement.toolNames)
+      }
+      upsert(conversation.profile, into: &configuration.agents)
+    }
+    for agent in configuration.agents {
+      try await runtime.register(agent: agent, replacingExisting: true)
+    }
+    configuration.toolSources[index] = source
+    markConfigurationChanged()
+    try saveConfiguration()
+    await refreshRegistries()
+    status = "Updated \(group.displayName) settings."
   }
 
   public func fetchModels(for provider: ProviderID) async {

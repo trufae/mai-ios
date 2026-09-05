@@ -142,6 +142,19 @@ private func handle(
           "required": .array([.string("text")]),
         ]))
     ])
+  case NativePluginOperation.toolGroups:
+    return try PluginWireCodec.value([
+      NativeToolGroupDefinition(
+        id: "native",
+        displayName: "Native fixture",
+        description: "Fixture native tools.",
+        toolNames: ["native_echo"],
+        options: [
+          NativeToolGroupOptionDefinition(
+            id: "prefix",
+            label: "Echo prefix")
+        ])
+    ])
   case NativePluginOperation.toolCall:
     let arguments = try callArguments(request)
     return toolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")

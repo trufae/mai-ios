@@ -76,9 +76,102 @@ public struct PluginFactoryContext: Codable, Equatable, Sendable {
   }
 }
 
+/// The portable field types a host can render for a tool group's settings.
+public enum ToolGroupOptionKind: String, Codable, Equatable, Sendable {
+  case text
+  case secret
+  case boolean
+  case number
+  case choice
+}
+
+public struct ToolGroupOptionDefinition: Codable, Equatable, Identifiable, Sendable {
+  public var id: String
+  public var label: String
+  public var help: String?
+  public var kind: ToolGroupOptionKind
+  public var defaultValue: JSONValue?
+  public var choices: [String]
+
+  public init(
+    id: String,
+    label: String,
+    help: String? = nil,
+    kind: ToolGroupOptionKind = .text,
+    defaultValue: JSONValue? = nil,
+    choices: [String] = []
+  ) {
+    self.id = id
+    self.label = label
+    self.help = help
+    self.kind = kind
+    self.defaultValue = defaultValue
+    self.choices = choices
+  }
+}
+
+/// One user-facing capability backed by one or more provider-visible tools.
+/// Group IDs are stable configuration identifiers supplied by the plugin.
+public struct ToolGroupDefinition: Codable, Equatable, Sendable {
+  public var id: String
+  public var sourceID: String
+  public var displayName: String
+  public var description: String
+  public var toolNames: Set<String>
+  public var options: [ToolGroupOptionDefinition]
+
+  public init(
+    id: String,
+    sourceID: String = "",
+    displayName: String? = nil,
+    description: String = "",
+    toolNames: Set<String>,
+    options: [ToolGroupOptionDefinition] = []
+  ) {
+    self.id = id
+    self.sourceID = sourceID
+    self.displayName = displayName ?? id
+    self.description = description
+    self.toolNames = toolNames
+    self.options = options
+  }
+
+  public var catalogID: String { sourceID.isEmpty ? id : "\(sourceID)/\(id)" }
+
+  public static func inferred(from tools: [any AgentTool]) -> [ToolGroupDefinition] {
+    inferred(from: tools.map(\.definition))
+  }
+
+  public static func inferred(from definitions: [ToolDefinition]) -> [ToolGroupDefinition] {
+    let grouped = Dictionary(grouping: definitions) { definition in
+      definition.name.split(separator: "_", maxSplits: 1).first.map(String.init)
+        ?? definition.name
+    }
+    return grouped.map { id, members in
+      let names = Set(members.map(\.name))
+      let description =
+        members.count == 1
+        ? members[0].description
+        : "Provides \(names.sorted().joined(separator: ", "))."
+      return ToolGroupDefinition(
+        id: id,
+        displayName: id.replacingOccurrences(of: "_", with: " ").capitalized,
+        description: description,
+        toolNames: names)
+    }.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+  }
+}
+
 public protocol ConfiguredToolFactory: Sendable {
   var kind: String { get }
   func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool]
+  func toolGroups(context: PluginFactoryContext) async throws -> [ToolGroupDefinition]
+}
+
+extension ConfiguredToolFactory {
+  public func toolGroups(context: PluginFactoryContext) async throws -> [ToolGroupDefinition] {
+    ToolGroupDefinition.inferred(from: try await makeTools(context: context))
+  }
 }
 
 public protocol ConfiguredOCRProviderFactory: Sendable {
@@ -228,6 +321,20 @@ public actor PluginRegistry {
       throw PluginRegistryError.factoryNotRegistered(capability: .agentTool, kind: kind)
     }
     return try await registered.value.makeTools(context: context)
+  }
+
+  public func toolGroups(
+    kind: String,
+    context: PluginFactoryContext
+  ) async throws -> [ToolGroupDefinition] {
+    guard let registered = toolFactories[kind] else {
+      throw PluginRegistryError.factoryNotRegistered(capability: .agentTool, kind: kind)
+    }
+    return try await registered.value.toolGroups(context: context).map { definition in
+      var definition = definition
+      definition.sourceID = context.id
+      return definition
+    }
   }
 
   public func makeOCRProvider(

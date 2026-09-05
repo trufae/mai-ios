@@ -68,6 +68,104 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
     let enabled = Set(names.compactMap(\.stringValue))
     return tools.filter { enabled.contains($0.definition.name) }
   }
+
+  public func toolGroups(context: PluginFactoryContext) async throws -> [ToolGroupDefinition] {
+    let available = Set(try await makeTools(context: context).map(\.definition.name))
+    let webTools: Set<String> =
+      context.options["webSearchFetchingEnabled"]?.boolValue == false
+      ? [MaiWebSearchTool.name]
+      : [MaiWebSearchTool.name, MaiWebFetchTool.name]
+    return [
+      ToolGroupDefinition(
+        id: "echo",
+        displayName: "Echo",
+        description: MaiEchoTool.toolDefinition.description,
+        toolNames: [MaiEchoTool.name]),
+      ToolGroupDefinition(
+        id: "datetime",
+        displayName: "Date & Time",
+        description: MaiCurrentTimeTool.toolDefinition.description,
+        toolNames: [MaiCurrentTimeTool.name]),
+      ToolGroupDefinition(
+        id: "calculator",
+        displayName: "Calculator",
+        description: MaiCalculatorTool.toolDefinition.description,
+        toolNames: [MaiCalculatorTool.name]),
+      ToolGroupDefinition(
+        id: "files",
+        displayName: "Files",
+        description: MaiReadTextFileTool.toolDefinition.description,
+        toolNames: [MaiReadTextFileTool.name]),
+      ToolGroupDefinition(
+        id: "weather",
+        displayName: "Weather",
+        description: MaiWeatherTool.toolDefinition.description,
+        toolNames: [MaiWeatherTool.name],
+        options: [
+          .init(
+            id: "weatherLocation",
+            label: "Default location",
+            help: "Used when a call does not provide a location."),
+          .init(id: "weatherLatitude", label: "Latitude", kind: .number),
+          .init(id: "weatherLongitude", label: "Longitude", kind: .number),
+        ]),
+      ToolGroupDefinition(
+        id: "web",
+        displayName: "Web Search",
+        description: "Search the web and optionally fetch readable page content.",
+        toolNames: webTools,
+        options: [
+          .init(
+            id: "webSearchProvider",
+            label: "Search provider",
+            kind: .choice,
+            defaultValue: .string(MaiWebSearchProvider.exa.rawValue),
+            choices: MaiWebSearchProvider.allCases.map(\.rawValue)),
+          .init(id: "searXNGURL", label: "SearXNG URL"),
+          .init(id: "searXNGUsername", label: "SearXNG username"),
+          .init(id: "searXNGPassword", label: "SearXNG password", kind: .secret),
+          .init(
+            id: "searXNGPasswordEnvironment",
+            label: "SearXNG password environment variable"),
+          .init(id: "ollamaAPIKey", label: "Ollama API key", kind: .secret),
+          .init(id: "ollamaAPIKeyEnvironment", label: "Ollama API key environment variable"),
+          .init(
+            id: "webSearchFetchingEnabled",
+            label: "Allow fetching pages",
+            kind: .boolean,
+            defaultValue: .bool(true)),
+        ]),
+      ToolGroupDefinition(
+        id: "mastodon",
+        displayName: "Mastodon",
+        description: "Search and read one Mastodon instance; optionally post and reply.",
+        toolNames: [MaiMastodonTool.name],
+        options: [
+          .init(
+            id: "mastodonInstance",
+            label: "Instance",
+            defaultValue: .string("mastodon.social")),
+          .init(id: "mastodonAPIKey", label: "API key", kind: .secret),
+          .init(id: "mastodonAPIKeyEnvironment", label: "API key environment variable"),
+          .init(
+            id: "mastodonWriteEnabled",
+            label: "Allow posting and replying",
+            kind: .boolean,
+            defaultValue: .bool(false)),
+        ]),
+      ToolGroupDefinition(
+        id: "github",
+        displayName: "GitHub",
+        description: "Browse public repositories, pull requests, commits, issues, releases, and CI.",
+        toolNames: Set(MaiGitHubTool.toolNames)),
+    ].compactMap { group in
+      let names = group.toolNames.intersection(available)
+      guard !names.isEmpty else { return nil }
+      var group = group
+      group.toolNames = names
+      return group
+    }
+  }
 }
 
 extension PluginFactoryContext {

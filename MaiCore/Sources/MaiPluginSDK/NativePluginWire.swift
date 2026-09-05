@@ -167,11 +167,61 @@ public enum NativePluginOperation {
   public static let providerModels = "provider.models"
   public static let providerComplete = "provider.complete"
   public static let toolList = "tool.list"
+  public static let toolGroups = "tool.groups"
   public static let toolCall = "tool.call"
   public static let ocrRecognize = "ocr.recognize"
   public static let mcpConnect = "mcp.connect"
   public static let mcpCall = "mcp.call"
   public static let mcpClose = "mcp.close"
+}
+
+/// Optional response types for `tool.groups`. Older plugins may omit this
+/// operation; hosts then infer groups from `tool.list` name prefixes.
+public struct NativeToolGroupOptionDefinition: Codable, Equatable, Sendable {
+  public var id: String
+  public var label: String
+  public var help: String?
+  public var kind: String
+  public var defaultValue: PluginJSONValue?
+  public var choices: [String]
+
+  public init(
+    id: String,
+    label: String,
+    help: String? = nil,
+    kind: String = "text",
+    defaultValue: PluginJSONValue? = nil,
+    choices: [String] = []
+  ) {
+    self.id = id
+    self.label = label
+    self.help = help
+    self.kind = kind
+    self.defaultValue = defaultValue
+    self.choices = choices
+  }
+}
+
+public struct NativeToolGroupDefinition: Codable, Equatable, Sendable {
+  public var id: String
+  public var displayName: String
+  public var description: String
+  public var toolNames: Set<String>
+  public var options: [NativeToolGroupOptionDefinition]
+
+  public init(
+    id: String,
+    displayName: String? = nil,
+    description: String = "",
+    toolNames: Set<String>,
+    options: [NativeToolGroupOptionDefinition] = []
+  ) {
+    self.id = id
+    self.displayName = displayName ?? id
+    self.description = description
+    self.toolNames = toolNames
+    self.options = options
+  }
 }
 
 public enum PluginWireCodec {

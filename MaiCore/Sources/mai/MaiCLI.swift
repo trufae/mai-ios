@@ -124,6 +124,7 @@ struct SessionProfile {
   var model: String
   var instructions: String
   var toolNames: Set<String>
+  var toolGroupNames: Set<String>
   var subagentNames: Set<String>
   var stream: Bool
   var limits: AgentRunLimits
@@ -139,6 +140,7 @@ struct SessionProfile {
     model = definition.model
     instructions = definition.instructions
     toolNames = definition.toolNames
+    toolGroupNames = definition.toolGroupNames
     subagentNames = definition.subagentNames
     stream = definition.stream
     limits = definition.limits
@@ -165,6 +167,7 @@ struct SessionProfile {
         MaiWebFetchTool.name,
         MaiMastodonTool.name,
       ] + MaiGitHubTool.toolNames)
+    toolGroupNames = ["echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github"]
     subagentNames = []
     self.stream = stream
     limits = .init()
@@ -182,6 +185,7 @@ struct SessionProfile {
       provider: provider,
       model: model,
       toolNames: toolNames,
+      toolGroupNames: toolGroupNames,
       subagentNames: subagentNames,
       stream: stream,
       limits: limits,
@@ -453,9 +457,22 @@ private struct MaiCLI {
       }
 
       let loaded = try loadConfiguration(options: options)
-      let loadedConfiguration = loaded?.configuration
+      let configurationPath = loaded?.path ?? defaultConfigurationPath
+      var configuration = loaded?.configuration
+      if var existing = configuration,
+        !existing.toolSources.contains(where: {
+          $0.kind == MaiStandardToolsPlugin.factoryKind
+        })
+      {
+        existing.toolSources.append(
+          ConfiguredToolSource(
+            id: "standard-tools",
+            kind: MaiStandardToolsPlugin.factoryKind))
+        try existing.save(to: URL(fileURLWithPath: configurationPath))
+        configuration = existing
+      }
       let approvalHandler = TerminalApprovalHandler(
-        configuration: loadedConfiguration?.approvals ?? .init())
+        configuration: configuration?.approvals ?? .init())
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
@@ -467,34 +484,37 @@ private struct MaiCLI {
       try await loadNativePlugins(
         options: options,
         loadedConfigurationPath: loaded?.path,
-        configuration: loadedConfiguration,
+        configuration: configuration,
         host: nativePluginHost,
         registry: plugins)
       try await registerTools(
         in: runtime,
         plugins: plugins,
-        configuration: loadedConfiguration,
+        configuration: configuration,
         environment: environment)
       let ocrProvider = try await configuredOCRProvider(
         plugins: plugins,
-        configuration: loadedConfiguration,
+        configuration: configuration,
         environment: environment)
       let setup = try await configureRuntime(
         runtime,
         plugins: plugins,
-        configuration: loadedConfiguration,
+        configuration: configuration,
         options: options,
         environment: environment)
       let profile = try selectedProfile(
-        configuration: loadedConfiguration,
+        configuration: configuration,
         options: options,
         environment: environment)
-      let configurationPath = loaded?.path ?? defaultConfigurationPath
-      var configuration = loadedConfiguration
       if configuration == nil {
         configuration = MaiConfiguration(
           defaultAgent: profile.agentID,
           providers: setup.implicitProviders,
+          toolSources: [
+            ConfiguredToolSource(
+              id: "standard-tools",
+              kind: MaiStandardToolsPlugin.factoryKind)
+          ],
           agents: [profile.agentDefinition])
         try configuration?.save(to: URL(fileURLWithPath: configurationPath))
       }
@@ -955,21 +975,14 @@ private struct MaiCLI {
         configurationPath: visual.configurationPath,
         terminal: terminal)
     case "/tools":
-      if session.profile.useToolProxy {
-        await terminal.line("Tool proxy enabled: models see list-tools and call-tool.")
-      }
-      let allowed = session.profile.toolNames.union(
-        session.profile.subagentNames.isEmpty ? [] : [AgentRuntime.subagentToolName])
-      for tool in await runtime.availableTools()
-      where allowed.isEmpty || allowed.contains(tool.name) {
-        await terminal.line(
-          "\(tool.name) [\(tool.annotations.approval.rawValue)] — \(tool.description)")
-      }
-      if !session.profile.subagentNames.isEmpty {
-        await terminal.line(
-          "\(AgentRuntime.subagentToolName) [confirm] — child agents: \(session.profile.subagentNames.sorted().joined(separator: ", "))"
-        )
-      }
+      await handleToolsCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/proxy":
       switch argument.lowercased() {
       case "":
@@ -1231,6 +1244,270 @@ private struct MaiCLI {
       character.isLetter || character.isNumber ? character : "_"
     }
     return String(stem) + "_API_KEY"
+  }
+
+  private static func handleToolsCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 3, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? "list"
+    let groups: [ToolGroupDefinition]
+    do {
+      groups = try await toolGroupCatalog(
+        runtime: runtime,
+        plugins: plugins,
+        configuration: configuration)
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return
+    }
+
+    if action == "list" || fields.isEmpty {
+      if session.profile.useToolProxy {
+        await terminal.line("Tool proxy enabled: models see list-tools and call-tool.")
+      }
+      for group in groups {
+        let enabled = isToolGroupEnabled(group, profile: session.profile) ? "*" : " "
+        await terminal.line(
+          "\(enabled) \(group.id) — \(group.displayName) [\(group.toolNames.count) tool\(group.toolNames.count == 1 ? "" : "s")]"
+        )
+      }
+      if !session.profile.subagentNames.isEmpty {
+        await terminal.line(
+          "* subagents — \(session.profile.subagentNames.sorted().joined(separator: ", "))")
+      }
+      await terminal.line("Use /tools show GROUP to inspect tool names and settings.")
+      return
+    }
+
+    guard fields.count >= 2, let group = resolveToolGroup(fields[1], in: groups) else {
+      await terminal.line(toolHelp)
+      return
+    }
+    switch action {
+    case "enable", "on":
+      session.profile.toolGroupNames.insert(group.id)
+      session.profile.toolNames.formUnion(group.toolNames)
+      if await persistAgentProfile(
+        session: session,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        runtime: runtime,
+        terminal: terminal)
+      {
+        await terminal.line("Enabled tool group '\(group.id)' for agent \(session.profile.agentID).")
+      }
+    case "disable", "off":
+      session.profile.toolGroupNames.remove(group.id)
+      session.profile.toolNames.subtract(group.toolNames)
+      if await persistAgentProfile(
+        session: session,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        runtime: runtime,
+        terminal: terminal)
+      {
+        await terminal.line("Disabled tool group '\(group.id)' for agent \(session.profile.agentID).")
+      }
+    case "show":
+      await terminal.line("\(group.displayName): \(group.description)")
+      await terminal.line("Tools: \(group.toolNames.sorted().joined(separator: ", "))")
+      let options = configuredOptions(for: group, configuration: configuration)
+      for option in group.options {
+        let value = options[option.id] ?? option.defaultValue
+        await terminal.line("\(option.id) = \(displayedOption(value, kind: option.kind))")
+      }
+    case "set", "config":
+      guard fields.count == 4,
+        let option = group.options.first(where: { $0.id == fields[2] }),
+        let value = parseToolOption(fields[3], definition: option)
+      else {
+        await terminal.line("Usage: /tools set GROUP OPTION VALUE")
+        return
+      }
+      await reconfigureToolGroup(
+        group,
+        option: option.id,
+        value: value,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+    case "unset":
+      guard fields.count == 3,
+        group.options.contains(where: { $0.id == fields[2] })
+      else {
+        await terminal.line("Usage: /tools unset GROUP OPTION")
+        return
+      }
+      await reconfigureToolGroup(
+        group,
+        option: fields[2],
+        value: nil,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+    default:
+      await terminal.line(toolHelp)
+    }
+  }
+
+  private static func toolGroupCatalog(
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: MaiConfiguration?
+  ) async throws -> [ToolGroupDefinition] {
+    var groups: [ToolGroupDefinition] = []
+    for source in configuration?.toolSources.filter(\.enabled) ?? [] {
+      groups.append(
+        contentsOf: try await plugins.toolGroups(
+          kind: source.kind,
+          context: source.context(environment: ProcessInfo.processInfo.environment)))
+    }
+    let tools = await runtime.availableTools()
+    let groupedNames = Set(groups.flatMap(\.toolNames))
+    var ungrouped = ToolGroupDefinition.inferred(
+      from: tools.filter { !groupedNames.contains($0.name) })
+    for index in ungrouped.indices { ungrouped[index].sourceID = "runtime" }
+    return (groups + ungrouped).sorted {
+      $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+    }
+  }
+
+  private static func resolveToolGroup(
+    _ selector: String,
+    in groups: [ToolGroupDefinition]
+  ) -> ToolGroupDefinition? {
+    let matches = groups.filter {
+      $0.id.caseInsensitiveCompare(selector) == .orderedSame
+        || $0.catalogID.caseInsensitiveCompare(selector) == .orderedSame
+    }
+    return matches.count == 1 ? matches[0] : nil
+  }
+
+  private static func isToolGroupEnabled(
+    _ group: ToolGroupDefinition,
+    profile: SessionProfile
+  ) -> Bool {
+    profile.toolGroupNames.contains(group.id) || group.toolNames.isSubset(of: profile.toolNames)
+  }
+
+  private static func configuredOptions(
+    for group: ToolGroupDefinition,
+    configuration: MaiConfiguration?
+  ) -> [String: JSONValue] {
+    let source = configuration?.toolSources.first { $0.id == group.sourceID }
+    return Dictionary(
+      uniqueKeysWithValues: group.options.compactMap { option in
+        source?.options[option.id].map { (option.id, $0) }
+          ?? option.defaultValue.map { (option.id, $0) }
+      })
+  }
+
+  private static func displayedOption(
+    _ value: JSONValue?,
+    kind: ToolGroupOptionKind
+  ) -> String {
+    guard let value else { return "-" }
+    if kind == .secret { return value.stringValue?.isEmpty == false ? "(configured)" : "-" }
+    if let string = value.stringValue { return string }
+    if let number = value.numberValue { return String(number) }
+    if let boolean = value.boolValue { return String(boolean) }
+    return value.compactJSONString
+  }
+
+  private static func parseToolOption(
+    _ rawValue: String,
+    definition: ToolGroupOptionDefinition
+  ) -> JSONValue? {
+    switch definition.kind {
+    case .text, .secret:
+      return .string(rawValue)
+    case .boolean:
+      return booleanSetting(rawValue).map(JSONValue.bool)
+    case .number:
+      return Double(rawValue).map(JSONValue.number)
+    case .choice:
+      guard definition.choices.contains(rawValue) else { return nil }
+      return .string(rawValue)
+    }
+  }
+
+  private static func reconfigureToolGroup(
+    _ group: ToolGroupDefinition,
+    option: String,
+    value: JSONValue?,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath,
+      let sourceIndex = draft.toolSources.firstIndex(where: { $0.id == group.sourceID })
+    else {
+      await terminal.line("This runtime-only group has no persistent settings.")
+      return
+    }
+    if let value {
+      draft.toolSources[sourceIndex].options[option] = value
+    } else {
+      draft.toolSources[sourceIndex].options.removeValue(forKey: option)
+    }
+    let source = draft.toolSources[sourceIndex]
+    do {
+      let context = source.context(environment: ProcessInfo.processInfo.environment)
+      let tools = try await plugins.makeTools(kind: source.kind, context: context)
+      let groups = try await plugins.toolGroups(kind: source.kind, context: context)
+      let replacement = groups.first(where: { $0.id == group.id })
+      for index in draft.agents.indices
+      where draft.agents[index].toolGroupNames.contains(group.id)
+        || group.toolNames.isSubset(of: draft.agents[index].toolNames)
+      {
+        draft.agents[index].toolGroupNames.insert(group.id)
+        draft.agents[index].toolNames.subtract(group.toolNames)
+        if let replacement {
+          draft.agents[index].toolNames.formUnion(replacement.toolNames)
+        }
+      }
+      if isToolGroupEnabled(group, profile: session.profile),
+        let replacement
+      {
+        session.profile.toolGroupNames.insert(group.id)
+        session.profile.toolNames.subtract(group.toolNames)
+        session.profile.toolNames.formUnion(replacement.toolNames)
+      }
+      let definition = session.profile.agentDefinition
+      if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
+        draft.agents[index] = definition
+      } else {
+        draft.agents.append(definition)
+      }
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      for tool in tools {
+        try await runtime.register(tool: tool, replacingExisting: true)
+      }
+      for agent in draft.agents {
+        try await runtime.register(agent: agent, replacingExisting: true)
+      }
+      configuration = draft
+      await terminal.line("Saved \(group.id).\(option).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
   }
 
   private static func handleSetCommand(
@@ -1818,6 +2095,19 @@ private struct MaiCLI {
       values.append("/provider \(provider.id)")
       values.append("/models \(provider.id)")
     }
+    var groupNames = Set(workspace.chats.flatMap(\.primaryAgent.toolGroupNames))
+    if configuration?.toolSources.contains(where: {
+      $0.enabled && $0.kind == MaiStandardToolsPlugin.factoryKind
+    }) == true {
+      groupNames.formUnion(
+        ["echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github"])
+    }
+    for group in groupNames {
+      values.append("/tools show \(group)")
+      values.append("/tools enable \(group)")
+      values.append("/tools disable \(group)")
+      values.append("/tools set \(group) ")
+    }
     return Array(Set(values))
   }
 
@@ -1943,6 +2233,9 @@ private struct MaiCLI {
               MaiWebFetchTool.name,
               MaiMastodonTool.name,
             ] + MaiGitHubTool.toolNames),
+          toolGroupNames: [
+            "echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github",
+          ],
           subagentNames: ["researcher"],
           useToolProxy: true),
         AgentDefinition(
@@ -1950,7 +2243,8 @@ private struct MaiCLI {
           instructions: "Investigate the delegated task and return a concise result.",
           provider: "openai",
           model: "your-model",
-          toolNames: [MaiCurrentTimeTool.name]),
+          toolNames: [MaiCurrentTimeTool.name],
+          toolGroupNames: ["datetime"]),
       ],
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
@@ -1967,7 +2261,7 @@ private struct MaiCLI {
     /agents             List configured agents
     /agent [use] ID     Set the current chat's primary agent
     /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
-    /tools              List tools available to the current agent
+    /tools              List logical tool groups for the current agent
     /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcps               List connected MCP servers
     /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
@@ -1995,6 +2289,21 @@ private struct MaiCLI {
       /chat clear         Clear the conversation and restore configured instructions
 
     Removing a tool call or result also removes its linked tool transaction.
+    """
+
+  private static let toolHelp = """
+    Tool group commands:
+      /tools list                    List logical tool groups
+      /tools show GROUP              Show tools and configurable options
+      /tools enable|disable GROUP    Change the current agent's allowed groups
+      /tools set GROUP OPTION VALUE  Configure a tool group and reload its tools
+      /tools unset GROUP OPTION      Restore an option's default
+
+    Examples:
+      /tools enable github
+      /tools set mastodon mastodonInstance mastodon.social
+      /tools set mastodon mastodonAPIKeyEnvironment MASTODON_API_KEY
+      /tools set mastodon mastodonWriteEnabled on
     """
 
   private static func printUsage() {
