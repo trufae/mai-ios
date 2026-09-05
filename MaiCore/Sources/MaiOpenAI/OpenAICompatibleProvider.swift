@@ -318,11 +318,15 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
   ) async throws -> ProviderResponse {
     let delegate = ProviderRedirectDelegate(originalRequest: request)
     let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
+#if !os(Linux)
     let urlTask = bytes.task
+#endif
     return try await withTaskCancellationHandler {
       try await decodedStream(bytes, response: response, resolver: resolver, emit: emit)
     } onCancel: {
+#if !os(Linux)
       urlTask.cancel()
+#endif
     }
   }
 
