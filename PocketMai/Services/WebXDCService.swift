@@ -1,5 +1,5 @@
-import Compression
 import Foundation
+import MaiDocuments
 
 struct WebXDCRevision: Codable, Identifiable, Sendable, Equatable {
   var number: Int
@@ -374,13 +374,13 @@ enum WebXDCLibrary {
       at: exportDirectory, withIntermediateDirectories: true)
     let url = exportDirectory.appendingPathComponent(
       "\(safeName.isEmpty ? "app" : safeName)-r\(revisionNumber).xdc")
-    try MiniZip.write(entries: entries, to: url)
+    try ZipArchiveWriter.write(entries: entries, to: url)
     return url
   }
 
   @discardableResult
   static func importXDC(from url: URL, fallbackName: String) throws -> WebXDCAppInfo {
-    let entries = try MiniZip.read(from: url)
+    let entries = try ZipArchiveReader.entries(at: url)
     guard entries.contains(where: { $0.path == "index.html" }) else {
       throw WebXDCError.message("The .xdc file has no index.html.")
     }
@@ -460,189 +460,5 @@ enum WebXDCLibrary {
     </body>
     </html>
     """
-  }
-}
-
-// MARK: - Minimal zip container support (Store + Deflate)
-
-enum MiniZip {
-  struct Entry {
-    let path: String
-    let data: Data
-  }
-
-  static func write(entries: [(path: String, data: Data)], to url: URL) throws {
-    var output = Data()
-    var central = Data()
-    var offsets: [(entry: (path: String, data: Data), offset: UInt32, crc: UInt32)] = []
-
-    for entry in entries {
-      guard let nameData = entry.path.data(using: .utf8) else { continue }
-      let crc = crc32(entry.data)
-      let offset = UInt32(output.count)
-      offsets.append((entry, offset, crc))
-      output.appendUInt32(0x0403_4b50)
-      output.appendUInt16(20)  // version needed
-      output.appendUInt16(0)  // flags
-      output.appendUInt16(0)  // method: store
-      output.appendUInt16(0)  // mod time
-      output.appendUInt16(0)  // mod date
-      output.appendUInt32(crc)
-      output.appendUInt32(UInt32(entry.data.count))
-      output.appendUInt32(UInt32(entry.data.count))
-      output.appendUInt16(UInt16(nameData.count))
-      output.appendUInt16(0)  // extra length
-      output.append(nameData)
-      output.append(entry.data)
-    }
-
-    for (entry, offset, crc) in offsets {
-      guard let nameData = entry.path.data(using: .utf8) else { continue }
-      central.appendUInt32(0x0201_4b50)
-      central.appendUInt16(20)  // version made by
-      central.appendUInt16(20)  // version needed
-      central.appendUInt16(0)  // flags
-      central.appendUInt16(0)  // method
-      central.appendUInt16(0)  // mod time
-      central.appendUInt16(0)  // mod date
-      central.appendUInt32(crc)
-      central.appendUInt32(UInt32(entry.data.count))
-      central.appendUInt32(UInt32(entry.data.count))
-      central.appendUInt16(UInt16(nameData.count))
-      central.appendUInt16(0)  // extra
-      central.appendUInt16(0)  // comment
-      central.appendUInt16(0)  // disk
-      central.appendUInt16(0)  // internal attrs
-      central.appendUInt32(0)  // external attrs
-      central.appendUInt32(offset)
-      central.append(nameData)
-    }
-
-    let centralOffset = UInt32(output.count)
-    output.append(central)
-    output.appendUInt32(0x0605_4b50)
-    output.appendUInt16(0)  // disk
-    output.appendUInt16(0)  // central dir disk
-    output.appendUInt16(UInt16(offsets.count))
-    output.appendUInt16(UInt16(offsets.count))
-    output.appendUInt32(UInt32(central.count))
-    output.appendUInt32(centralOffset)
-    output.appendUInt16(0)  // comment length
-    try output.write(to: url, options: [.atomic])
-  }
-
-  static func read(from url: URL) throws -> [Entry] {
-    let data = try Data(contentsOf: url)
-    guard let eocdOffset = findEndOfCentralDirectory(data) else {
-      throw WebXDCError.message("Not a valid .xdc (zip) file.")
-    }
-    let entryCount = Int(data.readUInt16(at: eocdOffset + 10))
-    var cursor = Int(data.readUInt32(at: eocdOffset + 16))
-    var entries: [Entry] = []
-    for _ in 0..<entryCount {
-      guard cursor + 46 <= data.count, data.readUInt32(at: cursor) == 0x0201_4b50 else { break }
-      let method = data.readUInt16(at: cursor + 10)
-      let compressedSize = Int(data.readUInt32(at: cursor + 20))
-      let uncompressedSize = Int(data.readUInt32(at: cursor + 24))
-      let nameLength = Int(data.readUInt16(at: cursor + 28))
-      let extraLength = Int(data.readUInt16(at: cursor + 30))
-      let commentLength = Int(data.readUInt16(at: cursor + 32))
-      let localOffset = Int(data.readUInt32(at: cursor + 42))
-      guard cursor + 46 + nameLength <= data.count,
-        let name = String(data: data.subdata(in: cursor + 46..<cursor + 46 + nameLength),
-          encoding: .utf8)
-      else { break }
-      cursor += 46 + nameLength + extraLength + commentLength
-
-      guard !name.hasSuffix("/") else { continue }
-      guard localOffset + 30 <= data.count, data.readUInt32(at: localOffset) == 0x0403_4b50 else {
-        continue
-      }
-      let localNameLength = Int(data.readUInt16(at: localOffset + 26))
-      let localExtraLength = Int(data.readUInt16(at: localOffset + 28))
-      let dataStart = localOffset + 30 + localNameLength + localExtraLength
-      guard dataStart + compressedSize <= data.count else { continue }
-      let raw = data.subdata(in: dataStart..<dataStart + compressedSize)
-      switch method {
-      case 0:
-        entries.append(Entry(path: name, data: raw))
-      case 8:
-        if let inflated = inflate(raw, expectedSize: uncompressedSize) {
-          entries.append(Entry(path: name, data: inflated))
-        }
-      default:
-        throw WebXDCError.message("Unsupported zip compression method \(method) for '\(name)'.")
-      }
-    }
-    return entries
-  }
-
-  private static func findEndOfCentralDirectory(_ data: Data) -> Int? {
-    let minOffset = max(0, data.count - 66_000)
-    var index = data.count - 22
-    while index >= minOffset {
-      if data.readUInt32(at: index) == 0x0605_4b50 {
-        return index
-      }
-      index -= 1
-    }
-    return nil
-  }
-
-  private static func inflate(_ data: Data, expectedSize: Int) -> Data? {
-    guard expectedSize > 0 else { return Data() }
-    let capacity = max(expectedSize, 64)
-    let destination = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
-    defer { destination.deallocate() }
-    let written = data.withUnsafeBytes { (source: UnsafeRawBufferPointer) -> Int in
-      guard let base = source.bindMemory(to: UInt8.self).baseAddress else { return 0 }
-      return compression_decode_buffer(
-        destination, capacity, base, data.count, nil, COMPRESSION_ZLIB)
-    }
-    guard written == expectedSize else { return nil }
-    return Data(bytes: destination, count: written)
-  }
-
-  private static let crcTable: [UInt32] = (0..<256).map { index -> UInt32 in
-    var value = UInt32(index)
-    for _ in 0..<8 {
-      value = (value & 1) == 1 ? (0xEDB8_8320 ^ (value >> 1)) : (value >> 1)
-    }
-    return value
-  }
-
-  static func crc32(_ data: Data) -> UInt32 {
-    var crc: UInt32 = 0xFFFF_FFFF
-    for byte in data {
-      crc = crcTable[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
-    }
-    return crc ^ 0xFFFF_FFFF
-  }
-}
-
-extension Data {
-  fileprivate mutating func appendUInt16(_ value: UInt16) {
-    append(UInt8(value & 0xFF))
-    append(UInt8(value >> 8))
-  }
-
-  fileprivate mutating func appendUInt32(_ value: UInt32) {
-    append(UInt8(value & 0xFF))
-    append(UInt8((value >> 8) & 0xFF))
-    append(UInt8((value >> 16) & 0xFF))
-    append(UInt8((value >> 24) & 0xFF))
-  }
-
-  fileprivate func readUInt16(at offset: Int) -> UInt16 {
-    guard offset >= 0, offset + 2 <= count else { return 0 }
-    return UInt16(self[startIndex + offset]) | (UInt16(self[startIndex + offset + 1]) << 8)
-  }
-
-  fileprivate func readUInt32(at offset: Int) -> UInt32 {
-    guard offset >= 0, offset + 4 <= count else { return 0 }
-    return UInt32(self[startIndex + offset])
-      | (UInt32(self[startIndex + offset + 1]) << 8)
-      | (UInt32(self[startIndex + offset + 2]) << 16)
-      | (UInt32(self[startIndex + offset + 3]) << 24)
   }
 }

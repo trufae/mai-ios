@@ -1,4 +1,5 @@
 import Foundation
+import MaiDocuments
 
 enum PocketMaiDirectories {
   private static let appPrivateDirectoryName = "PocketMai"

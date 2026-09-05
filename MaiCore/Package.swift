@@ -16,6 +16,7 @@ let package = Package(
     .library(name: "MaiPluginSDK", targets: ["MaiPluginSDK"]),
     .library(name: "MaiPluginHost", targets: ["MaiPluginHost"]),
     .library(name: "MaiVisual", targets: ["MaiVisual"]),
+    .library(name: "MaiDocuments", targets: ["MaiDocuments"]),
     .library(name: "MaiFixturePlugin", type: .dynamic, targets: ["MaiFixturePlugin"]),
     .executable(name: "pmai", targets: ["MaiCLI"]),
   ],
@@ -28,6 +29,7 @@ let package = Package(
     .target(name: "MaiMCP", dependencies: ["MaiCore"]),
     .target(name: "MaiStandardTools", dependencies: ["MaiCore"]),
     .target(name: "MaiVisionOCR", dependencies: ["MaiCore"]),
+    .target(name: "MaiDocuments", dependencies: ["MaiCore"]),
     .target(
       name: "CMaiPluginABI",
       publicHeadersPath: "include"),
@@ -51,14 +53,14 @@ let package = Package(
       name: "MaiCLI",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
-        "MaiVisual",
+        "MaiVisual", "MaiDocuments",
       ],
       path: "Sources/mai"),
     .testTarget(
       name: "MaiCoreTests",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
-        "MaiVisual",
+        "MaiVisual", "MaiDocuments",
         .product(name: "SwiftTUIRuntime", package: "swift-tui"),
         .product(name: "SwiftTUICLI", package: "swift-tui"),
       ]),

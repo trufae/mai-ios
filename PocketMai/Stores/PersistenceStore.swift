@@ -1,4 +1,5 @@
 import Foundation
+import MaiDocuments
 
 struct PersistedConversations: Codable {
   var conversations: [Conversation]
@@ -326,7 +327,7 @@ final class PersistenceStore: @unchecked Sendable {
       do {
         let filename = "PocketMai-corrupted-chats-\(Int(Date().timeIntervalSince1970))"
         let url = try ConversationExportFiles.url(filename: filename, fileExtension: "zip")
-        try MiniZip.write(entries: entries, to: url)
+        try ZipArchiveWriter.write(entries: entries, to: url)
         return CorruptedConversationExportResult(url: url, errorMessage: nil)
       } catch {
         return CorruptedConversationExportResult(

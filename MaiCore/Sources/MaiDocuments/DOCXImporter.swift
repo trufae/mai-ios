@@ -1,19 +1,23 @@
 import Foundation
 
+#if canImport(FoundationXML)
+  import FoundationXML
+#endif
+
 /// Converts a Word document (.docx) into Markdown so it can be attached as a text file.
 ///
 /// A .docx file is a zip container; the body lives in `word/document.xml` as
 /// WordprocessingML. Only the parts that map cleanly onto Markdown are kept:
 /// headings, emphasis, inline code, hyperlinks, lists and tables. Everything
 /// else (images, fields, tracked deletions, revision metadata) is dropped.
-enum DOCXImporter {
-  enum ImportError: LocalizedError {
+public enum DOCXImporter {
+  public enum ImportError: LocalizedError, Equatable, Sendable {
     case tooLarge
     case unreadableArchive
     case missingDocument
     case emptyDocument
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
       switch self {
       case .tooLarge:
         "Word attachments are limited to 25 MB."
@@ -27,16 +31,20 @@ enum DOCXImporter {
     }
   }
 
-  static let maximumArchiveBytes = 25_000_000
+  public static let maximumArchiveBytes = 25_000_000
 
-  static func markdown(from url: URL) throws -> String {
-    let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+  public static func markdown(from url: URL) throws -> String {
+    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+    let fileSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
     guard fileSize <= maximumArchiveBytes else { throw ImportError.tooLarge }
+    return try markdown(from: try Data(contentsOf: url))
+  }
 
-    // MiniZip (see WebXDCService) reads both stored and deflated zip entries.
-    let entries: [MiniZip.Entry]
+  public static func markdown(from data: Data) throws -> String {
+    guard data.count <= maximumArchiveBytes else { throw ImportError.tooLarge }
+    let entries: [ZipArchiveEntry]
     do {
-      entries = try MiniZip.read(from: url)
+      entries = try ZipArchiveReader.entries(in: data)
     } catch {
       throw ImportError.unreadableArchive
     }
@@ -49,7 +57,7 @@ enum DOCXImporter {
   }
 
   /// Converts already-extracted document parts. Exposed for testing.
-  static func markdown(parts: [String: Data]) throws -> String {
+  public static func markdown(parts: [String: Data]) throws -> String {
     guard let document = parts["word/document.xml"] else { throw ImportError.missingDocument }
     let numbering = NumberingIndex(xml: parts["word/numbering.xml"])
     let relationships = RelationshipIndex(xml: parts["word/_rels/document.xml.rels"])
