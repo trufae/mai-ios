@@ -55,9 +55,16 @@ let package = Package(
       name: "MaiCLI",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
-        "MaiVisual", "MaiDocuments", "MaiMarkdown",
+        "MaiDocuments", "MaiMarkdown",
+        .target(name: "MaiVisual", condition: .when(platforms: [.macOS, .linux])),
       ],
-      path: "Sources/mai"),
+      path: "Sources/mai",
+      swiftSettings: [
+        .define("PMAI_HAS_VISUAL", .when(platforms: [.macOS, .linux]))
+      ],
+      linkerSettings: [
+        .linkedLibrary("z", .when(platforms: [.android]))
+      ]),
     .testTarget(
       name: "MaiCoreTests",
       dependencies: [
