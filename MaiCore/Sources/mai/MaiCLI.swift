@@ -1098,6 +1098,29 @@ private struct MaiCLI {
     }
   }
 
+  private static func changeWorkingDirectory(_ argument: String, terminal: TerminalWriter) async {
+    let path = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !path.isEmpty else {
+      await terminal.line("Usage: /cd PATH")
+      return
+    }
+    let expanded = NSString(string: path).expandingTildeInPath
+    let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let target = URL(fileURLWithPath: expanded, relativeTo: current).standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      await terminal.line("error: Not a directory: \(target.path)", to: .standardError)
+      return
+    }
+    guard FileManager.default.changeCurrentDirectoryPath(target.path) else {
+      await terminal.line("error: Could not change directory to \(target.path)", to: .standardError)
+      return
+    }
+    await terminal.line(FileManager.default.currentDirectoryPath)
+  }
+
   private static func handleCommand(
     _ input: String,
     session: inout REPLSession,
@@ -1117,6 +1140,10 @@ private struct MaiCLI {
       return true
     case "/help":
       await terminal.line(replHelp)
+    case "/cwd", "/pwd":
+      await terminal.line(FileManager.default.currentDirectoryPath)
+    case "/cd":
+      await changeWorkingDirectory(argument, terminal: terminal)
     case "/set":
       await handleSetCommand(
         argument,
@@ -2610,7 +2637,7 @@ private struct MaiCLI {
       "/set ui.bgline blue", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
       "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
-      "/plugins",
+      "/cwd", "/pwd", "/cd ", "/plugins",
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/agents",
       "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
@@ -2793,6 +2820,8 @@ private struct MaiCLI {
     /set                   List mutable session and terminal UI settings
     /set yolo BOOL         Permit all tool calls for this session (on/off)
     /set ui.markdown BOOL  Render replies as styled markdown (on/off)
+    /cwd                  Print the current working directory
+    /cd PATH              Change the current working directory
     /set ui.               List terminal UI settings
     /set ui.SETTING VALUE  Set colors or bold input and persist the change
     /plugins            List statically and dynamically loaded plugins

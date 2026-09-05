@@ -9,6 +9,7 @@ public struct MaiFileWorkspaceConfiguration: Equatable, Sendable {
   public var rootURL: URL
   public var displayName: String
   public var writeEnabled: Bool
+  public var followsProcessWorkingDirectory: Bool
   public var isSecurityScoped: Bool
   public var hiddenRootEntryNames: Set<String>
 
@@ -16,12 +17,14 @@ public struct MaiFileWorkspaceConfiguration: Equatable, Sendable {
     rootURL: URL,
     displayName: String? = nil,
     writeEnabled: Bool = true,
+    followsProcessWorkingDirectory: Bool = false,
     isSecurityScoped: Bool = false,
     hiddenRootEntryNames: Set<String> = []
   ) {
     self.rootURL = rootURL.standardizedFileURL
     self.displayName = displayName ?? rootURL.lastPathComponent
     self.writeEnabled = writeEnabled
+    self.followsProcessWorkingDirectory = followsProcessWorkingDirectory
     self.isSecurityScoped = isSecurityScoped
     self.hiddenRootEntryNames = hiddenRootEntryNames
   }
@@ -38,10 +41,11 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case write = "files_write"
     case rename = "files_rename"
     case delete = "files_delete"
+    case chdir = "files_chdir"
 
     var changesFiles: Bool {
       switch self {
-      case .list, .find, .grep, .read, .readDocument: false
+      case .list, .find, .grep, .read, .readDocument, .chdir: false
       case .write, .rename, .delete: true
       }
     }
@@ -98,6 +102,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
         return try workspace.rename(arguments)
       case .delete:
         return try workspace.delete(arguments)
+      case .chdir:
+        return try workspace.chdir(arguments)
       }
     } catch is CancellationError {
       throw CancellationError()
@@ -280,6 +286,17 @@ public struct MaiFileWorkspaceTool: AgentTool {
           idempotent: false,
           openWorld: false,
           approval: .dangerous))
+    case .chdir:
+      return ToolDefinition(
+        name: operation.rawValue,
+        description: "Change the current directory used by the Files workspace.",
+        parameters: [ToolParameterDef(
+          name: "path",
+          type: "string",
+          description: "Directory path, relative to the current directory or absolute.",
+          required: true)],
+        annotations: ToolAnnotations(
+          readOnly: false, idempotent: false, openWorld: false, approval: .confirm))
     }
   }
 }
@@ -294,16 +311,40 @@ private struct MaiFileWorkspace: Sendable {
   let rootURL: URL
 
   init(configuration: MaiFileWorkspaceConfiguration) throws {
+    let configuredRoot = configuration.followsProcessWorkingDirectory
+      ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+      : configuration.rootURL
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(
-      atPath: configuration.rootURL.path,
+      atPath: configuredRoot.path,
       isDirectory: &isDirectory),
       isDirectory.boolValue
     else {
-      throw MaiFileWorkspaceError.invalidRoot(configuration.rootURL.path)
+      throw MaiFileWorkspaceError.invalidRoot(configuredRoot.path)
     }
     self.configuration = configuration
-    rootURL = configuration.rootURL.resolvingSymlinksInPath().standardizedFileURL
+    rootURL = configuredRoot.resolvingSymlinksInPath().standardizedFileURL
+  }
+
+  func chdir(_ arguments: [String: JSONValue]) throws -> ToolOutput {
+    guard configuration.followsProcessWorkingDirectory else {
+      throw MaiFileWorkspaceError.invalidPath("files_chdir requires a dynamic workspace")
+    }
+    guard let rawPath = arguments["path"]?.stringValue,
+      !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { throw MaiFileWorkspaceError.missingArgument("path") }
+    let expanded = NSString(string: rawPath).expandingTildeInPath
+    let target = URL(fileURLWithPath: expanded, relativeTo: rootURL).standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else { throw MaiFileWorkspaceError.notDirectory(target.path) }
+    guard FileManager.default.changeCurrentDirectoryPath(target.path) else {
+      throw MaiFileWorkspaceError.invalidPath(target.path)
+    }
+    return ToolOutput(
+      content: [.text(FileManager.default.currentDirectoryPath)],
+      structuredContent: .object(["cwd": .string(FileManager.default.currentDirectoryPath)]))
   }
 
   func list(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -828,6 +869,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
   case writeTooLarge(Int)
   case writeDisabled
   case invalidPattern(String)
+  case invalidPath(String)
 
   var errorDescription: String? {
     switch self {
@@ -846,6 +888,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .writeTooLarge(let limit): "A single write is limited to \(limit) bytes."
     case .writeDisabled: "File changes are disabled for this tool source."
     case .invalidPattern(let detail): "Invalid regular expression: \(detail)"
+    case .invalidPath(let path): "Could not change the current directory to '\(path)'."
     }
   }
 }

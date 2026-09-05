@@ -23,6 +23,9 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
   public init() {}
 
   public func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
+    let configuredFilesRoot = context.options["filesRoot"]?.stringValue
+      ?? context.environment["PMAI_FILES_ROOT"]
+    let followsWorkingDirectory = configuredFilesRoot == nil || configuredFilesRoot == "."
     let filesRoot = NSString(
       string: context.string(
         "filesRoot",
@@ -32,7 +35,8 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
     let fileConfiguration = MaiFileWorkspaceConfiguration(
       rootURL: URL(fileURLWithPath: filesRoot),
       displayName: context.options["filesDisplayName"]?.stringValue,
-      writeEnabled: context.options["filesWriteEnabled"]?.boolValue ?? true)
+      writeEnabled: context.options["filesWriteEnabled"]?.boolValue ?? true,
+      followsProcessWorkingDirectory: followsWorkingDirectory)
     let webSearchProvider =
       context.options["webSearchProvider"]?.stringValue
       .flatMap(MaiWebSearchProvider.init(rawValue:)) ?? .exa
@@ -106,7 +110,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
         id: "files",
         displayName: "Files",
         description:
-          "List, find, grep, read, convert, write, append, rename, and delete files in one workspace.",
+          "List, find, grep, read, convert, write, append, rename, delete, and change directory in one workspace.",
         toolNames: Set([MaiReadTextFileTool.name] + MaiFileWorkspaceTool.toolNames),
         options: [
           .init(
