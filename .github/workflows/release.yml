@@ -33,7 +33,9 @@ jobs:
           test "$(uname -m)" = "${{ matrix.runner_arch }}"
 
       - name: Build release CLI
-        run: swift build --package-path MaiCore -c release --product pmai
+        run: |
+          swift build --package-path MaiCore -c release --product pmai -Xswiftc -Osize
+          strip -x MaiCore/.build/release/pmai
 
       - name: Package CLI
         run: |
