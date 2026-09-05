@@ -39,6 +39,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case read = "files_read"
     case readDocument = "files_read_document"
     case readIndex = "files_read_index"
+    case getFunction = "files_get_function"
+    case setFunction = "files_set_function"
     case readRange = "files_read_range"
     case replaceRange = "files_replace_range"
     case patch = "files_patch"
@@ -49,14 +51,18 @@ public struct MaiFileWorkspaceTool: AgentTool {
 
     var changesFiles: Bool {
       switch self {
-      case .list, .find, .grep, .read, .readDocument, .readIndex, .readRange, .chdir: false
-      case .replaceRange, .patch, .write, .rename, .delete: true
+      case .list, .find, .grep, .read, .readDocument, .readIndex, .getFunction, .readRange,
+        .chdir:
+        false
+      case .setFunction, .replaceRange, .patch, .write, .rename, .delete: true
       }
     }
   }
 
   public static let toolNames = Operation.allCases.map(\.rawValue)
-  public static let advancedOperations: Set<Operation> = [.readIndex, .readRange, .replaceRange, .patch]
+  public static let advancedOperations: Set<Operation> = [
+    .readIndex, .getFunction, .setFunction, .readRange, .replaceRange, .patch,
+  ]
 
   public let operation: Operation
   public let configuration: MaiFileWorkspaceConfiguration
@@ -73,7 +79,7 @@ public struct MaiFileWorkspaceTool: AgentTool {
     includeAdvancedTools: Bool = true
   ) -> [MaiFileWorkspaceTool] {
     Operation.allCases.compactMap { operation in
-      guard (includeAdvancedTools || !advancedOperations.contains(operation)),
+      guard includeAdvancedTools || !advancedOperations.contains(operation),
         configuration.writeEnabled || !operation.changesFiles
       else { return nil }
       return MaiFileWorkspaceTool(operation: operation, configuration: configuration)
@@ -106,6 +112,10 @@ public struct MaiFileWorkspaceTool: AgentTool {
         return try workspace.readDocument(arguments)
       case .readIndex:
         return try workspace.readIndex(arguments)
+      case .getFunction:
+        return try workspace.getFunction(arguments)
+      case .setFunction:
+        return try workspace.setFunction(arguments)
       case .readRange:
         return try workspace.readRange(arguments)
       case .replaceRange:
@@ -249,56 +259,129 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case .readIndex:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "List functions and types in source files, or headings in documents, with 1-based line numbers in '\(workspaceName)'.",
+        description:
+          "List functions and types in source files, or headings in documents, with 1-based line numbers in '\(workspaceName)'.",
         parameters: [path],
         annotations: ToolAnnotations(
           readOnly: true, idempotent: true, openWorld: false, approval: .confirm))
+    case .getFunction:
+      return ToolDefinition(
+        name: operation.rawValue,
+        description:
+          "Read one function from a source file in '\(workspaceName)' and report its line and UTF-8 byte bounds. Supports common brace, indentation, and end-delimited languages, including HolyC. Returns a revision required by files_set_function.",
+        parameters: [
+          path,
+          ToolParameterDef(
+            name: "name", type: "string",
+            description: "Function or method name. Unqualified names also match qualified names.",
+            required: true),
+          ToolParameterDef(
+            name: "line", type: "integer",
+            description: "Exact 1-based declaration line to disambiguate overloads.",
+            required: false),
+        ],
+        annotations: ToolAnnotations(
+          readOnly: true, idempotent: true, openWorld: false, approval: .confirm))
+    case .setFunction:
+      return ToolDefinition(
+        name: operation.rawValue,
+        description:
+          "Atomically replace only a named function body in a source file in '\(workspaceName)'. Uses the latest file contents so edits to other functions are preserved, rejects stale revisions, validates the new structural bounds, and returns a unified diff.",
+        parameters: [
+          path,
+          ToolParameterDef(
+            name: "name", type: "string",
+            description: "Function or method name used with files_get_function.",
+            required: true),
+          ToolParameterDef(
+            name: "body", type: "string",
+            description:
+              "Complete replacement body between the existing braces or declaration/end lines, including desired whitespace and indentation but excluding the delimiters.",
+            required: true),
+          ToolParameterDef(
+            name: "revision", type: "string",
+            description:
+              "Current body revision returned by files_get_function. The write fails if that function changed.",
+            required: true),
+          ToolParameterDef(
+            name: "line", type: "integer",
+            description: "Exact 1-based declaration line to disambiguate overloads.",
+            required: false),
+        ],
+        annotations: ToolAnnotations(
+          readOnly: false, idempotent: false, openWorld: false, approval: .confirm))
     case .readRange:
       return ToolDefinition(
         name: operation.rawValue,
         description: "Read a 1-based inclusive line range from a file in '\(workspaceName)'.",
         parameters: [
           path,
-          ToolParameterDef(name: "start_line", type: "integer", description: "First line, 1-based. Default: 1.", required: false),
-          ToolParameterDef(name: "end_line", type: "integer", description: "Last line, inclusive. Default: start_line + 199.", required: false),
+          ToolParameterDef(
+            name: "start_line", type: "integer", description: "First line, 1-based. Default: 1.",
+            required: false),
+          ToolParameterDef(
+            name: "end_line", type: "integer",
+            description: "Last line, inclusive. Default: start_line + 199.", required: false),
         ],
         annotations: ToolAnnotations(
           readOnly: true, idempotent: true, openWorld: false, approval: .confirm))
     case .replaceRange:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Replace a 1-based inclusive line range in a UTF-8 text file in '\(workspaceName)'. Set end_line to start_line - 1 to insert; omit content to delete.",
+        description:
+          "Replace a 1-based inclusive line range in a UTF-8 text file in '\(workspaceName)'. Set end_line to start_line - 1 to insert; omit content to delete.",
         parameters: [
           path,
-          ToolParameterDef(name: "start_line", type: "integer", description: "First line to replace, 1-based.", required: true),
-          ToolParameterDef(name: "end_line", type: "integer", description: "Last line, inclusive. Default: start_line.", required: false),
-          ToolParameterDef(name: "content", type: "string", description: "Replacement text; may contain multiple lines. Omit to delete.", required: false),
+          ToolParameterDef(
+            name: "start_line", type: "integer", description: "First line to replace, 1-based.",
+            required: true),
+          ToolParameterDef(
+            name: "end_line", type: "integer",
+            description: "Last line, inclusive. Default: start_line.", required: false),
+          ToolParameterDef(
+            name: "content", type: "string",
+            description: "Replacement text; may contain multiple lines. Omit to delete.",
+            required: false),
         ],
         annotations: ToolAnnotations(
           readOnly: false, idempotent: false, openWorld: false, approval: .confirm))
     case .patch:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Patch a UTF-8 text file in '\(workspaceName)' by replacing a unique literal string or regular-expression match. This avoids fragile byte and line offsets.",
+        description:
+          "Patch a UTF-8 text file in '\(workspaceName)' by replacing a unique literal string or regular-expression match. This avoids fragile byte and line offsets.",
         parameters: [
           path,
-          ToolParameterDef(name: "find", type: "string", description: "Exact text to find, or a regular expression when regex is true. Must match exactly expected_matches times.", required: true),
-          ToolParameterDef(name: "replace", type: "string", description: "Replacement text. Use an empty string to delete the match.", required: true),
-          ToolParameterDef(name: "regex", type: "boolean", description: "Interpret find as a regular expression. Default: false.", required: false),
-          ToolParameterDef(name: "expected_matches", type: "integer", description: "Required number of matches, 1-100. Default: 1.", required: false),
+          ToolParameterDef(
+            name: "find", type: "string",
+            description:
+              "Exact text to find, or a regular expression when regex is true. Must match exactly expected_matches times.",
+            required: true),
+          ToolParameterDef(
+            name: "replace", type: "string",
+            description: "Replacement text. Use an empty string to delete the match.",
+            required: true),
+          ToolParameterDef(
+            name: "regex", type: "boolean",
+            description: "Interpret find as a regular expression. Default: false.", required: false),
+          ToolParameterDef(
+            name: "expected_matches", type: "integer",
+            description: "Required number of matches, 1-100. Default: 1.", required: false),
         ],
         annotations: ToolAnnotations(
           readOnly: false, idempotent: false, openWorld: false, approval: .confirm))
     case .write:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Create a new UTF-8 file, append to a file, or create a folder in '\(workspaceName)'. Replacing an existing file's ENTIRE contents requires overwrite: true. Never use this to modify only part of an existing file: use files_patch (preferred) or files_replace_range instead.",
+        description:
+          "Create a new UTF-8 file, append to a file, or create a folder in '\(workspaceName)'. Replacing an existing file's ENTIRE contents requires overwrite: true. Never use this to modify only part of an existing file: use files_patch (preferred) or files_replace_range instead.",
         parameters: [
           path,
           ToolParameterDef(
             name: "content",
             type: "string",
-            description: "The complete contents of the file, unless append is true. Omit only when create_directory is true.",
+            description:
+              "The complete contents of the file, unless append is true. Omit only when create_directory is true.",
             required: false),
           ToolParameterDef(
             name: "append",
@@ -308,7 +391,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
           ToolParameterDef(
             name: "overwrite",
             type: "boolean",
-            description: "Required to replace an existing non-empty file. Prefer files_patch for partial edits. Default: false.",
+            description:
+              "Required to replace an existing non-empty file. Prefer files_patch for partial edits. Default: false.",
             required: false),
           ToolParameterDef(
             name: "create_directory",
@@ -354,11 +438,13 @@ public struct MaiFileWorkspaceTool: AgentTool {
       return ToolDefinition(
         name: operation.rawValue,
         description: "Change the current directory used by the Files workspace.",
-        parameters: [ToolParameterDef(
-          name: "path",
-          type: "string",
-          description: "Directory path, relative to the current directory or absolute.",
-          required: true)],
+        parameters: [
+          ToolParameterDef(
+            name: "path",
+            type: "string",
+            description: "Directory path, relative to the current directory or absolute.",
+            required: true)
+        ],
         annotations: ToolAnnotations(
           readOnly: false, idempotent: false, openWorld: false, approval: .confirm))
     }
@@ -370,19 +456,23 @@ private struct MaiFileWorkspace: Sendable {
   private static let maximumReadLimit = 500_000
   private static let maximumWriteBytes = 1_000_000
   private static let maximumEditableFileBytes = 10_000_000
+  private static let maximumSourceFileBytes = 50_000_000
   private static let maximumListEntries = 500
+  private static let functionMutationLock = NSLock()
 
   let configuration: MaiFileWorkspaceConfiguration
   let rootURL: URL
 
   init(configuration: MaiFileWorkspaceConfiguration) throws {
-    let configuredRoot = configuration.followsProcessWorkingDirectory
+    let configuredRoot =
+      configuration.followsProcessWorkingDirectory
       ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
       : configuration.rootURL
     var isDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(
-      atPath: configuredRoot.path,
-      isDirectory: &isDirectory),
+    guard
+      FileManager.default.fileExists(
+        atPath: configuredRoot.path,
+        isDirectory: &isDirectory),
       isDirectory.boolValue
     else {
       throw MaiFileWorkspaceError.invalidRoot(configuredRoot.path)
@@ -424,14 +514,15 @@ private struct MaiFileWorkspace: Sendable {
     let entries = try FileManager.default.contentsOfDirectory(
       at: directory,
       includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey],
-      options: [.skipsHiddenFiles])
-      .filter {
-        directory.path != rootURL.path
-          || !configuration.hiddenRootEntryNames.contains($0.lastPathComponent)
-      }
-      .sorted {
-        $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
-      }
+      options: [.skipsHiddenFiles]
+    )
+    .filter {
+      directory.path != rootURL.path
+        || !configuration.hiddenRootEntryNames.contains($0.lastPathComponent)
+    }
+    .sorted {
+      $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+    }
     let visible = Array(entries.prefix(Self.maximumListEntries))
     let rows: [JSONValue] = visible.map { entry in
       let values = try? entry.resourceValues(
@@ -439,7 +530,8 @@ private struct MaiFileWorkspace: Sendable {
       return .object([
         "path": .string(relativePath(entry)),
         "kind": .string(
-          values?.isSymbolicLink == true ? "symlink" : values?.isDirectory == true ? "directory" : "file"),
+          values?.isSymbolicLink == true
+            ? "symlink" : values?.isDirectory == true ? "directory" : "file"),
         "bytes": .integer(values?.fileSize ?? 0),
       ])
     }
@@ -495,7 +587,8 @@ private struct MaiFileWorkspace: Sendable {
         "score": .integer(match.score),
       ])
     }
-    let text = selected.isEmpty
+    let text =
+      selected.isEmpty
       ? "No files matched '\(query)'."
       : selected.map { relativePath($0.url) + ($0.kind == "directory" ? "/" : "") }
         .joined(separator: "\n")
@@ -664,11 +757,13 @@ private struct MaiFileWorkspace: Sendable {
     let conversion: String?
     let entries: [MaiDocumentIndexer.Entry]
     if extension_ == "json" {
-      let rendered = try JSONDocumentImporter.render(data: Data(contentsOf: file, options: [.mappedIfSafe]))
+      let rendered = try JSONDocumentImporter.render(
+        data: Data(contentsOf: file, options: [.mappedIfSafe]))
       text = rendered.text
       conversion = "converted from JSON to an indented outline"
       entries = rendered.sections.map {
-        MaiDocumentIndexer.Entry(line: $0.line, title: String(repeating: "  ", count: $0.depth) + $0.title)
+        MaiDocumentIndexer.Entry(
+          line: $0.line, title: String(repeating: "  ", count: $0.depth) + $0.title)
       }
     } else {
       let attachment = try DocumentAttachmentImporter.attachment(at: file)
@@ -677,23 +772,109 @@ private struct MaiFileWorkspace: Sendable {
       }
       text = contentText
       conversion = attachment.note
-      entries = conversion == nil
-        ? (MaiDocumentIndexer.sourceIndex(text: text, fileExtension: extension_) ?? MaiDocumentIndexer.markdownIndex(text: text))
+      entries =
+        conversion == nil
+        ? (MaiDocumentIndexer.sourceIndex(text: text, fileExtension: extension_)
+          ?? MaiDocumentIndexer.markdownIndex(text: text))
         : MaiDocumentIndexer.markdownIndex(text: text)
     }
     guard !entries.isEmpty else {
       return ToolOutput(text: "No index entries found in \(display).")
     }
-    var lines = ["Index of \(display)\(conversion.map { " (\($0))" } ?? ""): \(entries.count) entries"]
+    var lines = [
+      "Index of \(display)\(conversion.map { " (\($0))" } ?? ""): \(entries.count) entries"
+    ]
     lines.append(contentsOf: entries.prefix(400).map { "\($0.line): \($0.title)" })
     if entries.count > 400 { lines.append("Truncated: showing 400 of \(entries.count) entries.") }
     return ToolOutput(
       content: [.text(lines.joined(separator: "\n"))],
       structuredContent: .object([
         "path": .string(display),
-        "entries": .array(entries.prefix(400).map { .object(["line": .integer($0.line), "title": .string($0.title)]) }),
+        "entries": .array(
+          entries.prefix(400).map {
+            .object(["line": .integer($0.line), "title": .string($0.title)])
+          }),
         "truncated": .bool(entries.count > 400),
       ]))
+  }
+
+  func getFunction(_ arguments: [String: JSONValue]) throws -> ToolOutput {
+    let rawPath = try requiredPath(arguments, key: "path")
+    let name = try requiredText(arguments, key: "name")
+    let file = try resolve(rawPath, allowRoot: false, mustExist: true)
+    let source = try sourceText(at: file, path: rawPath)
+    let match = try functionMatch(
+      named: name,
+      line: arguments["line"]?.intValue,
+      text: source.text,
+      file: file,
+      path: rawPath)
+    return functionOutput(match, data: source.data, path: rawPath)
+  }
+
+  func setFunction(_ arguments: [String: JSONValue]) throws -> ToolOutput {
+    try requireWriteAccess()
+    let rawPath = try requiredPath(arguments, key: "path")
+    let name = try requiredText(arguments, key: "name")
+    guard let body = arguments["body"]?.stringValue else {
+      throw MaiFileWorkspaceError.missingArgument("body")
+    }
+    let expectedRevision = try requiredText(arguments, key: "revision")
+    let bodyData = Data(body.utf8)
+    guard bodyData.count <= Self.maximumWriteBytes else {
+      throw MaiFileWorkspaceError.writeTooLarge(Self.maximumWriteBytes)
+    }
+    let file = try resolve(rawPath, allowRoot: false, mustExist: true)
+    let requestedLine = arguments["line"]?.intValue
+
+    return try Self.functionMutationLock.withLock {
+      let source = try sourceText(at: file, path: rawPath)
+      let match = try functionMatch(
+        named: name,
+        line: requestedLine,
+        text: source.text,
+        file: file,
+        path: rawPath)
+      let bodyRange = match.bodyByteOffset..<(match.bodyByteOffset + match.bodyByteSize)
+      let currentRevision = MaiSourceFunctionLocator.revision(of: source.data[bodyRange])
+      guard currentRevision == expectedRevision else {
+        throw MaiFileWorkspaceError.functionChanged(name, currentRevision)
+      }
+
+      var updated = Data()
+      updated.reserveCapacity(source.data.count - match.bodyByteSize + bodyData.count)
+      updated.append(source.data[..<match.bodyByteOffset])
+      updated.append(bodyData)
+      updated.append(source.data[(match.bodyByteOffset + match.bodyByteSize)...])
+      guard updated.count <= Self.maximumSourceFileBytes else {
+        throw MaiFileWorkspaceError.fileTooLarge(Self.maximumSourceFileBytes)
+      }
+      guard let updatedText = String(data: updated, encoding: .utf8) else {
+        throw MaiFileWorkspaceError.invalidUTF8(displayPath(rawPath))
+      }
+      let validated = try functionMatch(
+        named: name,
+        line: match.declarationLine,
+        text: updatedText,
+        file: file,
+        path: rawPath)
+      guard validated.bodyByteOffset == match.bodyByteOffset,
+        validated.bodyByteSize == bodyData.count
+      else {
+        throw MaiFileWorkspaceError.invalidFunctionBody(name)
+      }
+
+      let diff = MaiUnifiedDiff.render(
+        old: source.text, new: updatedText, path: displayPath(rawPath))
+      if updated != source.data { try updated.write(to: file, options: [.atomic]) }
+      let newRevision = MaiSourceFunctionLocator.revision(
+        of: updated[validated.bodyByteOffset..<(validated.bodyByteOffset + validated.bodyByteSize)])
+      return mutationOutput(
+        "Replaced body of \(name) in \(displayPath(rawPath)).",
+        path: rawPath,
+        diff: diff,
+        extra: functionMetadata(validated, revision: newRevision))
+    }
   }
 
   func readRange(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -714,10 +895,16 @@ private struct MaiFileWorkspace: Sendable {
     let start = arguments["start_line"]?.intValue ?? 1
     let end = arguments["end_line"]?.intValue ?? start + 199
     guard start >= 1, end >= start else { throw MaiFileWorkspaceError.invalidLineRange }
-    guard start <= lines.count else { throw MaiFileWorkspaceError.lineOutOfRange(start, lines.count) }
+    guard start <= lines.count else {
+      throw MaiFileWorkspaceError.lineOutOfRange(start, lines.count)
+    }
     let finalEnd = min(end, min(lines.count, start + 999))
     let rendered = (start...finalEnd).map { "\($0): \(lines[$0 - 1])" }
-    return ToolOutput(content: [.text((["File: \(displayPath(rawPath)), lines \(start)-\(finalEnd) of \(lines.count)"] + rendered).joined(separator: "\n"))])
+    return ToolOutput(content: [
+      .text(
+        (["File: \(displayPath(rawPath)), lines \(start)-\(finalEnd) of \(lines.count)"] + rendered)
+          .joined(separator: "\n"))
+    ])
   }
 
   func replaceRange(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -728,11 +915,18 @@ private struct MaiFileWorkspace: Sendable {
     let start = try requiredInteger(arguments, key: "start_line")
     let end = arguments["end_line"]?.intValue ?? start
     let replacement = arguments["content"]?.stringValue ?? ""
-    guard replacement.utf8.count <= Self.maximumWriteBytes else { throw MaiFileWorkspaceError.writeTooLarge(Self.maximumWriteBytes) }
-    let edit = try Self.replacingLineRange(in: text, startLine: start, endLine: end, replacement: replacement)
+    guard replacement.utf8.count <= Self.maximumWriteBytes else {
+      throw MaiFileWorkspaceError.writeTooLarge(Self.maximumWriteBytes)
+    }
+    let edit = try Self.replacingLineRange(
+      in: text, startLine: start, endLine: end, replacement: replacement)
     try Data(edit.text.utf8).write(to: file, options: .atomic)
-    let action = edit.removedLineCount == 0 ? "Inserted" : edit.insertedLineCount == 0 ? "Deleted" : "Replaced"
-    return mutationOutput("\(action) lines in \(displayPath(rawPath)); now \(edit.totalLineCount) lines.", path: rawPath)
+    let action =
+      edit.removedLineCount == 0 ? "Inserted" : edit.insertedLineCount == 0 ? "Deleted" : "Replaced"
+    return mutationOutput(
+      "\(action) lines in \(displayPath(rawPath)); now \(edit.totalLineCount) lines.",
+      path: rawPath,
+      diff: MaiUnifiedDiff.render(old: text, new: edit.text, path: displayPath(rawPath)))
   }
 
   func patch(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -762,11 +956,16 @@ private struct MaiFileWorkspace: Sendable {
         throw MaiFileWorkspaceError.emptyPatchMatch
       }
       matchCount = matches.count
-      guard matchCount == expected else { throw MaiFileWorkspaceError.patchMatchCount(expected, matchCount) }
-      patched = expression.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+      guard matchCount == expected else {
+        throw MaiFileWorkspaceError.patchMatchCount(expected, matchCount)
+      }
+      patched = expression.stringByReplacingMatches(
+        in: text, range: range, withTemplate: replacement)
     } else {
       matchCount = text.components(separatedBy: find).count - 1
-      guard matchCount == expected else { throw MaiFileWorkspaceError.patchMatchCount(expected, matchCount) }
+      guard matchCount == expected else {
+        throw MaiFileWorkspaceError.patchMatchCount(expected, matchCount)
+      }
       patched = text.replacingOccurrences(of: find, with: replacement)
     }
     let data = Data(patched.utf8)
@@ -774,7 +973,10 @@ private struct MaiFileWorkspace: Sendable {
       throw MaiFileWorkspaceError.fileTooLarge(Self.maximumEditableFileBytes)
     }
     try data.write(to: file, options: [.atomic])
-    return mutationOutput("Patched \(matchCount) match\(matchCount == 1 ? "" : "es") in \(displayPath(rawPath)).", path: rawPath)
+    return mutationOutput(
+      "Patched \(matchCount) match\(matchCount == 1 ? "" : "es") in \(displayPath(rawPath)).",
+      path: rawPath,
+      diff: MaiUnifiedDiff.render(old: text, new: patched, path: displayPath(rawPath)))
   }
 
   func write(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -832,12 +1034,14 @@ private struct MaiFileWorkspace: Sendable {
       throw MaiFileWorkspaceError.alreadyExists(displayPath(newPath))
     }
     var parentIsDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(
-      atPath: destination.deletingLastPathComponent().path,
-      isDirectory: &parentIsDirectory),
+    guard
+      FileManager.default.fileExists(
+        atPath: destination.deletingLastPathComponent().path,
+        isDirectory: &parentIsDirectory),
       parentIsDirectory.boolValue
     else {
-      throw MaiFileWorkspaceError.notDirectory(relativePath(destination.deletingLastPathComponent()))
+      throw MaiFileWorkspaceError.notDirectory(
+        relativePath(destination.deletingLastPathComponent()))
     }
     try FileManager.default.moveItem(at: source, to: destination)
     return mutationOutput(
@@ -874,6 +1078,84 @@ private struct MaiFileWorkspace: Sendable {
     return text
   }
 
+  private func sourceText(at file: URL, path: String) throws -> (data: Data, text: String) {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory),
+      !isDirectory.boolValue
+    else { throw MaiFileWorkspaceError.notFile(displayPath(path)) }
+    let data = try Data(contentsOf: file, options: [.mappedIfSafe])
+    guard data.count <= Self.maximumSourceFileBytes else {
+      throw MaiFileWorkspaceError.fileTooLarge(Self.maximumSourceFileBytes)
+    }
+    guard !looksBinary(data) else { throw MaiFileWorkspaceError.binary(displayPath(path)) }
+    guard let text = String(data: data, encoding: .utf8) else {
+      throw MaiFileWorkspaceError.invalidUTF8(displayPath(path))
+    }
+    return (data, text)
+  }
+
+  private func functionMatch(
+    named name: String,
+    line: Int?,
+    text: String,
+    file: URL,
+    path: String
+  ) throws -> MaiSourceFunctionLocator.Match {
+    var matches = MaiSourceFunctionLocator.matches(
+      named: name,
+      in: text,
+      fileExtension: file.pathExtension)
+    if let line { matches = matches.filter { $0.declarationLine == line } }
+    guard !matches.isEmpty else {
+      throw MaiFileWorkspaceError.functionNotFound(name, displayPath(path))
+    }
+    guard matches.count == 1 else {
+      throw MaiFileWorkspaceError.functionAmbiguous(name, matches.map(\.declarationLine))
+    }
+    return matches[0]
+  }
+
+  private func functionOutput(
+    _ match: MaiSourceFunctionLocator.Match,
+    data: Data,
+    path: String
+  ) -> ToolOutput {
+    let functionRange = match.byteOffset..<(match.byteOffset + match.byteSize)
+    let bodyRange = match.bodyByteOffset..<(match.bodyByteOffset + match.bodyByteSize)
+    let revision = MaiSourceFunctionLocator.revision(of: data[bodyRange])
+    let source = String(decoding: data[functionRange], as: UTF8.self)
+    let heading = [
+      "Function \(match.name) in \(displayPath(path))",
+      "Lines: \(match.startLine)-\(match.endLine); UTF-8 bytes: \(match.byteOffset)-\(match.byteOffset + match.byteSize) (\(match.byteSize) bytes)",
+      "Body lines: \(match.bodyStartLine)-\(match.bodyEndLine); UTF-8 bytes: \(match.bodyByteOffset)-\(match.bodyByteOffset + match.bodyByteSize) (\(match.bodyByteSize) bytes)",
+      "Revision: \(revision)",
+    ].joined(separator: "\n")
+    var metadata = functionMetadata(match, revision: revision)
+    metadata["path"] = .string(displayPath(path))
+    return ToolOutput(
+      content: [.text(heading + "\n\n" + source)],
+      structuredContent: .object(metadata))
+  }
+
+  private func functionMetadata(
+    _ match: MaiSourceFunctionLocator.Match,
+    revision: String
+  ) -> [String: JSONValue] {
+    [
+      "name": .string(match.name),
+      "declarationLine": .integer(match.declarationLine),
+      "startLine": .integer(match.startLine),
+      "endLine": .integer(match.endLine),
+      "byteOffset": .integer(match.byteOffset),
+      "byteSize": .integer(match.byteSize),
+      "bodyStartLine": .integer(match.bodyStartLine),
+      "bodyEndLine": .integer(match.bodyEndLine),
+      "bodyByteOffset": .integer(match.bodyByteOffset),
+      "bodyByteSize": .integer(match.bodyByteSize),
+      "revision": .string(revision),
+    ]
+  }
+
   private static func documentLines(_ text: String) -> [String] {
     guard !text.isEmpty else { return [] }
     var lines = text.components(separatedBy: "\n")
@@ -887,7 +1169,9 @@ private struct MaiFileWorkspace: Sendable {
     endLine: Int,
     replacement: String
   ) throws -> (text: String, removedLineCount: Int, insertedLineCount: Int, totalLineCount: Int) {
-    guard startLine >= 1, endLine >= startLine - 1 else { throw MaiFileWorkspaceError.invalidLineRange }
+    guard startLine >= 1, endLine >= startLine - 1 else {
+      throw MaiFileWorkspaceError.invalidLineRange
+    }
     let lines = documentLines(text)
     guard startLine <= lines.count + 1, endLine <= lines.count else {
       throw MaiFileWorkspaceError.lineOutOfRange(max(startLine, endLine), lines.count)
@@ -1013,7 +1297,8 @@ private struct MaiFileWorkspace: Sendable {
     if name == query { return 0 }
     if candidate == query { return 1 }
     if let range = name.range(of: query) {
-      return 10 + name.distance(from: name.startIndex, to: range.lowerBound) + name.count - query.count
+      return 10 + name.distance(from: name.startIndex, to: range.lowerBound) + name.count
+        - query.count
     }
     if let range = candidate.range(of: query) {
       return 30 + candidate.distance(from: candidate.startIndex, to: range.lowerBound)
@@ -1079,7 +1364,9 @@ private struct MaiFileWorkspace: Sendable {
   }
 
   private func requiredInteger(_ arguments: [String: JSONValue], key: String) throws -> Int {
-    guard let value = arguments[key]?.intValue else { throw MaiFileWorkspaceError.missingArgument(key) }
+    guard let value = arguments[key]?.intValue else {
+      throw MaiFileWorkspaceError.missingArgument(key)
+    }
     return value
   }
 
@@ -1094,11 +1381,14 @@ private struct MaiFileWorkspace: Sendable {
   private func mutationOutput(
     _ text: String,
     path: String,
+    diff: String? = nil,
     extra: [String: JSONValue] = [:]
   ) -> ToolOutput {
     var values: [String: JSONValue] = ["path": .string(displayPath(path))]
     values.merge(extra) { _, new in new }
-    return ToolOutput(content: [.text(text)], structuredContent: .object(values))
+    let rendered = diff.map { $0.isEmpty ? text : text + "\n" + $0 } ?? text
+    if let diff { values["changed"] = .bool(!diff.isEmpty) }
+    return ToolOutput(content: [.text(rendered)], structuredContent: .object(values))
   }
 }
 
@@ -1125,6 +1415,10 @@ private enum MaiFileWorkspaceError: LocalizedError {
   case patchMatchCount(Int, Int)
   case overwriteRequired(String, Int)
   case invalidPath(String)
+  case functionNotFound(String, String)
+  case functionAmbiguous(String, [Int])
+  case functionChanged(String, String)
+  case invalidFunctionBody(String)
 
   var errorDescription: String? {
     switch self {
@@ -1141,17 +1435,28 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .recursiveRequired(let path):
       "Directory '\(path)' is not empty; set recursive=true to delete it."
     case .writeTooLarge(let limit): "A single write is limited to \(limit) bytes."
-    case .fileTooLarge(let limit): "The file is larger than \(limit) bytes; use files_read with offsets instead."
-    case .invalidLineRange: "Line ranges must be 1-based and inclusive. Use end_line=start_line-1 to insert."
+    case .fileTooLarge(let limit):
+      "The file is larger than \(limit) bytes; use files_read with offsets instead."
+    case .invalidLineRange:
+      "Line ranges must be 1-based and inclusive. Use end_line=start_line-1 to insert."
     case .lineOutOfRange(let line, let count): "Line \(line) is outside this file's \(count) lines."
     case .writeDisabled: "File changes are disabled for this tool source."
     case .invalidPattern(let detail): "Invalid regular expression: \(detail)"
     case .invalidMatchCount: "expected_matches must be between 1 and 100."
     case .emptyPatchMatch: "The regular expression must not match an empty range."
-    case .patchMatchCount(let expected, let actual): "Expected \(expected) patch matches, found \(actual)."
+    case .patchMatchCount(let expected, let actual):
+      "Expected \(expected) patch matches, found \(actual)."
     case .overwriteRequired(let path, let size):
       "'\(path)' already exists (\(size) bytes). Use files_patch to change part of it, or set overwrite to true to replace the whole file."
     case .invalidPath(let path): "Could not change the current directory to '\(path)'."
+    case .functionNotFound(let name, let path):
+      "Could not find a complete function named '\(name)' in '\(path)'. Use files_read_index to inspect the available declarations."
+    case .functionAmbiguous(let name, let lines):
+      "Function '\(name)' is ambiguous; pass one of these declaration lines: \(lines.map(String.init).joined(separator: ", "))."
+    case .functionChanged(let name, let revision):
+      "Function '\(name)' changed since it was read. Call files_get_function again and use revision '\(revision)'."
+    case .invalidFunctionBody(let name):
+      "The replacement body changes the structural bounds of '\(name)'; check delimiters and indentation."
     }
   }
 }

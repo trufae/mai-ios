@@ -51,6 +51,17 @@ func markdownParagraphsWrap() {
   #expect(!output.contains("**"))
 }
 
+@Test("Unified diff lines distinguish changes from file headers")
+func unifiedDiffLinesAreClassifiedForBackgrounds() {
+  #expect(UnifiedDiffText.hasUnifiedDiff(["summary", "--- a/source.c", "+++ b/source.c"]))
+  #expect(!UnifiedDiffText.hasUnifiedDiff(["- ordinary tool output"]))
+  #expect(UnifiedDiffText.isRemoval("-old value"))
+  #expect(UnifiedDiffText.isAddition("+new value"))
+  #expect(!UnifiedDiffText.isRemoval("--- a/source.c"))
+  #expect(!UnifiedDiffText.isAddition("+++ b/source.c"))
+  #expect(!UnifiedDiffText.isAddition(" unchanged"))
+}
+
 @Test("Streaming replies reuse the cached layout for the unchanged prefix")
 @MainActor
 func renderCacheIsIncremental() {

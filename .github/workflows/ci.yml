@@ -118,6 +118,22 @@ jobs:
 
           echo "Android Swift SDK setup completed successfully"
 
+      - name: Patch SwiftTUI for Android
+        run: |
+          set -eu
+          swift package --package-path MaiCore resolve
+
+          source_file="MaiCore/.build/checkouts/swift-tui/Sources/SwiftTUIPlatformIO/PlatformPOSIX.swift"
+          before='let sent = unsafe send(fileDescriptor, buffer, count, Int32(MSG_NOSIGNAL))'
+          after='let sent = unsafe send(fileDescriptor, buffer!, count, Int32(MSG_NOSIGNAL))'
+
+          # SwiftTUI 0.10.1 accepts an optional buffer here, but Android imports
+          # send(2) with a non-optional pointer. The sole caller has already
+          # unwrapped a nonempty UTF-8 buffer before calling sceneWrite.
+          test "$(grep -Fc "$before" "$source_file")" -eq 1
+          sed -i "s/$before/$after/" "$source_file"
+          grep -Fq "$after" "$source_file"
+
       - name: Build Android arm64 release CLI
         run: |
           swift build --package-path MaiCore -c release --product pmai \
