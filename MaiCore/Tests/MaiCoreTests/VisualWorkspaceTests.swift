@@ -176,6 +176,7 @@ func workspaceRegistersProviders() async throws {
   form.id = "greeter"
   form.kind = ConfiguredProviderKind.hello.rawValue
   form.displayName = "Greeter"
+  form.apiKey = "existing-secret"
   try await workspace.registerProvider(form)
   #expect(workspace.providers.map(\.id) == [ProviderID("greeter"), .hello])
   #expect(workspace.configuration.providers.map(\.id) == ["greeter"])
@@ -183,6 +184,18 @@ func workspaceRegistersProviders() async throws {
   #expect(!workspace.configurationNeedsSave)
   let persisted = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
   #expect(persisted.providers.map(\.id) == ["greeter"])
+
+  var edit = ProviderForm(provider: try #require(workspace.configuredProvider("greeter")))
+  #expect(edit.apiKey.isEmpty)
+  edit.baseURL = "http://127.0.0.1:11434/v1"
+  try await workspace.registerProvider(edit)
+  let updated = try #require(workspace.configuredProvider("greeter"))
+  #expect(updated.baseURL?.absoluteString == "http://127.0.0.1:11434/v1")
+  #expect(updated.apiKey == "existing-secret")
+  let updatedPersisted = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
+  #expect(
+    updatedPersisted.providers.first?.baseURL?.absoluteString
+      == "http://127.0.0.1:11434/v1")
 
   form.id = ""
   await #expect(throws: VisualWorkspaceError.missingField("Identifier")) {

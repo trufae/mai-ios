@@ -76,6 +76,7 @@ private struct SaveConfigurationRow: View {
 
 struct ProvidersScreen: View {
   let workspace: VisualWorkspace
+  @State private var form = ProviderForm()
 
   var body: some View {
     ConfigScreen {
@@ -85,11 +86,15 @@ struct ProvidersScreen: View {
           Text("No providers are registered.").foregroundStyle(.muted)
         }
         ForEach(workspace.providers, id: \.id.rawValue) { provider in
-          ProviderRow(provider: provider, workspace: workspace)
+          ProviderRow(provider: provider, workspace: workspace) {
+            if let configured = workspace.configuredProvider(provider.id) {
+              form = ProviderForm(provider: configured)
+            }
+          }
         }
       }
     } form: {
-      ProviderFormView(workspace: workspace)
+      ProviderFormView(workspace: workspace, form: $form)
       SaveConfigurationRow(workspace: workspace)
     }
   }
@@ -98,6 +103,7 @@ struct ProvidersScreen: View {
 private struct ProviderRow: View {
   let provider: ProviderDescriptor
   let workspace: VisualWorkspace
+  let edit: () -> Void
 
   var body: some View {
     let isCurrent = workspace.focusedConversation?.profile.provider == provider.id
@@ -107,6 +113,9 @@ private struct ProviderRow: View {
         Text(provider.id.rawValue).bold()
         Text(provider.displayName).foregroundStyle(.muted).lineLimit(1)
         Spacer(minLength: 1)
+        if workspace.configuredProvider(provider.id) != nil {
+          Button("Edit") { edit() }
+        }
         Button(isCurrent ? "In use" : "Use") { workspace.useProvider(provider.id) }
           .disabled(isCurrent)
       }
@@ -126,13 +135,16 @@ private struct ProviderRow: View {
 
 private struct ProviderFormView: View {
   let workspace: VisualWorkspace
-  @State private var form = ProviderForm()
+  @Binding var form: ProviderForm
   @State private var message: String?
   @State private var isSubmitting = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Register a provider").bold()
+      Text(
+        workspace.configuredProvider(ProviderID(form.id)) == nil
+          ? "Register a provider" : "Edit provider"
+      ).bold()
       TextField("Identifier", text: $form.id)
       TextField("Kind (openAICompatible, hello, plugin kind)", text: $form.kind)
       TextField("Display name", text: $form.displayName)
@@ -140,8 +152,10 @@ private struct ProviderFormView: View {
       TextField("API key environment variable", text: $form.apiKeyEnvironment)
       SecureField("API key (saved to the config file if no variable)", text: $form.apiKey)
       HStack(spacing: 1) {
-        Button("Register") { submit() }
-          .disabled(isSubmitting || form.id.isEmpty)
+        Button(
+          workspace.configuredProvider(ProviderID(form.id)) == nil ? "Register" : "Update"
+        ) { submit() }
+        .disabled(isSubmitting || form.id.isEmpty)
         if isSubmitting { Spinner() }
       }
       if let message {

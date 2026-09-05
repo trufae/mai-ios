@@ -169,7 +169,7 @@ struct ConversationPaneView: View {
       }
       .padding(.horizontal, 1)
       Divider()
-      TranscriptView(conversation: conversation)
+      TranscriptView(conversation: conversation, markdown: workspace.configuration.ui.markdown)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       Divider()
       if let output = conversation.commandOutput {
@@ -239,6 +239,8 @@ struct TranscriptView: View {
   static let renderedMessageLimit = 200
 
   let conversation: VisualConversation
+  /// Render message bodies as markdown instead of verbatim text.
+  var markdown = true
 
   var body: some View {
     // The vertical scroll view hands its content whatever width it was
@@ -267,10 +269,16 @@ struct TranscriptView: View {
       }
       ForEach(conversation.visibleMessages.suffix(TranscriptView.renderedMessageLimit), id: \.id) {
         message in
-        MessageView(message: message)
+        MessageView(message: message, width: width, markdown: markdown)
       }
       if !conversation.liveReply.isEmpty {
-        MessageBlock(label: "Assistant", text: conversation.liveReply, isLive: true)
+        MessageBlock(
+          id: conversation.id.uuidString,
+          label: "Assistant",
+          text: conversation.liveReply,
+          isLive: true,
+          width: width,
+          markdown: markdown)
       }
       ForEach(conversation.activity.indices, id: \.self) { index in
         Text(conversation.activity[index]).foregroundStyle(.muted)
@@ -283,9 +291,17 @@ struct TranscriptView: View {
 
 struct MessageView: View {
   let message: AgentMessage
+  var width = 80
+  var markdown = true
 
   var body: some View {
-    MessageBlock(label: label, text: TranscriptCopy.render(message), isLive: false)
+    MessageBlock(
+      id: message.id,
+      label: label,
+      text: TranscriptCopy.render(message),
+      isLive: false,
+      width: width,
+      markdown: markdown && (message.role == .assistant || message.role == .user))
   }
 
   private var label: String {
@@ -300,15 +316,26 @@ struct MessageView: View {
 }
 
 struct MessageBlock: View {
+  let id: String
   let label: String
   let text: String
   let isLive: Bool
+  /// Columns available for tables and rules.
+  var width = 80
+  var markdown = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Text(isLive ? "\(label) …" : label).bold().foregroundStyle(labelStyle)
-      Text(text.isEmpty ? "(empty)" : MessageBlock.displayText(text))
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+      if text.isEmpty {
+        Text("(empty)").frame(maxWidth: .infinity, alignment: .topLeading)
+      } else if markdown {
+        MarkdownMessageText(id: id, text: MessageBlock.displayText(text), width: width)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+      } else {
+        Text(MessageBlock.displayText(text))
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .topLeading)
   }

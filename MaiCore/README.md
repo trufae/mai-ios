@@ -133,11 +133,24 @@ providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
 updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
 back to that agent in the shared configuration.
 
+Use `/baseurl URL` to change the current provider endpoint. To edit another
+provider, select it first with `/provider ID`. The provider is replaced in the
+live runtime and the new URL is saved immediately. `/provider baseurl URL`
+remains an alias. In `/visual`, open the Providers tab, choose **Edit** beside a
+configured provider, change **Base URL**, and choose **Update**.
+
 Each prompt is preceded by a colored separator so prompts remain easy to find
 in terminal scrollback. Long input scrolls horizontally and is printed in full
 when submitted. `/set ui.` lists the persisted terminal styling options;
 `ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, and `ui.bgcolor` accept
-named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` accepts `on` or `off`.
+named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` and `ui.markdown`
+accept `on` or `off`. Replies are rendered as styled markdown while they stream:
+headings, lists, task lists, quotes, rules, fenced code, footnotes, and pipe
+tables whose cells keep their bold, code, and link styling and wrap to the
+terminal width. `--no-markdown` or `ui.markdown off` prints replies verbatim,
+output that is not a terminal stays verbatim unless `--markdown` is given, and
+`NO_COLOR` keeps the structure without colors. The visual workspace renders the
+same markdown inside its panes.
 `Ctrl+A` and `Ctrl+E` move to the beginning and end, `Ctrl+W` deletes the
 previous word, and `Ctrl+C` cancels the active model or tool run without leaving
 the REPL. `Ctrl+Z` suspends pmai with the terminal restored; run `fg` in the

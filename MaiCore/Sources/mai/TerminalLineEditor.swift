@@ -196,7 +196,7 @@ final class TerminalLineEditor {
   private func redraw(prompt: String, bytes: [UInt8], cursor: Int) {
     // Leave the terminal's final column unused: printing into it can trigger an
     // automatic wrap, after which clearing one row no longer erases the input.
-    let lineWidth = max(1, terminalColumns() - 1)
+    let lineWidth = max(1, Self.terminalColumns() - 1)
     let minimumInputWidth = min(12, max(1, lineWidth / 2))
     let visiblePrompt = truncatedPrompt(prompt, maximumWidth: lineWidth - minimumInputWidth)
     let inputWidth = max(1, lineWidth - displayWidth(visiblePrompt))
@@ -225,7 +225,7 @@ final class TerminalLineEditor {
 
   private func drawSeparator() {
     guard let background = colorCode(ui.backgroundLine, background: true) else { return }
-    let width = max(1, terminalColumns() - 1)
+    let width = max(1, Self.terminalColumns() - 1)
     write(
       "\r\u{1B}[2K\u{1B}[\(background)m" + String(repeating: " ", count: width) + resetStyle + "\n")
   }
@@ -279,7 +279,7 @@ final class TerminalLineEditor {
     return editor.colorCode(value, background: false) == nil ? nil : value
   }
 
-  private func terminalColumns() -> Int {
+  static func terminalColumns() -> Int {
     var size = winsize()
     guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0, size.ws_col > 0 else { return 80 }
     return Int(size.ws_col)

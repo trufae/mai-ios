@@ -351,6 +351,8 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public var promptForeground: String
   public var promptBackground: String
   public var bold: Bool
+  /// Render assistant replies as styled markdown in the REPL and visual mode.
+  public var markdown: Bool
 
   public init(
     backgroundLine: String = "blue",
@@ -358,7 +360,8 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     background: String = "",
     promptForeground: String = "yellow",
     promptBackground: String = "",
-    bold: Bool = false
+    bold: Bool = false,
+    markdown: Bool = true
   ) {
     self.backgroundLine = backgroundLine
     self.foreground = foreground
@@ -366,6 +369,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     self.promptForeground = promptForeground
     self.promptBackground = promptBackground
     self.bold = bold
+    self.markdown = markdown
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -375,6 +379,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     case promptForeground = "fgprompt"
     case promptBackground = "bgprompt"
     case bold
+    case markdown
   }
 
   public init(from decoder: Decoder) throws {
@@ -386,7 +391,8 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
       promptForeground: try container.decodeIfPresent(String.self, forKey: .promptForeground)
         ?? "yellow",
       promptBackground: try container.decodeIfPresent(String.self, forKey: .promptBackground) ?? "",
-      bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false)
+      bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false,
+      markdown: try container.decodeIfPresent(Bool.self, forKey: .markdown) ?? true)
   }
 }
 
