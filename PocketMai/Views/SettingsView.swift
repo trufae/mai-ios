@@ -1582,7 +1582,7 @@ struct SettingsView: View {
         "Enable Files tools",
         isOn: settingsBinding(\.toolSettings.filesWorkspaceAccessEnabled))
       Text(
-        "The callable Files tools can list folders, read, write, append, rename, and delete UTF-8 text files in the chat's working folder. That is FilesData unless a chat picks a custom folder (for example from iCloud Drive) via the + menu, or a chat folder sets a default working folder in Manage Folders. Writes can create folders. files_read_document also reads Word (.docx) and PDF files as Markdown and JSON files as an indented outline. Downloaded MLX models are visible in the iOS Files app under Models, but unavailable to FilesData tools."
+        "The shared callable Files tools can list folders, find approximate file names, grep text, read, write, append, rename, and delete UTF-8 files in the chat's working folder. That is FilesData unless a chat picks a custom folder (for example from iCloud Drive) via the + menu, or a chat folder sets a default working folder in Manage Folders. Writes can create folders. files_read_document also reads Word (.docx) and PDF files as Markdown and JSON files as an indented outline. Downloaded MLX models are visible in the iOS Files app under Models, but unavailable to FilesData tools."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
