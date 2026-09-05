@@ -287,10 +287,14 @@ private struct FocusedToolsList: View {
   @Bindable var conversation: VisualConversation
   let workspace: VisualWorkspace
 
+  private var enabledGroupCount: Int {
+    workspace.toolGroups.filter { workspace.isToolGroupEnabled($0, for: conversation) }.count
+  }
+
   var body: some View {
-    Text("Tools allowed in '\(conversation.title)'").bold()
+    Text("Tool groups allowed in '\(conversation.title)'").bold()
     Text(
-      "\(conversation.profile.toolNames.count) of \(workspace.tools.count) enabled. Return toggles the focused row."
+      "\(enabledGroupCount) of \(workspace.toolGroups.count) groups enabled. Each group is saved on agent '\(conversation.profile.id)'."
     )
     .foregroundStyle(.muted)
     Toggle(
@@ -299,18 +303,127 @@ private struct FocusedToolsList: View {
         get: { conversation.profile.useToolProxy },
         set: { workspace.setToolProxy($0, for: conversation) }))
     Divider()
-    if workspace.tools.isEmpty {
-      Text("No tools are registered.").foregroundStyle(.muted)
+    if workspace.toolGroups.isEmpty {
+      Text("No tool groups are registered.").foregroundStyle(.muted)
     }
-    ForEach(workspace.tools, id: \.name) { tool in
-      VStack(alignment: .leading, spacing: 0) {
-        Toggle(
-          "\(tool.name) [\(tool.annotations.approval.rawValue)]",
-          isOn: Binding(
-            get: { conversation.profile.toolNames.contains(tool.name) },
-            set: { workspace.setTool(tool.name, allowed: $0, for: conversation) }))
-        Text("  \(tool.description)").foregroundStyle(.separator).lineLimit(1).truncationMode(.tail)
+    ForEach(workspace.toolGroups, id: \.catalogID) { group in
+      ToolGroupRow(group: group, conversation: conversation, workspace: workspace)
+    }
+  }
+}
+
+private struct ToolGroupRow: View {
+  let group: ToolGroupDefinition
+  @Bindable var conversation: VisualConversation
+  let workspace: VisualWorkspace
+  @State private var draft: [String: JSONValue]
+  @State private var message: String?
+  @State private var isSaving = false
+
+  init(
+    group: ToolGroupDefinition,
+    conversation: VisualConversation,
+    workspace: VisualWorkspace
+  ) {
+    self.group = group
+    self.conversation = conversation
+    self.workspace = workspace
+    _draft = State(initialValue: workspace.configuredToolGroupOptions(group))
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Toggle(
+        "\(group.displayName) (\(group.toolNames.count))",
+        isOn: Binding(
+          get: { workspace.isToolGroupEnabled(group, for: conversation) },
+          set: { workspace.setToolGroup(group, allowed: $0, for: conversation) }))
+      if !group.description.isEmpty {
+        Text("  \(group.description)")
+          .foregroundStyle(.separator)
+          .lineLimit(2)
+          .truncationMode(.tail)
       }
+      if !group.options.isEmpty {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(group.options) { option in
+            optionField(option)
+          }
+          HStack(spacing: 1) {
+            Button(isSaving ? "Applying…" : "Apply \(group.displayName) settings") {
+              apply()
+            }
+            .disabled(isSaving || group.sourceID == "runtime")
+            if let message {
+              Text(message)
+                .foregroundStyle(message.hasPrefix("error") ? .danger : .muted)
+                .lineLimit(1)
+            }
+          }
+        }
+        .padding(.leading, 2)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func optionField(_ option: ToolGroupOptionDefinition) -> some View {
+    switch option.kind {
+    case .boolean:
+      Toggle(option.label, isOn: booleanBinding(option))
+    case .choice:
+      Picker(option.label, selection: stringBinding(option)) {
+        ForEach(option.choices, id: \.self) { choice in
+          Text(choice).tag(choice)
+        }
+      }
+      .pickerStyle(.segmented)
+    case .secret:
+      SecureField(option.label, text: stringBinding(option))
+    case .text, .number:
+      TextField(option.label, text: stringBinding(option))
+    }
+    if let help = option.help {
+      Text("  \(help)").foregroundStyle(.separator).lineLimit(2)
+    }
+  }
+
+  private func stringBinding(_ option: ToolGroupOptionDefinition) -> Binding<String> {
+    Binding(
+      get: { stringValue(for: option) },
+      set: { value in
+        if option.kind == .number {
+          draft[option.id] = Double(value).map(JSONValue.number)
+        } else {
+          draft[option.id] = .string(value)
+        }
+      })
+  }
+
+  private func stringValue(for option: ToolGroupOptionDefinition) -> String {
+    if let value = draft[option.id]?.stringValue { return value }
+    if let value = draft[option.id]?.numberValue { return String(value) }
+    if let value = option.defaultValue?.stringValue { return value }
+    if let value = option.defaultValue?.numberValue { return String(value) }
+    return ""
+  }
+
+  private func booleanBinding(_ option: ToolGroupOptionDefinition) -> Binding<Bool> {
+    Binding(
+      get: { draft[option.id]?.boolValue ?? option.defaultValue?.boolValue ?? false },
+      set: { draft[option.id] = .bool($0) })
+  }
+
+  private func apply() {
+    isSaving = true
+    Task {
+      do {
+        try await workspace.configureToolGroup(group, options: draft)
+        message = "Saved."
+      } catch {
+        message = "error: \(error.localizedDescription)"
+      }
+      isSaving = false
     }
   }
 }

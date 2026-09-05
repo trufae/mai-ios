@@ -743,6 +743,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var provider: ProviderID
   public var model: String
   public var toolNames: Set<String>
+  public var toolGroupNames: Set<String>
   public var subagentNames: Set<String>
   public var stream: Bool
   public var limits: AgentRunLimits
@@ -759,6 +760,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     provider: ProviderID,
     model: String,
     toolNames: Set<String> = [],
+    toolGroupNames: Set<String> = [],
     subagentNames: Set<String> = [],
     stream: Bool = true,
     limits: AgentRunLimits = .init(),
@@ -774,6 +776,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.provider = provider
     self.model = model
     self.toolNames = toolNames
+    self.toolGroupNames = toolGroupNames
     self.subagentNames = subagentNames
     self.stream = stream
     self.limits = limits
@@ -785,7 +788,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, displayName, instructions, provider, model, toolNames, subagentNames, stream, limits
+    case id, displayName, instructions, provider, model, toolNames, toolGroupNames, subagentNames,
+      stream, limits
     case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy
   }
 
@@ -799,6 +803,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       provider: try container.decode(ProviderID.self, forKey: .provider),
       model: try container.decodeIfPresent(String.self, forKey: .model) ?? "",
       toolNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolNames) ?? [],
+      toolGroupNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolGroupNames) ?? [],
       subagentNames: try container.decodeIfPresent(Set<String>.self, forKey: .subagentNames) ?? [],
       stream: try container.decodeIfPresent(Bool.self, forKey: .stream) ?? true,
       limits: try container.decodeIfPresent(AgentRunLimits.self, forKey: .limits) ?? .init(),

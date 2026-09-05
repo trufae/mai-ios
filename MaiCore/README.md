@@ -118,6 +118,18 @@ providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
 updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
 back to that agent in the shared configuration.
 
+Native tools are presented as plugin-defined capability groups instead of one
+checkbox per provider-visible function. `/tools` lists the groups, `/tools
+enable|disable GROUP` changes the active agent, and `/tools show GROUP` displays
+the expanded tool names and settings. `/tools set GROUP OPTION VALUE` persists
+typed group settings and reloads the source; for example, Mastodon's instance,
+API-key environment variable, and write permission are configured this way.
+Visual mode renders the same descriptors as checkboxes and typed fields. Group
+selections live on each `AgentDefinition`, while source credentials and options
+live on `ConfiguredToolSource`, so every host uses the same configuration and
+plugin API. Older native plugins without group metadata are grouped by their
+tool-name prefix.
+
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
 list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin`

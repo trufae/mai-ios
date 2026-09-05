@@ -39,6 +39,15 @@ tool definitions and outputs, OCR requests and results, and MCP catalogs. The
 ABI version freezes those representations for v1; incompatible changes require
 a new entry symbol and ABI version.
 
+Agent-tool extensions answer `tool.list` with their provider-visible tool
+definitions. They may also answer the optional `tool.groups` operation with
+`NativeToolGroupDefinition` values. A group gives the host one stable checkbox
+for several related tool names (for example, `github`) and may declare portable
+`text`, `secret`, `boolean`, `number`, or `choice` settings. The host passes the
+updated tool-source options back in the factory context when it reloads the
+tools. Plugins that predate `tool.groups` remain compatible: the host groups
+their tools by the prefix before the first underscore.
+
 Build and exercise the reference plugin:
 
 ```sh

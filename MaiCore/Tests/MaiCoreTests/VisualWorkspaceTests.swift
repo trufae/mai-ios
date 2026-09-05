@@ -4,6 +4,7 @@ import SwiftTUIRuntime
 import Testing
 
 @testable import MaiCore
+@testable import MaiStandardTools
 @testable import MaiVisual
 
 private let helloProfile = AgentDefinition(
@@ -201,6 +202,70 @@ func workspaceRegistersProviders() async throws {
   let saved = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
   #expect(saved.agents.map(\.id) == ["main", "saved"])
   #expect(saved.providers.map(\.id) == ["greeter"])
+}
+
+@Test("Visual tool groups toggle whole capabilities and persist their options")
+@MainActor
+func workspaceConfiguresToolGroups() async throws {
+  let runtime = AgentRuntime()
+  try await runtime.register(HelloProvider())
+  let plugins = PluginRegistry()
+  try await plugins.install(MaiStandardToolsPlugin())
+  let source = ConfiguredToolSource(
+    id: "standard-tools",
+    kind: MaiStandardToolsPlugin.factoryKind)
+  for tool in try await plugins.makeTools(
+    kind: source.kind,
+    context: source.context(environment: [:]))
+  {
+    try await runtime.register(tool: tool)
+  }
+  let path = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-tool-groups-\(UUID().uuidString)/config.json").path
+  let configuration = MaiConfiguration(
+    defaultAgent: "main",
+    providers: [ConfiguredProvider(id: "hello", kind: .hello)],
+    toolSources: [source],
+    agents: [helloProfile])
+  let workspace = VisualWorkspace(
+    launch: VisualLaunch(
+      focusedConversation: VisualConversationSeed(title: "repl", profile: helloProfile),
+      configuration: configuration,
+      configurationPath: path),
+    runtime: runtime,
+    plugins: plugins,
+    approvals: VisualApprovalHandler())
+  await workspace.refreshRegistries()
+
+  let github = try #require(workspace.toolGroups.first { $0.id == "github" })
+  let conversation = try #require(workspace.focusedConversation)
+  workspace.setToolGroup(github, allowed: true, for: conversation)
+  #expect(conversation.profile.toolGroupNames.contains("github"))
+  #expect(Set(MaiGitHubTool.toolNames).isSubset(of: conversation.profile.toolNames))
+
+  let mastodon = try #require(workspace.toolGroups.first { $0.id == "mastodon" })
+  workspace.selectedTab = .tools
+  let rendered = RenderOnce.render(
+    VisualRootView(workspace: workspace).frame(height: 50),
+    width: 150,
+    environment: ["NO_COLOR": "1"],
+    isStdoutTTY: false)
+  #expect(rendered.contains("GitHub (12)"))
+  #expect(rendered.contains("Mastodon (1)"))
+  #expect(rendered.contains("Allow posting and replying"))
+
+  var options = workspace.configuredToolGroupOptions(mastodon)
+  options["mastodonInstance"] = .string("social.example")
+  options["mastodonAPIKeyEnvironment"] = .string("SOCIAL_TOKEN")
+  options["mastodonWriteEnabled"] = .bool(true)
+  try await workspace.configureToolGroup(mastodon, options: options)
+
+  let persisted = try MaiConfiguration.load(from: URL(fileURLWithPath: path))
+  let persistedSource = try #require(persisted.toolSources.first)
+  #expect(persistedSource.options["mastodonInstance"] == .string("social.example"))
+  #expect(persistedSource.options["mastodonAPIKeyEnvironment"] == .string("SOCIAL_TOKEN"))
+  #expect(persistedSource.options["mastodonWriteEnabled"] == .bool(true))
+  #expect(persisted.agents.first?.toolGroupNames.contains("github") == true)
 }
 
 @Test("Approvals raised during a run surface in the workspace and resolve the runtime")

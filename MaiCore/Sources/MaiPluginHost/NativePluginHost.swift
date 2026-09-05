@@ -375,6 +375,42 @@ private struct NativeToolFactory: ConfiguredToolFactory {
       NativeAgentTool(library: library, kind: kind, context: context, definition: $0)
     }
   }
+
+  func toolGroups(context: PluginFactoryContext) async throws -> [ToolGroupDefinition] {
+    do {
+      let result = try await library.invoke(
+        NativePluginRequest(
+          operation: NativePluginOperation.toolGroups,
+          kind: kind,
+          configuration: try PluginWireCodec.value(context)))
+      guard let result else {
+        return ToolGroupDefinition.inferred(from: try await makeTools(context: context))
+      }
+      let groups = try PluginWireCodec.decode([NativeToolGroupDefinition].self, from: result)
+      return try groups.map { group in
+        ToolGroupDefinition(
+          id: group.id,
+          displayName: group.displayName,
+          description: group.description,
+          toolNames: group.toolNames,
+          options: try group.options.map { option in
+            ToolGroupOptionDefinition(
+              id: option.id,
+              label: option.label,
+              help: option.help,
+              kind: ToolGroupOptionKind(rawValue: option.kind) ?? .text,
+              defaultValue: try option.defaultValue.map {
+                try PluginWireCodec.decode(JSONValue.self, from: $0)
+              },
+              choices: option.choices)
+          })
+      }
+    } catch {
+      // `tool.groups` is an optional wire operation added without changing the
+      // C ABI. Prefix inference keeps older native plugins compatible.
+      return ToolGroupDefinition.inferred(from: try await makeTools(context: context))
+    }
+  }
 }
 
 private struct NativeAgentTool: AgentTool {
