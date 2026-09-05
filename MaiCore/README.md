@@ -179,6 +179,13 @@ path to one directory (including symlink checks), while `filesWriteEnabled`
 removes the mutation tools when disabled. Mutations still go through normal
 confirmation, and deletion is marked dangerous. `read_text_file` remains
 available for compatibility with older agent configurations.
+
+With the default Files workspace (no explicit `filesRoot`, or `filesRoot: "."`),
+`/cwd` prints the process working directory and `/cd PATH` changes it. The model
+can use `files_chdir` with the same behavior. The default workspace resolves its
+root on each tool call, keeping an installed `pmai` binary aligned with the
+directory from which it was launched. An explicit `filesRoot` remains fixed and
+does not expose `files_chdir`.
 Streamable HTTP support is supplied by `MaiMCPPlugin`, so the transport is not a
 dependency of the core runtime.
 
