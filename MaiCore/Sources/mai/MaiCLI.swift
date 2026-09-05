@@ -27,6 +27,7 @@ private struct CLIOptions {
   var systemOverride: String?
   var maxToolCalls: Int?
   var maxModelTurns: Int?
+  var maxSubagents: Int?
   var stream = true
   /// Render replies as markdown; nil follows the configuration and the tty.
   var markdown: Bool?
@@ -68,6 +69,8 @@ private struct CLIOptions {
         maxToolCalls = try Self.count(after: argument, in: arguments, index: &index)
       case "--max-turns", "--max-model-turns":
         maxModelTurns = try Self.count(after: argument, in: arguments, index: &index)
+      case "--max-subagents":
+        maxSubagents = try Self.count(after: argument, in: arguments, index: &index)
       case "--image":
         imagePaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--plugin":
@@ -109,10 +112,11 @@ private struct CLIOptions {
     return count
   }
 
-  /// Applies `--max-tool-calls` and `--max-turns` on top of a configured agent.
+  /// Applies command-line run limits on top of a configured agent.
   func applyLimitOverrides(to limits: inout AgentRunLimits) {
     if let maxToolCalls { limits.maxToolCalls = max(0, maxToolCalls) }
     if let maxModelTurns { limits.maxModelTurns = max(1, maxModelTurns) }
+    if let maxSubagents { limits.maxSubagents = max(0, maxSubagents) }
   }
 }
 
@@ -135,6 +139,32 @@ private enum CLIError: LocalizedError {
     case .configNotFound(let path): "Configuration file not found: \(path)"
     case .noProvider: "No provider is configured."
     case .invalidImage(let path): "Unable to load image: \(path)"
+    }
+  }
+}
+
+private enum MCPCommandError: LocalizedError {
+  case missingID
+  case duplicateID(String)
+  case missingCommand
+  case missingOptionValue(String)
+  case invalidEnvironment
+  case invalidTimeout
+  case invalidApproval
+  case unterminatedQuote
+  case danglingEscape
+
+  var errorDescription: String? {
+    switch self {
+    case .missingID: "Usage: /mcp add ID [options] -- COMMAND [ARG ...]"
+    case .duplicateID(let id): "An MCP server named '\(id)' is already configured."
+    case .missingCommand: "The stdio MCP command is missing."
+    case .missingOptionValue(let option): "Missing value after \(option)."
+    case .invalidEnvironment: "--env expects KEY=VALUE."
+    case .invalidTimeout: "--timeout expects a positive number of seconds."
+    case .invalidApproval: "--approval expects automatic, confirm, or dangerous."
+    case .unterminatedQuote: "The command contains an unterminated quote."
+    case .danglingEscape: "The command ends with an incomplete escape."
     }
   }
 }
@@ -1012,13 +1042,15 @@ private struct MaiCLI {
 
     while true {
       editor.configure(ui: configuration?.ui ?? .init())
-      let prompt = "pmai · \(session.title) · \(session.profile.agentID) · \(promptContextStatus(session)) ❯ "
+      let promptStatus =
+        "\(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
       guard
         let input = editor.readLine(
-          prompt: prompt,
+          prompt: "pmai> ",
           completions: completionCandidates(
             workspace: workspace,
-            configuration: configuration))
+            configuration: configuration),
+          separator: promptStatus)
       else {
         workspace.upsert(session.chat, selecting: true)
         await saveWorkspace(workspace, to: stateURL, terminal: terminal)
@@ -1349,13 +1381,26 @@ private struct MaiCLI {
       default:
         await terminal.line("Usage: /proxy [on|off]")
       }
+    case "/mcp":
+      await handleMCPCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        catalogs: &catalogs,
+        terminal: terminal)
     case "/mcps":
-      if catalogs.isEmpty { await terminal.line("No connected MCP servers.") }
-      for catalog in catalogs {
-        await terminal.line(
-          "\(catalog.serverID) — \(catalog.tools.count) tools, \(catalog.resources.count) resources, MCP \(catalog.protocolVersion)"
-        )
-      }
+      await handleMCPCommand(
+        "list",
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        catalogs: &catalogs,
+        terminal: terminal)
     case "/image":
       let imageArguments = argument.split(
         maxSplits: 1, whereSeparator: \Character.isWhitespace
@@ -1402,6 +1447,305 @@ private struct MaiCLI {
       await terminal.line("Unknown command. Type /help.")
     }
     return false
+  }
+
+  private static func handleMCPCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    catalogs: inout [MCPServerCatalog],
+    terminal: TerminalWriter
+  ) async {
+    let pieces = argument.split(
+      maxSplits: 1, whereSeparator: \Character.isWhitespace
+    ).map(String.init)
+    let action = pieces.first?.lowercased() ?? "list"
+    switch action {
+    case "", "list":
+      let configured = configuration?.mcpServers ?? []
+      let connected = Dictionary(uniqueKeysWithValues: catalogs.map { ($0.serverID, $0) })
+      if configured.isEmpty, catalogs.isEmpty {
+        await terminal.line("No configured MCP servers.")
+        return
+      }
+      for server in configured {
+        let transport =
+          server.kind == "stdio"
+          ? server.command ?? "stdio" : server.url?.absoluteString ?? server.kind
+        let state: String
+        if !server.enabled {
+          state = "disabled"
+        } else if let catalog = connected[server.id] {
+          state =
+            "connected — \(catalog.tools.count) tools, \(catalog.resources.count) resources, MCP \(catalog.protocolVersion)"
+        } else {
+          state = "not connected"
+        }
+        await terminal.line("\(server.id) — \(transport) [\(state)]")
+      }
+      let configuredIDs = Set(configured.map(\.id))
+      for catalog in catalogs where !configuredIDs.contains(catalog.serverID) {
+        await terminal.line(
+          "\(catalog.serverID) — \(catalog.tools.count) tools, \(catalog.resources.count) resources, MCP \(catalog.protocolVersion) [connected]"
+        )
+      }
+
+    case "add":
+      guard let rawAddArguments = pieces.dropFirst().first else {
+        await terminal.line(mcpCommandHelp)
+        return
+      }
+      guard var draft = configuration, let configurationPath else {
+        await terminal.line("error: No writable configuration is active.", to: .standardError)
+        return
+      }
+      do {
+        let server = try parseStdioMCPAddArguments(rawAddArguments)
+        guard !draft.mcpServers.contains(where: { $0.id == server.id }) else {
+          throw MCPCommandError.duplicateID(server.id)
+        }
+        let source = try await plugins.makeMCPToolSource(
+          kind: server.kind,
+          configuration: server,
+          environment: ProcessInfo.processInfo.environment)
+        let toolsBefore = Set(await runtime.availableTools().map(\.name))
+        let catalog = try await runtime.register(mcp: source)
+        let addedTools = Set(await runtime.availableTools().map(\.name)).subtracting(toolsBefore)
+
+        var profile = session.profile
+        profile.toolNames.formUnion(addedTools)
+        let definition = profile.agentDefinition
+        draft.mcpServers.append(server)
+        if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
+          draft.agents[index] = definition
+        } else {
+          draft.agents.append(definition)
+        }
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        try await runtime.register(agent: definition, replacingExisting: true)
+        session.profile = profile
+        configuration = draft
+        catalogs.append(catalog)
+        await terminal.line(
+          "Added and connected stdio MCP '\(server.id)'; enabled \(addedTools.count) tools for agent \(definition.id)."
+        )
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
+    case "enable":
+      guard pieces.count == 2 else {
+        await terminal.line(mcpCommandHelp)
+        return
+      }
+      let id = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
+      guard var draft = configuration, let configurationPath,
+        let serverIndex = draft.mcpServers.firstIndex(where: { $0.id == id })
+      else {
+        await terminal.line("error: MCP server '\(id)' is not configured.", to: .standardError)
+        return
+      }
+      if catalogs.contains(where: { $0.serverID == id }) {
+        await terminal.line("MCP server '\(id)' is already enabled and connected.")
+        return
+      }
+      do {
+        var server = draft.mcpServers[serverIndex]
+        server.enabled = true
+        let source = try await plugins.makeMCPToolSource(
+          kind: server.kind,
+          configuration: server,
+          environment: ProcessInfo.processInfo.environment)
+        let toolsBefore = Set(await runtime.availableTools().map(\.name))
+        let catalog = try await runtime.register(mcp: source)
+        let addedTools = Set(await runtime.availableTools().map(\.name)).subtracting(toolsBefore)
+        var profile = session.profile
+        profile.toolNames.formUnion(addedTools)
+        let definition = profile.agentDefinition
+        draft.mcpServers[serverIndex] = server
+        if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
+          draft.agents[index] = definition
+        } else {
+          draft.agents.append(definition)
+        }
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        try await runtime.register(agent: definition, replacingExisting: true)
+        session.profile = profile
+        configuration = draft
+        catalogs.append(catalog)
+        await terminal.line(
+          "Enabled and connected MCP '\(id)'; enabled \(addedTools.count) tools for agent \(definition.id)."
+        )
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
+    case "disable":
+      guard pieces.count == 2 else {
+        await terminal.line(mcpCommandHelp)
+        return
+      }
+      let id = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
+      guard var draft = configuration, let configurationPath,
+        let serverIndex = draft.mcpServers.firstIndex(where: { $0.id == id })
+      else {
+        await terminal.line("error: MCP server '\(id)' is not configured.", to: .standardError)
+        return
+      }
+      if !draft.mcpServers[serverIndex].enabled {
+        await terminal.line("MCP server '\(id)' is already disabled.")
+        return
+      }
+      let namespace = mcpNamespace(for: draft.mcpServers[serverIndex])
+      let registeredTools = Set(await runtime.availableTools().map(\.name))
+      let removedTools = registeredTools.filter { $0.hasPrefix("\(namespace)::") }
+      draft.mcpServers[serverIndex].enabled = false
+      for index in draft.agents.indices {
+        draft.agents[index].toolNames.subtract(removedTools)
+      }
+      var profile = session.profile
+      profile.toolNames.subtract(removedTools)
+      do {
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        _ = await runtime.unregisterMCP(serverID: id)
+        for agent in draft.agents {
+          try await runtime.register(agent: agent, replacingExisting: true)
+        }
+        session.profile = profile
+        configuration = draft
+        catalogs.removeAll { $0.serverID == id }
+        await terminal.line("Disabled MCP '\(id)' and removed \(removedTools.count) live tools.")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
+    default:
+      await terminal.line(mcpCommandHelp)
+    }
+  }
+
+  private static func mcpNamespace(for server: ConfiguredMCPServer) -> String {
+    let prefix = server.toolNamePrefix?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return prefix.flatMap { $0.isEmpty ? nil : $0 } ?? server.id
+  }
+
+  private static func parseStdioMCPAddArguments(_ arguments: String) throws
+    -> ConfiguredMCPServer
+  {
+    let words = try shellWords(arguments)
+    guard let id = words.first, !id.isEmpty else { throw MCPCommandError.missingID }
+    var environment: [String: String] = [:]
+    var workingDirectory: String?
+    var timeout: TimeInterval?
+    var prefix: String?
+    var approval = ToolApprovalRequirement.confirm
+    var commandIndex: Int?
+    var index = 1
+    while index < words.count {
+      switch words[index] {
+      case "--":
+        commandIndex = index + 1
+        index = words.count
+      case "--env":
+        index += 1
+        guard index < words.count,
+          let separator = words[index].firstIndex(of: "="),
+          separator != words[index].startIndex
+        else { throw MCPCommandError.invalidEnvironment }
+        environment[String(words[index][..<separator])] = String(
+          words[index][words[index].index(after: separator)...])
+        index += 1
+      case "--cwd":
+        index += 1
+        guard index < words.count else { throw MCPCommandError.missingOptionValue("--cwd") }
+        workingDirectory = words[index]
+        index += 1
+      case "--timeout":
+        index += 1
+        guard index < words.count, let value = TimeInterval(words[index]), value > 0 else {
+          throw MCPCommandError.invalidTimeout
+        }
+        timeout = value
+        index += 1
+      case "--prefix":
+        index += 1
+        guard index < words.count else { throw MCPCommandError.missingOptionValue("--prefix") }
+        prefix = words[index]
+        index += 1
+      case "--approval":
+        index += 1
+        guard index < words.count,
+          let value = ToolApprovalRequirement(rawValue: words[index].lowercased())
+        else { throw MCPCommandError.invalidApproval }
+        approval = value
+        index += 1
+      default:
+        commandIndex = index
+        index = words.count
+      }
+    }
+    guard let commandIndex, commandIndex < words.count else {
+      throw MCPCommandError.missingCommand
+    }
+    return ConfiguredMCPServer(
+      id: id,
+      kind: "stdio",
+      command: words[commandIndex],
+      args: Array(words.dropFirst(commandIndex + 1)),
+      env: environment,
+      cwd: workingDirectory,
+      timeout: timeout,
+      toolNamePrefix: prefix,
+      defaultApproval: approval)
+  }
+
+  private static func shellWords(_ input: String) throws -> [String] {
+    enum Quote { case single, double }
+    var words: [String] = []
+    var word = ""
+    var quote: Quote?
+    var escaped = false
+    var started = false
+    for character in input {
+      if escaped {
+        word.append(character)
+        escaped = false
+        started = true
+        continue
+      }
+      if character == "\\", quote != .single {
+        escaped = true
+        started = true
+        continue
+      }
+      if character == "'", quote != .double {
+        quote = quote == .single ? nil : .single
+        started = true
+        continue
+      }
+      if character == "\"", quote != .single {
+        quote = quote == .double ? nil : .double
+        started = true
+        continue
+      }
+      if character.isWhitespace, quote == nil {
+        if started {
+          words.append(word)
+          word = ""
+          started = false
+        }
+        continue
+      }
+      word.append(character)
+      started = true
+    }
+    guard quote == nil else { throw MCPCommandError.unterminatedQuote }
+    guard !escaped else { throw MCPCommandError.danglingEscape }
+    if started { words.append(word) }
+    return words
   }
 
   /// Opens a text value from the active REPL session in the user's terminal
@@ -1552,9 +1896,13 @@ private struct MaiCLI {
     var processEnvironment = environment
     processEnvironment["EDITOR"] = command
     process.environment = processEnvironment
-    process.standardInput = FileHandle.standardInput
-    process.standardOutput = FileHandle.standardOutput
-    process.standardError = FileHandle.standardError
+    // Make sure the submitted REPL line and any status output are visible
+    // before handing the controlling terminal to the editor. Leaving these
+    // streams unset makes Process inherit the actual tty descriptors instead
+    // of attaching duplicated FileHandle objects, which some terminal editors
+    // do not recognize as an interactive terminal.
+    FileHandle.standardOutput.synchronizeFile()
+    FileHandle.standardError.synchronizeFile()
     do {
       try process.run()
       process.waitUntilExit()
@@ -2189,7 +2537,7 @@ private struct MaiCLI {
     let booleanKeys = ["ui.bold", "ui.markdown"]
     guard colorKeys.contains(key) || booleanKeys.contains(key) else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, limits.maxToolCalls, limits.maxModelTurns, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold, ui.markdown"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold, ui.markdown"
       )
       return
     }
@@ -2248,11 +2596,13 @@ private struct MaiCLI {
   private static let limitSettingKeys = [
     "limits.maxtoolcalls": "limits.maxToolCalls",
     "limits.maxmodelturns": "limits.maxModelTurns",
+    "limits.maxsubagents": "limits.maxSubagents",
   ]
 
   private static func listLimitSettings(_ limits: AgentRunLimits, terminal: TerminalWriter) async {
     await terminal.line("limits.maxToolCalls = \(limits.maxToolCalls)")
     await terminal.line("limits.maxModelTurns = \(limits.maxModelTurns)")
+    await terminal.line("limits.maxSubagents = \(limits.maxSubagents)")
   }
 
   /// Changes one run limit for the current chat and, when the chat uses a
@@ -2266,7 +2616,12 @@ private struct MaiCLI {
     terminal: TerminalWriter
   ) async {
     var limits = session.profile.limits
-    let current = key == "limits.maxToolCalls" ? limits.maxToolCalls : limits.maxModelTurns
+    let current: Int
+    switch key {
+    case "limits.maxToolCalls": current = limits.maxToolCalls
+    case "limits.maxSubagents": current = limits.maxSubagents
+    default: current = limits.maxModelTurns
+    }
     guard parts.count > 1 else {
       await terminal.line("\(key) = \(current)")
       return
@@ -2277,12 +2632,19 @@ private struct MaiCLI {
     }
     if key == "limits.maxToolCalls" {
       limits.maxToolCalls = value
+    } else if key == "limits.maxSubagents" {
+      limits.maxSubagents = value
     } else {
       limits.maxModelTurns = max(1, value)
     }
     session.profile.limits = limits
     session.touch()
-    let applied = key == "limits.maxToolCalls" ? limits.maxToolCalls : limits.maxModelTurns
+    let applied: Int
+    switch key {
+    case "limits.maxToolCalls": applied = limits.maxToolCalls
+    case "limits.maxSubagents": applied = limits.maxSubagents
+    default: applied = limits.maxModelTurns
+    }
     guard var draft = configuration, let configurationPath,
       let index = draft.agents.firstIndex(where: { $0.id == session.profile.agentID })
     else {
@@ -3013,13 +3375,15 @@ private struct MaiCLI {
     var values = [
       "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
       "/set limits.", "/set limits.maxToolCalls ", "/set limits.maxModelTurns ",
+      "/set limits.maxSubagents ",
       "/set ui.bgline blue", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
       "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
       "/cwd", "/pwd", "/cd ", "/plugins",
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/agents",
       "/agent use ",
-      "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
+      "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
+      "/mcp add ", "/mcp enable ", "/mcp disable ",
       "/edit prompt", "/edit config", "/edit mcps", "/chat compact",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
       "/image ocr ", "/attach ", "/attach clear", "/copy", "/visual", "/clear", "/chat list",
@@ -3230,7 +3594,10 @@ private struct MaiCLI {
     /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
     /tools              List logical tool groups for the current agent
     /proxy [on|off]     Inspect or toggle the shared tool proxy
-    /mcps               List connected MCP servers
+    /mcp list           List configured MCP servers and connection state
+    /mcp add ...        Add, connect, persist, and enable a stdio MCP server
+    /mcp enable ID      Connect and enable a configured MCP server
+    /mcp disable ID     Disconnect and disable a configured MCP server
     /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
     /attach PATH        Attach a Word, PDF, JSON, or text file as Markdown/plain text
     /attach clear       Drop the attachments queued for the next message
@@ -3261,6 +3628,22 @@ private struct MaiCLI {
       /chat clear         Clear the conversation and restore configured instructions
 
     Removing a tool call or result also removes its linked tool transaction.
+    """
+
+  private static let mcpCommandHelp = """
+    MCP commands:
+      /mcp list
+      /mcp enable ID
+      /mcp disable ID
+      /mcp add ID [--env KEY=VALUE] [--cwd PATH] [--timeout SECONDS]
+                  [--prefix PREFIX] [--approval MODE] -- COMMAND [ARG ...]
+
+    MODE is automatic, confirm, or dangerous. Quotes and backslash escapes are
+    supported. The new server is connected immediately, saved in the normal
+    mcpServers configuration, and its tools are enabled for the current agent.
+
+    Example:
+      /mcp add weather -- npx -y weather-mcp
     """
 
   private static let editHelp = """
@@ -3310,6 +3693,7 @@ private struct MaiCLI {
         --system TEXT       override agent instructions
         --max-tool-calls N  tool calls allowed per run (default 20)
         --max-turns N       model turns allowed per run (default 12)
+        --max-subagents N   concurrent background agents (default 0/off)
         --image PATH        attach an image (repeatable)
         --no-stream         disable response streaming
         --markdown          render replies as markdown even when piped
