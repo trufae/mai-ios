@@ -69,9 +69,54 @@ jobs:
           swift sdk install \
             https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz \
             --checksum d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5
-          android_sdk=$(find "$RUNNER_TEMP" -type d -name swift-android -print -quit)
-          test -n "$android_sdk"
-          ANDROID_NDK_HOME="$ndk" "$android_sdk/scripts/setup-android-sdk.sh"
+          swift_sdk_root="${XDG_CONFIG_HOME:-$HOME/.config}/swiftpm/swift-sdks"
+          android_sdk="$swift_sdk_root/swift-6.3.3-RELEASE_android.artifactbundle/swift-android"
+          setup_script="$android_sdk/scripts/setup-android-sdk.sh"
+
+          echo "Android NDK: $ndk"
+          echo "Swift Android SDK: $android_sdk"
+          echo "Setup script: $setup_script"
+          echo "Swift SDKs installed:"
+          swift sdk list
+
+          if [ ! -d "$ndk" ]; then
+            echo "::error::Android NDK directory does not exist: $ndk"
+            exit 1
+          fi
+          if [ ! -f "$setup_script" ]; then
+            echo "::error::Android SDK setup script does not exist: $setup_script"
+            echo "Contents of the Swift SDK installation directory:"
+            find "$swift_sdk_root" -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          echo "NDK and setup-script permissions:"
+          ls -ld "$ndk" "$setup_script"
+          echo "Starting setup-android-sdk.sh with ANDROID_NDK_HOME=$ndk"
+          set +e
+          ANDROID_NDK_HOME="$ndk" bash -x "$setup_script"
+          setup_status=$?
+          set -e
+          echo "setup-android-sdk.sh completed with exit code $setup_status"
+
+          if [ "$setup_status" -ne 0 ]; then
+            echo "::error::setup-android-sdk.sh failed with exit code $setup_status"
+            echo "Host and tool diagnostics:"
+            uname -a
+            bash --version
+            command -V swift curl unzip bash || true
+            echo "Relevant environment paths:"
+            echo "HOME=$HOME"
+            echo "RUNNER_TEMP=$RUNNER_TEMP"
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "Android NDK directory structure:"
+            find "$ndk" -maxdepth 3 -type d -print || true
+            echo "Swift Android SDK directory structure:"
+            find "$android_sdk" -maxdepth 3 -print || true
+            exit "$setup_status"
+          fi
+
+          echo "Android Swift SDK setup completed successfully"
 
       - name: Build Android arm64 release CLI
         run: |
