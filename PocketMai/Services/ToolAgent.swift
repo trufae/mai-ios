@@ -139,16 +139,6 @@ enum BuiltInToolCatalog {
     guard fileWorkspaceToolsEnabled(conversation: conversation, settings: store.settings) else {
       return "Error: Files tools are disabled in Files settings."
     }
-    let advancedToolNames = [
-      FileWorkspaceTool.readIndexName,
-      FileWorkspaceTool.readRangeName,
-      FileWorkspaceTool.replaceRangeName,
-    ]
-    if advancedToolNames.contains(name),
-      !store.settings.toolSettings.filesAdvancedToolsEnabled
-    {
-      return "Error: advanced file tools are disabled in Files settings."
-    }
     let context: FileWorkspaceContext
     do {
       let resolved = try FileWorkspaceTool.context(for: conversation, settings: store.settings)
@@ -174,19 +164,7 @@ enum BuiltInToolCatalog {
             hiddenRootEntryNames: context.hidesModelsFolder ? ["Models"] : [])),
         arguments: arguments)
     }
-    switch name {
-    case FileWorkspaceTool.readIndexName:
-      return await Task.detached {
-        FileWorkspaceService.readIndex(arguments: arguments, in: context)
-      }.value
-    case FileWorkspaceTool.readRangeName:
-      return await Task.detached {
-        FileWorkspaceService.readRange(arguments: arguments, in: context)
-      }.value
-    case FileWorkspaceTool.replaceRangeName:
-      return FileWorkspaceService.replaceRange(arguments: arguments, in: context)
-    default: return "Error: Unknown Files tool."
-    }
+    return "Error: Unknown Files tool."
   }
 
   private static func definitions(
@@ -558,9 +536,6 @@ enum FileWorkspaceTool {
   static let grepName = MaiFileWorkspaceTool.Operation.grep.rawValue
   static let readName = MaiFileWorkspaceTool.Operation.read.rawValue
   static let readDocumentName = MaiFileWorkspaceTool.Operation.readDocument.rawValue
-  static let readIndexName = "files_read_index"
-  static let readRangeName = "files_read_range"
-  static let replaceRangeName = "files_replace_range"
   static let writeName = MaiFileWorkspaceTool.Operation.write.rawValue
   static let renameName = MaiFileWorkspaceTool.Operation.rename.rawValue
   static let deleteName = MaiFileWorkspaceTool.Operation.delete.rawValue
@@ -602,71 +577,10 @@ enum FileWorkspaceTool {
     var definitions = MaiFileWorkspaceTool.makeTools(
       configuration: MaiFileWorkspaceConfiguration(
         rootURL: PocketMaiDirectories.filesWorkspaceURL,
-        displayName: name))
+        displayName: name),
+      includeAdvancedTools: includeAdvancedTools)
       .map(\.definition)
-    if includeAdvancedTools {
-      definitions.append(contentsOf: advancedDefinitions(workspaceName: name))
-    }
     return definitions
-  }
-
-  private static func advancedDefinitions(workspaceName name: String) -> [ToolDefinition] {
-    [
-      ToolDefinition(
-        name: readIndexName,
-        description:
-          "List an index of a file in the working folder '\(name)' with 1-based line numbers: function and type names for source code, headings for Markdown and converted documents (.docx, .pdf), keys for JSON.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File path inside \(name).",
-            required: true)
-        ]
-      ),
-      ToolDefinition(
-        name: readRangeName,
-        description:
-          "Read a numbered range of lines from a file in the working folder '\(name)'. Word, PDF, and JSON files are converted like files_read_document, so line numbers match files_read_index.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File path inside \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "start_line", type: "number",
-            description: "First line to read, 1-based. Default: 1.",
-            required: false),
-          ToolParameterDef(
-            name: "end_line", type: "number",
-            description: "Last line to read, inclusive. Default: start_line + 199.",
-            required: false),
-        ]
-      ),
-      ToolDefinition(
-        name: replaceRangeName,
-        description:
-          "Replace a 1-based inclusive line range of a UTF-8 text file in the working folder '\(name)'. Use end_line = start_line - 1 to insert before start_line; empty content deletes the range. Not available for converted documents (.docx, .pdf, .json).",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File path inside \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "start_line", type: "number",
-            description: "First line to replace, 1-based.",
-            required: true),
-          ToolParameterDef(
-            name: "end_line", type: "number",
-            description: "Last line to replace, inclusive. Default: start_line.",
-            required: false),
-          ToolParameterDef(
-            name: "content", type: "string",
-            description:
-              "New text for the range; may contain multiple lines. Omit to delete the range.",
-            required: false),
-        ]
-      ),
-    ]
   }
 }
 

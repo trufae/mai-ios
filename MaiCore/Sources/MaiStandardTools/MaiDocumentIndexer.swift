@@ -1,5 +1,7 @@
 import Foundation
 
+private typealias DocumentIndexer = MaiDocumentIndexer
+
 /// Builds a table of contents for a text file: function and type names for
 /// source code, heading titles for Markdown. Each entry carries the 1-based
 /// line number it starts on, which is what the files_read_index tool shows so
@@ -7,16 +9,21 @@ import Foundation
 ///
 /// The source scanners are line-based heuristics, not parsers: they aim for
 /// useful navigation, not compiler-grade accuracy.
-enum DocumentIndexer {
-  struct Entry: Equatable {
-    let line: Int
-    let title: String
+public enum MaiDocumentIndexer {
+  public struct Entry: Equatable, Sendable {
+    public let line: Int
+    public let title: String
+
+    public init(line: Int, title: String) {
+      self.line = line
+      self.title = title
+    }
   }
 
   /// Index a source file by its extension. Returns nil when the extension is
   /// not a recognized programming language (callers then fall back to the
   /// Markdown heading index).
-  static func sourceIndex(text: String, fileExtension: String) -> [Entry]? {
+  public static func sourceIndex(text: String, fileExtension: String) -> [Entry]? {
     guard let language = Language(fileExtension: fileExtension) else { return nil }
     let patterns = language.patterns
     let cDefinitionRegex = language.usesCFunctionHeuristic ? makeCDefinitionRegex() : nil
@@ -39,7 +46,7 @@ enum DocumentIndexer {
   /// Index Markdown ATX headings (`# Title` … `###### Title`), skipping fenced
   /// code blocks. The heading markers are kept in the title so the nesting
   /// level stays visible.
-  static func markdownIndex(text: String) -> [Entry] {
+  public static func markdownIndex(text: String) -> [Entry] {
     var entries: [Entry] = []
     var openFence: String?
     for (offset, line) in lines(of: text).enumerated() {

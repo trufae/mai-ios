@@ -1590,7 +1590,7 @@ struct SettingsView: View {
         "Enable advanced file tools",
         isOn: settingsBinding(\.toolSettings.filesAdvancedToolsEnabled))
       Text(
-        "Off keeps the basic file management tools only. On adds coding-oriented tools: files_read_index lists function and type names in source files (C, Java, Python, Swift, and more) and section headings in Markdown or converted documents with line numbers, and files_read_range and files_replace_range read and edit line ranges in large text files."
+        "Off keeps the basic file management tools only. On adds coding-oriented tools: files_read_index lists function and type names in source files (C, Java, Python, Swift, and more) and section headings in Markdown or converted documents with line numbers; files_read_range and files_replace_range read and edit line ranges; and files_patch safely replaces exact text or a regular-expression match."
       )
       .font(.caption)
       .foregroundStyle(.secondary)

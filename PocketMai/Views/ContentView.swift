@@ -95,10 +95,15 @@ struct ContentView: View {
       // main-thread layout/scroll work ~8×/sec and starving the Settings UI.
       store.streamingTextStore.setPublishingSuspended(isShowing)
     }
-    .sheet(item: toolCallApprovalBinding) { request in
+    .fullScreenCover(item: toolCallApprovalBinding) { request in
       ToolCallApprovalView(request: request)
         .environmentObject(store)
         .interactiveDismissDisabled()
+    }
+    .onChange(of: store.activeToolCallApprovalRequest?.id) { _, requestID in
+      // An approval is a blocking decision. Dismiss any ordinary sheet so the
+      // confirmation cannot be queued behind it while the assistant waits.
+      if requestID != nil { showingSettings = false }
     }
     .alert(
       store.activeLongRunningOperationTimeoutRequest?.context.promptTitle
@@ -260,13 +265,18 @@ struct ContentView: View {
 
   private var longRunningOperationTimeoutBinding: Binding<Bool> {
     Binding(
-      get: { store.activeLongRunningOperationTimeoutRequest != nil },
+      // Keep the approval surface foremost; the timeout decision remains queued
+      // and is presented as soon as the approval is resolved.
+      get: {
+        store.activeToolCallApprovalRequest == nil
+          && store.activeLongRunningOperationTimeoutRequest != nil
+      },
       set: { _ in })
   }
 
   private var errorBinding: Binding<Bool> {
     Binding(
-      get: { store.errorMessage != nil },
+      get: { store.activeToolCallApprovalRequest == nil && store.errorMessage != nil },
       set: { if !$0 { store.errorMessage = nil } }
     )
   }
