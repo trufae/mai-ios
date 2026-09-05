@@ -63,6 +63,8 @@ let package = Package(
         .define("PMAI_HAS_VISUAL", .when(platforms: [.macOS, .linux]))
       ],
       linkerSettings: [
+        .linkedLibrary("ssl", .when(platforms: [.android])),
+        .linkedLibrary("crypto", .when(platforms: [.android])),
         .linkedLibrary("z", .when(platforms: [.android]))
       ]),
     .testTarget(
