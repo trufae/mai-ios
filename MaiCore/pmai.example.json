@@ -32,6 +32,8 @@
       "id": "standard-tools",
       "kind": "standard-tools",
       "options": {
+        "filesRoot": ".",
+        "filesWriteEnabled": true,
         "webSearchProvider": "exa",
         "weatherLocation": "",
         "mastodonInstance": "mastodon.social",
@@ -81,6 +83,14 @@
         "calculator",
         "current_time",
         "echo",
+        "files_delete",
+        "files_find",
+        "files_grep",
+        "files_list",
+        "files_read",
+        "files_read_document",
+        "files_rename",
+        "files_write",
         "github_ci_log",
         "github_ci_status",
         "github_commit",
@@ -98,6 +108,16 @@
         "weather",
         "web_fetch",
         "web_search"
+      ],
+      "toolGroupNames": [
+        "calculator",
+        "datetime",
+        "echo",
+        "files",
+        "github",
+        "mastodon",
+        "weather",
+        "web"
       ],
       "subagentNames": [
         "researcher"
@@ -118,6 +138,9 @@
       "model": "your-model",
       "toolNames": [
         "current_time"
+      ],
+      "toolGroupNames": [
+        "datetime"
       ]
     }
   ],

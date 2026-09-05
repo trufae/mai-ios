@@ -70,7 +70,8 @@ enum BuiltInToolCatalog {
         settings: store.settings.toolSettings, locationService: { store.locationService })
       return await PocketMaiPluginHost.shared.call(
         tool: tool, arguments: call.argumentValues)
-    case FileWorkspaceTool.listName, FileWorkspaceTool.readName,
+    case FileWorkspaceTool.listName, FileWorkspaceTool.findName, FileWorkspaceTool.grepName,
+      FileWorkspaceTool.readName,
       FileWorkspaceTool.readDocumentName, FileWorkspaceTool.readIndexName,
       FileWorkspaceTool.readRangeName, FileWorkspaceTool.replaceRangeName,
       FileWorkspaceTool.writeName, FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
@@ -162,17 +163,18 @@ enum BuiltInToolCatalog {
       return
         "Error: working folder '\(workspaceName)' is no longer accessible. Select it again from the chat's + menu."
     }
+    if let operation = MaiFileWorkspaceTool.Operation(rawValue: name) {
+      return await PocketMaiPluginHost.shared.call(
+        tool: MaiFileWorkspaceTool(
+          operation: operation,
+          configuration: MaiFileWorkspaceConfiguration(
+            rootURL: context.rootURL,
+            displayName: context.displayName,
+            isSecurityScoped: context.isSecurityScoped,
+            hiddenRootEntryNames: context.hidesModelsFolder ? ["Models"] : [])),
+        arguments: arguments)
+    }
     switch name {
-    case FileWorkspaceTool.listName:
-      return FileWorkspaceService.list(arguments: arguments, in: context)
-    case FileWorkspaceTool.readName:
-      return FileWorkspaceService.read(arguments: arguments, in: context)
-    case FileWorkspaceTool.readDocumentName:
-      // Document conversion (PDF text extraction, OCR) can be slow, so it
-      // runs off the main actor.
-      return await Task.detached {
-        FileWorkspaceService.readDocument(arguments: arguments, in: context)
-      }.value
     case FileWorkspaceTool.readIndexName:
       return await Task.detached {
         FileWorkspaceService.readIndex(arguments: arguments, in: context)
@@ -183,12 +185,6 @@ enum BuiltInToolCatalog {
       }.value
     case FileWorkspaceTool.replaceRangeName:
       return FileWorkspaceService.replaceRange(arguments: arguments, in: context)
-    case FileWorkspaceTool.writeName:
-      return FileWorkspaceService.write(arguments: arguments, in: context)
-    case FileWorkspaceTool.renameName:
-      return FileWorkspaceService.rename(arguments: arguments, in: context)
-    case FileWorkspaceTool.deleteName:
-      return FileWorkspaceService.delete(arguments: arguments, in: context)
     default: return "Error: Unknown Files tool."
     }
   }
@@ -557,15 +553,17 @@ enum MCPResourceTool {
 
 @MainActor
 enum FileWorkspaceTool {
-  static let listName = "files_list"
-  static let readName = "files_read"
-  static let readDocumentName = "files_read_document"
+  static let listName = MaiFileWorkspaceTool.Operation.list.rawValue
+  static let findName = MaiFileWorkspaceTool.Operation.find.rawValue
+  static let grepName = MaiFileWorkspaceTool.Operation.grep.rawValue
+  static let readName = MaiFileWorkspaceTool.Operation.read.rawValue
+  static let readDocumentName = MaiFileWorkspaceTool.Operation.readDocument.rawValue
   static let readIndexName = "files_read_index"
   static let readRangeName = "files_read_range"
   static let replaceRangeName = "files_replace_range"
-  static let writeName = "files_write"
-  static let renameName = "files_rename"
-  static let deleteName = "files_delete"
+  static let writeName = MaiFileWorkspaceTool.Operation.write.rawValue
+  static let renameName = MaiFileWorkspaceTool.Operation.rename.rawValue
+  static let deleteName = MaiFileWorkspaceTool.Operation.delete.rawValue
 
   /// The working folder the Files tools operate in for this conversation:
   /// the chat's own selection, else the chat folder's default, else nil for
@@ -601,108 +599,11 @@ enum FileWorkspaceTool {
     workspaceName name: String,
     includeAdvancedTools: Bool
   ) -> [ToolDefinition] {
-    var definitions = [
-      ToolDefinition(
-        name: listName,
-        description: "List a folder inside the working folder '\(name)'.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "Folder path inside \(name). Omit for the root folder.",
-            required: false)
-        ]
-      ),
-      ToolDefinition(
-        name: readName,
-        description: "Read a UTF-8 text file from the working folder '\(name)'.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File path inside \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "max_bytes", type: "number",
-            description: "Maximum bytes to return. Default: 120000.",
-            required: false),
-          ToolParameterDef(
-            name: "offset", type: "number",
-            description: "Byte offset to continue reading a large file. Default: 0.",
-            required: false),
-        ]
-      ),
-      ToolDefinition(
-        name: readDocumentName,
-        description:
-          "Read a document from the working folder '\(name)' as text: Word (.docx) and PDF files are converted to Markdown, JSON files to an indented outline, anything else is read as UTF-8 text.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File path inside \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "max_bytes", type: "number",
-            description: "Maximum bytes to return. Default: 120000.",
-            required: false),
-          ToolParameterDef(
-            name: "offset", type: "number",
-            description: "Byte offset into the converted text to continue reading. Default: 0.",
-            required: false),
-        ]
-      ),
-      ToolDefinition(
-        name: writeName,
-        description:
-          "Write or append text to a file, or create a folder, in the working folder '\(name)'.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File or folder path in \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "content", type: "string",
-            description: "Text to write. Required unless create_directory is true.",
-            required: false),
-          ToolParameterDef(
-            name: "append", type: "boolean",
-            description: "Append instead of replacing. Default: false.",
-            required: false),
-          ToolParameterDef(
-            name: "create_directory", type: "boolean",
-            description: "Create a folder instead of writing a file. Default: false.",
-            required: false),
-        ]
-      ),
-      ToolDefinition(
-        name: renameName,
-        description:
-          "Rename or move a file or folder inside the working folder '\(name)'.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "Current path in \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "new_path", type: "string",
-            description: "New path in \(name).",
-            required: true),
-        ]
-      ),
-      ToolDefinition(
-        name: deleteName,
-        description:
-          "Delete a file or folder inside the working folder '\(name)'.",
-        parameters: [
-          ToolParameterDef(
-            name: "path", type: "string",
-            description: "File or folder path in \(name).",
-            required: true),
-          ToolParameterDef(
-            name: "recursive", type: "boolean",
-            description: "Delete non-empty folders. Default: false.",
-            required: false),
-        ]
-      ),
-    ]
+    var definitions = MaiFileWorkspaceTool.makeTools(
+      configuration: MaiFileWorkspaceConfiguration(
+        rootURL: PocketMaiDirectories.filesWorkspaceURL,
+        displayName: name))
+      .map(\.definition)
     if includeAdvancedTools {
       definitions.append(contentsOf: advancedDefinitions(workspaceName: name))
     }

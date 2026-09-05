@@ -143,8 +143,14 @@ tool-name prefix.
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
 list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin`
-provides `echo`, `current_time`, `calculator`, and `read_text_file`; default CLI
-agents select the same three tools as before, and PocketMai reuses its calculator.
+provides `echo`, date/time, calculator, network, and workspace-scoped Files tools.
+The `files` group can list files, find approximate names, grep bounded UTF-8
+content, convert DOCX/PDF/JSON documents, write or append text, create folders,
+rename entries, and delete them. `filesRoot` confines every relative
+path to one directory (including symlink checks), while `filesWriteEnabled`
+removes the mutation tools when disabled. Mutations still go through normal
+confirmation, and deletion is marked dangerous. `read_text_file` remains
+available for compatibility with older agent configurations.
 Streamable HTTP support is supplied by `MaiMCPPlugin`, so the transport is not a
 dependency of the core runtime.
 

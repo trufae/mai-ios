@@ -27,7 +27,7 @@ let package = Package(
     .target(name: "MaiCore"),
     .target(name: "MaiOpenAI", dependencies: ["MaiCore"]),
     .target(name: "MaiMCP", dependencies: ["MaiCore"]),
-    .target(name: "MaiStandardTools", dependencies: ["MaiCore"]),
+    .target(name: "MaiStandardTools", dependencies: ["MaiCore", "MaiDocuments"]),
     .target(name: "MaiVisionOCR", dependencies: ["MaiCore"]),
     .target(name: "MaiDocuments", dependencies: ["MaiCore"]),
     .target(

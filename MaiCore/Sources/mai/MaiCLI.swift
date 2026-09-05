@@ -167,7 +167,7 @@ struct SessionProfile {
         MaiWebSearchTool.name,
         MaiWebFetchTool.name,
         MaiMastodonTool.name,
-      ] + MaiGitHubTool.toolNames)
+      ] + MaiFileWorkspaceTool.toolNames + MaiGitHubTool.toolNames)
     toolGroupNames = ["echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github"]
     subagentNames = []
     self.stream = stream
@@ -493,6 +493,11 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: configuration,
         environment: environment)
+      try await synchronizeToolGroupSelections(
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        plugins: plugins,
+        environment: environment)
       let ocrProvider = try await configuredOCRProvider(
         plugins: plugins,
         configuration: configuration,
@@ -631,6 +636,38 @@ private struct MaiCLI {
         context: source.context(environment: environment))
       for tool in tools { try await runtime.register(tool: tool) }
     }
+  }
+
+  /// Tool names remain in the agent record for provider/runtime portability;
+  /// group names let a host expand newly added plugin tools without requiring
+  /// users to toggle an already enabled group off and on again.
+  private static func synchronizeToolGroupSelections(
+    configuration: inout MaiConfiguration?,
+    configurationPath: String,
+    plugins: PluginRegistry,
+    environment: [String: String]
+  ) async throws {
+    guard var draft = configuration else { return }
+    var toolsByGroup: [String: Set<String>] = [:]
+    for source in draft.toolSources where source.enabled {
+      for group in try await plugins.toolGroups(
+        kind: source.kind,
+        context: source.context(environment: environment))
+      {
+        toolsByGroup[group.id, default: []].formUnion(group.toolNames)
+      }
+    }
+    var changed = false
+    for index in draft.agents.indices {
+      let previous = draft.agents[index].toolNames
+      for groupName in draft.agents[index].toolGroupNames {
+        draft.agents[index].toolNames.formUnion(toolsByGroup[groupName] ?? [])
+      }
+      changed = changed || previous != draft.agents[index].toolNames
+    }
+    guard changed else { return }
+    try draft.save(to: URL(fileURLWithPath: configurationPath))
+    configuration = draft
   }
 
   private static func configuredOCRProvider(
@@ -2289,7 +2326,7 @@ private struct MaiCLI {
               MaiWebSearchTool.name,
               MaiWebFetchTool.name,
               MaiMastodonTool.name,
-            ] + MaiGitHubTool.toolNames),
+            ] + MaiFileWorkspaceTool.toolNames + MaiGitHubTool.toolNames),
           toolGroupNames: [
             "echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github",
           ],

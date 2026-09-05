@@ -23,6 +23,16 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
   public init() {}
 
   public func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
+    let filesRoot = NSString(
+      string: context.string(
+        "filesRoot",
+        environment: "PMAI_FILES_ROOT",
+        default: FileManager.default.currentDirectoryPath))
+      .expandingTildeInPath
+    let fileConfiguration = MaiFileWorkspaceConfiguration(
+      rootURL: URL(fileURLWithPath: filesRoot),
+      displayName: context.options["filesDisplayName"]?.stringValue,
+      writeEnabled: context.options["filesWriteEnabled"]?.boolValue ?? true)
     let webSearchProvider =
       context.options["webSearchProvider"]?.stringValue
       .flatMap(MaiWebSearchProvider.init(rawValue:)) ?? .exa
@@ -63,6 +73,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
               defaultEnvironment: "MASTODON_API_KEY"),
             writeEnabled: context.options["mastodonWriteEnabled"]?.boolValue ?? false)),
       ]
+      + MaiFileWorkspaceTool.makeTools(configuration: fileConfiguration)
       + MaiGitHubTool.makeTools()
     guard let names = context.options["tools"]?.arrayValue else { return tools }
     let enabled = Set(names.compactMap(\.stringValue))
@@ -94,8 +105,21 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
       ToolGroupDefinition(
         id: "files",
         displayName: "Files",
-        description: MaiReadTextFileTool.toolDefinition.description,
-        toolNames: [MaiReadTextFileTool.name]),
+        description:
+          "List, find, grep, read, convert, write, append, rename, and delete files in one workspace.",
+        toolNames: Set([MaiReadTextFileTool.name] + MaiFileWorkspaceTool.toolNames),
+        options: [
+          .init(
+            id: "filesRoot",
+            label: "Workspace folder",
+            help: "All relative tool paths are confined to this folder."),
+          .init(id: "filesDisplayName", label: "Workspace name"),
+          .init(
+            id: "filesWriteEnabled",
+            label: "Allow file changes",
+            kind: .boolean,
+            defaultValue: .bool(true)),
+        ]),
       ToolGroupDefinition(
         id: "weather",
         displayName: "Weather",
