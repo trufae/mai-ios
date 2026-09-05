@@ -251,7 +251,9 @@ struct TranscriptView: View {
         ScrollView(.vertical) {
           transcriptContent(width: max(1, geometry.size.width - 2))
         }
-        .onChange(of: conversation.revision) { _ = proxy.scrollTo(edge: .bottom) }
+        // Also run for the initial value: a restored conversation may already
+        // have a long transcript before its revision changes.
+        .onChange(of: conversation.revision, initial: true) { _ = proxy.scrollTo(edge: .bottom) }
       }
     }
   }

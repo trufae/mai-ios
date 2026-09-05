@@ -215,3 +215,41 @@ private func call(
         depth: 0),
       modelTurn: 1))
 }
+
+@Test("Shared Files tools require overwrite to replace an existing file")
+func fileWorkspaceWriteRequiresOverwrite() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-files-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root, displayName: "test-workspace"))
+  let write = tool(tools, .write)
+  #expect(write.definition.parameters.contains { $0.name == "overwrite" })
+
+  let created = try await call(write, ["path": .string("main.c"), "content": .string("int a;\n")])
+  #expect(!created.isError)
+
+  let refused = try await call(write, ["path": .string("main.c"), "content": .string("int b;\n")])
+  #expect(refused.isError)
+  #expect(refused.text.contains("files_patch"))
+  #expect(refused.text.contains("overwrite"))
+  let unchanged = try await call(tool(tools, .read), ["path": .string("main.c")])
+  #expect(unchanged.text == "int a;\n")
+
+  let appended = try await call(
+    write, ["path": .string("main.c"), "content": .string("int c;\n"), "append": .bool(true)])
+  #expect(!appended.isError)
+
+  let replaced = try await call(
+    write, ["path": .string("main.c"), "content": .string("int b;\n"), "overwrite": .bool(true)])
+  #expect(!replaced.isError)
+  let read = try await call(tool(tools, .read), ["path": .string("main.c")])
+  #expect(read.text == "int b;\n")
+
+  try Data().write(to: root.appendingPathComponent("empty.txt"))
+  let filledEmpty = try await call(
+    write, ["path": .string("empty.txt"), "content": .string("now full")])
+  #expect(!filledEmpty.isError)
+}

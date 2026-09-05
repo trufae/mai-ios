@@ -177,21 +177,29 @@ public actor AgentRuntime {
       localModelTurns += 1
       await emit(.modelStarted(context, turn: localModelTurns))
 
+      // Once the run's tool budget is spent the model gets no tools and is
+      // told to answer, instead of the run failing with a limit error.
+      let toolBudgetExhausted =
+        !definitions.isEmpty && localToolCalls >= request.limits.maxToolCalls
       var providerMessages = transcript
-      if let textToolMode {
+      if textToolMode != nil || toolBudgetExhausted {
         let insertionIndex =
           providerMessages.firstIndex {
             $0.role != .system && $0.role != .developer
           } ?? providerMessages.endIndex
-        providerMessages.insert(
-          .system(textToolPrompt(definitions, mode: textToolMode)), at: insertionIndex)
+        let prompt =
+          toolBudgetExhausted
+          ? Self.toolBudgetExhaustedPrompt
+          : textToolPrompt(definitions, mode: textToolMode ?? .text)
+        providerMessages.insert(.system(prompt), at: insertionIndex)
       }
+      let offersTools = !usesTextToolProtocol && !toolBudgetExhausted
       var providerResponse = try await provider.complete(
         ProviderRequest(
           model: request.model,
           messages: providerMessages,
-          tools: usesTextToolProtocol ? [] : definitions,
-          toolChoice: definitions.isEmpty || usesTextToolProtocol ? .none : request.toolChoice,
+          tools: offersTools ? definitions : [],
+          toolChoice: definitions.isEmpty || !offersTools ? .none : request.toolChoice,
           responseFormat: request.responseFormat,
           options: request.options,
           stream: usesTextToolProtocol ? false : request.stream)
@@ -209,7 +217,7 @@ public actor AgentRuntime {
         throw AgentRuntimeError.limitExceeded("token budget")
       }
 
-      if let textToolMode {
+      if let textToolMode, !toolBudgetExhausted {
         let decision = AgentToolLoopPolicy.evaluate(
           response: providerResponse.message.text,
           tools: definitions,
@@ -268,27 +276,31 @@ public actor AgentRuntime {
 
       for call in calls {
         try Task.checkCancellation()
-        guard localToolCalls < request.limits.maxToolCalls,
-          await budget.claimToolCall()
-        else {
-          throw AgentRuntimeError.limitExceeded("tool calls")
-        }
-        localToolCalls += 1
         let result: ToolResult
-        if fingerprints.insert(ToolCallKey(call)).inserted {
-          result = try await execute(
-            call,
-            definitions: concreteDefinitions,
-            request: request,
-            context: context,
-            modelTurn: localModelTurns,
-            depth: depth,
-            budget: budget,
-            emit: emit)
+        if localToolCalls < request.limits.maxToolCalls, await budget.claimToolCall() {
+          localToolCalls += 1
+          if fingerprints.insert(ToolCallKey(call)).inserted {
+            result = try await execute(
+              call,
+              definitions: concreteDefinitions,
+              request: request,
+              context: context,
+              modelTurn: localModelTurns,
+              depth: depth,
+              budget: budget,
+              emit: emit)
+          } else {
+            result = ToolResult(
+              callID: call.id,
+              text: "Error: refusing to repeat an identical tool call.",
+              isError: true)
+            await emit(.toolFinished(context, result))
+          }
         } else {
           result = ToolResult(
             callID: call.id,
-            text: "Error: refusing to repeat an identical tool call.",
+            text:
+              "Error: the tool call budget for this run (\(request.limits.maxToolCalls)) is exhausted; this call was not executed. Answer with the information already gathered.",
             isError: true)
           await emit(.toolFinished(context, result))
         }
@@ -587,6 +599,9 @@ public actor AgentRuntime {
       toolCallingStrategy: definition.toolCallingStrategy,
       useToolProxy: definition.useToolProxy)
   }
+
+  static let toolBudgetExhaustedPrompt =
+    "The tool call budget for this run is exhausted and no tools are available anymore. Do not call tools; give the final answer using the information already gathered."
 
   private func textToolPrompt(
     _ definitions: [ToolDefinition],

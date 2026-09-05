@@ -175,6 +175,11 @@ public struct MaiMCPPlugin: MaiPlugin {
     try await registry.register(
       mcpFactory: StreamableHTTPMCPFactory(),
       from: manifest.id)
+    #if !os(iOS)
+      try await registry.register(
+        mcpFactory: StdioMCPFactory(),
+        from: manifest.id)
+    #endif
   }
 }
 

@@ -39,6 +39,16 @@ func installsBundledIntegrationPlugins() async throws {
       url: URL(string: "https://example.com/mcp")!),
     environment: [:])
   #expect(mcp is MCPClient)
+  #if !os(iOS)
+    let stdio = try await registry.makeMCPToolSource(
+      kind: "stdio",
+      configuration: ConfiguredMCPServer(
+        id: "local-fixture",
+        kind: "stdio",
+        command: "/bin/echo"),
+      environment: [:])
+    #expect(stdio is MCPStdioClient)
+  #endif
 }
 
 @Test("Tool factories describe logical groups and their configuration")

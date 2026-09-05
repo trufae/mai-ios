@@ -1154,3 +1154,49 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 private enum TestError: Error { case missingResponse }
+
+@Test("Exhausted tool call budgets become tool errors and the model is asked to answer")
+func toolCallBudgetExhaustion() async throws {
+  func upper(_ id: String, _ text: String) -> ContentPart {
+    .toolCall(ToolCall(id: id, name: "uppercase", arguments: .object(["text": .string(text)])))
+  }
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(
+      message: AgentMessage(role: .assistant, content: [upper("c1", "one"), upper("c2", "two")]),
+      stopReason: .toolCall),
+    ProviderResponse(message: .assistant("ONE is all I got."), stopReason: .stop),
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "uppercase",
+        description: "Uppercase text",
+        inputSchema: objectSchema(required: ["text"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      ToolOutput(text: arguments.objectValue?["text"]?.stringValue?.uppercased() ?? "")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("uppercase both")],
+      toolNames: ["uppercase"],
+      limits: AgentRunLimits(maxToolCalls: 1)))
+
+  #expect(result.response.text == "ONE is all I got.")
+  #expect(result.toolCalls == 1)
+  let toolResults = result.transcript.flatMap(\.toolResults)
+  #expect(toolResults.count == 2)
+  #expect(toolResults[0].text == "ONE")
+  #expect(toolResults[1].isError)
+  #expect(toolResults[1].text.contains("budget"))
+  let requests = await provider.requests
+  #expect(requests.count == 2)
+  #expect(requests[0].tools.count == 1)
+  #expect(requests[1].tools.isEmpty)
+  #expect(requests[1].messages.contains { $0.text == AgentRuntime.toolBudgetExhaustedPrompt })
+}

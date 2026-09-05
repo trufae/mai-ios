@@ -214,6 +214,10 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
   public var enabled: Bool
   public var displayName: String?
   public var url: URL?
+  public var command: String?
+  public var args: [String]
+  public var env: [String: String]
+  public var cwd: String?
   public var headers: [String: String]
   public var headerEnvironment: [String: String]
   public var bearerToken: String?
@@ -229,6 +233,10 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
     enabled: Bool = true,
     displayName: String? = nil,
     url: URL? = nil,
+    command: String? = nil,
+    args: [String] = [],
+    env: [String: String] = [:],
+    cwd: String? = nil,
     headers: [String: String] = [:],
     headerEnvironment: [String: String] = [:],
     bearerToken: String? = nil,
@@ -243,6 +251,10 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
     self.enabled = enabled
     self.displayName = displayName
     self.url = url
+    self.command = command
+    self.args = args
+    self.env = env
+    self.cwd = cwd
     self.headers = headers
     self.headerEnvironment = headerEnvironment
     self.bearerToken = bearerToken
@@ -254,19 +266,26 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, kind, enabled, displayName, url, headers, headerEnvironment, bearerToken
+    case id, kind, enabled, displayName, url, command, args, env, cwd
+    case headers, headerEnvironment, bearerToken
     case bearerTokenEnvironment
     case timeout, toolNamePrefix, defaultApproval, options
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
+    let command = try container.decodeIfPresent(String.self, forKey: .command)
     self.init(
       id: try container.decode(String.self, forKey: .id),
-      kind: try container.decodeIfPresent(String.self, forKey: .kind) ?? "streamable-http",
+      kind: try container.decodeIfPresent(String.self, forKey: .kind)
+        ?? (command == nil ? "streamable-http" : "stdio"),
       enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
       displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
       url: try container.decodeIfPresent(URL.self, forKey: .url),
+      command: command,
+      args: try container.decodeIfPresent([String].self, forKey: .args) ?? [],
+      env: try container.decodeIfPresent([String: String].self, forKey: .env) ?? [:],
+      cwd: try container.decodeIfPresent(String.self, forKey: .cwd),
       headers: try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:],
       headerEnvironment: try container.decodeIfPresent(
         [String: String].self,
@@ -313,6 +332,35 @@ public struct ConfiguredMCPServer: Codable, Equatable, Identifiable, Sendable {
       toolNamePrefix: toolNamePrefix,
       defaultApproval: defaultApproval)
   }
+
+  #if !os(iOS)
+    public func resolvedStdio(environment: [String: String]) throws
+      -> MCPStdioServerConfiguration
+    {
+      let executable = command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !executable.isEmpty else {
+        throw MaiConfigurationError.mcpServerMissingCommand(id)
+      }
+      var childEnvironment = environment
+      childEnvironment.merge(env) { _, configured in configured }
+      let workingDirectory = cwd.flatMap { raw -> URL? in
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+      }
+      return MCPStdioServerConfiguration(
+        id: id,
+        displayName: displayName,
+        command: executable,
+        args: args,
+        environment: childEnvironment,
+        workingDirectory: workingDirectory,
+        timeout: timeout ?? 60,
+        toolNamePrefix: toolNamePrefix,
+        defaultApproval: defaultApproval)
+    }
+  #endif
 }
 
 public enum ConfiguredApprovalMode: String, Codable, Sendable {
@@ -526,6 +574,7 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case duplicateIdentifier(kind: String, id: String)
   case providerMissingBaseURL(String)
   case mcpServerMissingURL(String)
+  case mcpServerMissingCommand(String)
   case unknownProvider(String)
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
@@ -545,6 +594,8 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "OpenAI-compatible provider '\(id)' is missing baseURL."
     case .mcpServerMissingURL(let id):
       "MCP server '\(id)' is missing a URL."
+    case .mcpServerMissingCommand(let id):
+      "Stdio MCP server '\(id)' is missing a command."
     case .unknownProvider(let id):
       "Configuration references unknown provider '\(id)'."
     case .unknownAgent(let id):

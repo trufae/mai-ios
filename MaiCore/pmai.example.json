@@ -67,6 +67,17 @@
       "bearerTokenEnvironment": "MCP_API_KEY",
       "toolNamePrefix": "remote",
       "defaultApproval": "confirm"
+    },
+    {
+      "id": "local",
+      "enabled": false,
+      "displayName": "Example local MCP",
+      "command": "your-mcp-server",
+      "args": ["--stdio"],
+      "env": {},
+      "cwd": ".",
+      "toolNamePrefix": "local",
+      "defaultApproval": "confirm"
     }
   ],
   "agents": [

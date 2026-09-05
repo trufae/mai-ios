@@ -292,18 +292,23 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case .write:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Create a UTF-8 file, replace its ENTIRE contents, append to its end, or create a folder in '\(workspaceName)'. Never use this to modify only part of an existing file: use files_patch (preferred) or files_replace_range instead.",
+        description: "Create a new UTF-8 file, append to a file, or create a folder in '\(workspaceName)'. Replacing an existing file's ENTIRE contents requires overwrite: true. Never use this to modify only part of an existing file: use files_patch (preferred) or files_replace_range instead.",
         parameters: [
           path,
           ToolParameterDef(
             name: "content",
             type: "string",
-            description: "The complete replacement contents of the file, unless append is true. Omit only when create_directory is true.",
+            description: "The complete contents of the file, unless append is true. Omit only when create_directory is true.",
             required: false),
           ToolParameterDef(
             name: "append",
             type: "boolean",
             description: "Append instead of replacing the file. Default: false.",
+            required: false),
+          ToolParameterDef(
+            name: "overwrite",
+            type: "boolean",
+            description: "Required to replace an existing non-empty file. Prefer files_patch for partial edits. Default: false.",
             required: false),
           ToolParameterDef(
             name: "create_directory",
@@ -787,6 +792,12 @@ private struct MaiFileWorkspace: Sendable {
       at: destination.deletingLastPathComponent(),
       withIntermediateDirectories: true)
     let append = arguments["append"]?.coercedBoolValue == true
+    if !append, arguments["overwrite"]?.coercedBoolValue != true,
+      let existing = try? FileManager.default.attributesOfItem(atPath: destination.path),
+      let size = (existing[.size] as? NSNumber)?.intValue, size > 0
+    {
+      throw MaiFileWorkspaceError.overwriteRequired(displayPath(rawPath), size)
+    }
     if append, FileManager.default.fileExists(atPath: destination.path) {
       let handle = try FileHandle(forWritingTo: destination)
       defer { try? handle.close() }
@@ -1102,6 +1113,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
   case invalidMatchCount
   case emptyPatchMatch
   case patchMatchCount(Int, Int)
+  case overwriteRequired(String, Int)
   case invalidPath(String)
 
   var errorDescription: String? {
@@ -1127,6 +1139,8 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .invalidMatchCount: "expected_matches must be between 1 and 100."
     case .emptyPatchMatch: "The regular expression must not match an empty range."
     case .patchMatchCount(let expected, let actual): "Expected \(expected) patch matches, found \(actual)."
+    case .overwriteRequired(let path, let size):
+      "'\(path)' already exists (\(size) bytes). Use files_patch to change part of it, or set overwrite to true to replace the whole file."
     case .invalidPath(let path): "Could not change the current directory to '\(path)'."
     }
   }

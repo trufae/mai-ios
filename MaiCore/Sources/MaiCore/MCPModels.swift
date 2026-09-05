@@ -28,6 +28,42 @@ public struct MCPServerConfiguration: Codable, Equatable, Identifiable, Sendable
   }
 }
 
+#if !os(iOS)
+  public struct MCPStdioServerConfiguration: Equatable, Identifiable, Sendable {
+    public var id: String
+    public var displayName: String
+    public var command: String
+    public var args: [String]
+    public var environment: [String: String]
+    public var workingDirectory: URL?
+    public var timeout: TimeInterval
+    public var toolNamePrefix: String?
+    public var defaultApproval: ToolApprovalRequirement
+
+    public init(
+      id: String,
+      displayName: String? = nil,
+      command: String,
+      args: [String] = [],
+      environment: [String: String] = [:],
+      workingDirectory: URL? = nil,
+      timeout: TimeInterval = 60,
+      toolNamePrefix: String? = nil,
+      defaultApproval: ToolApprovalRequirement = .confirm
+    ) {
+      self.id = id
+      self.displayName = displayName ?? id
+      self.command = command
+      self.args = args
+      self.environment = environment
+      self.workingDirectory = workingDirectory
+      self.timeout = max(1, timeout)
+      self.toolNamePrefix = toolNamePrefix
+      self.defaultApproval = defaultApproval
+    }
+  }
+#endif
+
 public struct MCPResourceDescriptor: Codable, Equatable, Identifiable, Sendable {
   public var uri: String
   public var name: String
