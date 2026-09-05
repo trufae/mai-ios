@@ -6,8 +6,8 @@ TEST_DESTINATION ?=
 DERIVED_DATA ?= build/DerivedData
 XCODE_PACKAGE_FLAGS ?= -skipPackagePluginValidation
 SUDO ?= sudo
-ifeq ($(uname),Darwin)
-STRIP ?= strip
+ifeq ($(shell uname),Darwin)
+STRIP ?= strip -x
 else
 STRIP ?= strip -s
 endif

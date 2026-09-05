@@ -118,13 +118,6 @@ jobs:
 
           echo "Android Swift SDK setup completed successfully"
 
-      - name: Patch SwiftTUI for Android
-        run: |
-          set -eu
-          swift package --package-path MaiCore resolve
-          patch -d MaiCore/.build/checkouts/swift-tui -p1 \
-            < .github/patches/swift-tui-0.10.1-android.patch
-
       - name: Build Android arm64 release CLI
         run: |
           swift build --package-path MaiCore -c release --product pmai \

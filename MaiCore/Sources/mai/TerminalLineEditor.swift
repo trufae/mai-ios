@@ -1,9 +1,11 @@
 import Foundation
 import MaiCore
 
-#if os(Linux)
+#if canImport(Android)
+  import Android
+#elseif canImport(Glibc)
   import Glibc
-#else
+#elseif canImport(Darwin)
   import Darwin
 #endif
 

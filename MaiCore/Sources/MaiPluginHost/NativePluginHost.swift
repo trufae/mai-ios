@@ -1,12 +1,15 @@
 import CMaiPluginABI
-#if os(Linux)
-import Glibc
-#else
-import Darwin
-#endif
 import Foundation
 import MaiCore
 import MaiPluginSDK
+
+#if canImport(Android)
+  import Android
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Darwin)
+  import Darwin
+#endif
 
 /// Owns loaded dynamic libraries for the lifetime of their registered
 /// factories and adapters. Native plugins are trusted in-process code.

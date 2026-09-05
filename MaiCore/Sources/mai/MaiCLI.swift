@@ -7,11 +7,16 @@ import MaiOpenAI
 import MaiPluginHost
 import MaiStandardTools
 import MaiVisionOCR
-import MaiVisual
 
-#if os(Linux)
+#if PMAI_HAS_VISUAL
+  import MaiVisual
+#endif
+
+#if canImport(Android)
+  import Android
+#elseif canImport(Glibc)
   import Glibc
-#else
+#elseif canImport(Darwin)
   import Darwin
 #endif
 
@@ -316,8 +321,10 @@ struct REPLSession {
   var pendingContent: [ContentPart]
   var createdAt: Date
   var updatedAt: Date
-  /// Conversations and panes left behind by the last `/visual` session.
-  var visualSnapshot: VisualWorkspaceSnapshot?
+  #if PMAI_HAS_VISUAL
+    /// Conversations and panes left behind by the last `/visual` session.
+    var visualSnapshot: VisualWorkspaceSnapshot?
+  #endif
 
   init(
     id: UUID = UUID(),
@@ -368,23 +375,25 @@ struct REPLSession {
     updatedAt = Date()
   }
 
-  func visualSeed() -> VisualConversationSeed {
-    VisualConversationSeed(
-      id: id,
-      title: title,
-      profile: profile.agentDefinition,
-      messages: history.messages,
-      pendingContent: pendingContent)
-  }
+  #if PMAI_HAS_VISUAL
+    func visualSeed() -> VisualConversationSeed {
+      VisualConversationSeed(
+        id: id,
+        title: title,
+        profile: profile.agentDefinition,
+        messages: history.messages,
+        pendingContent: pendingContent)
+    }
 
-  mutating func adopt(_ conversation: VisualConversationSeed) {
-    id = conversation.id
-    title = conversation.title
-    profile = SessionProfile(definition: conversation.profile)
-    history.replaceAll(with: conversation.messages)
-    pendingContent = conversation.pendingContent
-    touch()
-  }
+    mutating func adopt(_ conversation: VisualConversationSeed) {
+      id = conversation.id
+      title = conversation.title
+      profile = SessionProfile(definition: conversation.profile)
+      history.replaceAll(with: conversation.messages)
+      pendingContent = conversation.pendingContent
+      touch()
+    }
+  #endif
 
   private static func initialHistory(for profile: SessionProfile) -> [AgentMessage] {
     let instructions = profile.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1145,10 +1154,12 @@ private struct MaiCLI {
           await saveWorkspace(workspace, to: stateURL, terminal: terminal)
           continue
         }
-        if text == "/visual" {
-          workspace.upsert(session.chat, selecting: true)
-          session.visualSnapshot = visualSnapshot(for: workspace)
-        }
+        #if PMAI_HAS_VISUAL
+          if text == "/visual" {
+            workspace.upsert(session.chat, selecting: true)
+            session.visualSnapshot = visualSnapshot(for: workspace)
+          }
+        #endif
         if await handleCommand(
           text,
           session: &session,
@@ -1164,13 +1175,18 @@ private struct MaiCLI {
           await saveWorkspace(workspace, to: stateURL, terminal: terminal)
           return
         }
-        if text == "/visual", let snapshot = session.visualSnapshot {
-          workspace = chatWorkspace(from: snapshot, focusedID: session.id, previous: workspace)
-          session = REPLSession(chat: workspace.selectedChat!)
-        } else {
+        #if PMAI_HAS_VISUAL
+          if text == "/visual", let snapshot = session.visualSnapshot {
+            workspace = chatWorkspace(from: snapshot, focusedID: session.id, previous: workspace)
+            session = REPLSession(chat: workspace.selectedChat!)
+          } else {
+            session.touch()
+            workspace.upsert(session.chat, selecting: true)
+          }
+        #else
           session.touch()
           workspace.upsert(session.chat, selecting: true)
-        }
+        #endif
         await saveWorkspace(workspace, to: stateURL, terminal: terminal)
         continue
       }
@@ -1505,16 +1521,18 @@ private struct MaiCLI {
         argument, session: &session, ocrProvider: ocrProvider, terminal: terminal)
     case "/copy":
       await copyToClipboard(argument, session: session, terminal: terminal)
-    case "/visual":
-      await runVisualMode(
-        session: &session,
-        runtime: runtime,
-        plugins: plugins,
-        ocrProvider: ocrProvider,
-        configuration: &configuration,
-        catalogs: &catalogs,
-        visual: visual,
-        terminal: terminal)
+    #if PMAI_HAS_VISUAL
+      case "/visual":
+        await runVisualMode(
+          session: &session,
+          runtime: runtime,
+          plugins: plugins,
+          ocrProvider: ocrProvider,
+          configuration: &configuration,
+          catalogs: &catalogs,
+          visual: visual,
+          terminal: terminal)
+    #endif
     case "/clear":
       session.reset()
       await terminal.line("Conversation cleared.")
@@ -2957,116 +2975,119 @@ private struct MaiCLI {
     }
   }
 
-  /// Hands the terminal to the SwiftTUI workspace and adopts its focused
-  /// conversation, registrations, and configuration draft when it returns.
-  private static func runVisualMode(
-    session: inout REPLSession,
-    runtime: AgentRuntime,
-    plugins: PluginRegistry,
-    ocrProvider: any OCRProvider,
-    configuration: inout MaiConfiguration?,
-    catalogs: inout [MCPServerCatalog],
-    visual: VisualBridge,
-    terminal: TerminalWriter
-  ) async {
-    guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
-      await terminal.line("Visual mode needs an interactive terminal.", to: .standardError)
-      return
-    }
-    let launch = VisualLaunch(
-      focusedConversation: session.visualSeed(),
-      snapshot: session.visualSnapshot,
-      configuration: configuration ?? MaiConfiguration(providers: visual.implicitProviders),
-      configurationPath: visual.configurationPath,
-      catalogs: catalogs,
-      environment: ProcessInfo.processInfo.environment,
-      commandHandler: { request in
-        await runVisualCommand(
-          request,
+  #if PMAI_HAS_VISUAL
+    /// Hands the terminal to the SwiftTUI workspace and adopts its focused
+    /// conversation, registrations, and configuration draft when it returns.
+    private static func runVisualMode(
+      session: inout REPLSession,
+      runtime: AgentRuntime,
+      plugins: PluginRegistry,
+      ocrProvider: any OCRProvider,
+      configuration: inout MaiConfiguration?,
+      catalogs: inout [MCPServerCatalog],
+      visual: VisualBridge,
+      terminal: TerminalWriter
+    ) async {
+      guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
+        await terminal.line("Visual mode needs an interactive terminal.", to: .standardError)
+        return
+      }
+      let launch = VisualLaunch(
+        focusedConversation: session.visualSeed(),
+        snapshot: session.visualSnapshot,
+        configuration: configuration ?? MaiConfiguration(providers: visual.implicitProviders),
+        configurationPath: visual.configurationPath,
+        catalogs: catalogs,
+        environment: ProcessInfo.processInfo.environment,
+        commandHandler: { request in
+          await runVisualCommand(
+            request,
+            runtime: runtime,
+            plugins: plugins,
+            ocrProvider: ocrProvider,
+            visual: visual)
+        })
+      let approvals = VisualApprovalHandler {
+        await visual.approvalHandler.setYOLOEnabled(true)
+      }
+      await visual.approvalHandler.setDelegate(approvals)
+      do {
+        let outcome = try await VisualMode.run(
+          launch,
           runtime: runtime,
           plugins: plugins,
-          ocrProvider: ocrProvider,
-          visual: visual)
-      })
-    let approvals = VisualApprovalHandler {
-      await visual.approvalHandler.setYOLOEnabled(true)
+          approvals: approvals)
+        await visual.approvalHandler.setDelegate(nil)
+        session.adopt(outcome.focusedConversation)
+        session.visualSnapshot = outcome.snapshot
+        catalogs = outcome.catalogs
+        if outcome.configurationChanged || configuration != nil {
+          configuration = outcome.configuration
+        }
+        await terminal.line(outcome.summary)
+      } catch {
+        await visual.approvalHandler.setDelegate(nil)
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
     }
-    await visual.approvalHandler.setDelegate(approvals)
-    do {
-      let outcome = try await VisualMode.run(
-        launch,
+
+    /// Runs a slash command typed into a visual pane exactly as the REPL would,
+    /// on a session built from that pane's conversation, and returns what it
+    /// printed together with the conversation it left behind.
+    private static func runVisualCommand(
+      _ request: VisualCommandRequest,
+      runtime: AgentRuntime,
+      plugins: PluginRegistry,
+      ocrProvider: any OCRProvider,
+      visual: VisualBridge
+    ) async -> VisualCommandOutcome {
+      let command =
+        request.input.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).first.map(
+          String.init) ?? request.input
+      switch command {
+      case "/visual":
+        return VisualCommandOutcome(
+          output: "Already in visual mode. /exit or Ctrl+C returns to the REPL.",
+          conversation: request.conversation)
+      case "/exit", "/quit":
+        return VisualCommandOutcome(
+          output: "Leaving visual mode.",
+          conversation: request.conversation,
+          leavesVisualMode: true)
+      default:
+        break
+      }
+
+      var session = REPLSession(
+        profile: SessionProfile(definition: request.conversation.profile),
+        pendingContent: request.conversation.pendingContent)
+      session.history.replaceAll(with: request.conversation.messages)
+      var configuration: MaiConfiguration? = request.configuration
+      var catalogs = request.catalogs
+      let terminal = TerminalWriter(capturesOutput: true)
+      _ = await handleCommand(
+        request.input,
+        session: &session,
         runtime: runtime,
         plugins: plugins,
-        approvals: approvals)
-      await visual.approvalHandler.setDelegate(nil)
-      session.adopt(outcome.focusedConversation)
-      session.visualSnapshot = outcome.snapshot
-      catalogs = outcome.catalogs
-      if outcome.configurationChanged || configuration != nil {
-        configuration = outcome.configuration
+        ocrProvider: ocrProvider,
+        configuration: &configuration,
+        catalogs: &catalogs,
+        visual: visual,
+        terminal: terminal)
+      var output = await terminal.drainCaptured()
+      if command == "/help" {
+        output +=
+          "\nIn visual mode, /exit returns to the REPL and the output above closes with Esc."
       }
-      await terminal.line(outcome.summary)
-    } catch {
-      await visual.approvalHandler.setDelegate(nil)
-      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { output = "Done." }
+      var conversation = request.conversation
+      conversation.profile = session.profile.agentDefinition
+      conversation.messages = session.history.messages
+      conversation.pendingContent = session.pendingContent
+      return VisualCommandOutcome(output: output, conversation: conversation)
     }
-  }
-
-  /// Runs a slash command typed into a visual pane exactly as the REPL would,
-  /// on a session built from that pane's conversation, and returns what it
-  /// printed together with the conversation it left behind.
-  private static func runVisualCommand(
-    _ request: VisualCommandRequest,
-    runtime: AgentRuntime,
-    plugins: PluginRegistry,
-    ocrProvider: any OCRProvider,
-    visual: VisualBridge
-  ) async -> VisualCommandOutcome {
-    let command =
-      request.input.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).first.map(
-        String.init) ?? request.input
-    switch command {
-    case "/visual":
-      return VisualCommandOutcome(
-        output: "Already in visual mode. /exit or Ctrl+C returns to the REPL.",
-        conversation: request.conversation)
-    case "/exit", "/quit":
-      return VisualCommandOutcome(
-        output: "Leaving visual mode.",
-        conversation: request.conversation,
-        leavesVisualMode: true)
-    default:
-      break
-    }
-
-    var session = REPLSession(
-      profile: SessionProfile(definition: request.conversation.profile),
-      pendingContent: request.conversation.pendingContent)
-    session.history.replaceAll(with: request.conversation.messages)
-    var configuration: MaiConfiguration? = request.configuration
-    var catalogs = request.catalogs
-    let terminal = TerminalWriter(capturesOutput: true)
-    _ = await handleCommand(
-      request.input,
-      session: &session,
-      runtime: runtime,
-      plugins: plugins,
-      ocrProvider: ocrProvider,
-      configuration: &configuration,
-      catalogs: &catalogs,
-      visual: visual,
-      terminal: terminal)
-    var output = await terminal.drainCaptured()
-    if command == "/help" {
-      output += "\nIn visual mode, /exit returns to the REPL and the output above closes with Esc."
-    }
-    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { output = "Done." }
-    var conversation = request.conversation
-    conversation.profile = session.profile.agentDefinition
-    conversation.messages = session.history.messages
-    conversation.pendingContent = session.pendingContent
-    return VisualCommandOutcome(output: output, conversation: conversation)
-  }
+  #endif
 
   private static func handleWorkspaceChatCommand(
     _ argument: String,
@@ -3559,39 +3580,42 @@ private struct MaiCLI {
     }
   }
 
-  private static func visualSnapshot(for workspace: AgentChatWorkspace) -> VisualWorkspaceSnapshot {
-    let conversations = workspace.chats.map { chat in
-      VisualConversationSeed(
-        id: chat.id,
-        title: chat.title,
-        profile: chat.primaryAgent,
-        messages: chat.messages,
-        pendingContent: chat.pendingContent)
+  #if PMAI_HAS_VISUAL
+    private static func visualSnapshot(for workspace: AgentChatWorkspace) -> VisualWorkspaceSnapshot
+    {
+      let conversations = workspace.chats.map { chat in
+        VisualConversationSeed(
+          id: chat.id,
+          title: chat.title,
+          profile: chat.primaryAgent,
+          messages: chat.messages,
+          pendingContent: chat.pendingContent)
+      }
+      return VisualWorkspaceSnapshot(
+        conversations: conversations,
+        layout: PaneLayout(conversation: workspace.selectedChatID ?? conversations[0].id))
     }
-    return VisualWorkspaceSnapshot(
-      conversations: conversations,
-      layout: PaneLayout(conversation: workspace.selectedChatID ?? conversations[0].id))
-  }
 
-  private static func chatWorkspace(
-    from snapshot: VisualWorkspaceSnapshot,
-    focusedID: UUID,
-    previous: AgentChatWorkspace
-  ) -> AgentChatWorkspace {
-    let previousByID = Dictionary(uniqueKeysWithValues: previous.chats.map { ($0.id, $0) })
-    let chats = snapshot.conversations.map { conversation in
-      let old = previousByID[conversation.id]
-      return AgentChat(
-        id: conversation.id,
-        title: conversation.title,
-        primaryAgent: conversation.profile,
-        messages: conversation.messages,
-        pendingContent: conversation.pendingContent,
-        createdAt: old?.createdAt ?? Date(),
-        updatedAt: Date())
+    private static func chatWorkspace(
+      from snapshot: VisualWorkspaceSnapshot,
+      focusedID: UUID,
+      previous: AgentChatWorkspace
+    ) -> AgentChatWorkspace {
+      let previousByID = Dictionary(uniqueKeysWithValues: previous.chats.map { ($0.id, $0) })
+      let chats = snapshot.conversations.map { conversation in
+        let old = previousByID[conversation.id]
+        return AgentChat(
+          id: conversation.id,
+          title: conversation.title,
+          primaryAgent: conversation.profile,
+          messages: conversation.messages,
+          pendingContent: conversation.pendingContent,
+          createdAt: old?.createdAt ?? Date(),
+          updatedAt: Date())
+      }
+      return AgentChatWorkspace(chats: chats, selectedChatID: focusedID)
     }
-    return AgentChatWorkspace(chats: chats, selectedChatID: focusedID)
-  }
+  #endif
 
   private static func completionCandidates(
     workspace: AgentChatWorkspace,
@@ -3615,12 +3639,15 @@ private struct MaiCLI {
       "/mcp add ", "/mcp enable ", "/mcp disable ",
       "/edit prompt", "/edit config", "/edit mcps", "/chat compact",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
-      "/image ocr ", "/attach ", "/attach clear", "/copy", "/visual", "/clear", "/chat list",
+      "/image ocr ", "/attach ", "/attach clear", "/copy", "/clear", "/chat list",
       "/chat new ",
       "/chat use ", "/chat next", "/chat previous", "/chat rename ",
       "/chat close confirm", "/chat messages", "/chat log", "/chat edit ",
       "/chat remove ", "/chat undo", "/chat trim ", "/chat clear",
     ]
+    #if PMAI_HAS_VISUAL
+      values.append("/visual")
+    #endif
     for (index, chat) in workspace.chats.enumerated() {
       values.append("/chat use \(index + 1)")
       values.append("/chat use \(chat.id.uuidString.prefix(8))")
@@ -3800,6 +3827,14 @@ private struct MaiCLI {
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
 
+  private static let visualHelp: String = {
+    #if PMAI_HAS_VISUAL
+      "/visual             Open the terminal workspace: split chats, providers, MCPs, tools\n"
+    #else
+      ""
+    #endif
+  }()
+
   private static let replHelp = """
     /set                   List mutable session and terminal UI settings
     /set yolo BOOL         Permit all tool calls for this session (on/off)
@@ -3834,8 +3869,7 @@ private struct MaiCLI {
     /attach PATH        Attach a Word, PDF, JSON, or text file as Markdown/plain text
     /attach clear       Drop the attachments queued for the next message
     /copy [N]           Copy the last reply, or the last N messages, to the clipboard
-    /visual             Open the terminal workspace: split chats, providers, MCPs, tools
-    /clear              Clear conversation history
+    \(visualHelp)/clear              Clear conversation history
     /exit               Exit the REPL
 
     Input: Ctrl+A/E beginning/end · Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend

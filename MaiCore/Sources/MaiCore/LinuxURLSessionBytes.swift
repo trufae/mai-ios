@@ -1,6 +1,6 @@
 import Foundation
 
-#if os(Linux)
+#if canImport(FoundationNetworking)
 import FoundationNetworking
 
 /// FoundationNetworking does not currently provide URLSession's streaming API.

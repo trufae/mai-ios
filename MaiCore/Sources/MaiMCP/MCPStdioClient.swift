@@ -2,10 +2,12 @@
   import Foundation
   import MaiCore
 
-  #if os(macOS)
-    import Darwin
-  #elseif os(Linux)
+  #if canImport(Android)
+    import Android
+  #elseif canImport(Glibc)
     import Glibc
+  #elseif canImport(Darwin)
+    import Darwin
   #endif
 
   /// An MCP tool source backed by a local subprocess using newline-delimited JSON-RPC.
@@ -424,7 +426,7 @@
       errorHandle = errors.fileHandleForReading
       #if os(macOS)
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-      #elseif os(Linux)
+      #elseif os(Linux) || os(Android)
         signal(SIGPIPE, SIG_IGN)
       #endif
       outputBuffer.removeAll(keepingCapacity: false)
