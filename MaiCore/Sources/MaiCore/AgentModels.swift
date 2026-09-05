@@ -710,7 +710,7 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
   public init(
     maxModelTurns: Int = 12,
     maxToolCalls: Int = 20,
-    maxSubagents: Int = 4,
+    maxSubagents: Int = 0,
     maxSubagentDepth: Int = 2,
     maxTotalTokens: Int? = nil
   ) {
@@ -730,7 +730,7 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
     self.init(
       maxModelTurns: try container.decodeIfPresent(Int.self, forKey: .maxModelTurns) ?? 12,
       maxToolCalls: try container.decodeIfPresent(Int.self, forKey: .maxToolCalls) ?? 20,
-      maxSubagents: try container.decodeIfPresent(Int.self, forKey: .maxSubagents) ?? 4,
+      maxSubagents: try container.decodeIfPresent(Int.self, forKey: .maxSubagents) ?? 0,
       maxSubagentDepth: try container.decodeIfPresent(Int.self, forKey: .maxSubagentDepth) ?? 2,
       maxTotalTokens: try container.decodeIfPresent(Int.self, forKey: .maxTotalTokens))
   }
@@ -803,7 +803,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       provider: try container.decode(ProviderID.self, forKey: .provider),
       model: try container.decodeIfPresent(String.self, forKey: .model) ?? "",
       toolNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolNames) ?? [],
-      toolGroupNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolGroupNames) ?? [],
+      toolGroupNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolGroupNames)
+        ?? [],
       subagentNames: try container.decodeIfPresent(Set<String>.self, forKey: .subagentNames) ?? [],
       stream: try container.decodeIfPresent(Bool.self, forKey: .stream) ?? true,
       limits: try container.decodeIfPresent(AgentRunLimits.self, forKey: .limits) ?? .init(),

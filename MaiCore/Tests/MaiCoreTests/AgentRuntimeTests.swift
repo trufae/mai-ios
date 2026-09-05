@@ -788,6 +788,118 @@ func subagentRun() async throws {
   #expect(requests[1].messages.last?.text == "Find the answer")
 }
 
+@Test("Agent tools keep a child running across orchestrator turns")
+func launchedSubagentRun() async throws {
+  let provider = LaunchedSubagentProvider()
+  let recorder = EventRecorder()
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "researcher",
+      instructions: "Research carefully.",
+      provider: "launched-subagent",
+      model: "fixture"))
+
+  let launch = try await runtime.run(
+    AgentRequest(
+      provider: "launched-subagent",
+      model: "fixture",
+      messages: [.user("delegate asynchronously")],
+      subagentNames: ["researcher"],
+      limits: AgentRunLimits(
+        maxModelTurns: 4,
+        maxToolCalls: 2,
+        maxSubagents: 1,
+        maxSubagentDepth: 1))
+  ) { event in
+    await recorder.append(event)
+  }
+
+  let launchResult = try #require(launch.transcript.flatMap(\.toolResults).first)
+  let id = try #require(launchResult.structuredContent?.objectValue?["id"]?.stringValue)
+  #expect(launch.response.text == "Launched \(id)")
+  #expect(launchResult.structuredContent?.objectValue?["status"] == .string("running"))
+
+  let rejected = try await runtime.run(
+    AgentRequest(
+      provider: "launched-subagent",
+      model: "fixture",
+      messages: [.user("launch again")],
+      subagentNames: ["researcher"],
+      limits: AgentRunLimits(
+        maxModelTurns: 4,
+        maxToolCalls: 2,
+        maxSubagents: 1,
+        maxSubagentDepth: 1)))
+  let rejectedResult = try #require(rejected.transcript.flatMap(\.toolResults).first)
+  #expect(rejectedResult.isError)
+  #expect(rejectedResult.text.contains("already has 1 background subagents"))
+
+  try await Task.sleep(for: .milliseconds(120))
+  let collected = try await runtime.run(
+    AgentRequest(
+      provider: "launched-subagent",
+      model: "fixture",
+      messages: [.user("collect \(id)")],
+      subagentNames: ["researcher"],
+      limits: AgentRunLimits(
+        maxModelTurns: 5,
+        maxToolCalls: 3,
+        maxSubagents: 1,
+        maxSubagentDepth: 1))
+  ) { event in
+    await recorder.append(event)
+  }
+
+  #expect(collected.response.text == "Parent received: Background result")
+  let toolResults = collected.transcript.flatMap(\.toolResults)
+  #expect(toolResults.count == 2)
+  #expect(toolResults[0].structuredContent?.objectValue?["status"] == .string("completed"))
+  #expect(toolResults[1].text == "Background result")
+  #expect(toolResults[1].structuredContent?.objectValue?["status"] == .string("completed"))
+  let events = await recorder.events
+  #expect(events.contains { if case .childStarted = $0 { true } else { false } })
+  let requests = await provider.requests
+  let offeredNames = Set(requests.first?.tools.map(\.name) ?? [])
+  #expect(offeredNames.contains(AgentRuntime.subagentToolName))
+  #expect(offeredNames.contains(AgentRuntime.agentLaunchToolName))
+  #expect(offeredNames.contains(AgentRuntime.agentStatusToolName))
+  #expect(offeredNames.contains(AgentRuntime.agentResultToolName))
+  #expect(
+    requests.first { $0.messages.first?.text == "Research carefully." }?.messages.last?.text
+      == "Find this in the background")
+}
+
+@Test("Subagents are disabled by default")
+func subagentsDisabledByDefault() async throws {
+  #expect(AgentRunLimits().maxSubagents == 0)
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("No delegation"), stopReason: .stop)
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "researcher",
+      instructions: "Research.",
+      provider: "scripted",
+      model: "fixture"))
+
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("Do not delegate")],
+      subagentNames: ["researcher"]))
+
+  let names = Set(try #require(await provider.requests.first).tools.map(\.name))
+  #expect(!names.contains(AgentRuntime.subagentToolName))
+  #expect(!names.contains(AgentRuntime.agentLaunchToolName))
+  #expect(!names.contains(AgentRuntime.agentStatusToolName))
+  #expect(!names.contains(AgentRuntime.agentResultToolName))
+}
+
 @Test("Configuration loads providers, agents, secrets, and defaults")
 func configurationLoading() async throws {
   let data = Data(
@@ -1084,6 +1196,83 @@ private actor ScriptedProvider: ChatProvider {
     }
     if !response.message.text.isEmpty { await emit(.textDelta(response.message.text)) }
     return response
+  }
+}
+
+private actor LaunchedSubagentProvider: ChatProvider {
+  nonisolated let descriptor = ProviderDescriptor(
+    id: "launched-subagent",
+    displayName: "Launched subagent fixture",
+    capabilities: [.nativeToolCalling])
+  private(set) var requests: [ProviderRequest] = []
+
+  func complete(
+    _ request: ProviderRequest,
+    emit: @escaping ProviderEventHandler
+  ) async throws -> ProviderResponse {
+    requests.append(request)
+    if request.messages.first?.text == "Research carefully." {
+      try await Task.sleep(for: .milliseconds(100))
+      return ProviderResponse(message: .assistant("Background result"), stopReason: .stop)
+    }
+
+    let results = request.messages.flatMap(\.toolResults)
+    let command = request.messages.last { $0.role == .user }?.text ?? ""
+    if ["delegate asynchronously", "launch again"].contains(command), results.isEmpty {
+      return ProviderResponse(
+        message: AgentMessage(
+          role: .assistant,
+          content: [
+            .toolCall(
+              ToolCall(
+                id: "launch-1",
+                name: AgentRuntime.agentLaunchToolName,
+                arguments: .object([
+                  "agent": .string("researcher"),
+                  "prompt": .string("Find this in the background"),
+                ])))
+          ]),
+        stopReason: .toolCall)
+    }
+    if command == "delegate asynchronously" {
+      let id = try #require(results[0].structuredContent?.objectValue?["id"]?.stringValue)
+      return ProviderResponse(message: .assistant("Launched \(id)"), stopReason: .stop)
+    }
+    if command == "launch again" {
+      return ProviderResponse(
+        message: .assistant("Second launch: \(results[0].text)"),
+        stopReason: .stop)
+    }
+    let id = String(command.dropFirst("collect ".count))
+    if results.isEmpty {
+      return ProviderResponse(
+        message: AgentMessage(
+          role: .assistant,
+          content: [
+            .toolCall(
+              ToolCall(
+                id: "status-1",
+                name: AgentRuntime.agentStatusToolName,
+                arguments: .object(["id": .string(id)])))
+          ]),
+        stopReason: .toolCall)
+    }
+    if results.count == 1 {
+      return ProviderResponse(
+        message: AgentMessage(
+          role: .assistant,
+          content: [
+            .toolCall(
+              ToolCall(
+                id: "result-1",
+                name: AgentRuntime.agentResultToolName,
+                arguments: .object(["id": .string(id)])))
+          ]),
+        stopReason: .toolCall)
+    }
+    return ProviderResponse(
+      message: .assistant("Parent received: \(results.last?.text ?? "")"),
+      stopReason: .stop)
   }
 }
 

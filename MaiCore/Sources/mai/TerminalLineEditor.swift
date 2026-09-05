@@ -25,7 +25,7 @@ final class TerminalLineEditor {
     self.ui = ui
   }
 
-  func readLine(prompt: String, completions: [String]) -> String? {
+  func readLine(prompt: String, completions: [String], separator: String? = nil) -> String? {
     wasInterrupted = false
     guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
       FileHandle.standardOutput.write(Data(prompt.utf8))
@@ -51,7 +51,7 @@ final class TerminalLineEditor {
     var cursor = 0
     var historyIndex: Int?
     var draft: [UInt8] = []
-    drawSeparator()
+    drawSeparator(separator)
     redraw(prompt: prompt, bytes: bytes, cursor: cursor)
 
     while let byte = readByte() {
@@ -86,7 +86,7 @@ final class TerminalLineEditor {
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 26:  // Ctrl+Z
         suspend(original: &original, raw: &raw)
-        drawSeparator()
+        drawSeparator(separator)
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 10, 13:
         renderSubmittedLine(prompt: prompt, bytes: bytes)
@@ -223,11 +223,13 @@ final class TerminalLineEditor {
       "\r\u{1B}[2K" + promptStyle + prompt + resetStyle + inputStyle + line + resetStyle + "\n")
   }
 
-  private func drawSeparator() {
+  private func drawSeparator(_ text: String?) {
     guard let background = colorCode(ui.backgroundLine, background: true) else { return }
     let width = max(1, Self.terminalColumns() - 1)
+    let content = truncatedPrompt(text.map { " \($0) " } ?? "", maximumWidth: width)
+    let padding = String(repeating: " ", count: max(0, width - displayWidth(content)))
     write(
-      "\r\u{1B}[2K\u{1B}[\(background)m" + String(repeating: " ", count: width) + resetStyle + "\n")
+      "\r\u{1B}[2K\u{1B}[\(background)m" + content + padding + resetStyle + "\n")
   }
 
   private var resetStyle: String { "\u{1B}[0m" }

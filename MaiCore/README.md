@@ -178,6 +178,22 @@ MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
 list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin`
 provides `echo`, date/time, calculator, network, and workspace-scoped Files tools.
+
+Subagents are disabled by default. Set an agent's `limits.maxSubagents` above
+zero and populate `subagentNames` to expose the runtime-managed tools.
+`spawn_agent` runs one child synchronously for compatibility. `agent_launch`
+starts a child with a specific `agent` and `prompt`, returning a structured run
+`id` immediately. `agent_status` polls one id or lists the orchestrator's jobs
+without waiting, while `agent_result` waits when necessary and returns the final
+child content. Background children survive across orchestrator turns, and
+`maxSubagents` caps concurrent work; a completed child releases its slot.
+
+In the `pmai` REPL, `/mcp list` shows configured servers and their live state.
+Add and connect a stdio server without editing JSON using
+`/mcp add ID [options] -- COMMAND [ARG ...]`. `/mcp enable ID` and
+`/mcp disable ID` reconnect or disconnect it and persist the state. Run `/mcp`
+for the full option list. The legacy `/mcps` spelling remains a list alias.
+
 The `files` group can list files, find approximate names, grep bounded UTF-8
 content, convert DOCX/PDF/JSON documents, write or append text, create folders,
 rename entries, and delete them. Existing files are edited in place with

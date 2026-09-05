@@ -2,6 +2,12 @@
   import Foundation
   import MaiCore
 
+  #if os(macOS)
+    import Darwin
+  #elseif os(Linux)
+    import Glibc
+  #endif
+
   /// An MCP tool source backed by a local subprocess using newline-delimited JSON-RPC.
   public actor MCPStdioClient: MCPToolSource {
     public let configuration: MCPStdioServerConfiguration
@@ -15,6 +21,15 @@
 
     public func connect() async throws -> MCPServerCatalog {
       if let catalog { return catalog }
+      do {
+        return try await establishConnection()
+      } catch {
+        await transport.close()
+        throw error
+      }
+    }
+
+    private func establishConnection() async throws -> MCPServerCatalog {
       let initialized = try await transport.sendResult(
         method: "initialize",
         params: [
@@ -268,12 +283,9 @@
     private var inputHandle: FileHandle?
     private var outputHandle: FileHandle?
     private var errorHandle: FileHandle?
-    private var outputTask: Task<Void, Never>?
-    private var errorTask: Task<Void, Never>?
     private var outputBuffer = Data()
     private var errorBuffer = Data()
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
-    private var pendingMethods: [Int: String] = [:]
     private var timeouts: [Int: Task<Void, Never>] = [:]
     private var nextRequestID = 1
     private var generation = 0
@@ -299,7 +311,6 @@
       return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { continuation in
           pending[id] = continuation
-          pendingMethods[id] = method
           do {
             try write(.object(object))
           } catch {
@@ -335,15 +346,13 @@
       process = nil
       try? inputHandle?.close()
       if oldProcess?.isRunning == true { oldProcess?.terminate() }
+      outputHandle?.readabilityHandler = nil
+      errorHandle?.readabilityHandler = nil
       try? outputHandle?.close()
       try? errorHandle?.close()
       inputHandle = nil
       outputHandle = nil
       errorHandle = nil
-      outputTask?.cancel()
-      errorTask?.cancel()
-      outputTask = nil
-      errorTask = nil
       outputBuffer.removeAll(keepingCapacity: false)
       errorBuffer.removeAll(keepingCapacity: false)
       failure = nil
@@ -380,9 +389,30 @@
         let status = terminated.terminationStatus
         Task { await self?.processTerminated(status: status, generation: currentGeneration) }
       }
+      let stdout = output.fileHandleForReading
+      stdout.readabilityHandler = { [weak self] handle in
+        let data = handle.availableData
+        if data.isEmpty { handle.readabilityHandler = nil }
+        Task {
+          if data.isEmpty {
+            await self?.outputClosed(generation: currentGeneration)
+          } else {
+            await self?.receivedOutput(data, generation: currentGeneration)
+          }
+        }
+      }
+      let stderr = errors.fileHandleForReading
+      stderr.readabilityHandler = { [weak self] handle in
+        let data = handle.availableData
+        if data.isEmpty { handle.readabilityHandler = nil }
+        guard !data.isEmpty else { return }
+        Task { await self?.receivedError(data, generation: currentGeneration) }
+      }
       do {
         try child.run()
       } catch {
+        stdout.readabilityHandler = nil
+        stderr.readabilityHandler = nil
         throw MCPStdioTransportError.launchFailed(
           command: configuration.command,
           message: error.localizedDescription)
@@ -392,37 +422,14 @@
       inputHandle = input.fileHandleForWriting
       outputHandle = output.fileHandleForReading
       errorHandle = errors.fileHandleForReading
+      #if os(macOS)
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+      #elseif os(Linux)
+        signal(SIGPIPE, SIG_IGN)
+      #endif
       outputBuffer.removeAll(keepingCapacity: false)
       errorBuffer.removeAll(keepingCapacity: false)
       failure = nil
-
-      let stdout = output.fileHandleForReading
-      outputTask = Task.detached { [weak self] in
-        do {
-          while !Task.isCancelled,
-            let data = try stdout.read(upToCount: 64 * 1_024),
-            !data.isEmpty
-          {
-            await self?.receivedOutput(data, generation: currentGeneration)
-          }
-          await self?.outputClosed(generation: currentGeneration)
-        } catch {
-          await self?.readerFailed(error.localizedDescription, generation: currentGeneration)
-        }
-      }
-      let stderr = errors.fileHandleForReading
-      errorTask = Task.detached { [weak self] in
-        do {
-          while !Task.isCancelled,
-            let data = try stderr.read(upToCount: 64 * 1_024),
-            !data.isEmpty
-          {
-            await self?.receivedError(data, generation: currentGeneration)
-          }
-        } catch {
-          // A closed stderr pipe is expected while shutting down.
-        }
-      }
     }
 
     private func write(_ value: JSONValue) throws {
@@ -520,11 +527,6 @@
       fail(with: MCPStdioTransportError.closed, generation: generation)
     }
 
-    private func readerFailed(_ message: String, generation: Int) {
-      guard generation == self.generation else { return }
-      fail(with: MCPStdioTransportError.readFailed(message), generation: generation)
-    }
-
     private func processTerminated(status: Int32, generation: Int) {
       guard generation == self.generation, failure == nil else { return }
       fail(
@@ -536,7 +538,9 @@
 
     private func requestTimedOut(id: Int, method: String) {
       guard pending[id] != nil else { return }
-      finish(id: id, result: .failure(MCPStdioTransportError.timedOut(method)))
+      finish(
+        id: id,
+        result: .failure(MCPStdioTransportError.timedOut(method: method, stderr: stderrSnippet)))
     }
 
     private func cancelRequest(id: Int) {
@@ -546,7 +550,6 @@
 
     private func finish(id: Int, result: Result<JSONValue, Error>) {
       guard let continuation = pending.removeValue(forKey: id) else { return }
-      pendingMethods[id] = nil
       timeouts.removeValue(forKey: id)?.cancel()
       continuation.resume(with: result)
     }
@@ -562,7 +565,6 @@
     private func failPending(with error: Error) {
       let continuations = pending.values
       pending.removeAll()
-      pendingMethods.removeAll()
       for timeout in timeouts.values { timeout.cancel() }
       timeouts.removeAll()
       for continuation in continuations { continuation.resume(throwing: error) }
@@ -577,9 +579,8 @@
   public enum MCPStdioTransportError: LocalizedError, Equatable, Sendable {
     case launchFailed(command: String, message: String)
     case writeFailed(String)
-    case readFailed(String)
     case processExited(status: Int32, stderr: String)
-    case timedOut(String)
+    case timedOut(method: String, stderr: String)
     case invalidMessage(String)
     case closed
 
@@ -589,14 +590,14 @@
         "Unable to launch MCP command '\(command)': \(message)"
       case .writeFailed(let message):
         "Unable to write to the MCP process: \(message)"
-      case .readFailed(let message):
-        "Unable to read from the MCP process: \(message)"
       case .processExited(let status, let stderr):
         stderr.isEmpty
           ? "MCP process exited with status \(status)."
           : "MCP process exited with status \(status): \(stderr)"
-      case .timedOut(let method):
-        "MCP stdio request '\(method)' timed out."
+      case .timedOut(let method, let stderr):
+        stderr.isEmpty
+          ? "MCP stdio request '\(method)' timed out."
+          : "MCP stdio request '\(method)' timed out: \(stderr)"
       case .invalidMessage(let message):
         message
       case .closed:

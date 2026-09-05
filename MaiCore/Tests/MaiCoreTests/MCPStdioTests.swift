@@ -37,18 +37,18 @@
       while IFS= read -r line
       do
         case "$line" in
-          *'notifications/initialized'*)
+          *notifications*initialized*)
             ;;
           *'initialize'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"Stdio Fixture"}}}'
             ;;
-          *'tools/list'*)
+          *tools*list*)
             printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
             ;;
-          *'resources/list'*)
+          *resources*list*)
             printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resources":[]}}'
             ;;
-          *'tools/call'*)
+          *tools*call*)
             printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"stdio result"}],"structuredContent":{"count":1}}}'
             ;;
           *)

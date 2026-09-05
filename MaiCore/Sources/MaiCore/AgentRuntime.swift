@@ -5,10 +5,34 @@ import Foundation
 /// observe work through `AgentEvent` values.
 public actor AgentRuntime {
   public static let subagentToolName = "spawn_agent"
+  public static let agentLaunchToolName = "agent_launch"
+  public static let agentStatusToolName = "agent_status"
+  public static let agentResultToolName = "agent_result"
+
+  private enum LaunchedSubagentState: String, Sendable {
+    case running, completed, failed, cancelled
+  }
+
+  private struct LaunchedSubagent: Sendable {
+    var agentID: String
+    var ownerAgentID: String
+    var state: LaunchedSubagentState
+    var task: Task<AgentResult, Error>?
+    var result: AgentResult?
+    var failure: String?
+  }
+
+  private struct RegisteredMCP: Sendable {
+    var source: any MCPToolSource
+    var toolNames: Set<String>
+  }
 
   private var providers: [ProviderID: any ChatProvider] = [:]
   private var tools: [String: any AgentTool] = [:]
   private var agents: [String: AgentDefinition] = [:]
+  private var launchedSubagents: [UUID: LaunchedSubagent] = [:]
+  private var runningSubagentsByOwner: [String: Int] = [:]
+  private var registeredMCPs: [String: RegisteredMCP] = [:]
   private let approvalHandler: any ApprovalHandler
 
   public init(approvalHandler: any ApprovalHandler = DenyInteractiveApprovals()) {
@@ -35,7 +59,7 @@ public actor AgentRuntime {
   ) throws {
     let name = tool.definition.name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty else { throw AgentToolError.invalidName }
-    guard name != Self.subagentToolName else {
+    guard !Self.reservedToolNames.contains(name) else {
       throw AgentRuntimeError.reservedToolName(name)
     }
     guard replacingExisting || tools[name] == nil else {
@@ -62,10 +86,23 @@ public actor AgentRuntime {
     replacingExistingTools: Bool = false
   ) async throws -> MCPServerCatalog {
     let catalog = try await source.connect()
-    for tool in try await source.agentTools() {
+    let agentTools = try await source.agentTools()
+    for tool in agentTools {
       try register(tool: tool, replacingExisting: replacingExistingTools)
     }
+    registeredMCPs[catalog.serverID] = RegisteredMCP(
+      source: source,
+      toolNames: Set(agentTools.map { $0.definition.name }))
     return catalog
+  }
+
+  /// Disconnects an MCP source and removes the tools discovered from it.
+  @discardableResult
+  public func unregisterMCP(serverID: String) async -> Set<String> {
+    guard let registration = registeredMCPs.removeValue(forKey: serverID) else { return [] }
+    for name in registration.toolNames { tools[name] = nil }
+    await registration.source.close()
+    return registration.toolNames
   }
 
   public func availableProviders() -> [ProviderDescriptor] {
@@ -425,6 +462,30 @@ public actor AgentRuntime {
         budget: budget,
         emit: emit)
     }
+    if resolvedCall.name == Self.agentLaunchToolName {
+      return await launchSubagent(
+        approvedCall,
+        allowedAgentNames: request.subagentNames,
+        maxConcurrentSubagents: request.limits.maxSubagents,
+        parent: context,
+        depth: depth,
+        budget: budget,
+        emit: emit)
+    }
+    if resolvedCall.name == Self.agentStatusToolName {
+      return await pollSubagentStatus(
+        approvedCall,
+        allowedAgentNames: request.subagentNames,
+        parent: context,
+        emit: emit)
+    }
+    if resolvedCall.name == Self.agentResultToolName {
+      return try await awaitSubagentResult(
+        approvedCall,
+        allowedAgentNames: request.subagentNames,
+        parent: context,
+        emit: emit)
+    }
     guard let tool = tools[resolvedCall.name] else {
       let result = ToolResult(
         callID: resolvedCall.id,
@@ -507,21 +568,18 @@ public actor AgentRuntime {
         depth: depth + 1,
         budget: budget,
         emit: emit)
+      await budget.releaseSubagent()
       await emit(.childFinished(parent, child: child))
-      let content = child.response.content.filter { part in
-        switch part {
-        case .toolCall, .toolResult, .reasoning: false
-        default: true
-        }
-      }
       let result = ToolResult(
         callID: call.id,
-        content: content.isEmpty ? [.text(child.response.text)] : content)
+        content: subagentResultContent(child))
       await emit(.toolFinished(parent, result))
       return result
     } catch is CancellationError {
+      await budget.releaseSubagent()
       throw CancellationError()
     } catch {
+      await budget.releaseSubagent()
       let result = ToolResult(
         callID: call.id,
         text: "Error: subagent '\(agentID)' failed: \(error.localizedDescription)",
@@ -529,6 +587,262 @@ public actor AgentRuntime {
       await emit(.toolFinished(parent, result))
       return result
     }
+  }
+
+  private func launchSubagent(
+    _ call: ToolCall,
+    allowedAgentNames: Set<String>,
+    maxConcurrentSubagents: Int,
+    parent: AgentEventContext,
+    depth: Int,
+    budget: RunBudget,
+    emit: @escaping AgentEventHandler
+  ) async -> ToolResult {
+    let arguments = call.arguments.objectValue ?? [:]
+    let agentID = arguments["agent"]?.stringValue ?? ""
+    let prompt = arguments["prompt"]?.stringValue ?? ""
+    guard allowedAgentNames.contains(agentID), let definition = agents[agentID] else {
+      let result = ToolResult(
+        callID: call.id,
+        text: "Error: subagent '\(agentID)' is not available.",
+        isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+    guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      let result = ToolResult(
+        callID: call.id, text: "Error: subagent prompt is empty.", isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+    let runningForOwner = runningSubagentsByOwner[parent.agentID, default: 0]
+    guard runningForOwner < maxConcurrentSubagents else {
+      let result = ToolResult(
+        callID: call.id,
+        text:
+          "Error: orchestrator '\(parent.agentID)' already has \(runningForOwner) background subagents running (limit \(maxConcurrentSubagents)).",
+        isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+    runningSubagentsByOwner[parent.agentID] = runningForOwner + 1
+    guard await budget.claimSubagent(depth: depth + 1) else {
+      releaseSubagentSlot(ownerAgentID: parent.agentID)
+      let result = ToolResult(
+        callID: call.id,
+        text: "Error: subagent budget or depth limit reached.",
+        isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+
+    let childRequest = request(for: definition, messages: [.user(prompt)])
+    let childContext = AgentEventContext(
+      runID: UUID(),
+      parentRunID: parent.runID,
+      agentID: agentID,
+      depth: depth + 1)
+    await emit(.childStarted(parent, child: childContext))
+    let task = Task {
+      do {
+        let child = try await runInternal(
+          childRequest,
+          runID: childContext.runID,
+          parentRunID: parent.runID,
+          depth: depth + 1,
+          budget: budget,
+          emit: { _ in })
+        await budget.releaseSubagent()
+        completeLaunchedSubagent(childContext.runID, result: child)
+        return child
+      } catch is CancellationError {
+        await budget.releaseSubagent()
+        failLaunchedSubagent(childContext.runID, state: .cancelled, failure: "Cancelled")
+        throw CancellationError()
+      } catch {
+        await budget.releaseSubagent()
+        failLaunchedSubagent(
+          childContext.runID, state: .failed, failure: error.localizedDescription)
+        throw error
+      }
+    }
+    launchedSubagents[childContext.runID] = LaunchedSubagent(
+      agentID: agentID,
+      ownerAgentID: parent.agentID,
+      state: .running,
+      task: task)
+    let handle = childContext.runID.uuidString
+    let result = ToolResult(
+      callID: call.id,
+      content: [
+        .text(
+          "Started subagent '\(agentID)' as \(handle). Poll \(Self.agentStatusToolName), then call \(Self.agentResultToolName) when it is ready."
+        )
+      ],
+      structuredContent: .object([
+        "id": .string(handle),
+        "agent": .string(agentID),
+        "status": .string("running"),
+      ]))
+    await emit(.toolFinished(parent, result))
+    return result
+  }
+
+  private func pollSubagentStatus(
+    _ call: ToolCall,
+    allowedAgentNames: Set<String>,
+    parent: AgentEventContext,
+    emit: @escaping AgentEventHandler
+  ) async -> ToolResult {
+    let rawID = call.arguments.objectValue?["id"]?.stringValue
+    let jobs: [(UUID, LaunchedSubagent)]
+    if let rawID {
+      guard let id = UUID(uuidString: rawID),
+        let job = launchedSubagents[id],
+        job.ownerAgentID == parent.agentID,
+        allowedAgentNames.contains(job.agentID)
+      else {
+        let result = ToolResult(
+          callID: call.id,
+          text: "Error: subagent run '\(rawID)' is not available.",
+          isError: true)
+        await emit(.toolFinished(parent, result))
+        return result
+      }
+      jobs = [(id, job)]
+    } else {
+      jobs = launchedSubagents.compactMap { id, job in
+        job.ownerAgentID == parent.agentID && allowedAgentNames.contains(job.agentID)
+          ? (id, job) : nil
+      }.sorted { $0.0.uuidString < $1.0.uuidString }
+    }
+
+    let states = jobs.map { subagentState(id: $0.0, job: $0.1) }
+    let summary =
+      jobs.isEmpty
+      ? "No background subagents."
+      : jobs.map { "\($0.0.uuidString): \($0.1.agentID) [\($0.1.state.rawValue)]" }
+        .joined(separator: "\n")
+    let structuredContent: JSONValue =
+      rawID == nil
+      ? .object([
+        "agents": .array(states),
+        "count": .number(Double(states.count)),
+      ])
+      : states[0]
+    let result = ToolResult(
+      callID: call.id,
+      content: [.text(summary)],
+      structuredContent: structuredContent)
+    await emit(.toolFinished(parent, result))
+    return result
+  }
+
+  private func awaitSubagentResult(
+    _ call: ToolCall,
+    allowedAgentNames: Set<String>,
+    parent: AgentEventContext,
+    emit: @escaping AgentEventHandler
+  ) async throws -> ToolResult {
+    let rawID = call.arguments.objectValue?["id"]?.stringValue ?? ""
+    guard let id = UUID(uuidString: rawID),
+      let job = launchedSubagents[id],
+      job.ownerAgentID == parent.agentID,
+      allowedAgentNames.contains(job.agentID)
+    else {
+      let result = ToolResult(
+        callID: call.id,
+        text: "Error: subagent run '\(rawID)' is not available.",
+        isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+
+    do {
+      let child: AgentResult
+      if let completed = job.result {
+        child = completed
+      } else if let task = job.task {
+        child = try await task.value
+      } else {
+        throw BackgroundSubagentError.failed(job.failure ?? "No result is available")
+      }
+      launchedSubagents[id] = nil
+      let content = subagentResultContent(child)
+      let result = ToolResult(
+        callID: call.id,
+        content: content,
+        structuredContent: .object([
+          "id": .string(id.uuidString),
+          "agent": .string(job.agentID),
+          "status": .string("completed"),
+        ]))
+      await emit(.toolFinished(parent, result))
+      return result
+    } catch is CancellationError {
+      let result = ToolResult(
+        callID: call.id,
+        text: "Error: subagent '\(job.agentID)' was cancelled.",
+        isError: true)
+      launchedSubagents[id] = nil
+      await emit(.toolFinished(parent, result))
+      return result
+    } catch {
+      launchedSubagents[id] = nil
+      let result = ToolResult(
+        callID: call.id,
+        text: "Error: subagent '\(job.agentID)' failed: \(error.localizedDescription)",
+        isError: true)
+      await emit(.toolFinished(parent, result))
+      return result
+    }
+  }
+
+  private func completeLaunchedSubagent(_ id: UUID, result: AgentResult) {
+    guard var job = launchedSubagents[id] else { return }
+    if job.state == .running { releaseSubagentSlot(ownerAgentID: job.ownerAgentID) }
+    job.state = .completed
+    job.task = nil
+    job.result = result
+    launchedSubagents[id] = job
+  }
+
+  private func failLaunchedSubagent(
+    _ id: UUID,
+    state: LaunchedSubagentState,
+    failure: String
+  ) {
+    guard var job = launchedSubagents[id] else { return }
+    if job.state == .running { releaseSubagentSlot(ownerAgentID: job.ownerAgentID) }
+    job.state = state
+    job.task = nil
+    job.failure = failure
+    launchedSubagents[id] = job
+  }
+
+  private func releaseSubagentSlot(ownerAgentID: String) {
+    let remaining = runningSubagentsByOwner[ownerAgentID, default: 0] - 1
+    runningSubagentsByOwner[ownerAgentID] = remaining > 0 ? remaining : nil
+  }
+
+  private func subagentState(id: UUID, job: LaunchedSubagent) -> JSONValue {
+    var value: [String: JSONValue] = [
+      "id": .string(id.uuidString),
+      "agent": .string(job.agentID),
+      "status": .string(job.state.rawValue),
+    ]
+    if let failure = job.failure { value["error"] = .string(failure) }
+    return .object(value)
+  }
+
+  private func subagentResultContent(_ child: AgentResult) -> [ContentPart] {
+    let content = child.response.content.filter { part in
+      switch part {
+      case .toolCall, .toolResult, .reasoning: false
+      default: true
+      }
+    }
+    return content.isEmpty ? [.text(child.response.text)] : content
   }
 
   private func visibleDefinitions(for request: AgentRequest) throws -> [ToolDefinition] {
@@ -541,7 +855,10 @@ public actor AgentRuntime {
       for name in request.subagentNames where agents[name] == nil {
         throw AgentRuntimeError.agentNotRegistered(name)
       }
-      definitions.append(subagentDefinition(allowedAgentNames: request.subagentNames))
+      if request.limits.maxSubagents > 0 {
+        definitions.append(
+          contentsOf: subagentDefinitions(allowedAgentNames: request.subagentNames))
+      }
     }
     return definitions
   }
@@ -573,6 +890,79 @@ public actor AgentRuntime {
         idempotent: false,
         openWorld: true,
         approval: .confirm))
+  }
+
+  private func subagentDefinitions(allowedAgentNames: Set<String>) -> [ToolDefinition] {
+    let names = allowedAgentNames.sorted()
+    return [
+      subagentDefinition(allowedAgentNames: allowedAgentNames),
+      ToolDefinition(
+        name: Self.agentLaunchToolName,
+        description:
+          "Start an isolated child agent in the background and return its run id immediately. Available agents: \(names.joined(separator: ", ")).",
+        inputSchema: .object([
+          "type": .string("object"),
+          "properties": .object([
+            "agent": .object([
+              "type": .string("string"),
+              "enum": .array(names.map(JSONValue.string)),
+            ]),
+            "prompt": .object([
+              "type": .string("string"),
+              "description": .string("A self-contained prompt for the child agent."),
+            ]),
+          ]),
+          "required": .array([.string("agent"), .string("prompt")]),
+          "additionalProperties": .bool(false),
+        ]),
+        annotations: ToolAnnotations(
+          readOnly: false,
+          destructive: false,
+          idempotent: false,
+          openWorld: true,
+          approval: .confirm)),
+      ToolDefinition(
+        name: Self.agentStatusToolName,
+        description:
+          "Poll background child-agent state without waiting. Omit id to list all background children owned by this orchestrator.",
+        inputSchema: .object([
+          "type": .string("object"),
+          "properties": .object([
+            "id": .object([
+              "type": .string("string"),
+              "description": .string("Optional run id returned by \(Self.agentLaunchToolName)."),
+            ])
+          ]),
+          "additionalProperties": .bool(false),
+        ]),
+        annotations: ToolAnnotations(
+          readOnly: true,
+          destructive: false,
+          idempotent: true,
+          openWorld: false,
+          approval: .automatic)),
+      ToolDefinition(
+        name: Self.agentResultToolName,
+        description:
+          "Wait for a child started by \(Self.agentLaunchToolName) and return its final result.",
+        inputSchema: .object([
+          "type": .string("object"),
+          "properties": .object([
+            "id": .object([
+              "type": .string("string"),
+              "description": .string("Run id returned by \(Self.agentLaunchToolName)."),
+            ])
+          ]),
+          "required": .array([.string("id")]),
+          "additionalProperties": .bool(false),
+        ]),
+        annotations: ToolAnnotations(
+          readOnly: true,
+          destructive: false,
+          idempotent: false,
+          openWorld: false,
+          approval: .automatic)),
+    ]
   }
 
   private func request(
@@ -628,6 +1018,22 @@ public actor AgentRuntime {
     }
     if !text.isEmpty { message.content.append(.text(text)) }
     return message
+  }
+}
+
+extension AgentRuntime {
+  fileprivate static let reservedToolNames: Set<String> = [
+    subagentToolName, agentLaunchToolName, agentStatusToolName, agentResultToolName,
+  ]
+}
+
+private enum BackgroundSubagentError: LocalizedError {
+  case failed(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .failed(let message): message
+    }
   }
 }
 
@@ -693,6 +1099,10 @@ private actor RunBudget {
     guard depth <= limits.maxSubagentDepth, subagents < limits.maxSubagents else { return false }
     subagents += 1
     return true
+  }
+
+  func releaseSubagent() {
+    subagents = max(0, subagents - 1)
   }
 
   func record(tokens newTokens: Int) -> Bool {
