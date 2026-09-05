@@ -1,0 +1,74 @@
+diff --git a/Sources/SwiftTUIPlatformIO/PlatformPOSIX.swift b/Sources/SwiftTUIPlatformIO/PlatformPOSIX.swift
+index c8b9bd0..bb40174 100644
+--- a/Sources/SwiftTUIPlatformIO/PlatformPOSIX.swift
++++ b/Sources/SwiftTUIPlatformIO/PlatformPOSIX.swift
+@@ -107,7 +107,7 @@ package enum PlatformPOSIX {
+     _ count: Int
+   ) -> Int {
+     #if canImport(Darwin) || canImport(Glibc) || canImport(Android)
+-      let sent = unsafe send(fileDescriptor, buffer, count, Int32(MSG_NOSIGNAL))
++      let sent = unsafe send(fileDescriptor, buffer!, count, Int32(MSG_NOSIGNAL))
+       if sent >= 0 || errno != ENOTSOCK {
+         return sent
+       }
+diff --git a/Vendor/UnixSignals/Sources/UnixSignals/CrashSignalHandler.swift b/Vendor/UnixSignals/Sources/UnixSignals/CrashSignalHandler.swift
+index 19206c2..d639d2d 100644
+--- a/Vendor/UnixSignals/Sources/UnixSignals/CrashSignalHandler.swift
++++ b/Vendor/UnixSignals/Sources/UnixSignals/CrashSignalHandler.swift
+@@ -211,9 +211,12 @@ extension CrashSignalHandler {
+           // __sigaction_u is a C union; assigning into one of its members has
+           // no static type-safety guarantee, so this read is genuinely unsafe.
+           unsafe action.__sigaction_u.__sa_handler = crashSignalHandler
+-        #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
+-          // The Glibc/Musl/Android shape is a typed struct, no `unsafe` needed.
++        #elseif canImport(Glibc) || canImport(Musl)
++          // The Glibc/Musl shape is a typed struct, no `unsafe` needed.
+           action.__sigaction_handler = .init(sa_handler: crashSignalHandler)
++        #elseif canImport(Android)
++          // Bionic exposes the anonymous sigaction union member directly.
++          action.sa_handler = crashSignalHandler
+         #endif
+         // SA_RESETHAND/SA_ONSTACK Swift-import types differ across platforms
+         // (Glibc surfaces SA_RESETHAND as UInt32 because 0x80000000 overflows
+@@ -285,7 +288,11 @@ extension CrashSignalHandler {
+ 
+       var stack = unsafe stack_t()
+       unsafe stack.ss_sp = unsafe buffer
+-      unsafe stack.ss_size = crashAltStackSize
++      #if canImport(Android)
++        unsafe stack.ss_size = UInt(crashAltStackSize)
++      #else
++        unsafe stack.ss_size = crashAltStackSize
++      #endif
+       unsafe stack.ss_flags = 0
+       unsafe sigaltstack(&stack, nil)
+     }
+@@ -298,7 +305,11 @@ extension CrashSignalHandler {
+ 
+       var stack = unsafe stack_t()
+       unsafe stack.ss_flags = Int32(SS_DISABLE)
+-      unsafe stack.ss_size = crashAltStackSize
++      #if canImport(Android)
++        unsafe stack.ss_size = UInt(crashAltStackSize)
++      #else
++        unsafe stack.ss_size = crashAltStackSize
++      #endif
+       unsafe stack.ss_sp = unsafe buffer
+       unsafe sigaltstack(&stack, nil)
+ 
+diff --git a/Vendor/UnixSignals/Tests/UnixSignalsTests/CrashSignalHandlerTests.swift b/Vendor/UnixSignals/Tests/UnixSignalsTests/CrashSignalHandlerTests.swift
+index 33491b3..21fba0f 100644
+--- a/Vendor/UnixSignals/Tests/UnixSignalsTests/CrashSignalHandlerTests.swift
++++ b/Vendor/UnixSignals/Tests/UnixSignalsTests/CrashSignalHandlerTests.swift
+@@ -119,8 +119,10 @@ struct CrashSignalHandlerTests {
+       var customAction = sigaction()
+       #if canImport(Darwin)
+         unsafe customAction.__sigaction_u.__sa_handler = { _ in }
+-      #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
++      #elseif canImport(Glibc) || canImport(Musl)
+         customAction.__sigaction_handler = .init(sa_handler: { _ in })
++      #elseif canImport(Android)
++        customAction.sa_handler = { _ in }
+       #endif
+       unsafe sigemptyset(&customAction.sa_mask)
+       customAction.sa_flags = 0
