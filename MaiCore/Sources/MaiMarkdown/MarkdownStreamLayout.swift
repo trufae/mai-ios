@@ -264,7 +264,9 @@ public struct MarkdownStreamLayout: Equatable, Sendable {
       } else {
         box = checked ? "[x]" : "[ ]"
       }
-      return [.spans([MarkdownSpan(indentation(indent) + box + " ", role: .taskMarker(checked: checked))])]
+      return [
+        .spans([MarkdownSpan(indentation(indent) + box + " ", role: .taskMarker(checked: checked))])
+      ]
     case .footnote(let key):
       return [.spans([MarkdownSpan("[^\(key)] ", role: .footnoteLabel)])]
     }

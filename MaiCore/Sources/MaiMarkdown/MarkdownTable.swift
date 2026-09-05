@@ -131,7 +131,9 @@ public enum MarkdownTableLayout {
     lines.append(border(widths, glyphs.topLeft, glyphs.topMiddle, glyphs.topRight, glyphs))
     lines += rowLines(header, widths: widths, alignments: table.alignments, glyphs: glyphs)
     lines.append(border(widths, glyphs.middleLeft, glyphs.cross, glyphs.middleRight, glyphs))
-    let rows = body.map { rowLines($0, widths: widths, alignments: table.alignments, glyphs: glyphs) }
+    let rows = body.map {
+      rowLines($0, widths: widths, alignments: table.alignments, glyphs: glyphs)
+    }
     let separateRows = rows.contains { $0.count > 1 }
     for (index, row) in rows.enumerated() {
       if index > 0, separateRows {
@@ -366,7 +368,8 @@ public enum MarkdownTableLayout {
             // a bold phrase stays continuous but underlines end with the link.
             let previous = current.last
             let next = spans.first
-            let shared = previous?.style == next?.style && previous?.destination == next?.destination
+            let shared =
+              previous?.style == next?.style && previous?.destination == next?.destination
             current.append(
               MarkdownSpan(
                 " ", shared ? previous?.style ?? .plain : .plain,

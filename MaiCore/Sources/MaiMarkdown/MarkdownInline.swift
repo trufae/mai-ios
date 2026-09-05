@@ -240,7 +240,8 @@ public enum MarkdownInlineParser {
       let touchesEnd = end == chars.count
       let next: Character = touchesEnd ? " " : chars[end]
       let leftFlanking =
-        !next.isWhitespace && (!isPunctuation(next) || previous.isWhitespace || isPunctuation(previous))
+        !next.isWhitespace
+        && (!isPunctuation(next) || previous.isWhitespace || isPunctuation(previous))
       let rightFlanking =
         !previous.isWhitespace
         && (!isPunctuation(previous) || next.isWhitespace || isPunctuation(next))

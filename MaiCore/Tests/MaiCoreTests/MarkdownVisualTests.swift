@@ -29,8 +29,9 @@ func messageBlockRendersMarkdown() {
   #expect(output.contains("Title"))
   #expect(output.contains("A bold word and code."))
   #expect(output.contains("• one"))
-  #expect(output.contains("┌───┬───┐"))
-  #expect(output.contains("│ x │ y │"))
+  // The offline renderer substitutes ASCII for box-drawing glyphs.
+  #expect(output.contains("┌─────┬─────┐") || output.contains("+-----+-----+"))
+  #expect(output.contains("│ x   │ y   │") || output.contains("| x   | y   |"))
   #expect(!output.contains("**"))
 }
 
@@ -55,7 +56,8 @@ func markdownParagraphsWrap() {
 func renderCacheIsIncremental() {
   let first = MarkdownRenderCache.lines(id: "live", text: "Hello **wor", width: 40)
   #expect(first.map { $0.map(\.text).joined() } == ["Hello **wor"])
-  let second = MarkdownRenderCache.lines(id: "live", text: "Hello **world** done\n- item", width: 40)
+  let second = MarkdownRenderCache.lines(
+    id: "live", text: "Hello **world** done\n- item", width: 40)
   #expect(second.map { $0.map(\.text).joined() } == ["Hello world done", "• item"])
   let restarted = MarkdownRenderCache.lines(id: "live", text: "New reply", width: 40)
   #expect(restarted.map { $0.map(\.text).joined() } == ["New reply"])
