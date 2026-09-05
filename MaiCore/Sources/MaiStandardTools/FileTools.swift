@@ -187,7 +187,7 @@ public struct MaiFileWorkspaceTool: AgentTool {
           ToolParameterDef(
             name: "path",
             type: "string",
-            description: "Relative folder to search. Omit for the workspace root.",
+            description: "Relative file or folder to search. Omit for the workspace root.",
             required: false),
           ToolParameterDef(
             name: "regex",
@@ -512,8 +512,7 @@ private struct MaiFileWorkspace: Sendable {
   func grep(_ arguments: [String: JSONValue]) throws -> ToolOutput {
     let query = try requiredText(arguments, key: "query")
     let rawPath = arguments["path"]?.stringValue ?? ""
-    let directory = try resolve(rawPath, allowRoot: true, mustExist: true)
-    try requireDirectory(directory, displayPath: displayPath(rawPath))
+    let target = try resolve(rawPath, allowRoot: true, mustExist: true)
     let limit = boundedLimit(arguments["limit"]?.intValue, default: 100)
     let caseSensitive =
       arguments["case_sensitive"]?.coercedBoolValue ?? query.contains(where: \.isUppercase)
@@ -534,10 +533,9 @@ private struct MaiFileWorkspace: Sendable {
     var rendered: [String] = []
     var scannedFiles = 0
     var hitLimit = false
-    try enumerateFiles(at: directory) { url, values, enumerator in
+    let scanFile: (URL, URLResourceValues) throws -> Bool = { url, values in
       guard rows.count < limit, scannedFiles < 10_000 else {
         hitLimit = true
-        enumerator.skipDescendants()
         return false
       }
       guard values.isRegularFile == true, values.isSymbolicLink != true else { return true }
@@ -576,6 +574,18 @@ private struct MaiFileWorkspace: Sendable {
       }
       if rows.count == limit { hitLimit = true }
       return rows.count < limit
+    }
+    let targetValues = try target.resourceValues(forKeys: [
+      .fileSizeKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+    ])
+    if targetValues.isDirectory == true {
+      try enumerateFiles(at: target) { url, values, enumerator in
+        let shouldContinue = try scanFile(url, values)
+        if !shouldContinue { enumerator.skipDescendants() }
+        return shouldContinue
+      }
+    } else {
+      _ = try scanFile(target, targetValues)
     }
     return ToolOutput(
       content: [.text(rendered.isEmpty ? "No matching lines." : rendered.joined(separator: "\n"))],

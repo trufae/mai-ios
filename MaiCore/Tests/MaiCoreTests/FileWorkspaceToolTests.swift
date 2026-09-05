@@ -60,6 +60,15 @@ func fileWorkspaceToolsManageFiles() async throws {
   #expect(grepMatch?.objectValue?["path"] == .string("notes/todo.md"))
   #expect(grepMatch?.objectValue?["line"] == .integer(2))
 
+  let greppedFile = try await call(
+    tool(tools, .grep),
+    ["path": .string("notes/todo.md"), "query": .string("one")])
+  let fileMatches = greppedFile.structuredContent?.objectValue?["matches"]?.arrayValue
+  #expect(fileMatches?.count == 1)
+  #expect(fileMatches?.first?.objectValue?["path"] == .string("notes/todo.md"))
+  #expect(fileMatches?.first?.objectValue?["line"] == .integer(1))
+  #expect(greppedFile.structuredContent?.objectValue?["scannedFiles"] == .integer(1))
+
   _ = try await call(
     tool(tools, .rename),
     ["path": .string("notes/todo.md"), "new_path": .string("notes/done.md")])
