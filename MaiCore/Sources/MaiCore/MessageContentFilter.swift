@@ -134,10 +134,26 @@ public enum MessageContentFilter {
   }
 
   public static func markdownPlainText(from text: String) -> String {
-    text.components(separatedBy: .newlines).map { line in
-      guard let attributed = try? AttributedString(markdown: line) else { return line }
-      return String(attributed.characters)
-    }.joined(separator: "\n")
+    // Foundation's Markdown initializer for AttributedString is unavailable on
+    // Linux Foundation. Keep this intentionally small, portable conversion for
+    // notification, search, and speech text rather than making those features
+    // depend on platform-specific rich text support.
+    text.components(separatedBy: .newlines).map(markdownPlainTextLine).joined(separator: "\n")
+  }
+
+  private static func markdownPlainTextLine(_ line: String) -> String {
+    var result = line
+    result = result.replacingOccurrences(
+      of: "^\\s{0,3}(?:#{1,6}\\s+|>\\s?|[-+*]\\s+|\\d+[.)]\\s+)",
+      with: "",
+      options: .regularExpression)
+    result = result.replacingOccurrences(
+      of: "!?(?:\\[([^]]*)\\]\\([^)]*\\)|\\[([^]]*)\\]\\[[^]]*\\])",
+      with: "$1$2",
+      options: .regularExpression)
+    result = result.replacingOccurrences(of: "`([^`]*)`", with: "$1", options: .regularExpression)
+    result = result.replacingOccurrences(of: "(\\*\\*|__|\\*|_|~~)", with: "", options: .regularExpression)
+    return result
   }
 
   private static func scan(

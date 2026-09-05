@@ -174,6 +174,46 @@ public struct ToolOutput: Codable, Equatable, Sendable {
   }
 }
 
+package enum ToolResultPreview {
+  package static func render(
+    _ result: ToolResult,
+    maxLines: Int,
+    maxLineLength: Int = 240
+  ) -> String {
+    let compactHeading = "← tool \(result.isError ? "error" : "done")"
+    let maximumLines = max(0, maxLines)
+    guard maximumLines > 0 else { return compactHeading }
+    var text = result.text
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      let structured = result.structuredContent
+    {
+      text = structured.compactJSONString
+    }
+    text = text.trimmingCharacters(in: .newlines)
+    guard !text.isEmpty else { return compactHeading }
+    let lines = text.components(separatedBy: .newlines)
+    var output = ["← tool \(result.isError ? "error" : "result")"]
+    output.append(
+      contentsOf: lines.prefix(maximumLines).map {
+        "  \(safeLine($0, maximumLength: max(1, maxLineLength)))"
+      })
+    if lines.count > maximumLines {
+      let remaining = lines.count - maximumLines
+      output.append("  … \(remaining) more line\(remaining == 1 ? "" : "s")")
+    }
+    return output.joined(separator: "\n")
+  }
+
+  private static func safeLine(_ line: String, maximumLength: Int) -> String {
+    let sanitized = line.unicodeScalars.map { scalar -> String in
+      if scalar.value == 9 { return "  " }
+      return CharacterSet.controlCharacters.contains(scalar) ? " " : String(scalar)
+    }.joined()
+    guard sanitized.count > maximumLength else { return sanitized }
+    return String(sanitized.prefix(maximumLength)) + "…"
+  }
+}
+
 public struct ClosureTool: AgentTool {
   public let definition: ToolDefinition
   private let operation: @Sendable (JSONValue, ToolExecutionContext) async throws -> ToolOutput

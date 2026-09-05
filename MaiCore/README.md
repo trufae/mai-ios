@@ -144,10 +144,17 @@ in terminal scrollback. Long input scrolls horizontally and is printed in full
 when submitted. `/set ui.` lists the persisted terminal styling options;
 `ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, and `ui.bgcolor` accept
 named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` and `ui.markdown`
-accept `on` or `off`. `/set limits.` shows the per-run limits of the current
+accept `on` or `off`. `ui.toolResultLines` controls how many leading lines of
+each tool result are shown in the terminal (default `3`; `0` restores the
+compact status-only display). Tool lifecycle messages are green, with failed
+results shown in red. `/set limits.` shows the per-run limits of the current
 chat's agent; `/set limits.maxToolCalls N` and `/set limits.maxModelTurns N`
 change them and persist the change into that agent's configuration. The
 `--max-tool-calls N` and `--max-turns N` flags override both for one launch.
+`/set toolCallingStrategy text|xml|json` forces message-based tool calling for
+models without native tools; `automatic` prefers native calls and otherwise
+uses JSON, while `native` requires native support. The selected mode is saved
+on the agent.
 When a run spends its tool call budget, the remaining calls of that reply are
 answered with an error and the model is asked to answer without tools instead
 of the run failing. Replies are rendered as styled markdown while they stream:
@@ -175,9 +182,13 @@ plugin API. Older native plugins without group metadata are grouped by their
 tool-name prefix.
 
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
-`<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
-list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin`
-provides `echo`, date/time, calculator, network, and workspace-scoped Files tools.
+`<server-id>::<remoteName>` when no prefix is configured. Connecting an enabled
+MCP exposes all of that server's discovered tools to every agent; the server is
+the enable/disable unit. Obsolete names left in an agent after an MCP rename are
+ignored instead of preventing the REPL from starting. Agents still explicitly
+list non-MCP tools and child agents they are allowed to use.
+`MaiStandardToolsPlugin` provides `echo`, date/time, calculator, network, and
+workspace-scoped Files tools.
 
 Subagents are disabled by default. Set an agent's `limits.maxSubagents` above
 zero and populate `subagentNames` to expose the runtime-managed tools.
@@ -190,9 +201,11 @@ child content. Background children survive across orchestrator turns, and
 
 In the `pmai` REPL, `/mcp list` shows configured servers and their live state.
 Add and connect a stdio server without editing JSON using
-`/mcp add ID [options] -- COMMAND [ARG ...]`. `/mcp enable ID` and
-`/mcp disable ID` reconnect or disconnect it and persist the state. Run `/mcp`
-for the full option list. The legacy `/mcps` spelling remains a list alias.
+`/mcp add COMMAND [ARG ...]`; the command basename becomes its ID. Use
+`/mcp add --name ID [options] -- COMMAND [ARG ...]` when a different ID or
+options are needed. `/mcp enable ID` and `/mcp disable ID` reconnect or
+disconnect the complete server tool set and persist the state. Run `/mcp` for
+the full option list. The legacy `/mcps` spelling remains a list alias.
 
 The `files` group can list files, find approximate names, grep bounded UTF-8
 content, convert DOCX/PDF/JSON documents, write or append text, create folders,
@@ -246,7 +259,12 @@ MCP support, including its subprocess factory and public transport types, is
 compiled out on iOS. The iOS app continues to support Streamable HTTP only.
 
 The example MCP entry is disabled so the example remains safe to inspect. Set
-an HTTP URL or stdio command, enable it, discover its tools with `/tools`, and
-add the names you want to an agent's `toolNames` list. Set `useToolProxy` on an
-agent when models should see only MaiCore's shared `list-tools` and `call-tool`
-interface.
+an HTTP URL or stdio command and enable it to expose all discovered tools. Set
+`useToolProxy` on an agent when models should see only MaiCore's shared
+`list-tools` and `call-tool` interface.
+
+Agents can force MaiCore's emulated tool loop with `toolCallingStrategy` set to
+`text`, `xml`, or `json`. These modes send tool instructions as messages, parse
+the model's response, execute the calls, return results, and continue until the
+model answers. `automatic` uses native calls when the provider supports them
+and JSON emulation otherwise; `native` requires provider-native tool calling.

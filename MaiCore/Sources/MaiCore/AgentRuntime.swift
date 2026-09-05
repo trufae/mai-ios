@@ -847,9 +847,11 @@ public actor AgentRuntime {
 
   private func visibleDefinitions(for request: AgentRequest) throws -> [ToolDefinition] {
     var definitions: [ToolDefinition] = []
-    for name in request.toolNames.sorted() {
-      guard let tool = tools[name] else { throw AgentToolError.unavailable(name) }
-      definitions.append(tool.definition)
+    let mcpToolNames = registeredMCPs.values.reduce(into: Set<String>()) {
+      $0.formUnion($1.toolNames)
+    }
+    for name in request.toolNames.union(mcpToolNames).sorted() {
+      if let tool = tools[name] { definitions.append(tool.definition) }
     }
     if !request.subagentNames.isEmpty {
       for name in request.subagentNames where agents[name] == nil {
@@ -1065,7 +1067,7 @@ public enum AgentRuntimeError: LocalizedError, Equatable, Sendable {
     case .reservedToolName(let name):
       "Tool name '\(name)' is reserved by MaiCore."
     case .nativeToolCallingUnavailable(let provider):
-      "Provider '\(provider)' does not support native tool calling. Use the automatic or json strategy."
+      "Provider '\(provider)' does not support native tool calling. Use automatic, text, xml, or json."
     case .limitExceeded(let resource):
       "Agent run exceeded its \(resource) limit."
     }
