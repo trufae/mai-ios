@@ -88,7 +88,9 @@ func inlineRuns() {
       MarkdownInlineRun("em", style: [.bold, .italic]),
       MarkdownInlineRun(" here", style: .bold),
     ])
-  #expect(MarkdownInlineParser.plainText("a * b *c* <http://h.o> ![alt](i.png)") == "a * b c http://h.o alt")
+  #expect(
+    MarkdownInlineParser.plainText("a * b *c* <http://h.o> ![alt](i.png)")
+      == "a * b c http://h.o alt")
 }
 
 @Test("Streamable length stops before unfinished constructs")
@@ -107,8 +109,10 @@ func lineKinds() {
   #expect(MarkdownLineClassifier.classify("## Heading ") == .heading(level: 2, text: "Heading "))
   #expect(MarkdownLineClassifier.classify("- item") == .bullet(indent: 0, text: "item"))
   #expect(MarkdownLineClassifier.classify("  - nested") == .bullet(indent: 1, text: "nested"))
-  #expect(MarkdownLineClassifier.classify("3) third") == .ordered(indent: 0, label: "3)", text: "third"))
-  #expect(MarkdownLineClassifier.classify("- [x] done") == .task(indent: 0, checked: true, text: "done"))
+  #expect(
+    MarkdownLineClassifier.classify("3) third") == .ordered(indent: 0, label: "3)", text: "third"))
+  #expect(
+    MarkdownLineClassifier.classify("- [x] done") == .task(indent: 0, checked: true, text: "done"))
   #expect(MarkdownLineClassifier.classify("- [link](u)") == .bullet(indent: 0, text: "[link](u)"))
   #expect(MarkdownLineClassifier.classify("> quote") == .quote("quote"))
   #expect(MarkdownLineClassifier.classify("***") == .rule)
@@ -121,7 +125,9 @@ func lineKinds() {
   #expect(MarkdownLineClassifier.analyze(Array("-"), complete: false) == .needMore)
   #expect(MarkdownLineClassifier.analyze(Array("--"), complete: false) == .needMore)
   #expect(MarkdownLineClassifier.analyze(Array("- ["), complete: false) == .needMore)
-  #expect(MarkdownLineClassifier.analyze(Array("**b"), complete: false) == .decided(.paragraph, contentStart: 0))
+  #expect(
+    MarkdownLineClassifier.analyze(Array("**b"), complete: false)
+      == .decided(.paragraph, contentStart: 0))
   #expect(MarkdownLineClassifier.analyze(Array("| a"), complete: false) == .hold)
   #expect(MarkdownLineClassifier.analyze(Array("``"), complete: false) == .needMore)
   #expect(MarkdownLineClassifier.analyze(Array("1"), complete: false) == .needMore)
@@ -133,7 +139,8 @@ func lineKinds() {
 @Test("Streaming in any chunk size renders the same bytes as one shot")
 func streamingMatchesOneShot() {
   let options = MarkdownLayoutOptions(width: 60, unicode: true)
-  let expected = MarkdownTerminalRenderer.render(sampleDocument, theme: MarkdownTerminalTheme(), options: options)
+  let expected = MarkdownTerminalRenderer.render(
+    sampleDocument, theme: MarkdownTerminalTheme(), options: options)
   let chars = Array(sampleDocument)
   for size in [1, 2, 3, 5, 7, 11, 29, 64, 257, chars.count] {
     var renderer = MarkdownTerminalRenderer(theme: MarkdownTerminalTheme(), options: options)
@@ -188,7 +195,9 @@ func tableRendering() {
   #expect(output.contains("\u{1B}[1mbold\u{1B}[0m"))
   #expect(output.contains("\u{1B}[4mdoc\u{1B}[0m"))
 
-  let oneShot = stripANSI(MarkdownTerminalRenderer.render(source, theme: .plain, options: MarkdownLayoutOptions(width: 70)))
+  let oneShot = stripANSI(
+    MarkdownTerminalRenderer.render(
+      source, theme: .plain, options: MarkdownLayoutOptions(width: 70)))
   #expect(oneShot.split(separator: "\n").map(String.init) == Array(lines.prefix(6)))
 }
 
@@ -231,16 +240,19 @@ func blockRendering() {
   #expect(colored.contains("\u{1B}[93m☐ \u{1B}[0mtodo\n"))
   #expect(colored.contains("\u{1B}[93m  1. \u{1B}[0msub\n"))
   #expect(colored.contains("\u{1B}[90m────────────────────\u{1B}[0m\n"))
-  #expect(colored.contains("\u{1B}[90m```\u{1B}[0m\n\u{1B}[92mcode\u{1B}[0m\n\u{1B}[90m```\u{1B}[0m"))
+  #expect(
+    colored.contains("\u{1B}[90m```\u{1B}[0m\n\u{1B}[92mcode\u{1B}[0m\n\u{1B}[90m```\u{1B}[0m"))
 
   let ascii = stripANSI(
-    MarkdownTerminalRenderer.render(source, theme: .plain, options: MarkdownLayoutOptions(width: 20, unicode: false)))
+    MarkdownTerminalRenderer.render(
+      source, theme: .plain, options: MarkdownLayoutOptions(width: 20, unicode: false)))
   #expect(ascii.contains("| quote\n[ ] todo\n  1. sub\n--------------------\n```\ncode\n```"))
 }
 
 @Test("Layout lines carry roles for the visual mode")
 func styledLines() {
-  let lines = MarkdownStreamLayout.lines(for: "## T\n\ntext **b**", options: MarkdownLayoutOptions(width: 30))
+  let lines = MarkdownStreamLayout.lines(
+    for: "## T\n\ntext **b**", options: MarkdownLayoutOptions(width: 30))
   #expect(lines.count == 3)
   #expect(lines[0] == [MarkdownSpan("T", MarkdownSpanStyle(role: .heading(2)))])
   #expect(lines[1] == [])
@@ -258,7 +270,10 @@ func environmentDetection() {
 
   let linked = MarkdownTerminalRenderer.render(
     "[x](https://e.com)", theme: MarkdownTerminalTheme(colors: false, hyperlinks: true))
-  #expect(linked == "\u{1B}[4m\u{1B}]8;;https://e.com\u{1B}\\x\u{1B}]8;;\u{1B}\\\u{1B}[0m\u{1B}[2m (https://e.com)\u{1B}[0m")
+  #expect(
+    linked
+      == "\u{1B}[4m\u{1B}]8;;https://e.com\u{1B}\\x\u{1B}]8;;\u{1B}\\\u{1B}[0m\u{1B}[2m (https://e.com)\u{1B}[0m"
+  )
 }
 
 @Test("Display width counts wide glyphs as two cells")

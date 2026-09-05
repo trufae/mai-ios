@@ -16,7 +16,8 @@ public struct MarkdownTerminalTheme: Equatable, Sendable {
 
   /// SGR parameters for a style, joined with `;`. Empty means default text.
   public func parameters(for style: MarkdownSpanStyle) -> String {
-    var parameters = colors ? colorParameters(for: style.role) : attributeParameters(for: style.role)
+    var parameters =
+      colors ? colorParameters(for: style.role) : attributeParameters(for: style.role)
     let inline = style.inline
     if inline.contains(.bold) { parameters.append("1") }
     if inline.contains(.italic) { parameters.append("3") }
@@ -110,7 +111,8 @@ public struct MarkdownANSIEncoder: Equatable, Sendable {
 
   private func isHyperlinkTarget(_ destination: String) -> Bool {
     let lowercased = destination.lowercased()
-    guard !destination.contains(where: { $0.isWhitespace || $0.asciiValue.map { $0 < 0x20 } ?? false })
+    guard
+      !destination.contains(where: { $0.isWhitespace || $0.asciiValue.map { $0 < 0x20 } ?? false })
     else { return false }
     return lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://")
       || lowercased.hasPrefix("mailto:") || lowercased.hasPrefix("file://")

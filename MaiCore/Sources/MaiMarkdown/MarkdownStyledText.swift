@@ -70,7 +70,8 @@ extension MarkdownSpan {
     while index < runs.count {
       let run = runs[index]
       spans.append(
-        MarkdownSpan(run.text, MarkdownSpanStyle(role: role, inline: run.style), destination: run.destination))
+        MarkdownSpan(
+          run.text, MarkdownSpanStyle(role: role, inline: run.style), destination: run.destination))
       index += 1
       guard linkDestinations, run.style.contains(.link), let destination = run.destination else {
         continue
@@ -83,7 +84,8 @@ extension MarkdownSpan {
       {
         let next = runs[index]
         spans.append(
-          MarkdownSpan(next.text, MarkdownSpanStyle(role: role, inline: next.style), destination: destination))
+          MarkdownSpan(
+            next.text, MarkdownSpanStyle(role: role, inline: next.style), destination: destination))
         linkText += next.text
         index += 1
       }

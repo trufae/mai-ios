@@ -136,7 +136,7 @@ public enum MarkdownLineClassifier {
           return complete ? .decided(.bullet(indent: level), contentStart: afterSpaces) : .needMore
         }
         let mark = chars[afterSpaces + 1]
-        if (mark == " " || mark == "x" || mark == "X"), chars[afterSpaces + 2] == "]" {
+        if mark == " " || mark == "x" || mark == "X", chars[afterSpaces + 2] == "]" {
           let boxEnd = afterSpaces + 3
           if boxEnd == chars.count {
             return complete
@@ -152,13 +152,17 @@ public enum MarkdownLineClassifier {
 
     case "0"..."9":
       var end = index
-      while end < chars.count, chars[end].isASCII, chars[end].isNumber, end - index < 10 { end += 1 }
+      while end < chars.count, chars[end].isASCII, chars[end].isNumber, end - index < 10 {
+        end += 1
+      }
       if end - index > 9 { return .decided(.paragraph, contentStart: 0) }
       if end == chars.count { return complete ? .decided(.paragraph, contentStart: 0) : .needMore }
       guard chars[end] == "." || chars[end] == ")" else {
         return .decided(.paragraph, contentStart: 0)
       }
-      if end + 1 == chars.count { return complete ? .decided(.paragraph, contentStart: 0) : .needMore }
+      if end + 1 == chars.count {
+        return complete ? .decided(.paragraph, contentStart: 0) : .needMore
+      }
       guard isSpace(chars[end + 1]) else { return .decided(.paragraph, contentStart: 0) }
       return .decided(
         .ordered(indent: level, label: String(chars[index...end])), contentStart: end + 1)
@@ -173,7 +177,9 @@ public enum MarkdownLineClassifier {
       guard chars[index + 1] == "^" else { return .decided(.paragraph, contentStart: 0) }
       var end = index + 2
       while end < chars.count, chars[end] != "]" {
-        if chars[end].isWhitespace || end - index > 64 { return .decided(.paragraph, contentStart: 0) }
+        if chars[end].isWhitespace || end - index > 64 {
+          return .decided(.paragraph, contentStart: 0)
+        }
         end += 1
       }
       guard end < chars.count, end > index + 2 else {
