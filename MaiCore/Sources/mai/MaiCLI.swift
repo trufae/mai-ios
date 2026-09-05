@@ -1063,13 +1063,21 @@ private struct MaiCLI {
     let fields = argument.split(maxSplits: 5, whereSeparator: \Character.isWhitespace).map(
       String.init)
     guard let action = fields.first?.lowercased() else {
-      await showAgent(session.profile.agentID, session: session, configuration: configuration, terminal: terminal)
-      await terminal.line("Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+      await showAgent(
+        session.profile.agentID,
+        session: session,
+        configuration: configuration,
+        terminal: terminal)
+      await terminal.line(
+        "Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
       return
     }
 
     if action == "add" {
-      guard fields.count == 6, let baseURL = URL(string: fields[3]) else {
+      guard fields.count == 6, let baseURL = URL(string: fields[3]),
+        ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""),
+        baseURL.host != nil
+      else {
         await terminal.line("Usage: /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
         return
       }
@@ -1183,7 +1191,8 @@ private struct MaiCLI {
     await terminal.line("Provider: \(definition.provider)")
     await terminal.line("Base URL: \(provider?.baseURL?.absoluteString ?? "-")")
     await terminal.line("Model: \(definition.model.isEmpty ? "-" : definition.model)")
-    await terminal.line("System prompt: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
+    await terminal.line(
+      "System prompt: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
   }
 
   @discardableResult
