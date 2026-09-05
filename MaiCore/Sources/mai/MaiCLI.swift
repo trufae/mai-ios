@@ -1,5 +1,6 @@
 import Foundation
 import MaiCore
+import MaiMarkdown
 import MaiDocuments
 import MaiMCP
 import MaiOpenAI
@@ -25,6 +26,8 @@ private struct CLIOptions {
   var apiKeyOverride: String?
   var systemOverride: String?
   var stream = true
+  /// Render replies as markdown; nil follows the configuration and the tty.
+  var markdown: Bool?
   var imagePaths: [String] = []
   var pluginPaths: [String] = []
   var initialPrompt: String?
@@ -65,6 +68,10 @@ private struct CLIOptions {
         pluginPaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--no-stream":
         stream = false
+      case "--markdown":
+        markdown = true
+      case "--no-markdown":
+        markdown = false
       case "--print-config":
         printConfig = true
       default:
@@ -304,6 +311,9 @@ private actor TerminalWriter {
   /// When set, output is collected for another surface instead of hitting the tty.
   private let capturesOutput: Bool
   private var captured: [String] = []
+  /// Styles assistant markdown when set; nil prints replies verbatim.
+  private var markdown: MarkdownTerminalRenderer?
+  private var outputEndedLine = true
 
   init(capturesOutput: Bool = false) {
     self.capturesOutput = capturesOutput
@@ -315,29 +325,58 @@ private actor TerminalWriter {
     return text
   }
 
+  /// Installs the renderer for replies. Captured output stays verbatim because
+  /// it is shown by surfaces that do not interpret escape sequences.
+  func configureMarkdown(_ renderer: MarkdownTerminalRenderer?) {
+    markdown = capturesOutput ? nil : renderer
+  }
+
+  var markdownRenderer: MarkdownTerminalRenderer? { markdown }
+
+  /// Renders a complete text the way replies are rendered.
+  func render(_ text: String) -> String {
+    markdown?.render(text) ?? text
+  }
+
   func resetResponse() {
     wroteRootDelta = false
     rootLineOpen = false
+    markdown?.reset()
   }
 
   func consume(_ event: AgentEvent) {
     switch event {
+    case .modelStarted(let context, let turn) where context.depth == 0 && turn > 1:
+      finishReply()
+      closeRootLine()
     case .provider(let context, .textDelta(let text)) where context.depth == 0:
-      write(text)
+      if var renderer = markdown {
+        let output = renderer.feed(text)
+        markdown = renderer
+        write(output)
+      } else {
+        write(text)
+      }
       wroteRootDelta = true
       rootLineOpen = true
     case .toolStarted(let context, let call) where context.depth == 0:
+      finishReply()
       closeRootLine()
       status("→ tool \(call.name) \(call.arguments.compactJSONString)")
     case .toolFinished(let context, let result) where context.depth == 0:
       status("← tool \(result.isError ? "error" : "done")")
     case .childStarted(_, let child):
+      finishReply()
       closeRootLine()
       status("↳ child \(child.agentID) [\(child.runID.uuidString.prefix(8))]")
     case .childFinished(_, let child):
       status("↲ child \(child.agentID): \(child.response.text.prefix(100))")
     case .finished(let context, let result) where context.depth == 0:
-      if !wroteRootDelta { write(result.response.text) }
+      if wroteRootDelta {
+        finishReply()
+      } else {
+        write(render(result.response.text))
+      }
       closeRootLine(force: true)
     default:
       break
@@ -345,11 +384,13 @@ private actor TerminalWriter {
   }
 
   func recoverAfterError(_ message: String) {
+    finishReply()
     closeRootLine()
     status("error: \(message)")
   }
 
   func recoverAfterCancellation() {
+    finishReply()
     closeRootLine()
     status("cancelled")
   }
@@ -362,9 +403,20 @@ private actor TerminalWriter {
       return
     }
     handle.write(Data((value + "\n").utf8))
+    if handle === FileHandle.standardOutput { outputEndedLine = true }
+  }
+
+  /// Writes what the markdown renderer still holds for the current reply.
+  private func finishReply() {
+    guard var renderer = markdown else { return }
+    let output = renderer.flush()
+    markdown = renderer
+    write(output)
   }
 
   private func write(_ value: String) {
+    guard !value.isEmpty else { return }
+    outputEndedLine = value.hasSuffix("\n")
     if capturesOutput {
       captured.append(value)
       return
@@ -381,12 +433,8 @@ private actor TerminalWriter {
   }
 
   private func closeRootLine(force: Bool = false) {
-    if rootLineOpen || force {
-      if capturesOutput {
-        captured.append("\n")
-      } else {
-        FileHandle.standardOutput.write(Data("\n".utf8))
-      }
+    if (rootLineOpen || force) && !outputEndedLine {
+      write("\n")
     }
     rootLineOpen = false
   }
@@ -614,6 +662,11 @@ private struct MaiCLI {
       session.touch()
       workspace.upsert(session.chat, selecting: true)
       let terminal = TerminalWriter()
+      await terminal.configureMarkdown(
+        markdownRenderer(
+          enabled: options.markdown ?? configuration?.ui.markdown ?? true,
+          forced: options.markdown == true,
+          environment: environment))
 
       if let path = loaded?.path {
         await terminal.line("Loaded \(path)", to: .standardError)
@@ -889,6 +942,22 @@ private struct MaiCLI {
       stream: options.stream)
   }
 
+  /// A renderer for replies on this terminal, or nil to print them verbatim.
+  /// Output that is not a terminal stays verbatim unless rendering is forced.
+  private static func markdownRenderer(
+    enabled: Bool,
+    forced: Bool,
+    environment: [String: String]
+  ) -> MarkdownTerminalRenderer? {
+    guard enabled, forced || isatty(STDOUT_FILENO) != 0 else { return nil }
+    let detected = MarkdownTerminalEnvironment.detect(environment)
+    return MarkdownTerminalRenderer(
+      theme: detected.theme,
+      options: MarkdownLayoutOptions(
+        width: TerminalLineEditor.terminalColumns(), unicode: detected.unicode),
+      widthProvider: { TerminalLineEditor.terminalColumns() })
+  }
+
   private static func runREPL(
     workspace: inout AgentChatWorkspace,
     stateURL: URL,
@@ -1059,8 +1128,8 @@ private struct MaiCLI {
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
         let baseURL =
-          (visual.providerBaseURLs[provider.id.rawValue]
-          ?? configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL)
+          (configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL
+          ?? visual.providerBaseURLs[provider.id.rawValue])
           .map { " — \($0.absoluteString)" } ?? ""
         await terminal.line("\(selected) \(provider.id) — \(provider.displayName)\(baseURL)")
       }
@@ -1094,25 +1163,23 @@ private struct MaiCLI {
     case "/chat":
       await handleChatCommand(argument, session: &session, terminal: terminal)
     case "/provider":
-      guard !argument.isEmpty else {
-        await terminal.line("Current provider: \(session.profile.provider)")
-        return false
-      }
-      let id = ProviderID(argument)
-      guard await runtime.availableProviders().contains(where: { $0.id == id }) else {
-        await terminal.line("Unknown provider '\(argument)'. Use /providers.")
-        return false
-      }
-      session.profile.provider = id
-      let saved = await persistAgentProfile(
-        session: session,
+      await handleProviderCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
-        runtime: runtime,
         terminal: terminal)
-      if saved {
-        await terminal.line("Provider: \(id) (saved for agent \(session.profile.agentID))")
-      }
+    case "/baseurl":
+      await handleBaseURLCommand(
+        argument,
+        currentProvider: session.profile.provider,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/model":
       if argument.isEmpty {
         await terminal.line(
@@ -1141,9 +1208,9 @@ private struct MaiCLI {
         let selected = agent.id == session.profile.agentID ? "*" : " "
         let displayedAgent = selected == "*" ? session.profile.agentDefinition : agent
         let baseURL =
-          visual.providerBaseURLs[displayedAgent.provider.rawValue]?.absoluteString
-          ?? configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
-          .absoluteString ?? "-"
+          configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
+          .absoluteString
+          ?? visual.providerBaseURLs[displayedAgent.provider.rawValue]?.absoluteString ?? "-"
         await terminal.line(
           "\(selected) \(displayedAgent.id) — \(displayedAgent.displayName) [\(displayedAgent.provider) \(baseURL) \(displayedAgent.model)]"
         )
@@ -1249,6 +1316,113 @@ private struct MaiCLI {
       await terminal.line("Unknown command. Type /help.")
     }
     return false
+  }
+
+  private static func handleProviderCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    guard !fields.isEmpty else {
+      let baseURL =
+        configuration?.providers.first {
+          $0.id == session.profile.provider.rawValue
+        }?.baseURL?.absoluteString ?? "-"
+      await terminal.line("Current provider: \(session.profile.provider) — \(baseURL)")
+      await terminal.line("Use /baseurl URL to change its endpoint.")
+      return
+    }
+
+    if ["baseurl", "url"].contains(fields[0].lowercased()) {
+      await handleBaseURLCommand(
+        fields.dropFirst().joined(separator: " "),
+        currentProvider: session.profile.provider,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+      return
+    }
+
+    let selectedID = fields[0].lowercased() == "use" && fields.count == 2 ? fields[1] : fields[0]
+    let id = ProviderID(selectedID)
+    guard await runtime.availableProviders().contains(where: { $0.id == id }) else {
+      await terminal.line("Unknown provider '\(selectedID)'. Use /providers.")
+      return
+    }
+    session.profile.provider = id
+    let saved = await persistAgentProfile(
+      session: session,
+      configuration: &configuration,
+      configurationPath: configurationPath,
+      runtime: runtime,
+      terminal: terminal)
+    if saved {
+      await terminal.line("Provider: \(id) (saved for agent \(session.profile.agentID))")
+    }
+  }
+
+  private static func handleBaseURLCommand(
+    _ argument: String,
+    currentProvider: ProviderID,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    guard !fields.isEmpty else {
+      let baseURL =
+        configuration?.providers.first {
+          $0.id == currentProvider.rawValue
+        }?.baseURL?.absoluteString ?? "-"
+      await terminal.line("Base URL for '\(currentProvider)': \(baseURL)")
+      await terminal.line("Usage: /baseurl URL")
+      return
+    }
+
+    guard fields.count == 1 else {
+      await terminal.line("Usage: /baseurl URL")
+      return
+    }
+    let providerID = currentProvider
+    let rawURL = fields[0]
+    guard let baseURL = URL(string: rawURL),
+      ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""),
+      baseURL.host != nil
+    else {
+      await terminal.line("Invalid provider URL '\(rawURL)'; use an http:// or https:// URL.")
+      return
+    }
+    guard var draft = configuration,
+      let index = draft.providers.firstIndex(where: { $0.id == providerID.rawValue })
+    else {
+      await terminal.line("Unknown configured provider '\(providerID)'. Use /providers.")
+      return
+    }
+    guard let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    draft.providers[index].baseURL = baseURL
+    do {
+      let provider = try await plugins.makeProvider(
+        from: draft.providers[index],
+        environment: ProcessInfo.processInfo.environment)
+      try await runtime.register(provider, replacingExisting: true)
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      await terminal.line("Provider '\(providerID)' base URL set to \(baseURL.absoluteString).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
   }
 
   private static func handleAgentCommand(
@@ -1391,8 +1565,8 @@ private struct MaiCLI {
       return
     }
     let baseURL =
-      providerBaseURLs[definition.provider.rawValue]
-      ?? configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
+      configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
+      ?? providerBaseURLs[definition.provider.rawValue]
     await terminal.line("Agent: \(definition.id) (\(definition.displayName))")
     await terminal.line("Provider: \(definition.provider)")
     await terminal.line("Base URL: \(baseURL?.absoluteString ?? "-")")
@@ -1744,9 +1918,10 @@ private struct MaiCLI {
     }
 
     let colorKeys = ["ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt"]
-    guard colorKeys.contains(key) || key == "ui.bold" else {
+    let booleanKeys = ["ui.bold", "ui.markdown"]
+    guard colorKeys.contains(key) || booleanKeys.contains(key) else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold, ui.markdown"
       )
       return
     }
@@ -1759,12 +1934,19 @@ private struct MaiCLI {
       await terminal.line("Usage: /set \(key) VALUE")
       return
     }
-    if key == "ui.bold" {
+    if booleanKeys.contains(key) {
       guard let enabled = booleanSetting(parts[1]) else {
-        await terminal.line("Usage: /set ui.bold <on|off>")
+        await terminal.line("Usage: /set \(key) <on|off>")
         return
       }
-      ui.bold = enabled
+      if key == "ui.bold" {
+        ui.bold = enabled
+      } else {
+        ui.markdown = enabled
+        await terminal.configureMarkdown(
+          markdownRenderer(
+            enabled: enabled, forced: false, environment: ProcessInfo.processInfo.environment))
+      }
     } else {
       guard let color = TerminalLineEditor.normalizedColor(parts[1]) else {
         await terminal.line(
@@ -1797,6 +1979,7 @@ private struct MaiCLI {
   private static func listUISettings(_ ui: ConfiguredTerminalUI, terminal: TerminalWriter) async {
     for key in [
       "ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt", "ui.bold",
+      "ui.markdown",
     ] {
       await terminal.line("\(key) = \(uiSetting(key, in: ui))")
     }
@@ -1811,6 +1994,7 @@ private struct MaiCLI {
     case "ui.fgprompt": value = ui.promptForeground
     case "ui.bgprompt": value = ui.promptBackground
     case "ui.bold": return ui.bold ? "on" : "off"
+    case "ui.markdown": return ui.markdown ? "on" : "off"
     default: return "-"
     }
     return value.isEmpty ? "none" : value
@@ -2147,7 +2331,14 @@ private struct MaiCLI {
     case "list":
       await terminal.line(conversationLog(session: session, full: false))
     case "log":
-      await terminal.line(conversationLog(session: session, full: true))
+      let renderer = await terminal.markdownRenderer
+      await terminal.line(
+        conversationLog(session: session, full: true) { text in
+          guard let renderer else { return text }
+          var rendered = renderer.render(text)
+          while rendered.hasSuffix("\n") { rendered.removeLast() }
+          return rendered
+        })
     case "edit":
       guard parts.count == 3, let index = chatIndex(parts[1], count: session.history.count) else {
         await terminal.line("Usage: /chat edit N TEXT")
@@ -2225,7 +2416,11 @@ private struct MaiCLI {
     return value - 1
   }
 
-  private static func conversationLog(session: REPLSession, full: Bool) -> String {
+  private static func conversationLog(
+    session: REPLSession,
+    full: Bool,
+    renderText: (String) -> String = { $0 }
+  ) -> String {
     guard !session.history.isEmpty else { return "No conversation messages yet." }
     var lines = [full ? "# Full conversation log" : "Conversation log:"]
     if !full { lines.append("-----------------") }
@@ -2233,7 +2428,9 @@ private struct MaiCLI {
       let role = message.role.rawValue.capitalized
       if full {
         lines.append("\n## [\(index + 1)] \(role) (id: \(message.id))")
-        lines.append(message.content.map(renderFullContent).joined(separator: "\n"))
+        lines.append(
+          message.content.map { renderFullContent($0, renderText: renderText) }
+            .joined(separator: "\n"))
         lines.append("--------------------")
       } else {
         lines.append("[\(index + 1)] \(role): \(messagePreview(message))")
@@ -2276,10 +2473,13 @@ private struct MaiCLI {
     }
   }
 
-  private static func renderFullContent(_ part: ContentPart) -> String {
+  private static func renderFullContent(
+    _ part: ContentPart,
+    renderText: (String) -> String = { $0 }
+  ) -> String {
     switch part {
     case .text(let text):
-      return text
+      return renderText(text)
     case .image(let image):
       return
         "[image name=\(image.name ?? "-") mime=\(image.mimeType) source=\(binarySourceSummary(image.source))]"
@@ -2299,7 +2499,7 @@ private struct MaiCLI {
     case .toolResult(let result):
       var value = "[tool result call=\(result.callID) status=\(result.isError ? "error" : "ok")]"
       if !result.content.isEmpty {
-        value += "\n" + result.content.map(renderFullContent).joined(separator: "\n")
+        value += "\n" + result.content.map { renderFullContent($0) }.joined(separator: "\n")
       }
       if let structured = result.structuredContent {
         value += "\n[structured content]\n\(structured.compactJSONString)"
@@ -2409,8 +2609,10 @@ private struct MaiCLI {
       "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
       "/set ui.bgline blue", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
-      "/set ui.bold on", "/set ui.bold off", "/plugins",
-      "/providers", "/models ", "/provider ", "/model ", "/agents", "/agent use ",
+      "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
+      "/plugins",
+      "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/agents",
+      "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
       "/image ocr ", "/attach ", "/attach clear", "/copy", "/visual", "/clear", "/chat list",
@@ -2590,12 +2792,14 @@ private struct MaiCLI {
   private static let replHelp = """
     /set                   List mutable session and terminal UI settings
     /set yolo BOOL         Permit all tool calls for this session (on/off)
+    /set ui.markdown BOOL  Render replies as styled markdown (on/off)
     /set ui.               List terminal UI settings
     /set ui.SETTING VALUE  Set colors or bold input and persist the change
     /plugins            List statically and dynamically loaded plugins
     /providers          List registered providers
     /models [PROVIDER]  List models from the current or named provider
-    /provider ID        Select a provider
+    /provider ID       Select a provider
+    /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
     /chat               Create, switch, rename, or edit persistent chats
     /agents             List configured agents
@@ -2672,6 +2876,8 @@ private struct MaiCLI {
         --system TEXT       override agent instructions
         --image PATH        attach an image (repeatable)
         --no-stream         disable response streaming
+        --markdown          render replies as markdown even when piped
+        --no-markdown       print replies verbatim
         -h, --help          show this help
 
       Config discovery:

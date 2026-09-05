@@ -150,7 +150,8 @@
     "fgcolor": "",
     "bgcolor": "",
     "bgprompt": "",
-    "bold": false
+    "bold": false,
+    "markdown": true
   },
   "approvals": {
     "confirm": "ask",

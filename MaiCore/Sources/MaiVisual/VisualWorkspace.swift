@@ -17,6 +17,17 @@ public struct ProviderForm: Equatable, Sendable {
   public var apiKey = ""
 
   public init() {}
+
+  init(provider: ConfiguredProvider) {
+    id = provider.id
+    kind = provider.kind.rawValue
+    displayName = provider.displayName ?? ""
+    baseURL = provider.baseURL?.absoluteString ?? ""
+    apiKeyEnvironment = provider.apiKeyEnvironment ?? ""
+    // Never copy a saved secret into an editable UI field. An empty key keeps
+    // the existing direct key when this form updates the provider.
+    apiKey = ""
+  }
 }
 
 public struct MCPServerForm: Equatable, Sendable {
@@ -646,13 +657,20 @@ public final class VisualWorkspace {
       baseURL = url
     }
     let apiKeyEnvironment = optional(form.apiKeyEnvironment)
-    let configured = ConfiguredProvider(
-      id: id,
-      kind: ConfiguredProviderKind(kind),
-      displayName: optional(form.displayName),
-      baseURL: baseURL,
-      apiKey: apiKeyEnvironment == nil ? optional(form.apiKey) : nil,
-      apiKeyEnvironment: apiKeyEnvironment)
+    let existing = configuration.providers.first { $0.id == id }
+    var configured = existing ?? ConfiguredProvider(id: id, kind: ConfiguredProviderKind(kind))
+    configured.kind = ConfiguredProviderKind(kind)
+    configured.displayName = optional(form.displayName)
+    configured.baseURL = baseURL
+    if let apiKeyEnvironment {
+      configured.apiKey = nil
+      configured.apiKeyEnvironment = apiKeyEnvironment
+    } else if let apiKey = optional(form.apiKey) {
+      configured.apiKey = apiKey
+      configured.apiKeyEnvironment = nil
+    } else {
+      configured.apiKeyEnvironment = nil
+    }
     let provider = try await plugins.makeProvider(from: configured, environment: environment)
     try await runtime.register(provider, replacingExisting: true)
     upsert(configured, into: &configuration.providers)
