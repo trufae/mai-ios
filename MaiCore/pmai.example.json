@@ -34,6 +34,10 @@
       "options": {
         "filesRoot": ".",
         "filesWriteEnabled": true,
+        "runShell": "/bin/sh",
+        "runPython": "python3",
+        "runNode": "node",
+        "runTimeoutSeconds": 60,
         "webSearchProvider": "exa",
         "weatherLocation": "",
         "mastodonInstance": "mastodon.social",
@@ -105,6 +109,10 @@
         "github_releases",
         "mastodon",
         "read_text_file",
+        "run_js",
+        "run_python",
+        "run_sh",
+        "run_system",
         "weather",
         "web_fetch",
         "web_search"
@@ -116,6 +124,7 @@
         "files",
         "github",
         "mastodon",
+        "run",
         "weather",
         "web"
       ],
