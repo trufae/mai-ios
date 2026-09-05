@@ -190,8 +190,10 @@ struct SessionProfile {
         MaiWebSearchTool.name,
         MaiWebFetchTool.name,
         MaiMastodonTool.name,
-      ] + MaiFileWorkspaceTool.toolNames + MaiGitHubTool.toolNames)
-    toolGroupNames = ["echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github"]
+      ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames)
+    toolGroupNames = [
+      "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github",
+    ]
     subagentNames = []
     self.stream = stream
     limits = .init()
@@ -314,6 +316,9 @@ private actor TerminalWriter {
   /// Styles assistant markdown when set; nil prints replies verbatim.
   private var markdown: MarkdownTerminalRenderer?
   private var outputEndedLine = true
+  private var indicatorTask: Task<Void, Never>?
+  private var indicatorLabel: String?
+  private var indicatorFrame = 0
 
   init(capturesOutput: Bool = false) {
     self.capturesOutput = capturesOutput
@@ -339,6 +344,7 @@ private actor TerminalWriter {
   }
 
   func resetResponse() {
+    stopIndicator()
     wroteRootDelta = false
     rootLineOpen = false
     markdown?.reset()
@@ -346,10 +352,14 @@ private actor TerminalWriter {
 
   func consume(_ event: AgentEvent) {
     switch event {
-    case .modelStarted(let context, let turn) where context.depth == 0 && turn > 1:
-      finishReply()
-      closeRootLine()
+    case .modelStarted(let context, let turn) where context.depth == 0:
+      startIndicator("waiting for LLM")
+      if turn > 1 {
+        finishReply()
+        closeRootLine()
+      }
     case .provider(let context, .textDelta(let text)) where context.depth == 0:
+      if !wroteRootDelta { startIndicator("receiving from LLM") }
       if var renderer = markdown {
         let output = renderer.feed(text)
         markdown = renderer
@@ -360,18 +370,21 @@ private actor TerminalWriter {
       wroteRootDelta = true
       rootLineOpen = true
     case .toolStarted(let context, let call) where context.depth == 0:
+      stopIndicator()
       finishReply()
       closeRootLine()
       status("→ tool \(call.name) \(call.arguments.compactJSONString)")
     case .toolFinished(let context, let result) where context.depth == 0:
       status("← tool \(result.isError ? "error" : "done")")
     case .childStarted(_, let child):
+      stopIndicator()
       finishReply()
       closeRootLine()
       status("↳ child \(child.agentID) [\(child.runID.uuidString.prefix(8))]")
     case .childFinished(_, let child):
       status("↲ child \(child.agentID): \(child.response.text.prefix(100))")
     case .finished(let context, let result) where context.depth == 0:
+      stopIndicator()
       if wroteRootDelta {
         finishReply()
       } else {
@@ -384,12 +397,14 @@ private actor TerminalWriter {
   }
 
   func recoverAfterError(_ message: String) {
+    stopIndicator()
     finishReply()
     closeRootLine()
     status("error: \(message)")
   }
 
   func recoverAfterCancellation() {
+    stopIndicator()
     finishReply()
     closeRootLine()
     status("cancelled")
@@ -430,6 +445,45 @@ private actor TerminalWriter {
       return
     }
     FileHandle.standardError.write(Data((value + "\n").utf8))
+  }
+
+  private func startIndicator(_ label: String) {
+    guard !capturesOutput, isatty(STDERR_FILENO) != 0 else { return }
+    if indicatorLabel == label { return }
+    stopIndicator()
+    indicatorLabel = label
+    indicatorFrame = 0
+    drawIndicator()
+    indicatorTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        guard !Task.isCancelled else { return }
+        await self?.advanceIndicator()
+      }
+    }
+  }
+
+  private func advanceIndicator() {
+    guard indicatorLabel != nil else { return }
+    indicatorFrame += 1
+    drawIndicator()
+  }
+
+  private func drawIndicator() {
+    guard let label = indicatorLabel else { return }
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    let frame = frames[indicatorFrame % frames.count]
+    FileHandle.standardError.write(Data("\r\u{001B}[K\(frame) \(label)…".utf8))
+  }
+
+  private func stopIndicator() {
+    indicatorTask?.cancel()
+    indicatorTask = nil
+    guard indicatorLabel != nil else { return }
+    indicatorLabel = nil
+    if !capturesOutput, isatty(STDERR_FILENO) != 0 {
+      FileHandle.standardError.write(Data("\r\u{001B}[K".utf8))
+    }
   }
 
   private func closeRootLine(force: Bool = false) {
@@ -2667,7 +2721,7 @@ private struct MaiCLI {
       $0.enabled && $0.kind == MaiStandardToolsPlugin.factoryKind
     }) == true {
       groupNames.formUnion(
-        ["echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github"])
+        ["echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github"])
     }
     for group in groupNames {
       values.append("/tools show \(group)")
@@ -2799,9 +2853,9 @@ private struct MaiCLI {
               MaiWebSearchTool.name,
               MaiWebFetchTool.name,
               MaiMastodonTool.name,
-            ] + MaiFileWorkspaceTool.toolNames + MaiGitHubTool.toolNames),
+            ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames),
           toolGroupNames: [
-            "echo", "datetime", "calculator", "files", "weather", "web", "mastodon", "github",
+            "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github",
           ],
           subagentNames: ["researcher"],
           useToolProxy: true),

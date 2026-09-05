@@ -186,6 +186,17 @@ can use `files_chdir` with the same behavior. The default workspace resolves its
 root on each tool call, keeping an installed `pmai` binary aligned with the
 directory from which it was launched. An explicit `filesRoot` remains fixed and
 does not expose `files_chdir`.
+The `run` group executes code on this computer with the privileges of the
+`pmai` process: `run_system` passes one command line to `sh -c`, while
+`run_sh`, `run_python`, and `run_js` save a script to a temporary file and run
+it with the configured shell, Python, or Node.js interpreter (`runShell`,
+`runPython`, `runNode`; names are looked up in `PATH`, and leading arguments
+such as `node --no-warnings` are honoured). Every call may pass `args`, `stdin`,
+`cwd`, and `timeout_seconds`; stdout and stderr are captured with a 100 KB cap
+per stream, the process is killed after the timeout (`runTimeoutSeconds`,
+default 60), and `Ctrl+C` terminates it. All four tools are marked dangerous,
+so they follow the `dangerous` approval setting, and the group is absent on
+iOS. Use `/tools disable run` to remove them from an agent.
 Streamable HTTP support is supplied by `MaiMCPPlugin`, so the transport is not a
 dependency of the core runtime.
 
