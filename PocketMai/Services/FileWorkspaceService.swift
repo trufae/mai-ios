@@ -1,5 +1,6 @@
 import Foundation
 import MaiDocuments
+import MaiStandardTools
 
 enum PocketMaiDirectories {
   private static let appPrivateDirectoryName = "PocketMai"
@@ -305,20 +306,20 @@ enum FileWorkspaceService {
       let display = displayPath(path)
       let document = try loadDocument(at: url, displayPath: display)
 
-      let entries: [DocumentIndexer.Entry]
+      let entries: [MaiDocumentIndexer.Entry]
       if let sections = document.jsonSections {
         entries = sections.map { section in
-          DocumentIndexer.Entry(
+          MaiDocumentIndexer.Entry(
             line: section.line,
             title: String(repeating: "  ", count: section.depth) + section.title)
         }
       } else if document.conversionNote == nil,
-        let sourceEntries = DocumentIndexer.sourceIndex(
+        let sourceEntries = MaiDocumentIndexer.sourceIndex(
           text: document.text, fileExtension: url.pathExtension)
       {
         entries = sourceEntries
       } else {
-        entries = DocumentIndexer.markdownIndex(text: document.text)
+        entries = MaiDocumentIndexer.markdownIndex(text: document.text)
       }
 
       let suffix = document.conversionNote.map { " (\($0))" } ?? ""

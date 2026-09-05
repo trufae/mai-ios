@@ -74,6 +74,7 @@ enum BuiltInToolCatalog {
       FileWorkspaceTool.readName,
       FileWorkspaceTool.readDocumentName, FileWorkspaceTool.readIndexName,
       FileWorkspaceTool.readRangeName, FileWorkspaceTool.replaceRangeName,
+      FileWorkspaceTool.patchName,
       FileWorkspaceTool.writeName, FileWorkspaceTool.renameName, FileWorkspaceTool.deleteName:
       return await executeFileWorkspaceTool(
         name: call.name,
@@ -536,6 +537,10 @@ enum FileWorkspaceTool {
   static let grepName = MaiFileWorkspaceTool.Operation.grep.rawValue
   static let readName = MaiFileWorkspaceTool.Operation.read.rawValue
   static let readDocumentName = MaiFileWorkspaceTool.Operation.readDocument.rawValue
+  static let readIndexName = MaiFileWorkspaceTool.Operation.readIndex.rawValue
+  static let readRangeName = MaiFileWorkspaceTool.Operation.readRange.rawValue
+  static let replaceRangeName = MaiFileWorkspaceTool.Operation.replaceRange.rawValue
+  static let patchName = MaiFileWorkspaceTool.Operation.patch.rawValue
   static let writeName = MaiFileWorkspaceTool.Operation.write.rawValue
   static let renameName = MaiFileWorkspaceTool.Operation.rename.rawValue
   static let deleteName = MaiFileWorkspaceTool.Operation.delete.rawValue
