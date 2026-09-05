@@ -54,7 +54,9 @@ func fileWorkspaceToolsManageFiles() async throws {
   #expect(entries?.first?.objectValue?["path"] == .string("notes/todo.md"))
 
   let found = try await call(tool(tools, .find), ["query": .string("tdmd")])
-  #expect(found.structuredContent?.objectValue?["matches"]?.arrayValue?.first?.objectValue?["path"] == .string("notes/todo.md"))
+  #expect(
+    found.structuredContent?.objectValue?["matches"]?.arrayValue?.first?.objectValue?["path"]
+      == .string("notes/todo.md"))
   let grepped = try await call(tool(tools, .grep), ["query": .string("two")])
   let grepMatch = grepped.structuredContent?.objectValue?["matches"]?.arrayValue?.first
   #expect(grepMatch?.objectValue?["path"] == .string("notes/todo.md"))
@@ -75,7 +77,8 @@ func fileWorkspaceToolsManageFiles() async throws {
   #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("notes/done.md").path))
 
   _ = try await call(tool(tools, .delete), ["path": .string("notes/done.md")])
-  #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("notes/done.md").path))
+  #expect(
+    !FileManager.default.fileExists(atPath: root.appendingPathComponent("notes/done.md").path))
 }
 
 @Test("Shared Files tools index, read, and replace source line ranges")
@@ -89,7 +92,10 @@ func fileWorkspaceToolsSupportAdvancedSourceNavigation() async throws {
     configuration: MaiFileWorkspaceConfiguration(rootURL: root, displayName: "test-workspace"))
   _ = try await call(
     tool(tools, .write),
-    ["path": .string("example.swift"), "content": .string("struct Greeter {\n  func hello() {}\n}\n")])
+    [
+      "path": .string("example.swift"),
+      "content": .string("struct Greeter {\n  func hello() {}\n}\n"),
+    ])
 
   let index = try await call(tool(tools, .readIndex), ["path": .string("example.swift")])
   #expect(index.text.contains("1: struct Greeter"))
@@ -100,23 +106,142 @@ func fileWorkspaceToolsSupportAdvancedSourceNavigation() async throws {
     ["path": .string("example.swift"), "start_line": .integer(2), "end_line": .integer(2)])
   #expect(range.text.contains("2:   func hello() {}"))
 
-  _ = try await call(
+  let replaced = try await call(
     tool(tools, .replaceRange),
     [
       "path": .string("example.swift"), "start_line": .integer(2), "end_line": .integer(2),
       "content": .string("  func goodbye() {}"),
     ])
+  #expect(replaced.text.contains("--- a/example.swift"))
+  #expect(replaced.text.contains("-  func hello() {}"))
+  #expect(replaced.text.contains("+  func goodbye() {}"))
   let read = try await call(tool(tools, .read), ["path": .string("example.swift")])
   #expect(read.text.contains("goodbye"))
 
-  _ = try await call(
+  let patchedResult = try await call(
     tool(tools, .patch),
     [
       "path": .string("example.swift"), "find": .string("func\\s+goodbye"),
       "replace": .string("func farewell"), "regex": .bool(true),
     ])
+  #expect(patchedResult.text.contains("-  func goodbye() {}"))
+  #expect(patchedResult.text.contains("+  func farewell() {}"))
   let patched = try await call(tool(tools, .read), ["path": .string("example.swift")])
   #expect(patched.text.contains("farewell"))
+}
+
+@Test("Files function tools locate large HolyC sources and replace one body safely")
+func fileWorkspaceFunctionToolsSupportHolyC() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-functions-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let filler = String(repeating: "// filler outside the normal read window\n", count: 4_000)
+  let source =
+    filler + """
+      U0 print_gvars(I64 count)
+      {
+        for (I64 i = 0; i < count; i++) {
+          Print("{still text}");
+        }
+      }
+
+      U0 untouched()
+      {
+        Print("same");
+      }
+      """
+  try Data(source.utf8).write(to: root.appendingPathComponent("debug.HC"))
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root, displayName: "test-workspace"))
+
+  let get = try await call(
+    tool(tools, .getFunction),
+    ["path": .string("debug.HC"), "name": .string("print_gvars")])
+  #expect(!get.isError)
+  #expect(get.text.contains("U0 print_gvars(I64 count)"))
+  #expect(get.structuredContent?.objectValue?["byteOffset"]?.intValue ?? 0 > 120_000)
+  #expect(get.structuredContent?.objectValue?["bodyByteSize"]?.intValue ?? 0 > 0)
+  let revision = try #require(
+    get.structuredContent?.objectValue?["revision"]?.stringValue)
+  let untouchedGet = try await call(
+    tool(tools, .getFunction),
+    ["path": .string("debug.HC"), "name": .string("untouched")])
+  let untouchedRevision = try #require(
+    untouchedGet.structuredContent?.objectValue?["revision"]?.stringValue)
+
+  let set = try await call(
+    tool(tools, .setFunction),
+    [
+      "path": .string("debug.HC"),
+      "name": .string("print_gvars"),
+      "body": .string("\n  Print(\"updated\");\n"),
+      "revision": .string(revision),
+    ])
+  #expect(!set.isError)
+  #expect(set.text.contains("--- a/debug.HC"))
+  #expect(set.text.contains("-  for (I64 i = 0; i < count; i++) {"))
+  #expect(set.text.contains("+  Print(\"updated\");"))
+  let updated = try String(contentsOf: root.appendingPathComponent("debug.HC"), encoding: .utf8)
+  #expect(updated.contains("Print(\"updated\");"))
+  #expect(updated.contains("U0 untouched()\n{\n  Print(\"same\");\n}"))
+
+  // This revision was read before the first update. A separate function edit
+  // still succeeds and starts from the latest complete file contents.
+  let parallelSet = try await call(
+    tool(tools, .setFunction),
+    [
+      "path": .string("debug.HC"),
+      "name": .string("untouched"),
+      "body": .string("\n  Print(\"also updated\");\n"),
+      "revision": .string(untouchedRevision),
+    ])
+  #expect(!parallelSet.isError)
+  let parallelUpdated = try String(
+    contentsOf: root.appendingPathComponent("debug.HC"), encoding: .utf8)
+  #expect(parallelUpdated.contains("Print(\"updated\");"))
+  #expect(parallelUpdated.contains("Print(\"also updated\");"))
+
+  let stale = try await call(
+    tool(tools, .setFunction),
+    [
+      "path": .string("debug.HC"),
+      "name": .string("print_gvars"),
+      "body": .string("\n  Print(\"stale\");\n"),
+      "revision": .string(revision),
+    ])
+  #expect(stale.isError)
+  #expect(stale.text.contains("changed since it was read"))
+}
+
+@Test("Files function tools understand indentation-delimited Python functions")
+func fileWorkspaceFunctionToolsSupportPython() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-python-functions-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let source = """
+    def greet(name):
+        if name:
+            return f"hi {name}"
+        return "hi"
+
+    def untouched():
+        return 1
+    """
+  try Data(source.utf8).write(to: root.appendingPathComponent("hello.py"))
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+
+  let get = try await call(
+    tool(tools, .getFunction),
+    ["path": .string("hello.py"), "name": .string("greet")])
+  #expect(!get.isError)
+  #expect(get.structuredContent?.objectValue?["startLine"] == .integer(1))
+  #expect(get.structuredContent?.objectValue?["endLine"] == .integer(5))
+  #expect(get.text.contains("return f\"hi {name}\""))
+  #expect(!get.text.contains("def untouched"))
 }
 
 @Test("Shared Files tools reject traversal and symlink escapes")
@@ -166,11 +291,14 @@ func fileWorkspaceCanDisableChanges() async throws {
   let names = Set(tools.map(\.definition.name))
   #expect(names.contains(MaiFileWorkspaceTool.Operation.list.rawValue))
   #expect(names.contains(MaiFileWorkspaceTool.Operation.read.rawValue))
+  #expect(names.contains(MaiFileWorkspaceTool.Operation.getFunction.rawValue))
   #expect(!names.contains(MaiFileWorkspaceTool.Operation.write.rawValue))
+  #expect(!names.contains(MaiFileWorkspaceTool.Operation.setFunction.rawValue))
   #expect(!names.contains(MaiFileWorkspaceTool.Operation.rename.rawValue))
   #expect(!names.contains(MaiFileWorkspaceTool.Operation.delete.rawValue))
 
-  let group = try #require(try await factory.toolGroups(context: context).first { $0.id == "files" })
+  let group = try #require(
+    try await factory.toolGroups(context: context).first { $0.id == "files" })
   #expect(group.toolNames.contains(MaiReadTextFileTool.name))
   #expect(group.toolNames.contains(MaiFileWorkspaceTool.Operation.read.rawValue))
   #expect(!group.toolNames.contains(MaiFileWorkspaceTool.Operation.write.rawValue))

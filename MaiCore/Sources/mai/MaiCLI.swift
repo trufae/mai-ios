@@ -1,8 +1,8 @@
 import Foundation
 import MaiCore
-import MaiMarkdown
 import MaiDocuments
 import MaiMCP
+import MaiMarkdown
 import MaiOpenAI
 import MaiPluginHost
 import MaiStandardTools
@@ -199,11 +199,32 @@ private func environmentName(
 }
 
 /// What `/visual` needs beyond the REPL session itself.
+private final class ProviderBaseURLStore: @unchecked Sendable {
+  private let lock = NSLock()
+  private var urls: [String: URL]
+
+  init(_ urls: [String: URL]) {
+    self.urls = urls
+  }
+
+  func url(for providerID: String) -> URL? {
+    lock.withLock { urls[providerID] }
+  }
+
+  func set(_ url: URL, for providerID: String) {
+    lock.withLock { urls[providerID] = url }
+  }
+
+  func snapshot() -> [String: URL] {
+    lock.withLock { urls }
+  }
+}
+
 private struct VisualBridge {
   var approvalHandler: TerminalApprovalHandler
   var configurationPath: String?
   var implicitProviders: [ConfiguredProvider]
-  var providerBaseURLs: [String: URL]
+  var providerBaseURLs: ProviderBaseURLStore
 }
 
 struct SessionProfile {
@@ -507,8 +528,24 @@ private actor TerminalWriter {
       return
     }
     let output: String
-    if colorsStatus, let color {
-      output = "\u{1B}[\(color)m\(value)\u{1B}[0m"
+    if colorsStatus {
+      let lines = value.components(separatedBy: "\n")
+      let hasUnifiedDiff = lines.indices.dropLast().contains { index in
+        let line = lines[index].drop(while: { $0.isWhitespace })
+        let next = lines[index + 1].drop(while: { $0.isWhitespace })
+        return line.hasPrefix("--- ") && next.hasPrefix("+++ ")
+      }
+      output = lines.map { line in
+        let marker = line.drop(while: { $0.isWhitespace })
+        if hasUnifiedDiff, marker.hasPrefix("-") && !marker.hasPrefix("--- ") {
+          return "\u{1B}[38;2;255;217;221;48;2;66;31;36m\(line)\u{1B}[0m"
+        }
+        if hasUnifiedDiff, marker.hasPrefix("+") && !marker.hasPrefix("+++ ") {
+          return "\u{1B}[38;2;217;247;227;48;2;22;58;36m\(line)\u{1B}[0m"
+        }
+        guard let color else { return line }
+        return "\u{1B}[\(color)m\(line)\u{1B}[0m"
+      }.joined(separator: "\n")
     } else {
       output = value
     }
@@ -784,7 +821,7 @@ private struct MaiCLI {
           approvalHandler: approvalHandler,
           configurationPath: configurationPath,
           implicitProviders: setup.implicitProviders,
-          providerBaseURLs: setup.providerBaseURLs),
+          providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs)),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -938,7 +975,15 @@ private struct MaiCLI {
         ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"], in: environment)
 
     if let configuration {
-      let targetProviderID = providerOverride?.rawValue ?? ProviderID.openAI.rawValue
+      let selectedAgentID =
+        options.agentOverride ?? configuration.defaultAgent
+        ?? configuration.agents.first?.id
+      let selectedProviderID = selectedAgentID.flatMap { selectedAgentID in
+        configuration.agents.first { $0.id == selectedAgentID }?.provider.rawValue
+      }
+      let targetProviderID =
+        providerOverride?.rawValue ?? selectedProviderID
+        ?? ProviderID.openAI.rawValue
       var providerBaseURLs: [String: URL] = [:]
       for configuredProvider in configuration.providers {
         var provider = configuredProvider
@@ -1266,8 +1311,8 @@ private struct MaiCLI {
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
         let baseURL =
-          (configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL
-          ?? visual.providerBaseURLs[provider.id.rawValue])
+          (visual.providerBaseURLs.url(for: provider.id.rawValue)
+          ?? configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL)
           .map { " — \($0.absoluteString)" } ?? ""
         await terminal.line("\(selected) \(provider.id) — \(provider.displayName)\(baseURL)")
       }
@@ -1316,6 +1361,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
+        providerBaseURLs: visual.providerBaseURLs,
         terminal: terminal)
     case "/baseurl":
       await handleBaseURLCommand(
@@ -1325,6 +1371,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
+        providerBaseURLs: visual.providerBaseURLs,
         terminal: terminal)
     case "/model":
       if argument.isEmpty {
@@ -1354,9 +1401,9 @@ private struct MaiCLI {
         let selected = agent.id == session.profile.agentID ? "*" : " "
         let displayedAgent = selected == "*" ? session.profile.agentDefinition : agent
         let baseURL =
-          configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
-          .absoluteString
-          ?? visual.providerBaseURLs[displayedAgent.provider.rawValue]?.absoluteString ?? "-"
+          visual.providerBaseURLs.url(for: displayedAgent.provider.rawValue)?.absoluteString
+          ?? configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
+          .absoluteString ?? "-"
         await terminal.line(
           "\(selected) \(displayedAgent.id) — \(displayedAgent.displayName) [\(displayedAgent.provider) \(baseURL) \(displayedAgent.model)]"
         )
@@ -1369,7 +1416,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
-        providerBaseURLs: visual.providerBaseURLs,
+        providerBaseURLs: visual.providerBaseURLs.snapshot(),
         terminal: terminal)
     case "/tools":
       await handleToolsCommand(
@@ -1814,8 +1861,9 @@ private struct MaiCLI {
     switch target.lowercased() {
     case "prompt", "system":
       let previousInstructions = session.profile.instructions
-      guard let edited = await editTemporaryText(
-        previousInstructions, suffix: "prompt.txt", terminal: terminal)
+      guard
+        let edited = await editTemporaryText(
+          previousInstructions, suffix: "prompt.txt", terminal: terminal)
       else { return }
       session.profile.instructions = edited.trimmingCharacters(in: .whitespacesAndNewlines)
       if let index = session.history.messages.firstIndex(where: {
@@ -1832,7 +1880,8 @@ private struct MaiCLI {
           return
         }
       } else if !session.profile.instructions.isEmpty {
-        session.history.replaceAll(with: [.system(session.profile.instructions)] + session.history.messages)
+        session.history.replaceAll(
+          with: [.system(session.profile.instructions)] + session.history.messages)
       }
       if await persistAgentProfile(
         session: session,
@@ -1868,7 +1917,9 @@ private struct MaiCLI {
           "Configuration saved. Agent limits and tool-calling strategy were applied; "
             + "restart pmai to apply provider, plugin, tool, or MCP changes.")
       } catch {
-        await terminal.line("error: The edited configuration was not loaded: \(error.localizedDescription)", to: .standardError)
+        await terminal.line(
+          "error: The edited configuration was not loaded: \(error.localizedDescription)",
+          to: .standardError)
       }
 
     case "mcps", "mcp":
@@ -1880,7 +1931,8 @@ private struct MaiCLI {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(draft.mcpServers)
-        guard let edited = await editTemporaryData(data, suffix: "mcps.json", terminal: terminal) else {
+        guard let edited = await editTemporaryData(data, suffix: "mcps.json", terminal: terminal)
+        else {
           return
         }
         draft.mcpServers = try JSONDecoder().decode([ConfiguredMCPServer].self, from: edited)
@@ -1897,7 +1949,8 @@ private struct MaiCLI {
         return
       }
       let message = session.history[index]
-      guard let edited = await editTemporaryText(message.text, suffix: "message.md", terminal: terminal)
+      guard
+        let edited = await editTemporaryText(message.text, suffix: "message.md", terminal: terminal)
       else { return }
       do {
         try session.history.editMessage(at: index, text: edited)
@@ -1908,7 +1961,8 @@ private struct MaiCLI {
     }
   }
 
-  private static func editableMessageIndex(_ target: String, in transcript: AgentTranscript) -> Int? {
+  private static func editableMessageIndex(_ target: String, in transcript: AgentTranscript) -> Int?
+  {
     if let index = chatIndex(target, count: transcript.count) { return index }
     return transcript.index(ofMessageID: target)
   }
@@ -1977,12 +2031,14 @@ private struct MaiCLI {
     plugins: PluginRegistry,
     configuration: inout MaiConfiguration?,
     configurationPath: String?,
+    providerBaseURLs: ProviderBaseURLStore,
     terminal: TerminalWriter
   ) async {
     let fields = argument.split(whereSeparator: \Character.isWhitespace).map(String.init)
     guard !fields.isEmpty else {
       let baseURL =
-        configuration?.providers.first {
+        providerBaseURLs.url(for: session.profile.provider.rawValue)?.absoluteString
+        ?? configuration?.providers.first {
           $0.id == session.profile.provider.rawValue
         }?.baseURL?.absoluteString ?? "-"
       await terminal.line("Current provider: \(session.profile.provider) — \(baseURL)")
@@ -1998,6 +2054,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: &configuration,
         configurationPath: configurationPath,
+        providerBaseURLs: providerBaseURLs,
         terminal: terminal)
       return
     }
@@ -2027,15 +2084,20 @@ private struct MaiCLI {
     plugins: PluginRegistry,
     configuration: inout MaiConfiguration?,
     configurationPath: String?,
+    providerBaseURLs: ProviderBaseURLStore,
     terminal: TerminalWriter
   ) async {
     let fields = argument.split(whereSeparator: \Character.isWhitespace).map(String.init)
     guard !fields.isEmpty else {
-      let baseURL =
-        configuration?.providers.first {
-          $0.id == currentProvider.rawValue
-        }?.baseURL?.absoluteString ?? "-"
-      await terminal.line("Base URL for '\(currentProvider)': \(baseURL)")
+      let configuredURL = configuration?.providers.first {
+        $0.id == currentProvider.rawValue
+      }?.baseURL
+      let effectiveURL = providerBaseURLs.url(for: currentProvider.rawValue) ?? configuredURL
+      var detail = effectiveURL?.absoluteString ?? "-"
+      if let effectiveURL, let configuredURL, effectiveURL != configuredURL {
+        detail += " (runtime override; configured: \(configuredURL.absoluteString))"
+      }
+      await terminal.line("Base URL for '\(currentProvider)': \(detail)")
       await terminal.line("Usage: /baseurl URL")
       return
     }
@@ -2071,6 +2133,7 @@ private struct MaiCLI {
       try await runtime.register(provider, replacingExisting: true)
       try draft.save(to: URL(fileURLWithPath: configurationPath))
       configuration = draft
+      providerBaseURLs.set(baseURL, for: providerID.rawValue)
       await terminal.line("Provider '\(providerID)' base URL set to \(baseURL.absoluteString).")
     } catch {
       await terminal.line("error: \(error.localizedDescription)", to: .standardError)
@@ -2217,8 +2280,8 @@ private struct MaiCLI {
       return
     }
     let baseURL =
-      configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
-      ?? providerBaseURLs[definition.provider.rawValue]
+      providerBaseURLs[definition.provider.rawValue]
+      ?? configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
     await terminal.line("Agent: \(definition.id) (\(definition.displayName))")
     await terminal.line("Provider: \(definition.provider)")
     await terminal.line("Base URL: \(baseURL?.absoluteString ?? "-")")
@@ -2322,7 +2385,8 @@ private struct MaiCLI {
         runtime: runtime,
         terminal: terminal)
       {
-        await terminal.line("Enabled tool group '\(group.id)' for agent \(session.profile.agentID).")
+        await terminal.line(
+          "Enabled tool group '\(group.id)' for agent \(session.profile.agentID).")
       }
     case "disable", "off":
       session.profile.toolGroupNames.remove(group.id)
@@ -2334,7 +2398,8 @@ private struct MaiCLI {
         runtime: runtime,
         terminal: terminal)
       {
-        await terminal.line("Disabled tool group '\(group.id)' for agent \(session.profile.agentID).")
+        await terminal.line(
+          "Disabled tool group '\(group.id)' for agent \(session.profile.agentID).")
       }
     case "show":
       await terminal.line("\(group.displayName): \(group.description)")
@@ -3057,7 +3122,8 @@ private struct MaiCLI {
         return
       }
       _ = workspace.selectChat(id: chat.id)
-      session = REPLSession(chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
+      session = REPLSession(
+        chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
       await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
     case "next", "previous", "prev":
       guard workspace.chats.count > 1,
@@ -3070,7 +3136,8 @@ private struct MaiCLI {
       let index = (current + offset + workspace.chats.count) % workspace.chats.count
       let chat = workspace.chats[index]
       _ = workspace.selectChat(id: chat.id)
-      session = REPLSession(chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
+      session = REPLSession(
+        chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
       await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
     case "rename":
       let title = String(argument.dropFirst(action.count)).trimmingCharacters(
@@ -3279,7 +3346,8 @@ private struct MaiCLI {
     await terminal.line("Compacting conversation…")
     do {
       let result = try await runtime.run(request) { _ in }
-      let summary = result.transcript.last(where: { $0.role == .assistant })?.text
+      let summary =
+        result.transcript.last(where: { $0.role == .assistant })?.text
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       guard !summary.isEmpty else {
         await terminal.line("error: Compact returned an empty summary.", to: .standardError)
@@ -3691,7 +3759,7 @@ private struct MaiCLI {
           args: ["--stdio"],
           cwd: ".",
           toolNamePrefix: "local",
-          defaultApproval: .confirm)
+          defaultApproval: .confirm),
       ],
       agents: [
         AgentDefinition(
@@ -3716,7 +3784,8 @@ private struct MaiCLI {
               MaiMastodonTool.name,
             ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames),
           toolGroupNames: [
-            "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github",
+            "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon",
+            "github",
           ],
           subagentNames: ["researcher"],
           useToolProxy: true),

@@ -280,7 +280,8 @@ struct TranscriptView: View {
           text: conversation.liveReply,
           isLive: true,
           width: width,
-          markdown: markdown)
+          markdown: markdown,
+          highlightsDiff: false)
       }
       ForEach(conversation.activity.indices, id: \.self) { index in
         Text(conversation.activity[index]).foregroundStyle(.muted)
@@ -303,7 +304,8 @@ struct MessageView: View {
       text: TranscriptCopy.render(message),
       isLive: false,
       width: width,
-      markdown: markdown && (message.role == .assistant || message.role == .user))
+      markdown: markdown && (message.role == .assistant || message.role == .user),
+      highlightsDiff: message.role == .tool)
   }
 
   private var label: String {
@@ -325,6 +327,7 @@ struct MessageBlock: View {
   /// Columns available for tables and rules.
   var width = 80
   var markdown = true
+  var highlightsDiff = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -333,6 +336,9 @@ struct MessageBlock: View {
         Text("(empty)").frame(maxWidth: .infinity, alignment: .topLeading)
       } else if markdown {
         MarkdownMessageText(id: id, text: MessageBlock.displayText(text), width: width)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+      } else if highlightsDiff {
+        UnifiedDiffText(text: MessageBlock.displayText(text), width: width)
           .frame(maxWidth: .infinity, alignment: .topLeading)
       } else {
         Text(MessageBlock.displayText(text))
@@ -368,6 +374,54 @@ struct MessageBlock: View {
     case "You": .tint
     case "Tool": .muted
     default: .success
+    }
+  }
+}
+
+struct UnifiedDiffText: View {
+  let text: String
+  let width: Int
+
+  var body: some View {
+    Text(Self.content(text: text, width: width))
+  }
+
+  @MainActor
+  static func content(text: String, width: Int) -> Text.RichContent {
+    var interpolation = Text.StringInterpolation(literalCapacity: 0, interpolationCount: 0)
+    let lines = text.components(separatedBy: "\n")
+    let highlightsChanges = hasUnifiedDiff(lines)
+    for (index, line) in lines.enumerated() {
+      if index > 0 { interpolation.appendLiteral("\n") }
+      let padded = line + String(repeating: " ", count: max(0, width - line.count))
+      if highlightsChanges, isRemoval(line) {
+        interpolation.appendInterpolation(
+          Text(padded)
+            .foregroundStyle(Color(hexRGB: 0xFFD9DD))
+            .cellBackground(Color(hexRGB: 0x421F24)))
+      } else if highlightsChanges, isAddition(line) {
+        interpolation.appendInterpolation(
+          Text(padded)
+            .foregroundStyle(Color(hexRGB: 0xD9F7E3))
+            .cellBackground(Color(hexRGB: 0x163A24)))
+      } else {
+        interpolation.appendLiteral(line)
+      }
+    }
+    return Text.RichContent(stringInterpolation: interpolation)
+  }
+
+  nonisolated static func isRemoval(_ line: String) -> Bool {
+    line.hasPrefix("-") && !line.hasPrefix("--- ")
+  }
+
+  nonisolated static func isAddition(_ line: String) -> Bool {
+    line.hasPrefix("+") && !line.hasPrefix("+++ ")
+  }
+
+  nonisolated static func hasUnifiedDiff(_ lines: [String]) -> Bool {
+    lines.indices.dropLast().contains { index in
+      lines[index].hasPrefix("--- ") && lines[index + 1].hasPrefix("+++ ")
     }
   }
 }

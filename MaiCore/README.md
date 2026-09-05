@@ -18,6 +18,9 @@ make repl
 `make repl` automatically loads an optional repository-local `env.sh`. The
 ad-hoc provider settings are `PMAI_PROVIDER`, `PMAI_MODEL`, `PMAI_BASE_URL`,
 and `PMAI_API_KEY`; the older `MAI_*` names remain supported for compatibility.
+They override the selected agent's provider for the current process; `/baseurl`
+shows the effective URL and also identifies a different persisted URL when one
+is being overridden.
 Keep `env.sh` local because it can contain credentials.
 
 Print a complete configuration template:
@@ -211,7 +214,13 @@ The `files` group can list files, find approximate names, grep bounded UTF-8
 content, convert DOCX/PDF/JSON documents, write or append text, create folders,
 rename entries, and delete them. Existing files are edited in place with
 `files_patch` (unique literal or regex replacement) or `files_replace_range`
-(1-based line ranges); `files_write` refuses to replace a non-empty file unless
+(1-based line ranges); both return a unified diff. For large source files,
+`files_get_function` finds a function by name and reports its complete line and
+UTF-8 byte bounds plus a body revision. `files_set_function` uses that revision
+to atomically replace only the body, preserving concurrent edits to other
+functions and rejecting stale edits to the same function. Its lightweight
+locator supports common brace-, indentation-, and `end`-delimited languages,
+including HolyC `.hc` files. `files_write` refuses to replace a non-empty file unless
 `overwrite: true` is passed, so a model cannot clobber a file it meant to
 patch. `filesRoot` confines every relative
 path to one directory (including symlink checks), while `filesWriteEnabled`

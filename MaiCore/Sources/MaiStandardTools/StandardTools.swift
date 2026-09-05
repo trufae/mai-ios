@@ -23,15 +23,17 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
   public init() {}
 
   public func makeTools(context: PluginFactoryContext) async throws -> [any AgentTool] {
-    let configuredFilesRoot = context.options["filesRoot"]?.stringValue
+    let configuredFilesRoot =
+      context.options["filesRoot"]?.stringValue
       ?? context.environment["PMAI_FILES_ROOT"]
     let followsWorkingDirectory = configuredFilesRoot == nil || configuredFilesRoot == "."
     let filesRoot = NSString(
       string: context.string(
         "filesRoot",
         environment: "PMAI_FILES_ROOT",
-        default: FileManager.default.currentDirectoryPath))
-      .expandingTildeInPath
+        default: FileManager.default.currentDirectoryPath)
+    )
+    .expandingTildeInPath
     let fileConfiguration = MaiFileWorkspaceConfiguration(
       rootURL: URL(fileURLWithPath: filesRoot),
       displayName: context.options["filesDisplayName"]?.stringValue,
@@ -117,7 +119,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
         id: "files",
         displayName: "Files",
         description:
-          "List, find, grep, index, read, patch, write, append, rename, delete, and change directory in one workspace.",
+          "List, find, grep, index, read, get or set functions, patch, write, append, rename, delete, and change directory in one workspace.",
         toolNames: Set([MaiReadTextFileTool.name] + MaiFileWorkspaceTool.toolNames),
         options: [
           .init(
@@ -220,7 +222,8 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
       ToolGroupDefinition(
         id: "github",
         displayName: "GitHub",
-        description: "Browse public repositories, pull requests, commits, issues, releases, and CI.",
+        description:
+          "Browse public repositories, pull requests, commits, issues, releases, and CI.",
         toolNames: Set(MaiGitHubTool.toolNames)),
     ].compactMap { group in
       let names = group.toolNames.intersection(available)

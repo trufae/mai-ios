@@ -43,6 +43,28 @@ public enum MaiDocumentIndexer {
     return entries
   }
 
+  /// Index only function-like declarations. This is also used by the Files
+  /// function tools before they calculate the declaration and body bounds.
+  static func sourceFunctionIndex(text: String, fileExtension: String) -> [Entry]? {
+    guard let language = Language(fileExtension: fileExtension) else { return nil }
+    let patterns = language.patterns.filter(\.isFunction)
+    let cDefinitionRegex = language.usesCFunctionHeuristic ? makeCDefinitionRegex() : nil
+    var entries: [Entry] = []
+    for (offset, line) in lines(of: text).enumerated() {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard !trimmed.isEmpty else { continue }
+      if language.commentPrefixes.contains(where: { trimmed.hasPrefix($0) }) { continue }
+      if let title = firstTitle(in: trimmed, patterns: patterns) {
+        entries.append(Entry(line: offset + 1, title: title))
+      } else if let cDefinitionRegex,
+        let name = cFunctionName(in: trimmed, definitionRegex: cDefinitionRegex)
+      {
+        entries.append(Entry(line: offset + 1, title: name))
+      }
+    }
+    return entries
+  }
+
   /// Index Markdown ATX headings (`# Title` … `###### Title`), skipping fenced
   /// code blocks. The heading markers are kept in the title so the nesting
   /// level stays visible.
@@ -83,6 +105,7 @@ public enum MaiDocumentIndexer {
 
   private struct LinePattern {
     let regex: NSRegularExpression?
+    let isFunction: Bool
     let title: (NSTextCheckingResult, String) -> String?
   }
 
@@ -113,14 +136,14 @@ public enum MaiDocumentIndexer {
 
   /// Pattern whose first capture group is the entry title.
   private static func name(_ pattern: String) -> LinePattern {
-    LinePattern(regex: regex(pattern)) { match, line in
+    LinePattern(regex: regex(pattern), isFunction: true) { match, line in
       group(1, of: match, in: line)
     }
   }
 
   /// Pattern labeled "<group 1> <group 2>", e.g. "class Foo".
   private static func keyworded(_ pattern: String) -> LinePattern {
-    LinePattern(regex: regex(pattern)) { match, line in
+    LinePattern(regex: regex(pattern), isFunction: false) { match, line in
       guard let keyword = group(1, of: match, in: line),
         let name = group(2, of: match, in: line)
       else { return nil }
@@ -130,7 +153,7 @@ public enum MaiDocumentIndexer {
 
   /// Pattern whose title is the whole matched line, minus a trailing brace.
   private static func wholeLine(_ pattern: String) -> LinePattern {
-    LinePattern(regex: regex(pattern)) { _, line in
+    LinePattern(regex: regex(pattern), isFunction: false) { _, line in
       var title = line
       if title.hasSuffix("{") { title.removeLast() }
       let cleaned = title.trimmingCharacters(in: .whitespaces)
@@ -140,7 +163,7 @@ public enum MaiDocumentIndexer {
 
   /// Pattern producing a fixed title, e.g. "init".
   private static func fixed(_ pattern: String, title: String) -> LinePattern {
-    LinePattern(regex: regex(pattern)) { _, _ in title }
+    LinePattern(regex: regex(pattern), isFunction: true) { _, _ in title }
   }
 
   // MARK: - C-style function heuristic
@@ -204,7 +227,7 @@ public enum MaiDocumentIndexer {
 
     init?(fileExtension: String) {
       switch fileExtension.lowercased() {
-      case "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ino":
+      case "c", "h", "hc", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "ino":
         self = .c
       case "m", "mm":
         self = .objectiveC
@@ -330,7 +353,8 @@ public enum MaiDocumentIndexer {
           LinePattern(
             regex: DocumentIndexer.regex(
               "^(?:(?:public|private|protected|static|readonly|async|override|get|set)\\s+)*"
-                + "([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*(?::\\s*[^{;]+)?\\{$")
+                + "([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)\\s*(?::\\s*[^{;]+)?\\{$"),
+            isFunction: true
           ) { match, line in
             guard let name = DocumentIndexer.group(1, of: match, in: line) else { return nil }
             let excluded: Set<String> = [
