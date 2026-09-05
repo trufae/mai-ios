@@ -49,3 +49,168 @@ func agentChatWorkspaceRoundTrip() throws {
   try workspace.save(to: url)
   #expect(try AgentChatWorkspace.load(from: url) == workspace)
 }
+
+@Test("Chats saved before archiving existed decode as active")
+func agentChatDecodesWithoutArchiveFlag() throws {
+  let legacy = """
+    {
+      "version": 1,
+      "chats": [{
+        "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+        "title": "Legacy",
+        "primaryAgent": \(String(decoding: try JSONEncoder().encode(chatAgent), as: UTF8.self)),
+        "messages": [],
+        "createdAt": 0,
+        "updatedAt": 0
+      }]
+    }
+    """
+  let workspace = try JSONDecoder().decode(AgentChatWorkspace.self, from: Data(legacy.utf8))
+  #expect(workspace.chats.count == 1)
+  #expect(workspace.chats[0].isArchived == false)
+  #expect(workspace.chats[0].pendingContent.isEmpty)
+  #expect(workspace.selectedChatID == workspace.chats[0].id)
+}
+
+@Test("Placeholder chats are disposable until something happens to them")
+func agentChatDisposable() {
+  var chat = AgentChat(primaryAgent: chatAgent)
+  #expect(chat.title == AgentChat.placeholderTitle)
+  #expect(chat.isDisposable)
+  #expect(!chat.hasConversation)
+
+  var renamed = chat
+  renamed.title = "Kept on purpose"
+  #expect(!renamed.isDisposable)
+
+  var attached = chat
+  attached.pendingContent = [.text("queued")]
+  #expect(!attached.isDisposable)
+
+  var archived = chat
+  archived.setArchived(true)
+  #expect(!archived.isDisposable)
+
+  chat.messages.append(.user("hello"))
+  #expect(chat.hasConversation)
+  #expect(!chat.isDisposable)
+  #expect(chat.conversationMessages.count == 1)
+}
+
+@Test("Placeholder titles come from the first message; chosen titles stay")
+func agentChatDerivedTitle() {
+  var chat = AgentChat(primaryAgent: chatAgent)
+  chat.refreshTitle(
+    from: "  Fix the\n  android   linker for ssl and crypto, then publish the build ")
+  #expect(chat.title == "Fix the android linker for ssl and crypto, then")
+  #expect(chat.title.count < AgentChat.derivedTitleLength)
+  #expect(AgentChat.derivedTitle(from: String(repeating: "x", count: 60))?.count == 48)
+
+  chat.refreshTitle(from: "second message")
+  #expect(chat.title == "Fix the android linker for ssl and crypto, then")
+
+  var named = AgentChat(title: "Release notes", primaryAgent: chatAgent)
+  named.refreshTitle(from: "anything")
+  #expect(named.title == "Release notes")
+
+  var blank = AgentChat(title: "  ", primaryAgent: chatAgent)
+  #expect(blank.hasPlaceholderTitle)
+  blank.refreshTitle(from: "   \n ")
+  #expect(blank.title == "  ")
+  #expect(AgentChat.derivedTitle(from: "") == nil)
+}
+
+@Test("Workspaces list active chats newest first and archived chats last")
+func agentChatWorkspaceOrdering() {
+  let base = Date(timeIntervalSince1970: 1_000_000)
+  let older = AgentChat(
+    title: "Older", primaryAgent: chatAgent, messages: [.user("a")],
+    createdAt: base, updatedAt: base)
+  let newer = AgentChat(
+    title: "Newer", primaryAgent: chatAgent, messages: [.user("b")],
+    createdAt: base + 10, updatedAt: base + 100)
+  let archived = AgentChat(
+    title: "Archived", primaryAgent: chatAgent, messages: [.user("c")],
+    createdAt: base + 20, updatedAt: base + 200, isArchived: true)
+  let tie = AgentChat(
+    title: "Tie", primaryAgent: chatAgent, messages: [.user("d")],
+    createdAt: base + 5, updatedAt: base)
+  let workspace = AgentChatWorkspace(chats: [older, archived, newer, tie])
+
+  #expect(workspace.activeChats.map(\.title) == ["Newer", "Tie", "Older"])
+  #expect(workspace.archivedChats.map(\.title) == ["Archived"])
+  #expect(workspace.orderedChats.map(\.title) == ["Newer", "Tie", "Older", "Archived"])
+  #expect(workspace.mostRecentActiveChat?.title == "Newer")
+}
+
+@Test("Starting a new chat keeps a single placeholder and drops the rest")
+func agentChatWorkspaceStartNewChat() {
+  var workspace = AgentChatWorkspace()
+  let first = workspace.startNewChat(primaryAgent: chatAgent)
+  #expect(workspace.selectedChatID == first.id)
+  #expect(workspace.mostRecentActiveChat == nil)
+
+  var used = first
+  used.messages.append(.user("keep me"))
+  workspace.upsert(used)
+  let stray = workspace.startNewChat(primaryAgent: chatAgent)
+  let second = workspace.startNewChat(primaryAgent: chatAgent)
+  #expect(workspace.chats.map(\.id) == [first.id, second.id])
+  #expect(!workspace.chats.contains { $0.id == stray.id })
+  #expect(workspace.selectedChatID == second.id)
+
+  let removed = workspace.removeDisposableChats(keeping: second.id)
+  #expect(removed.isEmpty)
+  #expect(workspace.removeDisposableChats().map(\.id) == [second.id])
+  #expect(workspace.selectedChatID == first.id)
+}
+
+@Test("Archiving is reversible and bumps the update time")
+func agentChatWorkspaceArchive() {
+  let base = Date(timeIntervalSince1970: 1_000_000)
+  let chat = AgentChat(
+    title: "Work", primaryAgent: chatAgent, messages: [.user("a")],
+    createdAt: base, updatedAt: base)
+  var workspace = AgentChatWorkspace(chats: [chat])
+  let archived = workspace.setArchived(true, id: chat.id, at: base + 5)
+  #expect(archived)
+  #expect(workspace.archivedChats.map(\.id) == [chat.id])
+  #expect(workspace.activeChats.isEmpty)
+  #expect(workspace.chats[0].updatedAt == base + 5)
+  let repeated = workspace.setArchived(true, id: chat.id, at: base + 9)
+  #expect(repeated)
+  #expect(workspace.chats[0].updatedAt == base + 5)
+  let restored = workspace.setArchived(false, id: chat.id, at: base + 10)
+  #expect(restored)
+  #expect(workspace.activeChats.map(\.id) == [chat.id])
+  #expect(workspace.chats[0].updatedAt == base + 10)
+  let missing = workspace.setArchived(true, id: UUID())
+  #expect(!missing)
+}
+
+@Test("Chat dates group like the PocketMai sidebar")
+func chatDatePresentationGroups() throws {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
+  calendar.firstWeekday = 2
+  // Thursday 2026-09-10 12:00 UTC
+  let now = try #require(
+    calendar.date(from: DateComponents(year: 2026, month: 9, day: 10, hour: 12)))
+  func group(_ seconds: TimeInterval) -> String {
+    ChatDatePresentation.groupTitle(for: now + seconds, relativeTo: now, calendar: calendar)
+  }
+  #expect(group(-3_600) == "Today")
+  #expect(group(-86_400) == "Yesterday")
+  #expect(group(-3 * 86_400) == "This week")
+  #expect(group(-5 * 86_400) == "Last week")
+  #expect(group(-20 * 86_400) == "August 21")
+  #expect(group(-400 * 86_400) == "August 6, 2025")
+
+  #expect(ChatDatePresentation.timestamp(now, calendar: calendar) == "2026-09-10 12:00")
+  #expect(
+    ChatDatePresentation.compactTimestamp(now - 60, relativeTo: now, calendar: calendar)
+      == "11:59")
+  #expect(
+    ChatDatePresentation.compactTimestamp(now - 86_400, relativeTo: now, calendar: calendar)
+      == "2026-09-09 12:00")
+}

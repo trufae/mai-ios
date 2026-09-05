@@ -131,11 +131,20 @@ of being stored directly in JSON.
 
 The text REPL persists independent chats to `~/.config/pmai/chats.json` and its
 editable Up/Down input history to `~/.config/pmai/history.json`; `PMAI_STATE`,
-`PMAI_HISTORY`, `--state`, and `--history` override those paths. `/chat list`,
-`new`, `use`, `next`, `previous`, `rename`, and `close` manage chats, while
-`messages`, `log`, `edit`, `remove`, `undo`, `trim`, and `clear` operate on the
-active transcript. Tab completes commands, chat selectors, agents, and
-providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
+`PMAI_HISTORY`, `--state`, and `--history` override those paths. Like the
+PocketMai app, every launch opens a fresh chat that is named after its first
+message; chats that never receive a message are dropped rather than piling up,
+and `--resume` reopens the most recently updated chat instead. `/chat list`
+shows the earlier chats grouped by day (Today, Yesterday, This week, Last week,
+then dates), newest first, with their agent, size, and last-update time, and
+lists archived chats last; `/chat list active` and `/chat list archived` narrow
+it down. `/chat use INDEX|ID|TITLE`, `next`, and `previous` switch chats,
+`/chat info` shows when a chat started and was last updated, `/chat archive`
+moves a chat out of the active list (archiving the current chat starts a new
+one), `/chat unarchive` brings it back, and `new`, `rename`, and `close` manage
+chats, while `messages`, `log`, `edit`, `remove`, `undo`, `trim`, and `clear`
+operate on the active transcript. Tab completes commands, chat selectors,
+agents, and providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
 updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
 back to that agent in the shared configuration.
 

@@ -4,6 +4,13 @@ import Foundation
 /// Providers remain normalized in `MaiConfiguration`; the agent's provider ID
 /// resolves the endpoint, credentials, and provider-specific options.
 public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
+  /// Title given to a chat that has not received its first message yet. A chat
+  /// keeping this title with no conversation is disposable, like the placeholder
+  /// PocketMai creates on launch.
+  public static let placeholderTitle = "New chat"
+  /// Maximum length of a title derived from the first user message.
+  public static let derivedTitleLength = 48
+
   public var id: UUID
   public var title: String
   public var primaryAgent: AgentDefinition
@@ -11,15 +18,18 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
   public var pendingContent: [ContentPart]
   public var createdAt: Date
   public var updatedAt: Date
+  /// Archived chats are kept for reference but listed apart from active ones.
+  public var isArchived: Bool
 
   public init(
     id: UUID = UUID(),
-    title: String,
+    title: String = AgentChat.placeholderTitle,
     primaryAgent: AgentDefinition,
     messages: [AgentMessage]? = nil,
     pendingContent: [ContentPart] = [],
     createdAt: Date = Date(),
-    updatedAt: Date = Date()
+    updatedAt: Date = Date(),
+    isArchived: Bool = false
   ) {
     self.id = id
     self.title = title
@@ -28,6 +38,50 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
     self.pendingContent = pendingContent
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.isArchived = isArchived
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, primaryAgent, messages, pendingContent, createdAt, updatedAt, isArchived
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    title = try container.decode(String.self, forKey: .title)
+    primaryAgent = try container.decode(AgentDefinition.self, forKey: .primaryAgent)
+    messages = try container.decode([AgentMessage].self, forKey: .messages)
+    pendingContent =
+      try container.decodeIfPresent([ContentPart].self, forKey: .pendingContent) ?? []
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+  }
+
+  /// The title shown to people; empty titles fall back to the placeholder.
+  public var displayTitle: String {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? Self.placeholderTitle : trimmed
+  }
+
+  /// True while the chat still carries the placeholder title.
+  public var hasPlaceholderTitle: Bool {
+    displayTitle == Self.placeholderTitle
+  }
+
+  /// Messages exchanged with the model, excluding configured instructions.
+  public var conversationMessages: [AgentMessage] {
+    messages.filter { $0.role != .system }
+  }
+
+  public var hasConversation: Bool {
+    messages.contains { $0.role != .system }
+  }
+
+  /// An untouched placeholder: nothing was said, attached, renamed, or archived.
+  /// Such chats are dropped instead of piling up as empty entries.
+  public var isDisposable: Bool {
+    !hasConversation && pendingContent.isEmpty && !isArchived && hasPlaceholderTitle
   }
 
   public mutating func assignPrimaryAgent(
@@ -50,6 +104,25 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
     updatedAt = date
   }
 
+  /// Names a placeholder chat after its first message, as PocketMai does.
+  /// Titles chosen by people are never replaced.
+  public mutating func refreshTitle(from text: String) {
+    guard hasPlaceholderTitle, let derived = Self.derivedTitle(from: text) else { return }
+    title = derived
+  }
+
+  public mutating func setArchived(_ archived: Bool, at date: Date = Date()) {
+    guard isArchived != archived else { return }
+    isArchived = archived
+    touch(at: date)
+  }
+
+  public static func derivedTitle(from text: String) -> String? {
+    let compact = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    guard !compact.isEmpty else { return nil }
+    return String(compact.prefix(derivedTitleLength)).trimmingCharacters(in: .whitespaces)
+  }
+
   public static func initialHistory(for agent: AgentDefinition) -> [AgentMessage] {
     let instructions = agent.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     return instructions.isEmpty ? [] : [.system(instructions)]
@@ -69,14 +142,48 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
   ) {
     self.version = version
     self.chats = chats
-    self.selectedChatID = selectedChatID.flatMap { id in
-      chats.contains(where: { $0.id == id }) ? id : nil
-    } ?? chats.first?.id
+    self.selectedChatID =
+      selectedChatID.flatMap { id in
+        chats.contains(where: { $0.id == id }) ? id : nil
+      } ?? chats.first?.id
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case version, selectedChatID, chats
+  }
+
+  /// Decoding goes through the memberwise initializer so a missing or dangling
+  /// selection falls back to the first chat, as it does for hosts.
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      version: try container.decodeIfPresent(Int.self, forKey: .version) ?? 1,
+      chats: try container.decodeIfPresent([AgentChat].self, forKey: .chats) ?? [],
+      selectedChatID: try container.decodeIfPresent(UUID.self, forKey: .selectedChatID))
   }
 
   public var selectedChat: AgentChat? {
     guard let selectedChatID else { return nil }
     return chats.first { $0.id == selectedChatID }
+  }
+
+  /// Chats in the order a sidebar shows them: active chats newest first,
+  /// then archived chats newest first. Listing indexes refer to this order.
+  public var orderedChats: [AgentChat] {
+    activeChats + archivedChats
+  }
+
+  public var activeChats: [AgentChat] {
+    chats.filter { !$0.isArchived }.sorted(by: Self.precedes)
+  }
+
+  public var archivedChats: [AgentChat] {
+    chats.filter(\.isArchived).sorted(by: Self.precedes)
+  }
+
+  /// The chat to continue when a host prefers resuming over starting fresh.
+  public var mostRecentActiveChat: AgentChat? {
+    activeChats.first { $0.hasConversation }
   }
 
   @discardableResult
@@ -103,6 +210,44 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
       selectedChatID = chats.isEmpty ? nil : chats[min(index, chats.count - 1)].id
     }
     return removed
+  }
+
+  /// Creates and selects a fresh placeholder chat, dropping every other
+  /// placeholder so only one empty chat exists at a time.
+  @discardableResult
+  public mutating func startNewChat(
+    primaryAgent: AgentDefinition,
+    title: String? = nil,
+    at date: Date = Date()
+  ) -> AgentChat {
+    let chat = AgentChat(
+      title: title ?? AgentChat.placeholderTitle,
+      primaryAgent: primaryAgent,
+      createdAt: date,
+      updatedAt: date)
+    removeDisposableChats()
+    upsert(chat, selecting: true)
+    return chat
+  }
+
+  /// Removes untouched placeholder chats, optionally sparing one of them.
+  @discardableResult
+  public mutating func removeDisposableChats(keeping keptID: UUID? = nil) -> [AgentChat] {
+    let disposable = chats.filter { $0.isDisposable && $0.id != keptID }
+    for chat in disposable { removeChat(id: chat.id) }
+    return disposable
+  }
+
+  @discardableResult
+  public mutating func setArchived(_ archived: Bool, id: UUID, at date: Date = Date()) -> Bool {
+    guard let index = chats.firstIndex(where: { $0.id == id }) else { return false }
+    chats[index].setArchived(archived, at: date)
+    return true
+  }
+
+  public static func precedes(_ lhs: AgentChat, _ rhs: AgentChat) -> Bool {
+    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+    return lhs.createdAt > rhs.createdAt
   }
 
   public static func load(from url: URL) throws -> AgentChatWorkspace {

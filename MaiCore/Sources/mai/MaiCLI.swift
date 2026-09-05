@@ -37,6 +37,8 @@ private struct CLIOptions {
   var maxModelTurns: Int?
   var maxSubagents: Int?
   var stream = true
+  /// Reopen the most recently updated chat instead of starting a fresh one.
+  var resume = false
   /// Render replies as markdown; nil follows the configuration and the tty.
   var markdown: Bool?
   var imagePaths: [String] = []
@@ -85,6 +87,8 @@ private struct CLIOptions {
         pluginPaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--no-stream":
         stream = false
+      case "--resume", "--continue":
+        resume = true
       case "--markdown":
         markdown = true
       case "--no-markdown":
@@ -330,6 +334,7 @@ struct REPLSession {
   var pendingContent: [ContentPart]
   var createdAt: Date
   var updatedAt: Date
+  var isArchived: Bool
   #if PMAI_HAS_VISUAL
     /// Conversations and panes left behind by the last `/visual` session.
     var visualSnapshot: VisualWorkspaceSnapshot?
@@ -350,6 +355,7 @@ struct REPLSession {
     self.pendingContent = pendingContent
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    isArchived = false
   }
 
   init(chat: AgentChat) {
@@ -360,6 +366,7 @@ struct REPLSession {
     pendingContent = chat.pendingContent
     createdAt = chat.createdAt
     updatedAt = chat.updatedAt
+    isArchived = chat.isArchived
   }
 
   var chat: AgentChat {
@@ -370,7 +377,17 @@ struct REPLSession {
       messages: history.messages,
       pendingContent: pendingContent,
       createdAt: createdAt,
-      updatedAt: updatedAt)
+      updatedAt: updatedAt,
+      isArchived: isArchived)
+  }
+
+  /// Names a placeholder chat after its first message; chosen titles stay.
+  mutating func refreshTitle(from text: String) {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty || trimmed == AgentChat.placeholderTitle,
+      let derived = AgentChat.derivedTitle(from: text)
+    else { return }
+    title = derived
   }
 
   mutating func reset(profile: SessionProfile? = nil) {
@@ -1126,6 +1143,12 @@ private struct MaiCLI {
     await terminal.line("pmai — MaiCore agent REPL")
     await terminal.line(
       "Type /help for commands. Chat: \(session.title); agent: \(session.profile.agentID)")
+    let earlier = workspace.chats.filter { $0.id != session.id && $0.hasConversation }
+    if !earlier.isEmpty {
+      await terminal.line(
+        "\(earlier.count) earlier chat\(earlier.count == 1 ? "" : "s"): /chat list shows them, /chat use N switches."
+      )
+    }
 
     while true {
       let ui = configuration?.ui ?? .init()
@@ -1142,7 +1165,7 @@ private struct MaiCLI {
           separator: promptStatus)
       else {
         workspace.upsert(session.chat, selecting: true)
-        await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+        await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
         return
       }
       let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1159,7 +1182,7 @@ private struct MaiCLI {
             configuration: configuration,
             terminal: terminal)
           workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+          await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
           continue
         }
         #if PMAI_HAS_VISUAL
@@ -1180,7 +1203,7 @@ private struct MaiCLI {
           terminal: terminal)
         {
           workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+          await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
           return
         }
         #if PMAI_HAS_VISUAL
@@ -1195,7 +1218,7 @@ private struct MaiCLI {
           session.touch()
           workspace.upsert(session.chat, selecting: true)
         #endif
-        await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+        await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
         continue
       }
       _ = await submit(
@@ -1206,7 +1229,7 @@ private struct MaiCLI {
         interruptHandler: interruptHandler)
       session.touch()
       workspace.upsert(session.chat, selecting: true)
-      await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+      await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
     }
   }
 
@@ -1221,6 +1244,7 @@ private struct MaiCLI {
     content.append(contentsOf: session.pendingContent)
     session.pendingContent.removeAll()
     session.history.append(AgentMessage(role: .user, content: content))
+    session.refreshTitle(from: text)
     await terminal.resetResponse()
     do {
       let profile = session.profile
@@ -3111,19 +3135,20 @@ private struct MaiCLI {
       await terminal.line(chatHelp)
       return
     }
+    let rest = String(argument.dropFirst(action.count)).trimmingCharacters(
+      in: .whitespacesAndNewlines)
 
     switch action {
-    case "list", "chats":
-      for (index, chat) in workspace.chats.enumerated() {
-        let selected = chat.id == workspace.selectedChatID ? "*" : " "
-        await terminal.line(
-          "\(selected) \(index + 1) \(chat.id.uuidString.prefix(8)) \(chat.title) — agent \(chat.primaryAgent.id), \(chat.messages.count) messages"
-        )
+    case "list", "chats", "ls":
+      guard let scope = ChatListScope(rest) else {
+        await terminal.line("Usage: /chat list [active|archived|all]")
+        return
       }
+      await terminal.line(chatListing(workspace, scope: scope, selectedID: session.id))
     case "new":
       var profile = session.profile
-      var title = String(argument.dropFirst(action.count)).trimmingCharacters(
-        in: .whitespacesAndNewlines)
+      var title = rest
+      var explicitAgent = false
       if title.hasPrefix("--agent ") {
         let values = title.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
           String.init)
@@ -3134,66 +3159,116 @@ private struct MaiCLI {
           return
         }
         profile = SessionProfile(definition: agent)
-        title = values.count == 3 ? values[2] : agent.displayName
+        title = values.count == 3 ? values[2] : ""
+        explicitAgent = true
       }
-      if title.isEmpty { title = "Chat \(workspace.chats.count + 1)" }
-      let chat = AgentChat(title: title, primaryAgent: profile.agentDefinition)
-      workspace.upsert(chat, selecting: true)
+      if title.isEmpty, !explicitAgent, session.chat.isDisposable {
+        await terminal.line("Already in a new chat.")
+        return
+      }
+      let chat = workspace.startNewChat(
+        primaryAgent: profile.agentDefinition,
+        title: title.isEmpty ? nil : title)
       session = REPLSession(chat: chat)
-      await terminal.line("Created and selected chat '\(title)' with agent \(profile.agentID).")
-    case "use", "switch":
-      let selector = String(argument.dropFirst(action.count)).trimmingCharacters(
-        in: .whitespacesAndNewlines)
-      guard !selector.isEmpty,
-        let chat = resolveChat(selector, in: workspace)
-      else {
+      await terminal.line("Started chat '\(chat.displayTitle)' with agent \(profile.agentID).")
+    case "use", "switch", "open":
+      guard !rest.isEmpty, let chat = resolveChat(rest, in: workspace) else {
         await terminal.line("Usage: /chat use INDEX|ID|TITLE")
         return
       }
-      _ = workspace.selectChat(id: chat.id)
-      session = REPLSession(
-        chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
-      await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
+      guard chat.id != session.id else {
+        await terminal.line("Already in '\(chat.displayTitle)'.")
+        return
+      }
+      await switchSession(
+        to: chat, session: &session, workspace: &workspace, configuration: configuration,
+        terminal: terminal)
     case "next", "previous", "prev":
-      guard workspace.chats.count > 1,
-        let current = workspace.chats.firstIndex(where: { $0.id == workspace.selectedChatID })
+      let ordered = workspace.orderedChats
+      guard ordered.count > 1,
+        let current = ordered.firstIndex(where: { $0.id == session.id })
       else {
         await terminal.line("There is only one chat.")
         return
       }
       let offset = action == "next" ? 1 : -1
-      let index = (current + offset + workspace.chats.count) % workspace.chats.count
-      let chat = workspace.chats[index]
-      _ = workspace.selectChat(id: chat.id)
-      session = REPLSession(
-        chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
-      await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
+      let chat = ordered[(current + offset + ordered.count) % ordered.count]
+      await switchSession(
+        to: chat, session: &session, workspace: &workspace, configuration: configuration,
+        terminal: terminal)
+    case "info", "show":
+      guard let chat = rest.isEmpty ? session.chat : resolveChat(rest, in: workspace) else {
+        await terminal.line("Usage: /chat info [INDEX|ID|TITLE]")
+        return
+      }
+      await terminal.line(chatInfo(chat, workspace: workspace, selectedID: session.id))
     case "rename":
-      let title = String(argument.dropFirst(action.count)).trimmingCharacters(
-        in: .whitespacesAndNewlines)
-      guard !title.isEmpty else {
+      guard !rest.isEmpty else {
         await terminal.line("Usage: /chat rename TITLE")
         return
       }
-      session.title = title
+      session.title = rest
       session.touch()
       workspace.upsert(session.chat, selecting: true)
-      await terminal.line("Chat renamed to '\(title)'.")
+      await terminal.line("Chat renamed to '\(rest)'.")
+    case "archive":
+      guard let chat = rest.isEmpty ? session.chat : resolveChat(rest, in: workspace) else {
+        await terminal.line("Usage: /chat archive [INDEX|ID|TITLE]")
+        return
+      }
+      guard !chat.isArchived else {
+        await terminal.line("'\(chat.displayTitle)' is already archived.")
+        return
+      }
+      guard !chat.isDisposable else {
+        await terminal.line("'\(chat.displayTitle)' is empty; there is nothing to archive.")
+        return
+      }
+      guard chat.id == session.id else {
+        workspace.setArchived(true, id: chat.id)
+        await terminal.line("Archived '\(chat.displayTitle)'.")
+        return
+      }
+      session.isArchived = true
+      session.touch()
+      workspace.upsert(session.chat, selecting: true)
+      session = REPLSession(
+        chat: workspace.startNewChat(primaryAgent: session.profile.agentDefinition))
+      await terminal.line("Archived '\(chat.displayTitle)' and started a new chat.")
+    case "unarchive", "restore":
+      guard let chat = rest.isEmpty ? session.chat : resolveChat(rest, in: workspace) else {
+        await terminal.line("Usage: /chat unarchive INDEX|ID|TITLE")
+        return
+      }
+      guard chat.isArchived else {
+        await terminal.line("'\(chat.displayTitle)' is not archived.")
+        return
+      }
+      if chat.id == session.id {
+        session.isArchived = false
+        session.touch()
+        workspace.upsert(session.chat, selecting: true)
+      } else {
+        workspace.setArchived(false, id: chat.id)
+      }
+      await terminal.line("Restored '\(chat.displayTitle)' to the active chats.")
     case "close", "delete":
       guard parts.count == 2, parts[1].lowercased() == "confirm" else {
         await terminal.line("Closing a chat is permanent. Confirm with: /chat close confirm")
         return
       }
-      guard workspace.chats.count > 1 else {
-        await terminal.line("Cannot close the only chat; use /chat clear instead.")
-        return
+      let closed = session.chat
+      _ = workspace.removeChat(id: closed.id)
+      if let next = workspace.activeChats.first ?? workspace.orderedChats.first {
+        _ = workspace.selectChat(id: next.id)
+        session = REPLSession(
+          chat: chatApplyingConfiguredAgentSettings(next, configuration: configuration))
+        await terminal.line("Closed '\(closed.displayTitle)'; switched to '\(session.title)'.")
+      } else {
+        session = REPLSession(
+          chat: workspace.startNewChat(primaryAgent: session.profile.agentDefinition))
+        await terminal.line("Closed '\(closed.displayTitle)'; started a new chat.")
       }
-      let oldTitle = session.title
-      _ = workspace.removeChat(id: session.id)
-      session = REPLSession(
-        chat: chatApplyingConfiguredAgentSettings(
-          workspace.selectedChat!, configuration: configuration))
-      await terminal.line("Closed '\(oldTitle)'; switched to '\(session.title)'.")
     case "messages":
       await handleChatCommand("list", session: &session, runtime: runtime, terminal: terminal)
     case "log", "edit", "remove", "rm", "undo", "trim", "compact", "clear", "help":
@@ -3203,22 +3278,131 @@ private struct MaiCLI {
     }
   }
 
+  private static func switchSession(
+    to chat: AgentChat,
+    session: inout REPLSession,
+    workspace: inout AgentChatWorkspace,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async {
+    _ = workspace.selectChat(id: chat.id)
+    session = REPLSession(
+      chat: chatApplyingConfiguredAgentSettings(chat, configuration: configuration))
+    let status = chat.isArchived ? ", archived" : ""
+    await terminal.line(
+      "Switched to '\(chat.displayTitle)' (agent \(chat.primaryAgent.id)\(status)).")
+  }
+
+  private enum ChatListScope {
+    case active, archived, all
+
+    init?(_ raw: String) {
+      switch raw.lowercased() {
+      case "", "all": self = .all
+      case "active", "open": self = .active
+      case "archived", "archive", "old": self = .archived
+      default: return nil
+      }
+    }
+  }
+
+  /// Chats grouped the way the PocketMai sidebar groups them: active chats
+  /// under Today / Yesterday / This week / Last week / date headers, newest
+  /// first, then the archived ones. Indexes match `/chat use N`.
+  private static func chatListing(
+    _ workspace: AgentChatWorkspace,
+    scope: ChatListScope,
+    selectedID: UUID?,
+    now: Date = Date()
+  ) -> String {
+    let ordered = workspace.orderedChats
+    var lines: [String] = []
+    func append(_ chats: [AgentChat], header: (AgentChat) -> String) {
+      var previous: String?
+      for chat in chats {
+        let title = header(chat)
+        if title != previous {
+          lines.append(title)
+          previous = title
+        }
+        let index = (ordered.firstIndex { $0.id == chat.id } ?? 0) + 1
+        lines.append(chatRow(chat, index: index, selected: chat.id == selectedID, now: now))
+      }
+    }
+    if scope != .archived {
+      let active = workspace.activeChats
+      if active.isEmpty { lines.append("No active chats.") }
+      append(active) { ChatDatePresentation.groupTitle(for: $0.updatedAt, relativeTo: now) }
+    }
+    if scope != .active {
+      let archived = workspace.archivedChats
+      if archived.isEmpty, scope == .archived { lines.append("No archived chats.") }
+      append(archived) { _ in "Archived" }
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func chatRow(_ chat: AgentChat, index: Int, selected: Bool, now: Date) -> String {
+    let marker = selected ? "*" : " "
+    let number = index < 10 ? " \(index)" : "\(index)"
+    let count = chat.conversationMessages.count
+    let size = count == 0 ? "empty" : "\(count) msg"
+    return [
+      "\(marker) \(number)", String(chat.id.uuidString.prefix(8)),
+      padded(chat.displayTitle, width: 40), padded(chat.primaryAgent.id, width: 10),
+      padded(size, width: 8),
+      ChatDatePresentation.compactTimestamp(chat.updatedAt, relativeTo: now),
+    ].joined(separator: "  ")
+  }
+
+  private static func chatInfo(
+    _ chat: AgentChat,
+    workspace: AgentChatWorkspace,
+    selectedID: UUID?
+  ) -> String {
+    let index = (workspace.orderedChats.firstIndex { $0.id == chat.id } ?? 0) + 1
+    let count = chat.conversationMessages.count
+    var status = chat.isArchived ? "archived" : "active"
+    if chat.id == selectedID { status += ", current" }
+    var lines = [
+      "Title:    \(chat.displayTitle)",
+      "Index:    \(index)",
+      "ID:       \(chat.id.uuidString)",
+      "Agent:    \(chat.primaryAgent.id) (\(chat.primaryAgent.provider) / \(chat.primaryAgent.model))",
+      "Messages: \(count) conversation, \(chat.messages.count) total",
+      "Started:  \(ChatDatePresentation.timestamp(chat.createdAt))",
+      "Updated:  \(ChatDatePresentation.timestamp(chat.updatedAt)) (\(ChatDatePresentation.groupTitle(for: chat.updatedAt)))",
+      "Status:   \(status)",
+    ]
+    if !chat.pendingContent.isEmpty {
+      lines.append("Pending:  \(chat.pendingContent.count) attachment(s) queued")
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func padded(_ text: String, width: Int) -> String {
+    let count = text.count
+    guard count <= width else { return String(text.prefix(width - 3)) + "..." }
+    return text + String(repeating: " ", count: width - count)
+  }
+
   private static func resolveChat(
     _ selector: String,
     in workspace: AgentChatWorkspace
   ) -> AgentChat? {
-    if let index = Int(selector), workspace.chats.indices.contains(index - 1) {
-      return workspace.chats[index - 1]
+    let ordered = workspace.orderedChats
+    if let index = Int(selector), ordered.indices.contains(index - 1) {
+      return ordered[index - 1]
     }
     if let id = UUID(uuidString: selector) {
-      return workspace.chats.first { $0.id == id }
+      return ordered.first { $0.id == id }
     }
-    let idMatches = workspace.chats.filter {
+    let idMatches = ordered.filter {
       $0.id.uuidString.lowercased().hasPrefix(selector.lowercased())
     }
     if idMatches.count == 1 { return idMatches[0] }
-    let titleMatches = workspace.chats.filter {
-      $0.title.caseInsensitiveCompare(selector) == .orderedSame
+    let titleMatches = ordered.filter {
+      $0.displayTitle.caseInsensitiveCompare(selector) == .orderedSame
     }
     return titleMatches.count == 1 ? titleMatches[0] : nil
   }
@@ -3520,29 +3704,31 @@ private struct MaiCLI {
     modelOverride: String?,
     options: CLIOptions
   ) throws -> AgentChatWorkspace {
+    var workspace = AgentChatWorkspace()
     if FileManager.default.fileExists(atPath: url.path) {
-      var workspace = try AgentChatWorkspace.load(from: url)
-      if workspace.selectedChat != nil {
-        synchronizeConfiguredAgentSettings(in: &workspace, agents: configuredAgents)
-        let overridesLimits =
-          options.maxToolCalls != nil || options.maxModelTurns != nil
-          || options.maxSubagents != nil
-        if providerOverride != nil || modelOverride != nil || overridesLimits {
-          for var chat in workspace.chats {
-            if let providerOverride { chat.primaryAgent.provider = providerOverride }
-            if let modelOverride { chat.primaryAgent.model = modelOverride }
-            options.applyLimitOverrides(to: &chat.primaryAgent.limits)
-            workspace.upsert(chat)
-          }
+      workspace = try AgentChatWorkspace.load(from: url)
+      synchronizeConfiguredAgentSettings(in: &workspace, agents: configuredAgents)
+      let overridesLimits =
+        options.maxToolCalls != nil || options.maxModelTurns != nil
+        || options.maxSubagents != nil
+      if providerOverride != nil || modelOverride != nil || overridesLimits {
+        for var chat in workspace.chats {
+          if let providerOverride { chat.primaryAgent.provider = providerOverride }
+          if let modelOverride { chat.primaryAgent.model = modelOverride }
+          options.applyLimitOverrides(to: &chat.primaryAgent.limits)
+          workspace.upsert(chat)
         }
-        return workspace
       }
-      let chat = AgentChat(title: "Chat 1", primaryAgent: initialProfile.agentDefinition)
-      workspace.upsert(chat, selecting: true)
+      workspace.removeDisposableChats()
+    }
+    // Like the PocketMai app, every launch opens a fresh chat and keeps the
+    // earlier ones one `/chat use` away; `--resume` reopens the latest instead.
+    if options.resume, let recent = workspace.mostRecentActiveChat {
+      workspace.selectChat(id: recent.id)
       return workspace
     }
-    let chat = AgentChat(title: "Chat 1", primaryAgent: initialProfile.agentDefinition)
-    return AgentChatWorkspace(chats: [chat], selectedChatID: chat.id)
+    workspace.startNewChat(primaryAgent: initialProfile.agentDefinition)
+    return workspace
   }
 
   /// Chat files retain an agent snapshot for portability, but reusable agent
@@ -3574,11 +3760,15 @@ private struct MaiCLI {
     return chat
   }
 
+  /// Persists the workspace without untouched placeholder chats. The selected
+  /// placeholder survives while the REPL runs and is dropped when it closes.
   private static func saveWorkspace(
-    _ workspace: AgentChatWorkspace,
+    _ workspace: inout AgentChatWorkspace,
     to url: URL,
-    terminal: TerminalWriter
+    terminal: TerminalWriter,
+    closing: Bool = false
   ) async {
+    workspace.removeDisposableChats(keeping: closing ? nil : workspace.selectedChatID)
     do {
       try workspace.save(to: url)
     } catch {
@@ -3612,6 +3802,12 @@ private struct MaiCLI {
       let previousByID = Dictionary(uniqueKeysWithValues: previous.chats.map { ($0.id, $0) })
       let chats = snapshot.conversations.map { conversation in
         let old = previousByID[conversation.id]
+        let untouched =
+          old.map {
+            $0.title == conversation.title && $0.primaryAgent == conversation.profile
+              && $0.messages == conversation.messages
+              && $0.pendingContent == conversation.pendingContent
+          } ?? false
         return AgentChat(
           id: conversation.id,
           title: conversation.title,
@@ -3619,7 +3815,8 @@ private struct MaiCLI {
           messages: conversation.messages,
           pendingContent: conversation.pendingContent,
           createdAt: old?.createdAt ?? Date(),
-          updatedAt: Date())
+          updatedAt: untouched ? old!.updatedAt : Date(),
+          isArchived: old?.isArchived ?? false)
       }
       return AgentChatWorkspace(chats: chats, selectedChatID: focusedID)
     }
@@ -3648,18 +3845,21 @@ private struct MaiCLI {
       "/edit prompt", "/edit config", "/edit mcps", "/chat compact",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
       "/image ocr ", "/attach ", "/attach clear", "/copy", "/clear", "/chat list",
-      "/chat new ",
-      "/chat use ", "/chat next", "/chat previous", "/chat rename ",
-      "/chat close confirm", "/chat messages", "/chat log", "/chat edit ",
-      "/chat remove ", "/chat undo", "/chat trim ", "/chat clear",
+      "/chat list active", "/chat list archived", "/chat list all", "/chat new ",
+      "/chat use ", "/chat next", "/chat previous", "/chat info", "/chat rename ",
+      "/chat archive", "/chat unarchive ", "/chat close confirm", "/chat messages",
+      "/chat log", "/chat edit ", "/chat remove ", "/chat undo", "/chat trim ",
+      "/chat clear",
     ]
     #if PMAI_HAS_VISUAL
       values.append("/visual")
     #endif
-    for (index, chat) in workspace.chats.enumerated() {
+    for (index, chat) in workspace.orderedChats.enumerated() {
       values.append("/chat use \(index + 1)")
       values.append("/chat use \(chat.id.uuidString.prefix(8))")
-      values.append("/chat use \(chat.title)")
+      values.append("/chat use \(chat.displayTitle)")
+      values.append("/chat info \(index + 1)")
+      values.append(chat.isArchived ? "/chat unarchive \(index + 1)" : "/chat archive \(index + 1)")
     }
     for agent in configuration?.agents ?? [] {
       values.append("/agent use \(agent.id)")
@@ -3862,7 +4062,7 @@ private struct MaiCLI {
     /provider ID       Select a provider
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
-    /chat               Create, switch, rename, or edit persistent chats
+    /chat               List, switch, archive, rename, or edit persistent chats
     /edit TARGET        Edit a prompt, config, MCP list, or message in $EDITOR
     /agents             List configured agents
     /agent [use] ID     Set the current chat's primary agent
@@ -3885,12 +4085,15 @@ private struct MaiCLI {
 
   private static let chatHelp = """
     Persistent chat management commands:
-      /chat list                    List chats (index, ID, title, primary agent)
-      /chat new [TITLE]             Create a chat using the current agent
-      /chat new --agent ID [TITLE]  Create a chat using a configured agent
-      /chat use INDEX|ID|TITLE      Switch the active chat
+      /chat list [active|archived|all]  List chats by day, newest first; archived last
+      /chat new [TITLE]             Start a fresh chat using the current agent
+      /chat new --agent ID [TITLE]  Start a fresh chat using a configured agent
+      /chat use INDEX|ID|TITLE      Switch to a chat by list index, ID prefix, or title
       /chat next|previous           Cycle through chats
+      /chat info [INDEX|ID|TITLE]   Show a chat's agent, size, and timestamps
       /chat rename TITLE            Rename the active chat
+      /chat archive [INDEX|ID|TITLE]  Archive a chat; archiving the active one starts fresh
+      /chat unarchive INDEX|ID|TITLE  Return an archived chat to the active list
       /chat close confirm           Permanently close the active chat
       /chat messages                Display a compact indexed message list
       /chat log           Display the full structured conversation
@@ -3902,6 +4105,9 @@ private struct MaiCLI {
       /chat clear         Clear the conversation and restore configured instructions
 
     Removing a tool call or result also removes its linked tool transaction.
+    pmai opens a fresh chat on every launch and names it after the first
+    message; chats that never received a message are dropped. Start with
+    --resume to reopen the most recently updated chat instead.
     """
 
   private static let mcpCommandHelp = """
@@ -3973,6 +4179,7 @@ private struct MaiCLI {
         --max-subagents N   concurrent background agents (default 0/off)
         --image PATH        attach an image (repeatable)
         --no-stream         disable response streaming
+        --resume            reopen the most recently updated chat instead of a fresh one
         --markdown          render replies as markdown even when piped
         --no-markdown       print replies verbatim
         -h, --help          show this help
