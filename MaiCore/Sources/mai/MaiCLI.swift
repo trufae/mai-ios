@@ -110,6 +110,21 @@ private enum CLIError: LocalizedError {
 private struct RuntimeSetup {
   var catalogs: [MCPServerCatalog]
   var implicitProviders: [ConfiguredProvider] = []
+  var providerBaseURLs: [String: URL] = [:]
+}
+
+private func environmentValue(
+  _ names: [String],
+  in environment: [String: String]
+) -> String? {
+  names.lazy.compactMap { environment[$0] }.first { !$0.isEmpty }
+}
+
+private func environmentName(
+  _ names: [String],
+  in environment: [String: String]
+) -> String? {
+  names.first { environment[$0].map { !$0.isEmpty } ?? false }
 }
 
 /// What `/visual` needs beyond the REPL session itself.
@@ -117,6 +132,7 @@ private struct VisualBridge {
   var approvalHandler: TerminalApprovalHandler
   var configurationPath: String?
   var implicitProviders: [ConfiguredProvider]
+  var providerBaseURLs: [String: URL]
 }
 
 struct SessionProfile {
@@ -333,6 +349,11 @@ private actor TerminalWriter {
     status("error: \(message)")
   }
 
+  func recoverAfterCancellation() {
+    closeRootLine()
+    status("cancelled")
+  }
+
   func prompt(_ value: String) { write(value) }
 
   func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
@@ -368,6 +389,49 @@ private actor TerminalWriter {
       }
     }
     rootLineOpen = false
+  }
+}
+
+private final class TerminalInterruptHandler: @unchecked Sendable {
+  private let source: DispatchSourceSignal
+  private let lock = NSLock()
+  private var cancellation: (@Sendable () -> Void)?
+  private var interrupted = false
+
+  init() {
+    signal(SIGINT, SIG_IGN)
+    source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+    source.setEventHandler { [weak self] in self?.interrupt() }
+    source.resume()
+  }
+
+  deinit {
+    source.cancel()
+    signal(SIGINT, SIG_DFL)
+  }
+
+  func activate(cancellation: @escaping @Sendable () -> Void) {
+    lock.withLock {
+      interrupted = false
+      self.cancellation = cancellation
+    }
+  }
+
+  func deactivate() {
+    lock.withLock { cancellation = nil }
+  }
+
+  func interruptedActiveOperation() -> Bool {
+    lock.withLock { interrupted }
+  }
+
+  private func interrupt() {
+    let action = lock.withLock { () -> (@Sendable () -> Void)? in
+      guard let cancellation else { return nil }
+      interrupted = true
+      return cancellation
+    }
+    action?()
   }
 }
 
@@ -412,10 +476,17 @@ private actor TerminalApprovalHandler: ApprovalHandler {
       }
       FileHandle.standardError.write(
         Data(
-          "Approve \(request.tool.annotations.approval.rawValue) tool '\(request.tool.name)'?\nArguments: \(request.call.arguments.compactJSONString)\n[y]es/[a]lways/[n]o/[e]dit/[c]ancel run: "
+          "Approve \(request.tool.annotations.approval.rawValue) tool '\(request.tool.name)'?\nArguments: \(request.call.arguments.compactJSONString)\n"
             .utf8))
-      guard let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let editor = TerminalLineEditor()
+      editor.configure(
+        ui: ConfiguredTerminalUI(backgroundLine: "", promptForeground: "yellow"))
+      guard
+        let answer = editor.readLine(
+          prompt: "[y]es/[a]lways/[n]o/[e]dit/[c]ancel run: ", completions: [])?
+          .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       else { return .deny(reason: "No approval response.") }
+      if editor.wasInterrupted { throw CancellationError() }
       switch answer {
       case "y", "yes":
         return .approve(arguments: request.call.arguments)
@@ -525,7 +596,19 @@ private struct MaiCLI {
         try configuration?.save(to: URL(fileURLWithPath: configurationPath))
       }
       let stateURL = URL(fileURLWithPath: resolvedStatePath(options: options))
-      var workspace = try loadChatWorkspace(from: stateURL, initialProfile: profile)
+      let providerOverride =
+        options.providerOverride
+        ?? environmentValue(["PMAI_PROVIDER", "MAI_PROVIDER"], in: environment).map {
+          ProviderID($0)
+        }
+      let modelOverride =
+        options.modelOverride
+        ?? environmentValue(["PMAI_MODEL", "MAI_MODEL", "OPENAI_MODEL"], in: environment)
+      var workspace = try loadChatWorkspace(
+        from: stateURL,
+        initialProfile: profile,
+        providerOverride: providerOverride,
+        modelOverride: modelOverride)
       var session = REPLSession(chat: workspace.selectedChat!)
       session.pendingContent.append(contentsOf: try options.imagePaths.map(imageContent))
       session.touch()
@@ -560,7 +643,8 @@ private struct MaiCLI {
         visual: VisualBridge(
           approvalHandler: approvalHandler,
           configurationPath: configurationPath,
-          implicitProviders: setup.implicitProviders),
+          implicitProviders: setup.implicitProviders,
+          providerBaseURLs: setup.providerBaseURLs),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -692,8 +776,40 @@ private struct MaiCLI {
     options: CLIOptions,
     environment: [String: String]
   ) async throws -> RuntimeSetup {
+    let providerOverride =
+      options.providerOverride
+      ?? environmentValue(["PMAI_PROVIDER", "MAI_PROVIDER"], in: environment).map {
+        ProviderID($0)
+      }
+    let rawBaseURL =
+      options.baseURLOverride?.absoluteString
+      ?? environmentValue(
+        ["PMAI_BASE_URL", "MAI_BASE_URL", "OPENAI_BASE_URL"], in: environment)
+    let baseURLOverride: URL?
+    if let rawBaseURL {
+      guard let url = URL(string: rawBaseURL) else { throw CLIError.invalidURL(rawBaseURL) }
+      baseURLOverride = url
+    } else {
+      baseURLOverride = nil
+    }
+    let apiKeyOverride =
+      options.apiKeyOverride
+      ?? environmentValue(
+        ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"], in: environment)
+
     if let configuration {
-      for provider in configuration.providers {
+      let targetProviderID = providerOverride?.rawValue ?? ProviderID.openAI.rawValue
+      var providerBaseURLs: [String: URL] = [:]
+      for configuredProvider in configuration.providers {
+        var provider = configuredProvider
+        if provider.id == targetProviderID {
+          if let baseURLOverride { provider.baseURL = baseURLOverride }
+          if let apiKeyOverride {
+            provider.apiKey = apiKeyOverride
+            provider.apiKeyEnvironment = nil
+          }
+        }
+        providerBaseURLs[provider.id] = provider.baseURL
         try await runtime.register(
           plugins.makeProvider(from: provider, environment: environment))
       }
@@ -714,30 +830,29 @@ private struct MaiCLI {
           throw MaiConfigurationError.unknownTool(agent: agent.id, tool: name)
         }
       }
-      return RuntimeSetup(catalogs: catalogs)
+      return RuntimeSetup(catalogs: catalogs, providerBaseURLs: providerBaseURLs)
     }
 
     let hello = ConfiguredProvider(id: "hello", kind: .hello)
     try await runtime.register(plugins.makeProvider(from: hello, environment: environment))
-    let rawBaseURL =
-      options.baseURLOverride?.absoluteString
-      ?? environment["MAI_BASE_URL"] ?? environment["OPENAI_BASE_URL"]
-      ?? "https://api.openai.com/v1"
-    guard let baseURL = URL(string: rawBaseURL) else { throw CLIError.invalidURL(rawBaseURL) }
+    let baseURL = baseURLOverride ?? URL(string: "https://api.openai.com/v1")!
     let openAI = ConfiguredProvider(
       id: ProviderID.openAI.rawValue,
       kind: .openAICompatible,
       baseURL: baseURL,
-      apiKey: options.apiKeyOverride ?? environment["MAI_API_KEY"]
-        ?? environment["OPENAI_API_KEY"])
+      apiKey: apiKeyOverride)
     try await runtime.register(plugins.makeProvider(from: openAI, environment: environment))
     // The visual workspace drafts a configuration from these implicit providers.
     // It references the API key through its environment variable instead of
     // copying the secret into a file.
     var draft = openAI
     draft.apiKey = nil
-    draft.apiKeyEnvironment = ["MAI_API_KEY", "OPENAI_API_KEY"].first { environment[$0] != nil }
-    return RuntimeSetup(catalogs: [], implicitProviders: [hello, draft])
+    draft.apiKeyEnvironment = environmentName(
+      ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"], in: environment)
+    return RuntimeSetup(
+      catalogs: [],
+      implicitProviders: [hello, draft],
+      providerBaseURLs: [openAI.id: baseURL])
   }
 
   private static func selectedProfile(
@@ -745,6 +860,14 @@ private struct MaiCLI {
     options: CLIOptions,
     environment: [String: String]
   ) throws -> SessionProfile {
+    let providerOverride =
+      options.providerOverride
+      ?? environmentValue(["PMAI_PROVIDER", "MAI_PROVIDER"], in: environment).map {
+        ProviderID($0)
+      }
+    let modelOverride =
+      options.modelOverride
+      ?? environmentValue(["PMAI_MODEL", "MAI_MODEL", "OPENAI_MODEL"], in: environment)
     if let configuration, !configuration.agents.isEmpty {
       let selectedID =
         options.agentOverride ?? configuration.defaultAgent
@@ -753,17 +876,15 @@ private struct MaiCLI {
         throw MaiConfigurationError.unknownAgent(selectedID ?? "")
       }
       var profile = SessionProfile(definition: definition)
-      if let provider = options.providerOverride { profile.provider = provider }
-      if let model = options.modelOverride { profile.model = model }
+      if let providerOverride { profile.provider = providerOverride }
+      if let modelOverride { profile.model = modelOverride }
       if let system = options.systemOverride { profile.instructions = system }
       profile.stream = options.stream && profile.stream
       return profile
     }
     return SessionProfile(
-      provider: options.providerOverride
-        ?? ProviderID(environment["MAI_PROVIDER"] ?? "hello"),
-      model: options.modelOverride ?? environment["MAI_MODEL"]
-        ?? environment["OPENAI_MODEL"] ?? "",
+      provider: providerOverride ?? "hello",
+      model: modelOverride ?? "",
       instructions: options.systemOverride ?? "You are a helpful, concise assistant.",
       stream: options.stream)
   }
@@ -784,12 +905,14 @@ private struct MaiCLI {
     var catalogs = catalogs
     var session = REPLSession(chat: workspace.selectedChat!)
     let editor = TerminalLineEditor(historyURL: historyURL)
+    let interruptHandler = TerminalInterruptHandler()
     await terminal.line("pmai — MaiCore agent REPL")
     await terminal.line(
       "Type /help for commands. Chat: \(session.title); agent: \(session.profile.agentID)")
 
     while true {
-      let prompt = "pmai[\(session.title):\(session.profile.agentID)]> "
+      editor.configure(ui: configuration?.ui ?? .init())
+      let prompt = "pmai · \(session.title) · \(session.profile.agentID) ❯ "
       guard
         let input = editor.readLine(
           prompt: prompt,
@@ -846,7 +969,12 @@ private struct MaiCLI {
         await saveWorkspace(workspace, to: stateURL, terminal: terminal)
         continue
       }
-      _ = await submit(text, session: &session, runtime: runtime, terminal: terminal)
+      _ = await submit(
+        text,
+        session: &session,
+        runtime: runtime,
+        terminal: terminal,
+        interruptHandler: interruptHandler)
       session.touch()
       workspace.upsert(session.chat, selecting: true)
       await saveWorkspace(workspace, to: stateURL, terminal: terminal)
@@ -857,7 +985,8 @@ private struct MaiCLI {
     _ text: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
-    terminal: TerminalWriter
+    terminal: TerminalWriter,
+    interruptHandler: TerminalInterruptHandler? = nil
   ) async -> Bool {
     var content: [ContentPart] = [.text(text)]
     content.append(contentsOf: session.pendingContent)
@@ -866,27 +995,35 @@ private struct MaiCLI {
     await terminal.resetResponse()
     do {
       let profile = session.profile
-      let result = try await runtime.run(
-        AgentRequest(
-          agentID: profile.agentID,
-          provider: profile.provider,
-          model: profile.model,
-          messages: session.history.messages,
-          toolNames: profile.toolNames,
-          subagentNames: profile.subagentNames,
-          toolChoice: profile.toolChoice,
-          responseFormat: profile.responseFormat,
-          options: profile.options,
-          limits: profile.limits,
-          stream: profile.stream,
-          toolCallingStrategy: profile.toolCallingStrategy,
-          useToolProxy: profile.useToolProxy)
-      ) { event in
-        await terminal.consume(event)
+      let request = AgentRequest(
+        agentID: profile.agentID,
+        provider: profile.provider,
+        model: profile.model,
+        messages: session.history.messages,
+        toolNames: profile.toolNames,
+        subagentNames: profile.subagentNames,
+        toolChoice: profile.toolChoice,
+        responseFormat: profile.responseFormat,
+        options: profile.options,
+        limits: profile.limits,
+        stream: profile.stream,
+        toolCallingStrategy: profile.toolCallingStrategy,
+        useToolProxy: profile.useToolProxy)
+      let task = Task {
+        try await runtime.run(request) { event in
+          await terminal.consume(event)
+        }
       }
+      interruptHandler?.activate { task.cancel() }
+      defer { interruptHandler?.deactivate() }
+      let result = try await task.value
       session.history.replaceAll(with: result.transcript)
       return true
     } catch {
+      if error is CancellationError || interruptHandler?.interruptedActiveOperation() == true {
+        await terminal.recoverAfterCancellation()
+        return false
+      }
       await terminal.recoverAfterError(error.localizedDescription)
       return false
     }
@@ -915,11 +1052,15 @@ private struct MaiCLI {
       await handleSetCommand(
         argument,
         approvalHandler: visual.approvalHandler,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
         terminal: terminal)
     case "/providers":
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
-        let baseURL = configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL
+        let baseURL =
+          (visual.providerBaseURLs[provider.id.rawValue]
+          ?? configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL)
           .map { " — \($0.absoluteString)" } ?? ""
         await terminal.line("\(selected) \(provider.id) — \(provider.displayName)\(baseURL)")
       }
@@ -998,10 +1139,14 @@ private struct MaiCLI {
       if agents.isEmpty { await terminal.line("No configured agents.") }
       for agent in agents {
         let selected = agent.id == session.profile.agentID ? "*" : " "
-        let baseURL = configuration?.providers.first { $0.id == agent.provider.rawValue }?.baseURL?
+        let displayedAgent = selected == "*" ? session.profile.agentDefinition : agent
+        let baseURL =
+          visual.providerBaseURLs[displayedAgent.provider.rawValue]?.absoluteString
+          ?? configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
           .absoluteString ?? "-"
         await terminal.line(
-          "\(selected) \(agent.id) — \(agent.displayName) [\(agent.provider) \(baseURL) \(agent.model)]")
+          "\(selected) \(displayedAgent.id) — \(displayedAgent.displayName) [\(displayedAgent.provider) \(baseURL) \(displayedAgent.model)]"
+        )
       }
     case "/agent":
       await handleAgentCommand(
@@ -1011,6 +1156,7 @@ private struct MaiCLI {
         plugins: plugins,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
+        providerBaseURLs: visual.providerBaseURLs,
         terminal: terminal)
     case "/tools":
       await handleToolsCommand(
@@ -1112,6 +1258,7 @@ private struct MaiCLI {
     plugins: PluginRegistry,
     configuration: inout MaiConfiguration?,
     configurationPath: String?,
+    providerBaseURLs: [String: URL],
     terminal: TerminalWriter
   ) async {
     let fields = argument.split(maxSplits: 5, whereSeparator: \Character.isWhitespace).map(
@@ -1121,6 +1268,7 @@ private struct MaiCLI {
         session.profile.agentID,
         session: session,
         configuration: configuration,
+        providerBaseURLs: providerBaseURLs,
         terminal: terminal)
       await terminal.line(
         "Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
@@ -1203,6 +1351,7 @@ private struct MaiCLI {
         fields.count > 1 ? fields[1] : session.profile.agentID,
         session: session,
         configuration: configuration,
+        providerBaseURLs: providerBaseURLs,
         terminal: terminal)
       return
     }
@@ -1231,19 +1380,22 @@ private struct MaiCLI {
     _ id: String,
     session: REPLSession,
     configuration: MaiConfiguration?,
+    providerBaseURLs: [String: URL],
     terminal: TerminalWriter
   ) async {
     let definition =
-      configuration?.agents.first(where: { $0.id == id })
-      ?? (session.profile.agentID == id ? session.profile.agentDefinition : nil)
+      session.profile.agentID == id
+      ? session.profile.agentDefinition : configuration?.agents.first(where: { $0.id == id })
     guard let definition else {
       await terminal.line("Unknown agent '\(id)'. Use /agents.")
       return
     }
-    let provider = configuration?.providers.first { $0.id == definition.provider.rawValue }
+    let baseURL =
+      providerBaseURLs[definition.provider.rawValue]
+      ?? configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
     await terminal.line("Agent: \(definition.id) (\(definition.displayName))")
     await terminal.line("Provider: \(definition.provider)")
-    await terminal.line("Base URL: \(provider?.baseURL?.absoluteString ?? "-")")
+    await terminal.line("Base URL: \(baseURL?.absoluteString ?? "-")")
     await terminal.line("Model: \(definition.model.isEmpty ? "-" : definition.model)")
     await terminal.line(
       "System prompt: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
@@ -1554,6 +1706,8 @@ private struct MaiCLI {
   private static func handleSetCommand(
     _ argument: String,
     approvalHandler: TerminalApprovalHandler,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
     terminal: TerminalWriter
   ) async {
     let parts = argument.replacingOccurrences(of: "=", with: " ")
@@ -1562,28 +1716,104 @@ private struct MaiCLI {
     guard !parts.isEmpty else {
       let enabled = await approvalHandler.isYOLOEnabled()
       await terminal.line("yolo = \(enabled ? "on" : "off")")
-      await terminal.line("Usage: /set yolo <on|off>")
+      await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
       return
     }
-    guard parts[0].lowercased() == "yolo" else {
-      await terminal.line("Unknown setting '\(parts[0])'. Available settings: yolo")
+    let key = parts[0].lowercased()
+    if key == "ui" || key == "ui." {
+      await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
       return
     }
+    if key == "yolo" {
+      guard parts.count > 1 else {
+        let enabled = await approvalHandler.isYOLOEnabled()
+        await terminal.line("yolo = \(enabled ? "on" : "off")")
+        return
+      }
+      guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
+        await terminal.line("Usage: /set yolo <on|off>")
+        return
+      }
+      await approvalHandler.setYOLOEnabled(enabled)
+      if enabled {
+        await terminal.line("YOLO mode enabled for this session; all tool calls are permitted.")
+      } else {
+        await terminal.line("YOLO mode disabled; configured approval rules restored.")
+      }
+      return
+    }
+
+    let colorKeys = ["ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt"]
+    guard colorKeys.contains(key) || key == "ui.bold" else {
+      await terminal.line(
+        "Unknown setting '\(parts[0])'. Available settings: yolo, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold"
+      )
+      return
+    }
+    var ui = configuration?.ui ?? .init()
     guard parts.count > 1 else {
-      let enabled = await approvalHandler.isYOLOEnabled()
-      await terminal.line("yolo = \(enabled ? "on" : "off")")
+      await terminal.line("\(key) = \(uiSetting(key, in: ui))")
       return
     }
-    guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
-      await terminal.line("Usage: /set yolo <on|off>")
+    guard parts.count == 2 else {
+      await terminal.line("Usage: /set \(key) VALUE")
       return
     }
-    await approvalHandler.setYOLOEnabled(enabled)
-    if enabled {
-      await terminal.line("YOLO mode enabled for this session; all tool calls are permitted.")
+    if key == "ui.bold" {
+      guard let enabled = booleanSetting(parts[1]) else {
+        await terminal.line("Usage: /set ui.bold <on|off>")
+        return
+      }
+      ui.bold = enabled
     } else {
-      await terminal.line("YOLO mode disabled; configured approval rules restored.")
+      guard let color = TerminalLineEditor.normalizedColor(parts[1]) else {
+        await terminal.line(
+          "Unknown color '\(parts[1])'. Use a named ANSI color, rgb:RGB, or none.")
+        return
+      }
+      switch key {
+      case "ui.bgline": ui.backgroundLine = color
+      case "ui.fgcolor": ui.foreground = color
+      case "ui.bgcolor": ui.background = color
+      case "ui.fgprompt": ui.promptForeground = color
+      case "ui.bgprompt": ui.promptBackground = color
+      default: break
+      }
     }
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    draft.ui = ui
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      await terminal.line("Set \(key) = \(uiSetting(key, in: ui)).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  private static func listUISettings(_ ui: ConfiguredTerminalUI, terminal: TerminalWriter) async {
+    for key in [
+      "ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt", "ui.bold",
+    ] {
+      await terminal.line("\(key) = \(uiSetting(key, in: ui))")
+    }
+  }
+
+  private static func uiSetting(_ key: String, in ui: ConfiguredTerminalUI) -> String {
+    let value: String
+    switch key {
+    case "ui.bgline": value = ui.backgroundLine
+    case "ui.fgcolor": value = ui.foreground
+    case "ui.bgcolor": value = ui.background
+    case "ui.fgprompt": value = ui.promptForeground
+    case "ui.bgprompt": value = ui.promptBackground
+    case "ui.bold": return ui.bold ? "on" : "off"
+    default: return "-"
+    }
+    return value.isEmpty ? "none" : value
   }
 
   private static func booleanSetting(_ value: String) -> Bool? {
@@ -2099,11 +2329,22 @@ private struct MaiCLI {
 
   private static func loadChatWorkspace(
     from url: URL,
-    initialProfile: SessionProfile
+    initialProfile: SessionProfile,
+    providerOverride: ProviderID?,
+    modelOverride: String?
   ) throws -> AgentChatWorkspace {
     if FileManager.default.fileExists(atPath: url.path) {
       var workspace = try AgentChatWorkspace.load(from: url)
-      if workspace.selectedChat != nil { return workspace }
+      if workspace.selectedChat != nil {
+        if providerOverride != nil || modelOverride != nil {
+          for var chat in workspace.chats {
+            if let providerOverride { chat.primaryAgent.provider = providerOverride }
+            if let modelOverride { chat.primaryAgent.model = modelOverride }
+            workspace.upsert(chat)
+          }
+        }
+        return workspace
+      }
       let chat = AgentChat(title: "Chat 1", primaryAgent: initialProfile.agentDefinition)
       workspace.upsert(chat, selecting: true)
       return workspace
@@ -2165,7 +2406,10 @@ private struct MaiCLI {
     configuration: MaiConfiguration?
   ) -> [String] {
     var values = [
-      "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/plugins",
+      "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
+      "/set ui.bgline blue", "/set ui.bgline none", "/set ui.fgprompt yellow",
+      "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
+      "/set ui.bold on", "/set ui.bold off", "/plugins",
       "/providers", "/models ", "/provider ", "/model ", "/agents", "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
@@ -2344,8 +2588,10 @@ private struct MaiCLI {
   }
 
   private static let replHelp = """
-    /set                List mutable session settings
-    /set yolo BOOL      Permit all tool calls for this session (on/off)
+    /set                   List mutable session and terminal UI settings
+    /set yolo BOOL         Permit all tool calls for this session (on/off)
+    /set ui.               List terminal UI settings
+    /set ui.SETTING VALUE  Set colors or bold input and persist the change
     /plugins            List statically and dynamically loaded plugins
     /providers          List registered providers
     /models [PROVIDER]  List models from the current or named provider
@@ -2365,6 +2611,8 @@ private struct MaiCLI {
     /visual             Open the terminal workspace: split chats, providers, MCPs, tools
     /clear              Clear conversation history
     /exit               Exit the REPL
+
+    Input: Ctrl+A/E beginning/end · Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
     """
 
   private static let chatHelp = """

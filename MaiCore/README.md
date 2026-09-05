@@ -15,6 +15,11 @@ Run the offline REPL from the repository root:
 make repl
 ```
 
+`make repl` automatically loads an optional repository-local `env.sh`. The
+ad-hoc provider settings are `PMAI_PROVIDER`, `PMAI_MODEL`, `PMAI_BASE_URL`,
+and `PMAI_API_KEY`; the older `MAI_*` names remain supported for compatibility.
+Keep `env.sh` local because it can contain credentials.
+
 Print a complete configuration template:
 
 ```sh
@@ -127,6 +132,16 @@ active transcript. Tab completes commands, chat selectors, agents, and
 providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
 updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
 back to that agent in the shared configuration.
+
+Each prompt is preceded by a colored separator so prompts remain easy to find
+in terminal scrollback. Long input scrolls horizontally and is printed in full
+when submitted. `/set ui.` lists the persisted terminal styling options;
+`ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, and `ui.bgcolor` accept
+named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` accepts `on` or `off`.
+`Ctrl+A` and `Ctrl+E` move to the beginning and end, `Ctrl+W` deletes the
+previous word, and `Ctrl+C` cancels the active model or tool run without leaving
+the REPL. `Ctrl+Z` suspends pmai with the terminal restored; run `fg` in the
+shell to resume the same input or active run.
 
 Native tools are presented as plugin-defined capability groups instead of one
 checkbox per provider-visible function. `/tools` lists the groups, `/tools

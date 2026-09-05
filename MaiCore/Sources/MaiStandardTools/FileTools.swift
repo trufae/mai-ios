@@ -70,15 +70,16 @@ public struct MaiFileWorkspaceTool: AgentTool {
 
   public func call(arguments: JSONValue, context: ToolExecutionContext) async throws -> ToolOutput {
     let arguments = arguments.objectValue ?? [:]
-#if os(macOS) || os(iOS)
-    let didStartAccess =
-      configuration.isSecurityScoped
-      ? configuration.rootURL.startAccessingSecurityScopedResource() : false
-    defer {
-      if didStartAccess { configuration.rootURL.stopAccessingSecurityScopedResource() }
-    }
-#endif
+    #if os(macOS) || os(iOS)
+      let didStartAccess =
+        configuration.isSecurityScoped
+        ? configuration.rootURL.startAccessingSecurityScopedResource() : false
+      defer {
+        if didStartAccess { configuration.rootURL.stopAccessingSecurityScopedResource() }
+      }
+    #endif
     do {
+      try Task.checkCancellation()
       let workspace = try MaiFileWorkspace(configuration: configuration)
       switch operation {
       case .list:
@@ -98,6 +99,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
       case .delete:
         return try workspace.delete(arguments)
       }
+    } catch is CancellationError {
+      throw CancellationError()
     } catch {
       return ToolOutput(text: "Error: \(error.localizedDescription)", isError: true)
     }
@@ -438,14 +441,17 @@ private struct MaiFileWorkspace: Sendable {
         !looksBinary(data),
         let text = String(data: data, encoding: .utf8)
       else { return true }
-      for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+      for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false)
+        .enumerated()
       where rows.count < limit {
+        if index.isMultiple(of: 64) { try Task.checkCancellation() }
         let line = String(line)
         let matched: Bool
         if let expression {
-          matched = expression.firstMatch(
-            in: line,
-            range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
+          matched =
+            expression.firstMatch(
+              in: line,
+              range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
         } else if caseSensitive {
           matched = line.contains(query)
         } else {
@@ -652,14 +658,16 @@ private struct MaiFileWorkspace: Sendable {
     let keys: Set<URLResourceKey> = [
       .fileSizeKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
     ]
-    guard let enumerator = FileManager.default.enumerator(
-      at: directory,
-      includingPropertiesForKeys: Array(keys),
-      options: [.skipsHiddenFiles, .skipsPackageDescendants])
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: directory,
+        includingPropertiesForKeys: Array(keys),
+        options: [.skipsHiddenFiles, .skipsPackageDescendants])
     else {
       throw MaiFileWorkspaceError.notDirectory(relativePath(directory))
     }
     while let url = enumerator.nextObject() as? URL {
+      try Task.checkCancellation()
       let values = try url.resourceValues(forKeys: keys)
       if values.isSymbolicLink == true {
         if values.isDirectory == true { enumerator.skipDescendants() }

@@ -344,6 +344,52 @@ public struct ConfiguredApprovals: Codable, Equatable, Sendable {
   }
 }
 
+public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
+  public var backgroundLine: String
+  public var foreground: String
+  public var background: String
+  public var promptForeground: String
+  public var promptBackground: String
+  public var bold: Bool
+
+  public init(
+    backgroundLine: String = "blue",
+    foreground: String = "",
+    background: String = "",
+    promptForeground: String = "yellow",
+    promptBackground: String = "",
+    bold: Bool = false
+  ) {
+    self.backgroundLine = backgroundLine
+    self.foreground = foreground
+    self.background = background
+    self.promptForeground = promptForeground
+    self.promptBackground = promptBackground
+    self.bold = bold
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case backgroundLine = "bgline"
+    case foreground = "fgcolor"
+    case background = "bgcolor"
+    case promptForeground = "fgprompt"
+    case promptBackground = "bgprompt"
+    case bold
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      backgroundLine: try container.decodeIfPresent(String.self, forKey: .backgroundLine) ?? "blue",
+      foreground: try container.decodeIfPresent(String.self, forKey: .foreground) ?? "",
+      background: try container.decodeIfPresent(String.self, forKey: .background) ?? "",
+      promptForeground: try container.decodeIfPresent(String.self, forKey: .promptForeground)
+        ?? "yellow",
+      promptBackground: try container.decodeIfPresent(String.self, forKey: .promptBackground) ?? "",
+      bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false)
+  }
+}
+
 public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var version: Int
   public var defaultAgent: String?
@@ -353,6 +399,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var ocrProviders: [ConfiguredOCRProvider]
   public var mcpServers: [ConfiguredMCPServer]
   public var agents: [AgentDefinition]
+  public var ui: ConfiguredTerminalUI
   public var approvals: ConfiguredApprovals
 
   public init(
@@ -364,6 +411,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     ocrProviders: [ConfiguredOCRProvider] = [],
     mcpServers: [ConfiguredMCPServer] = [],
     agents: [AgentDefinition] = [],
+    ui: ConfiguredTerminalUI = .init(),
     approvals: ConfiguredApprovals = .init()
   ) {
     self.version = version
@@ -374,11 +422,13 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     self.ocrProviders = ocrProviders
     self.mcpServers = mcpServers
     self.agents = agents
+    self.ui = ui
     self.approvals = approvals
   }
 
   private enum CodingKeys: String, CodingKey {
     case version, defaultAgent, plugins, providers, toolSources, ocrProviders, mcpServers, agents,
+      ui,
       approvals
   }
 
@@ -397,6 +447,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
       mcpServers: try container.decodeIfPresent([ConfiguredMCPServer].self, forKey: .mcpServers)
         ?? [],
       agents: try container.decodeIfPresent([AgentDefinition].self, forKey: .agents) ?? [],
+      ui: try container.decodeIfPresent(ConfiguredTerminalUI.self, forKey: .ui) ?? .init(),
       approvals: try container.decodeIfPresent(ConfiguredApprovals.self, forKey: .approvals)
         ?? .init())
   }

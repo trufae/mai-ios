@@ -127,6 +127,32 @@ func fileWorkspaceCanDisableChanges() async throws {
   #expect(group.options.contains { $0.id == "filesWriteEnabled" })
 }
 
+@Test("Files tools propagate task cancellation")
+func fileWorkspaceToolsPropagateCancellation() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-files-cancel-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let grep = MaiFileWorkspaceTool(
+    operation: .grep,
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+  let (stream, continuation) = AsyncStream<Void>.makeStream()
+  let task = Task {
+    for await _ in stream { break }
+    return try await call(grep, ["query": .string("needle")])
+  }
+
+  task.cancel()
+  continuation.yield()
+  continuation.finish()
+  do {
+    _ = try await task.value
+    Issue.record("Expected files_grep to propagate cancellation")
+  } catch is CancellationError {
+    // Expected: the runtime can return to the REPL instead of treating cancellation as tool output.
+  }
+}
+
 private func tool(
   _ tools: [MaiFileWorkspaceTool],
   _ operation: MaiFileWorkspaceTool.Operation
