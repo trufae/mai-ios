@@ -7,7 +7,7 @@ terminal workspace used by the CLI's `/visual` command and is the package's only
 external dependency; PocketMai does not link it. Each registers through the same plugin
 API available to third-party providers. Together they support structured
 message content, multimodal requests, native tool calls, approvals, MCP
-Streamable HTTP servers, and bounded child agents.
+Streamable HTTP servers, CLI-only stdio MCP processes, and bounded child agents.
 
 Run the offline REPL from the repository root:
 
@@ -144,7 +144,13 @@ in terminal scrollback. Long input scrolls horizontally and is printed in full
 when submitted. `/set ui.` lists the persisted terminal styling options;
 `ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, and `ui.bgcolor` accept
 named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` and `ui.markdown`
-accept `on` or `off`. Replies are rendered as styled markdown while they stream:
+accept `on` or `off`. `/set limits.` shows the per-run limits of the current
+chat's agent; `/set limits.maxToolCalls N` and `/set limits.maxModelTurns N`
+change them and persist the change into that agent's configuration. The
+`--max-tool-calls N` and `--max-turns N` flags override both for one launch.
+When a run spends its tool call budget, the remaining calls of that reply are
+answered with an error and the model is asked to answer without tools instead
+of the run failing. Replies are rendered as styled markdown while they stream:
 headings, lists, task lists, quotes, rules, fenced code, footnotes, and pipe
 tables whose cells keep their bold, code, and link styling and wrap to the
 terminal width. `--no-markdown` or `ui.markdown off` prints replies verbatim,
@@ -174,7 +180,11 @@ list the tools and child agents they are allowed to use. `MaiStandardToolsPlugin
 provides `echo`, date/time, calculator, network, and workspace-scoped Files tools.
 The `files` group can list files, find approximate names, grep bounded UTF-8
 content, convert DOCX/PDF/JSON documents, write or append text, create folders,
-rename entries, and delete them. `filesRoot` confines every relative
+rename entries, and delete them. Existing files are edited in place with
+`files_patch` (unique literal or regex replacement) or `files_replace_range`
+(1-based line ranges); `files_write` refuses to replace a non-empty file unless
+`overwrite: true` is passed, so a model cannot clobber a file it meant to
+patch. `filesRoot` confines every relative
 path to one directory (including symlink checks), while `filesWriteEnabled`
 removes the mutation tools when disabled. Mutations still go through normal
 confirmation, and deletion is marked dangerous. `read_text_file` remains
@@ -200,7 +210,27 @@ iOS. Use `/tools disable run` to remove them from an agent.
 Streamable HTTP support is supplied by `MaiMCPPlugin`, so the transport is not a
 dependency of the core runtime.
 
+On non-iOS hosts, `MaiMCPPlugin` also supports the standard stdio MCP
+configuration fields. `kind` may be omitted when `command` is present:
+
+```json
+{
+  "id": "local-tools",
+  "command": "npx",
+  "args": ["-y", "your-mcp-package"],
+  "env": {"EXAMPLE_API_KEY": "value"},
+  "cwd": ".",
+  "toolNamePrefix": "local"
+}
+```
+
+The command inherits the `pmai` environment, with `env` values taking
+precedence. A bare command is resolved through `PATH`; `cwd` is optional. Stdio
+MCP support, including its subprocess factory and public transport types, is
+compiled out on iOS. The iOS app continues to support Streamable HTTP only.
+
 The example MCP entry is disabled so the example remains safe to inspect. Set
-its URL, enable it, discover its tools with `/tools`, and add the names you want
-to an agent's `toolNames` list. Set `useToolProxy` on an agent when models should
-see only MaiCore's shared `list-tools` and `call-tool` interface.
+an HTTP URL or stdio command, enable it, discover its tools with `/tools`, and
+add the names you want to an agent's `toolNames` list. Set `useToolProxy` on an
+agent when models should see only MaiCore's shared `list-tools` and `call-tool`
+interface.
