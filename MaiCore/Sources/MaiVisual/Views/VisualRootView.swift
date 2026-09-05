@@ -7,6 +7,7 @@ import SwiftTUIRuntime
 struct VisualRootView: View {
   @Bindable var workspace: VisualWorkspace
   @Environment(\.clipboardWriteAction) private var clipboardWrite
+  @Environment(\.requestTermination) private var requestTermination
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -34,6 +35,17 @@ struct VisualRootView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .panel(id: "pmai-visual")
+    // Ctrl chords and function keys reach every terminal; the Alt chords only
+    // work where the terminal sends Alt as an Escape prefix. Every action is
+    // also in the command menu and the toolbar, so nothing depends on them.
+    // The chain is kept short on purpose: each modifier nests the root view's
+    // generic type one level deeper, and deep chains overflow the stack.
+    .keyCommand("Command menu", key: .character("k"), modifiers: .ctrl) {
+      workspace.showsCommandMenu = true
+    }
+    .keyCommand("Command menu", key: .functionKey(2), modifiers: []) {
+      workspace.showsCommandMenu = true
+    }
     .keyCommand("New conversation", key: .character("n"), modifiers: .alt) {
       workspace.newConversationInFocusedPane()
     }
@@ -50,11 +62,7 @@ struct VisualRootView: View {
       workspace.closeFocusedPane()
     }
     .keyCommand("Next pane", key: .arrowRight, modifiers: .alt) { workspace.focusNextPane() }
-    .keyCommand("Next pane", key: .arrowDown, modifiers: .alt) { workspace.focusNextPane() }
     .keyCommand("Previous pane", key: .arrowLeft, modifiers: .alt) {
-      workspace.focusPreviousPane()
-    }
-    .keyCommand("Previous pane", key: .arrowUp, modifiers: .alt) {
       workspace.focusPreviousPane()
     }
     .keyCommand("Toggle sidebar", key: .character("b"), modifiers: .alt) {
@@ -64,14 +72,8 @@ struct VisualRootView: View {
       workspace.cancelFocusedRun()
     }
     .keyCommand("Copy last reply", key: .character("c"), modifiers: .alt) { copyLastReply() }
-    .keyCommand("Chats", key: .character("1"), modifiers: .alt) { workspace.selectedTab = .chats }
-    .keyCommand("Providers", key: .character("2"), modifiers: .alt) {
-      workspace.selectedTab = .providers
-    }
-    .keyCommand("MCP", key: .character("3"), modifiers: .alt) { workspace.selectedTab = .mcp }
-    .keyCommand("Tools", key: .character("4"), modifiers: .alt) { workspace.selectedTab = .tools }
-    .keyCommand("Agents", key: .character("5"), modifiers: .alt) {
-      workspace.selectedTab = .agents
+    .sheet("Commands", isPresented: $workspace.showsCommandMenu) {
+      CommandMenuSheet(commands: menuCommands, dismiss: { workspace.showsCommandMenu = false })
     }
     .sheet(
       item: $workspace.pendingApproval,
@@ -99,7 +101,92 @@ struct VisualRootView: View {
     } message: { request in
       Text("Delete '\(request.title)' permanently?")
     }
+    .onChange(of: workspace.exitRequested) {
+      if workspace.exitRequested { _ = requestTermination() }
+    }
     .task { await workspace.refreshRegistries() }
+  }
+
+  /// Everything the workspace can do, in one list the menu renders as buttons.
+  private var menuCommands: [VisualMenuCommand] {
+    let alt = visualAlternateKeyName
+    let hasPanes = workspace.layout.panes.count > 1
+    return [
+      VisualMenuCommand(id: "new", name: "New conversation", shortcut: "\(alt)+N or /pane new") {
+        workspace.newConversationInFocusedPane()
+      },
+      VisualMenuCommand(
+        id: "split-right", name: "Split pane right", shortcut: "\(alt)+V or /pane split"
+      ) {
+        workspace.splitFocusedPane(.horizontal)
+      },
+      VisualMenuCommand(
+        id: "split-down", name: "Split pane down", shortcut: "\(alt)+S or /pane down"
+      ) {
+        workspace.splitFocusedPane(.vertical)
+      },
+      VisualMenuCommand(
+        id: "close", name: "Close pane", shortcut: "\(alt)+X or /pane close",
+        isEnabled: workspace.layout.canCloseFocusedPane
+      ) {
+        workspace.closeFocusedPane()
+      },
+      VisualMenuCommand(
+        id: "next", name: "Focus next pane", shortcut: "\(alt)+→ or /pane next", isEnabled: hasPanes
+      ) {
+        workspace.focusNextPane()
+      },
+      VisualMenuCommand(
+        id: "prev", name: "Focus previous pane", shortcut: "\(alt)+← or /pane prev",
+        isEnabled: hasPanes
+      ) {
+        workspace.focusPreviousPane()
+      },
+      VisualMenuCommand(id: "rename", name: "Rename chat") {
+        workspace.requestRenameFocusedConversation()
+      },
+      VisualMenuCommand(id: "clear", name: "Clear chat", shortcut: "/clear") {
+        workspace.clearFocusedConversation()
+      },
+      VisualMenuCommand(
+        id: "delete", name: "Delete chat", isEnabled: workspace.conversations.count > 1
+      ) {
+        workspace.deleteFocusedConversation()
+      },
+      VisualMenuCommand(
+        id: "sidebar", name: workspace.showsSidebar ? "Hide sidebar" : "Show sidebar",
+        shortcut: "\(alt)+B or /sidebar"
+      ) {
+        workspace.showsSidebar.toggle()
+      },
+      VisualMenuCommand(
+        id: "cancel", name: "Cancel reply", shortcut: "\(alt)+K or /cancel",
+        isEnabled: workspace.focusedConversation?.isRunning ?? false
+      ) {
+        workspace.cancelFocusedRun()
+      },
+      VisualMenuCommand(id: "copy", name: "Copy last reply", shortcut: "\(alt)+C or /copy") {
+        copyLastReply()
+      },
+      VisualMenuCommand(id: "tab-chats", name: "Show chats", shortcut: "/tab chats") {
+        workspace.selectedTab = .chats
+      },
+      VisualMenuCommand(id: "tab-providers", name: "Show providers", shortcut: "/tab providers") {
+        workspace.selectedTab = .providers
+      },
+      VisualMenuCommand(id: "tab-mcp", name: "Show MCP servers", shortcut: "/tab mcp") {
+        workspace.selectedTab = .mcp
+      },
+      VisualMenuCommand(id: "tab-tools", name: "Show tools", shortcut: "/tab tools") {
+        workspace.selectedTab = .tools
+      },
+      VisualMenuCommand(id: "tab-agents", name: "Show agents", shortcut: "/tab agents") {
+        workspace.selectedTab = .agents
+      },
+      VisualMenuCommand(id: "exit", name: "Back to the REPL", shortcut: "Ctrl+C or /exit") {
+        workspace.requestExit()
+      },
+    ]
   }
 
   private var header: some View {
@@ -125,7 +212,7 @@ struct VisualRootView: View {
     HStack(spacing: 2) {
       Text(footerHint).foregroundStyle(.muted).lineLimit(1).truncationMode(.tail)
       Spacer(minLength: 1)
-      Text("Ctrl+C back to REPL").foregroundStyle(.separator)
+      Text("Ctrl+K menu · Ctrl+C back to REPL").foregroundStyle(.separator)
     }
     .padding(.horizontal, 1)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -134,28 +221,20 @@ struct VisualRootView: View {
   private var footerHint: String {
     switch workspace.selectedTab {
     case .chats:
-      "\(visualAlternateKeyName)+N new · \(visualAlternateKeyName)+V/S split · \(visualAlternateKeyName)+X close · \(visualAlternateKeyName)+arrows focus · \(visualAlternateKeyName)+B sidebar · \(visualAlternateKeyName)+C copy · \(visualAlternateKeyName)+K cancel · \(visualAlternateKeyName)+1-5 tabs"
+      "Tab moves between controls · Return activates · type /help for commands, /pane and /tab for layout"
     case .providers:
-      "Register OpenAI-compatible or plugin providers; 'Use' switches the focused chat · \(visualAlternateKeyName)+1-5 tabs"
+      "Register OpenAI-compatible or plugin providers; 'Use' switches the focused chat"
     case .mcp:
-      "Connect Streamable HTTP MCP servers; their tools appear in the Tools tab · \(visualAlternateKeyName)+1-5 tabs"
+      "Connect Streamable HTTP MCP servers; their tools appear in the Tools tab"
     case .tools:
-      "Toggle which tools the focused chat may call; register plugin tool sources · \(visualAlternateKeyName)+1-5 tabs"
+      "Toggle which tools the focused chat may call; register plugin tool sources"
     case .agents:
-      "Tune the focused chat, switch agents, or save the chat as a named agent · \(visualAlternateKeyName)+1-5 tabs"
+      "Tune the focused chat, switch agents, or save the chat as a named agent"
     }
   }
 
   private func copyLastReply() {
-    guard let focused = workspace.focusedConversation else { return }
-    guard let text = focused.lastAssistantText else {
-      workspace.status = "No assistant reply to copy in '\(focused.title)'."
-      return
-    }
-    workspace.status =
-      clipboardWrite(text)
-      ? "Copied the last reply of '\(focused.title)' to the clipboard."
-      : "The terminal does not expose a clipboard; use /copy in the REPL."
+    workspace.copyLastReply { clipboardWrite($0) }
   }
 }
 
@@ -208,5 +287,96 @@ struct ApprovalSheet: View {
     }
     .padding(1)
     .frame(minWidth: 50, maxWidth: 90, alignment: .leading)
+  }
+}
+
+/// One entry of the command menu.
+struct VisualMenuCommand: Identifiable, Sendable {
+  let id: String
+  let name: String
+  var shortcut: String?
+  var isEnabled = true
+  let action: @MainActor @Sendable () -> Void
+
+  init(
+    id: String,
+    name: String,
+    shortcut: String? = nil,
+    isEnabled: Bool = true,
+    action: @escaping @MainActor @Sendable () -> Void
+  ) {
+    self.id = id
+    self.name = name
+    self.shortcut = shortcut
+    self.isEnabled = isEnabled
+    self.action = action
+  }
+}
+
+/// A filterable list of every workspace action, opened with Ctrl+K, F2,
+/// the toolbar's Menu button, or `/menu`. Tab and the arrows move between the
+/// entries, Return runs one, Escape closes the sheet.
+struct CommandMenuSheet: View {
+  let commands: [VisualMenuCommand]
+  let dismiss: @MainActor @Sendable () -> Void
+  @State private var query = ""
+  @FocusState private var isQueryFocused: Bool
+
+  private var matches: [VisualMenuCommand] {
+    let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+    guard !needle.isEmpty else { return commands }
+    return commands.filter { command in
+      command.name.lowercased().contains(needle)
+        || (command.shortcut?.lowercased().contains(needle) ?? false)
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 2) {
+        Text("Commands").bold()
+        Spacer(minLength: 1)
+        Text("Return runs · Esc closes").foregroundStyle(.separator)
+      }
+      Divider()
+      TextField("Filter commands", text: $query)
+        .focused($isQueryFocused)
+      Divider()
+      if matches.isEmpty {
+        Text("No matching command").foregroundStyle(.muted)
+      }
+      ScrollView(.vertical) {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(matches) { command in
+            Button {
+              command.action()
+              dismiss()
+            } label: {
+              HStack(spacing: 2) {
+                Text(command.name)
+                Spacer(minLength: 1)
+                if let shortcut = command.shortcut {
+                  Text(shortcut).foregroundStyle(.separator)
+                }
+              }
+            }
+            .disabled(!command.isEnabled)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+      }
+      .frame(maxHeight: 14)
+      Divider()
+      HStack {
+        Spacer(minLength: 1)
+        Button("Close", role: .cancel) { dismiss() }
+      }
+    }
+    .padding(1)
+    .frame(minWidth: 56, maxWidth: 84, alignment: .leading)
+    .onAppear {
+      query = ""
+      isQueryFocused = true
+    }
   }
 }

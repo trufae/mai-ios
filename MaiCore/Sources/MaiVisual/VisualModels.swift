@@ -95,7 +95,8 @@ public indirect enum PaneNode: Equatable, Sendable {
     case .leaf:
       self
     case .split(let axis, let first, let second):
-      .split(axis, first.assigning(conversation, to: pane), second.assigning(conversation, to: pane))
+      .split(
+        axis, first.assigning(conversation, to: pane), second.assigning(conversation, to: pane))
     }
   }
 
@@ -127,7 +128,9 @@ public struct PaneLayout: Equatable, Sendable {
 
   public var panes: [PaneID] { root.paneIDs }
   public var canCloseFocusedPane: Bool { panes.count > 1 }
-  public var focusedConversation: UUID { root.conversation(in: focusedPane) ?? root.leaves[0].conversation }
+  public var focusedConversation: UUID {
+    root.conversation(in: focusedPane) ?? root.leaves[0].conversation
+  }
 
   public func conversation(in pane: PaneID) -> UUID? { root.conversation(in: pane) }
 
@@ -218,6 +221,48 @@ public struct VisualWorkspaceSnapshot: Equatable, Sendable {
   }
 }
 
+/// A slash command typed into a pane, with the state the host needs to run it
+/// the way its REPL would.
+public struct VisualCommandRequest: Sendable {
+  public var input: String
+  public var conversation: VisualConversationSeed
+  public var configuration: MaiConfiguration
+  public var catalogs: [MCPServerCatalog]
+
+  public init(
+    input: String,
+    conversation: VisualConversationSeed,
+    configuration: MaiConfiguration,
+    catalogs: [MCPServerCatalog]
+  ) {
+    self.input = input
+    self.conversation = conversation
+    self.configuration = configuration
+    self.catalogs = catalogs
+  }
+}
+
+/// What a slash command printed and how it changed the conversation.
+public struct VisualCommandOutcome: Sendable {
+  public var output: String
+  public var conversation: VisualConversationSeed
+  /// True for commands such as `/exit` that hand the terminal back to the host.
+  public var leavesVisualMode: Bool
+
+  public init(
+    output: String,
+    conversation: VisualConversationSeed,
+    leavesVisualMode: Bool = false
+  ) {
+    self.output = output
+    self.conversation = conversation
+    self.leavesVisualMode = leavesVisualMode
+  }
+}
+
+public typealias VisualCommandHandler =
+  @Sendable (VisualCommandRequest) async -> VisualCommandOutcome
+
 public struct VisualLaunch: Sendable {
   /// The REPL's conversation. It replaces the focused conversation of a resumed
   /// snapshot, or becomes the only conversation of a fresh workspace.
@@ -227,6 +272,8 @@ public struct VisualLaunch: Sendable {
   public var configurationPath: String?
   public var catalogs: [MCPServerCatalog]
   public var environment: [String: String]
+  /// Runs `/commands` typed into a pane. Without a handler they are reported as unavailable.
+  public var commandHandler: VisualCommandHandler?
 
   public init(
     focusedConversation: VisualConversationSeed,
@@ -234,7 +281,8 @@ public struct VisualLaunch: Sendable {
     configuration: MaiConfiguration? = nil,
     configurationPath: String? = nil,
     catalogs: [MCPServerCatalog] = [],
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    commandHandler: VisualCommandHandler? = nil
   ) {
     self.focusedConversation = focusedConversation
     self.snapshot = snapshot
@@ -242,6 +290,7 @@ public struct VisualLaunch: Sendable {
     self.configurationPath = configurationPath
     self.catalogs = catalogs
     self.environment = environment
+    self.commandHandler = commandHandler
   }
 }
 

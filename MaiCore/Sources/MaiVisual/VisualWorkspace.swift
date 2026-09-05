@@ -85,6 +85,7 @@ public final class VisualWorkspace {
   @ObservationIgnored let runtime: AgentRuntime
   @ObservationIgnored let plugins: PluginRegistry
   @ObservationIgnored let approvals: VisualApprovalHandler
+  @ObservationIgnored let commandHandler: VisualCommandHandler?
   public let environment: [String: String]
   public var configuration: MaiConfiguration
   public private(set) var configurationChanged = false
@@ -95,7 +96,11 @@ public final class VisualWorkspace {
   public private(set) var layout: PaneLayout
   public var selectedTab: VisualTab
   public var showsSidebar = true
+  /// Presents the searchable command menu; every pane and tab action is listed there.
+  public var showsCommandMenu = false
   public var status: String?
+  /// Set when a command such as `/exit` asks to hand the terminal back to the host.
+  public private(set) var exitRequested = false
   public private(set) var providers: [ProviderDescriptor] = []
   public private(set) var tools: [ToolDefinition] = []
   public private(set) var agents: [AgentDefinition] = []
@@ -123,6 +128,7 @@ public final class VisualWorkspace {
     self.runtime = runtime
     self.plugins = plugins
     self.approvals = approvals
+    commandHandler = launch.commandHandler
     environment = launch.environment
     configuration = launch.configuration ?? MaiConfiguration()
     configurationPath =
@@ -296,6 +302,10 @@ public final class VisualWorkspace {
   public func send(_ conversation: VisualConversation) {
     let text = conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
+    if text.hasPrefix("/") {
+      runCommand(text, in: conversation)
+      return
+    }
     guard !conversation.isRunning else {
       status = "'\(conversation.title)' is still replying; \(visualAlternateKeyName)+K cancels it."
       return
@@ -316,6 +326,130 @@ public final class VisualWorkspace {
       } catch {
         conversation.failRun(error.localizedDescription)
       }
+    }
+  }
+
+  /// Runs a slash command through the host's REPL handler and shows what it
+  /// printed above the pane's input. The command never reaches the model.
+  public func runCommand(_ input: String, in conversation: VisualConversation) {
+    conversation.draft = ""
+    if let output = runVisualCommand(input) {
+      conversation.commandOutput = VisualCommandOutput(command: input, text: output)
+      return
+    }
+    guard let commandHandler else {
+      conversation.commandOutput = VisualCommandOutput(
+        command: input,
+        text: "Slash commands are not available in this session.")
+      return
+    }
+    guard !conversation.isRunning else {
+      status = "'\(conversation.title)' is still replying; wait for it or cancel it first."
+      return
+    }
+    let request = VisualCommandRequest(
+      input: input,
+      conversation: conversation.seed,
+      configuration: configuration,
+      catalogs: catalogs)
+    conversation.commandOutput = VisualCommandOutput(command: input, text: "…")
+    conversation.commandTask = Task { [weak self] in
+      let outcome = await commandHandler(request)
+      conversation.applyCommandResult(outcome.conversation)
+      var output = outcome.output.trimmingCharacters(in: .newlines)
+      if input.hasPrefix("/help") { output += "\n\n" + VisualWorkspace.visualCommandsHelp }
+      conversation.commandOutput = VisualCommandOutput(command: input, text: output)
+      conversation.commandTask = nil
+      if outcome.leavesVisualMode { self?.exitRequested = true }
+    }
+  }
+
+  public func dismissCommandOutput(in conversation: VisualConversation) {
+    conversation.commandOutput = nil
+  }
+
+  /// Asks the host to take the terminal back, like `/exit` or Ctrl+C.
+  public func requestExit() {
+    exitRequested = true
+  }
+
+  /// Copies the focused chat's last reply through the terminal clipboard action.
+  public func copyLastReply(using write: (String) -> Bool) {
+    guard let focused = focusedConversation else { return }
+    guard let text = focused.lastAssistantText else {
+      status = "No assistant reply to copy in '\(focused.title)'."
+      return
+    }
+    status =
+      write(text)
+      ? "Copied the last reply of '\(focused.title)' to the clipboard."
+      : "The terminal does not expose a clipboard; use /copy in the REPL."
+  }
+
+  public static let visualCommandsHelp = """
+    Visual mode commands:
+      /pane new            Start a conversation in the focused pane
+      /pane split          Split the focused pane to the right
+      /pane down           Split the focused pane downwards
+      /pane close          Close the focused pane
+      /pane next|prev      Move focus between panes
+      /tab NAME            Show chats, providers, mcp, tools, or agents
+      /menu                Open the command menu (also Ctrl+K or F2)
+      /sidebar             Show or hide the conversation list
+      /cancel              Cancel the focused chat's reply
+      /exit                Return to the REPL (also Ctrl+C)
+    """
+
+  /// Commands that only exist inside the workspace. Returns nil for REPL commands.
+  func runVisualCommand(_ input: String) -> String? {
+    let parts = input.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    guard let command = parts.first?.lowercased() else { return nil }
+    let argument = parts.dropFirst().first?.lowercased() ?? ""
+    switch command {
+    case "/pane":
+      switch argument {
+      case "new":
+        newConversationInFocusedPane()
+        return "Started a new conversation in the focused pane."
+      case "split", "right":
+        splitFocusedPane(.horizontal)
+        return "Split the pane to the right."
+      case "down", "vsplit":
+        splitFocusedPane(.vertical)
+        return "Split the pane downwards."
+      case "close":
+        guard layout.canCloseFocusedPane else { return "The last pane cannot be closed." }
+        closeFocusedPane()
+        return "Closed the pane."
+      case "next":
+        focusNextPane()
+        return "Focused the next pane."
+      case "prev", "previous":
+        focusPreviousPane()
+        return "Focused the previous pane."
+      default:
+        return "Usage: /pane new|split|down|close|next|prev"
+      }
+    case "/tab":
+      guard let tab = VisualTab(rawValue: argument) else {
+        return "Usage: /tab " + VisualTab.allCases.map(\.rawValue).joined(separator: "|")
+      }
+      selectedTab = tab
+      return "Showing the \(tab.title) tab."
+    case "/menu":
+      showsCommandMenu = true
+      return "Command menu opened."
+    case "/sidebar":
+      showsSidebar.toggle()
+      return showsSidebar ? "Sidebar shown." : "Sidebar hidden."
+    case "/cancel":
+      guard let focused = focusedConversation, focused.isRunning else {
+        return "No reply is running in the focused chat."
+      }
+      cancelFocusedRun()
+      return "Cancelled the reply."
+    default:
+      return nil
     }
   }
 

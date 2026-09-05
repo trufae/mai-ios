@@ -15,6 +15,8 @@ import MaiVisual
 
 private struct CLIOptions {
   var configPath: String?
+  var statePath: String?
+  var historyPath: String?
   var agentOverride: String?
   var providerOverride: ProviderID?
   var modelOverride: String?
@@ -29,6 +31,8 @@ private struct CLIOptions {
 
   init(arguments: [String], environment: [String: String]) throws {
     configPath = environment["PMAI_CONFIG"]
+    statePath = environment["PMAI_STATE"]
+    historyPath = environment["PMAI_HISTORY"]
     var positional: [String] = []
     var index = 0
     while index < arguments.count {
@@ -36,6 +40,10 @@ private struct CLIOptions {
       switch argument {
       case "--config":
         configPath = try Self.value(after: argument, in: arguments, index: &index)
+      case "--state":
+        statePath = try Self.value(after: argument, in: arguments, index: &index)
+      case "--history":
+        historyPath = try Self.value(after: argument, in: arguments, index: &index)
       case "--agent":
         agentOverride = try Self.value(after: argument, in: arguments, index: &index)
       case "--provider":
@@ -110,7 +118,7 @@ private struct VisualBridge {
   var implicitProviders: [ConfiguredProvider]
 }
 
-private struct SessionProfile {
+struct SessionProfile {
   var agentID: String
   var provider: ProviderID
   var model: String
@@ -185,37 +193,82 @@ private struct SessionProfile {
   }
 }
 
-private struct REPLSession {
+struct REPLSession {
+  var id: UUID
+  var title: String
   var profile: SessionProfile
   var history: AgentTranscript
   var pendingContent: [ContentPart]
+  var createdAt: Date
+  var updatedAt: Date
   /// Conversations and panes left behind by the last `/visual` session.
   var visualSnapshot: VisualWorkspaceSnapshot?
 
-  init(profile: SessionProfile, pendingContent: [ContentPart] = []) {
+  init(
+    id: UUID = UUID(),
+    title: String? = nil,
+    profile: SessionProfile,
+    pendingContent: [ContentPart] = [],
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.title = title ?? profile.agentID
     self.profile = profile
     history = AgentTranscript(messages: Self.initialHistory(for: profile))
     self.pendingContent = pendingContent
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+
+  init(chat: AgentChat) {
+    id = chat.id
+    title = chat.title
+    profile = SessionProfile(definition: chat.primaryAgent)
+    history = AgentTranscript(messages: chat.messages)
+    pendingContent = chat.pendingContent
+    createdAt = chat.createdAt
+    updatedAt = chat.updatedAt
+  }
+
+  var chat: AgentChat {
+    AgentChat(
+      id: id,
+      title: title,
+      primaryAgent: profile.agentDefinition,
+      messages: history.messages,
+      pendingContent: pendingContent,
+      createdAt: createdAt,
+      updatedAt: updatedAt)
   }
 
   mutating func reset(profile: SessionProfile? = nil) {
     if let profile { self.profile = profile }
     history.replaceAll(with: Self.initialHistory(for: self.profile))
     pendingContent.removeAll()
+    touch()
+  }
+
+  mutating func touch() {
+    updatedAt = Date()
   }
 
   func visualSeed() -> VisualConversationSeed {
     VisualConversationSeed(
-      title: profile.agentID,
+      id: id,
+      title: title,
       profile: profile.agentDefinition,
       messages: history.messages,
       pendingContent: pendingContent)
   }
 
   mutating func adopt(_ conversation: VisualConversationSeed) {
+    id = conversation.id
+    title = conversation.title
     profile = SessionProfile(definition: conversation.profile)
     history.replaceAll(with: conversation.messages)
     pendingContent = conversation.pendingContent
+    touch()
   }
 
   private static func initialHistory(for profile: SessionProfile) -> [AgentMessage] {
@@ -227,6 +280,19 @@ private struct REPLSession {
 private actor TerminalWriter {
   private var wroteRootDelta = false
   private var rootLineOpen = false
+  /// When set, output is collected for another surface instead of hitting the tty.
+  private let capturesOutput: Bool
+  private var captured: [String] = []
+
+  init(capturesOutput: Bool = false) {
+    self.capturesOutput = capturesOutput
+  }
+
+  func drainCaptured() -> String {
+    let text = captured.joined()
+    captured.removeAll()
+    return text
+  }
 
   func resetResponse() {
     wroteRootDelta = false
@@ -265,19 +331,37 @@ private actor TerminalWriter {
   func prompt(_ value: String) { write(value) }
 
   func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
+    if capturesOutput {
+      captured.append(value + "\n")
+      return
+    }
     handle.write(Data((value + "\n").utf8))
   }
 
   private func write(_ value: String) {
+    if capturesOutput {
+      captured.append(value)
+      return
+    }
     FileHandle.standardOutput.write(Data(value.utf8))
   }
 
   private func status(_ value: String) {
+    if capturesOutput {
+      captured.append(value + "\n")
+      return
+    }
     FileHandle.standardError.write(Data((value + "\n").utf8))
   }
 
   private func closeRootLine(force: Bool = false) {
-    if rootLineOpen || force { FileHandle.standardOutput.write(Data("\n".utf8)) }
+    if rootLineOpen || force {
+      if capturesOutput {
+        captured.append("\n")
+      } else {
+        FileHandle.standardOutput.write(Data("\n".utf8))
+      }
+    }
     rootLineOpen = false
   }
 }
@@ -369,9 +453,9 @@ private struct MaiCLI {
       }
 
       let loaded = try loadConfiguration(options: options)
-      let configuration = loaded?.configuration
+      let loadedConfiguration = loaded?.configuration
       let approvalHandler = TerminalApprovalHandler(
-        configuration: configuration?.approvals ?? .init())
+        configuration: loadedConfiguration?.approvals ?? .init())
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
@@ -383,35 +467,49 @@ private struct MaiCLI {
       try await loadNativePlugins(
         options: options,
         loadedConfigurationPath: loaded?.path,
-        configuration: configuration,
+        configuration: loadedConfiguration,
         host: nativePluginHost,
         registry: plugins)
       try await registerTools(
         in: runtime,
         plugins: plugins,
-        configuration: configuration,
+        configuration: loadedConfiguration,
         environment: environment)
       let ocrProvider = try await configuredOCRProvider(
         plugins: plugins,
-        configuration: configuration,
+        configuration: loadedConfiguration,
         environment: environment)
       let setup = try await configureRuntime(
         runtime,
         plugins: plugins,
-        configuration: configuration,
+        configuration: loadedConfiguration,
         options: options,
         environment: environment)
       let profile = try selectedProfile(
-        configuration: configuration,
+        configuration: loadedConfiguration,
         options: options,
         environment: environment)
-      var session = REPLSession(
-        profile: profile,
-        pendingContent: try options.imagePaths.map(imageContent))
+      let configurationPath = loaded?.path ?? defaultConfigurationPath
+      var configuration = loadedConfiguration
+      if configuration == nil {
+        configuration = MaiConfiguration(
+          defaultAgent: profile.agentID,
+          providers: setup.implicitProviders,
+          agents: [profile.agentDefinition])
+        try configuration?.save(to: URL(fileURLWithPath: configurationPath))
+      }
+      let stateURL = URL(fileURLWithPath: resolvedStatePath(options: options))
+      var workspace = try loadChatWorkspace(from: stateURL, initialProfile: profile)
+      var session = REPLSession(chat: workspace.selectedChat!)
+      session.pendingContent.append(contentsOf: try options.imagePaths.map(imageContent))
+      session.touch()
+      workspace.upsert(session.chat, selecting: true)
       let terminal = TerminalWriter()
 
       if let path = loaded?.path {
         await terminal.line("Loaded \(path)", to: .standardError)
+      } else {
+        await terminal.line("Created \(configurationPath)", to: .standardError)
       }
       if let prompt = options.initialPrompt {
         let succeeded = await submit(
@@ -419,11 +517,15 @@ private struct MaiCLI {
           session: &session,
           runtime: runtime,
           terminal: terminal)
+        workspace.upsert(session.chat, selecting: true)
+        try workspace.save(to: stateURL)
         if !succeeded { exit(1) }
         return
       }
       await runREPL(
-        session: &session,
+        workspace: &workspace,
+        stateURL: stateURL,
+        historyURL: URL(fileURLWithPath: resolvedHistoryPath(options: options)),
         runtime: runtime,
         plugins: plugins,
         ocrProvider: ocrProvider,
@@ -431,7 +533,7 @@ private struct MaiCLI {
         catalogs: setup.catalogs,
         visual: VisualBridge(
           approvalHandler: approvalHandler,
-          configurationPath: loaded?.path,
+          configurationPath: configurationPath,
           implicitProviders: setup.implicitProviders),
         terminal: terminal)
     } catch {
@@ -609,7 +711,9 @@ private struct MaiCLI {
   }
 
   private static func runREPL(
-    session: inout REPLSession,
+    workspace: inout AgentChatWorkspace,
+    stateURL: URL,
+    historyURL: URL,
     runtime: AgentRuntime,
     plugins: PluginRegistry,
     ocrProvider: any OCRProvider,
@@ -620,18 +724,45 @@ private struct MaiCLI {
   ) async {
     var configuration = configuration
     var catalogs = catalogs
-    await terminal.line("mai — MaiCore agent REPL")
-    await terminal.line("Type /help for commands. Agent: \(session.profile.agentID)")
+    var session = REPLSession(chat: workspace.selectedChat!)
+    let editor = TerminalLineEditor(historyURL: historyURL)
+    await terminal.line("pmai — MaiCore agent REPL")
+    await terminal.line(
+      "Type /help for commands. Chat: \(session.title); agent: \(session.profile.agentID)")
 
     while true {
-      await terminal.prompt("mai[\(session.profile.agentID)]> ")
-      guard let input = readLine(strippingNewline: true) else {
-        await terminal.line()
+      let prompt = "pmai[\(session.title):\(session.profile.agentID)]> "
+      guard
+        let input = editor.readLine(
+          prompt: prompt,
+          completions: completionCandidates(
+            workspace: workspace,
+            configuration: configuration))
+      else {
+        workspace.upsert(session.chat, selecting: true)
+        await saveWorkspace(workspace, to: stateURL, terminal: terminal)
         return
       }
       let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !text.isEmpty else { continue }
       if text.hasPrefix("/") {
+        if text == "/chat" || text.hasPrefix("/chat ") {
+          workspace.upsert(session.chat, selecting: true)
+          await handleWorkspaceChatCommand(
+            String(text.dropFirst("/chat".count)).trimmingCharacters(
+              in: .whitespacesAndNewlines),
+            session: &session,
+            workspace: &workspace,
+            configuration: configuration,
+            terminal: terminal)
+          workspace.upsert(session.chat, selecting: true)
+          await saveWorkspace(workspace, to: stateURL, terminal: terminal)
+          continue
+        }
+        if text == "/visual" {
+          workspace.upsert(session.chat, selecting: true)
+          session.visualSnapshot = visualSnapshot(for: workspace)
+        }
         if await handleCommand(
           text,
           session: &session,
@@ -643,11 +774,24 @@ private struct MaiCLI {
           visual: visual,
           terminal: terminal)
         {
+          workspace.upsert(session.chat, selecting: true)
+          await saveWorkspace(workspace, to: stateURL, terminal: terminal)
           return
         }
+        if text == "/visual", let snapshot = session.visualSnapshot {
+          workspace = chatWorkspace(from: snapshot, focusedID: session.id, previous: workspace)
+          session = REPLSession(chat: workspace.selectedChat!)
+        } else {
+          session.touch()
+          workspace.upsert(session.chat, selecting: true)
+        }
+        await saveWorkspace(workspace, to: stateURL, terminal: terminal)
         continue
       }
       _ = await submit(text, session: &session, runtime: runtime, terminal: terminal)
+      session.touch()
+      workspace.upsert(session.chat, selecting: true)
+      await saveWorkspace(workspace, to: stateURL, terminal: terminal)
     }
   }
 
@@ -717,7 +861,9 @@ private struct MaiCLI {
     case "/providers":
       for provider in await runtime.availableProviders() {
         let selected = provider.id == session.profile.provider ? "*" : " "
-        await terminal.line("\(selected) \(provider.id) — \(provider.displayName)")
+        let baseURL = configuration?.providers.first { $0.id == provider.id.rawValue }?.baseURL
+          .map { " — \($0.absoluteString)" } ?? ""
+        await terminal.line("\(selected) \(provider.id) — \(provider.displayName)\(baseURL)")
       }
     case "/plugins":
       for plugin in await plugins.installedPlugins() {
@@ -759,33 +905,55 @@ private struct MaiCLI {
         return false
       }
       session.profile.provider = id
-      await terminal.line("Provider: \(id)")
+      let saved = await persistAgentProfile(
+        session: session,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        runtime: runtime,
+        terminal: terminal)
+      if saved {
+        await terminal.line("Provider: \(id) (saved for agent \(session.profile.agentID))")
+      }
     case "/model":
       if argument.isEmpty {
         await terminal.line(
           session.profile.model.isEmpty ? "No model selected." : "Model: \(session.profile.model)")
       } else {
         session.profile.model = argument
-        await terminal.line("Model: \(argument)")
+        let saved = await persistAgentProfile(
+          session: session,
+          configuration: &configuration,
+          configurationPath: visual.configurationPath,
+          runtime: runtime,
+          terminal: terminal)
+        if saved {
+          await terminal.line("Model: \(argument) (saved for agent \(session.profile.agentID))")
+        }
       }
     case "/agents":
-      let agents = await runtime.availableAgents()
+      let agents: [AgentDefinition]
+      if let configured = configuration?.agents {
+        agents = configured
+      } else {
+        agents = await runtime.availableAgents()
+      }
       if agents.isEmpty { await terminal.line("No configured agents.") }
       for agent in agents {
         let selected = agent.id == session.profile.agentID ? "*" : " "
-        await terminal.line("\(selected) \(agent.id) — \(agent.displayName)")
+        let baseURL = configuration?.providers.first { $0.id == agent.provider.rawValue }?.baseURL?
+          .absoluteString ?? "-"
+        await terminal.line(
+          "\(selected) \(agent.id) — \(agent.displayName) [\(agent.provider) \(baseURL) \(agent.model)]")
       }
     case "/agent":
-      guard !argument.isEmpty else {
-        await terminal.line("Current agent: \(session.profile.agentID)")
-        return false
-      }
-      guard let definition = configuration?.agents.first(where: { $0.id == argument }) else {
-        await terminal.line("Unknown agent '\(argument)'. Use /agents.")
-        return false
-      }
-      session.reset(profile: SessionProfile(definition: definition))
-      await terminal.line("Agent: \(argument). Conversation cleared.")
+      await handleAgentCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/tools":
       if session.profile.useToolProxy {
         await terminal.line("Tool proxy enabled: models see list-tools and call-tool.")
@@ -808,10 +976,26 @@ private struct MaiCLI {
         await terminal.line("Tool proxy: \(session.profile.useToolProxy ? "on" : "off")")
       case "on":
         session.profile.useToolProxy = true
-        await terminal.line("Tool proxy enabled.")
+        if await persistAgentProfile(
+          session: session,
+          configuration: &configuration,
+          configurationPath: visual.configurationPath,
+          runtime: runtime,
+          terminal: terminal)
+        {
+          await terminal.line("Tool proxy enabled.")
+        }
       case "off":
         session.profile.useToolProxy = false
-        await terminal.line("Tool proxy disabled.")
+        if await persistAgentProfile(
+          session: session,
+          configuration: &configuration,
+          configurationPath: visual.configurationPath,
+          runtime: runtime,
+          terminal: terminal)
+        {
+          await terminal.line("Tool proxy disabled.")
+        }
       default:
         await terminal.line("Usage: /proxy [on|off]")
       }
@@ -853,6 +1037,7 @@ private struct MaiCLI {
         session: &session,
         runtime: runtime,
         plugins: plugins,
+        ocrProvider: ocrProvider,
         configuration: &configuration,
         catalogs: &catalogs,
         visual: visual,
@@ -864,6 +1049,179 @@ private struct MaiCLI {
       await terminal.line("Unknown command. Type /help.")
     }
     return false
+  }
+
+  private static func handleAgentCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 5, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    guard let action = fields.first?.lowercased() else {
+      await showAgent(session.profile.agentID, session: session, configuration: configuration, terminal: terminal)
+      await terminal.line("Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+      return
+    }
+
+    if action == "add" {
+      guard fields.count == 6, let baseURL = URL(string: fields[3]) else {
+        await terminal.line("Usage: /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+        return
+      }
+      let name = fields[1]
+      let providerID = ProviderID(fields[2])
+      var draft = configuration ?? MaiConfiguration()
+      var providerChanged = false
+      if let index = draft.providers.firstIndex(where: { $0.id == providerID.rawValue }) {
+        if let configuredURL = draft.providers[index].baseURL, configuredURL != baseURL {
+          await terminal.line(
+            "Provider '\(providerID)' already uses \(configuredURL.absoluteString). Use a unique provider ID for \(baseURL.absoluteString).",
+            to: .standardError)
+          return
+        }
+        if draft.providers[index].baseURL == nil {
+          draft.providers[index].baseURL = baseURL
+          providerChanged = true
+        }
+      } else {
+        draft.providers.append(
+          ConfiguredProvider(
+            id: providerID.rawValue,
+            kind: .openAICompatible,
+            baseURL: baseURL,
+            apiKeyEnvironment: apiKeyEnvironmentName(for: providerID.rawValue)))
+        providerChanged = true
+      }
+
+      var definition = session.profile.agentDefinition
+      definition.id = name
+      definition.displayName = name
+      definition.provider = providerID
+      definition.model = fields[4] == "-" ? "" : fields[4]
+      definition.instructions = fields[5] == "-" ? "" : fields[5]
+      if let index = draft.agents.firstIndex(where: { $0.id == name }) {
+        draft.agents[index] = definition
+      } else {
+        draft.agents.append(definition)
+      }
+      if draft.defaultAgent == nil { draft.defaultAgent = name }
+
+      do {
+        guard let configurationPath else {
+          throw CLIError.configNotFound("No configuration path is available.")
+        }
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        if providerChanged,
+          let provider = draft.providers.first(where: { $0.id == providerID.rawValue })
+        {
+          try await runtime.register(
+            plugins.makeProvider(
+              from: provider,
+              environment: ProcessInfo.processInfo.environment),
+            replacingExisting: true)
+        }
+        try await runtime.register(agent: definition, replacingExisting: true)
+        configuration = draft
+        session.reset(profile: SessionProfile(definition: definition))
+        await terminal.line(
+          "Agent '\(name)' saved and selected for chat '\(session.title)'. Conversation cleared.")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+      return
+    }
+
+    if action == "show" {
+      await showAgent(
+        fields.count > 1 ? fields[1] : session.profile.agentID,
+        session: session,
+        configuration: configuration,
+        terminal: terminal)
+      return
+    }
+
+    let selectedID: String
+    if action == "use" {
+      guard fields.count == 2 else {
+        await terminal.line("Usage: /agent use ID")
+        return
+      }
+      selectedID = fields[1]
+    } else {
+      selectedID = fields[0]
+    }
+    guard let definition = configuration?.agents.first(where: { $0.id == selectedID }) else {
+      await terminal.line("Unknown agent '\(selectedID)'. Use /agents.")
+      return
+    }
+    session.reset(profile: SessionProfile(definition: definition))
+    await terminal.line(
+      "Agent: \(selectedID). It is now the primary agent for chat '\(session.title)'; conversation cleared."
+    )
+  }
+
+  private static func showAgent(
+    _ id: String,
+    session: REPLSession,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async {
+    let definition =
+      configuration?.agents.first(where: { $0.id == id })
+      ?? (session.profile.agentID == id ? session.profile.agentDefinition : nil)
+    guard let definition else {
+      await terminal.line("Unknown agent '\(id)'. Use /agents.")
+      return
+    }
+    let provider = configuration?.providers.first { $0.id == definition.provider.rawValue }
+    await terminal.line("Agent: \(definition.id) (\(definition.displayName))")
+    await terminal.line("Provider: \(definition.provider)")
+    await terminal.line("Base URL: \(provider?.baseURL?.absoluteString ?? "-")")
+    await terminal.line("Model: \(definition.model.isEmpty ? "-" : definition.model)")
+    await terminal.line("System prompt: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
+  }
+
+  @discardableResult
+  private static func persistAgentProfile(
+    session: REPLSession,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async -> Bool {
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return false
+    }
+    let definition = session.profile.agentDefinition
+    if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
+      draft.agents[index] = definition
+    } else {
+      draft.agents.append(definition)
+    }
+    if draft.defaultAgent == nil { draft.defaultAgent = definition.id }
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      try await runtime.register(agent: definition, replacingExisting: true)
+      configuration = draft
+      return true
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return false
+    }
+  }
+
+  private static func apiKeyEnvironmentName(for providerID: String) -> String {
+    if providerID.lowercased() == "openai" { return "OPENAI_API_KEY" }
+    let stem = providerID.uppercased().map { character in
+      character.isLetter || character.isNumber ? character : "_"
+    }
+    return String(stem) + "_API_KEY"
   }
 
   private static func handleSetCommand(
@@ -938,6 +1296,7 @@ private struct MaiCLI {
     session: inout REPLSession,
     runtime: AgentRuntime,
     plugins: PluginRegistry,
+    ocrProvider: any OCRProvider,
     configuration: inout MaiConfiguration?,
     catalogs: inout [MCPServerCatalog],
     visual: VisualBridge,
@@ -953,7 +1312,15 @@ private struct MaiCLI {
       configuration: configuration ?? MaiConfiguration(providers: visual.implicitProviders),
       configurationPath: visual.configurationPath,
       catalogs: catalogs,
-      environment: ProcessInfo.processInfo.environment)
+      environment: ProcessInfo.processInfo.environment,
+      commandHandler: { request in
+        await runVisualCommand(
+          request,
+          runtime: runtime,
+          plugins: plugins,
+          ocrProvider: ocrProvider,
+          visual: visual)
+      })
     let approvals = VisualApprovalHandler {
       await visual.approvalHandler.setYOLOEnabled(true)
     }
@@ -976,6 +1343,183 @@ private struct MaiCLI {
       await visual.approvalHandler.setDelegate(nil)
       await terminal.line("error: \(error.localizedDescription)", to: .standardError)
     }
+  }
+
+  /// Runs a slash command typed into a visual pane exactly as the REPL would,
+  /// on a session built from that pane's conversation, and returns what it
+  /// printed together with the conversation it left behind.
+  private static func runVisualCommand(
+    _ request: VisualCommandRequest,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    ocrProvider: any OCRProvider,
+    visual: VisualBridge
+  ) async -> VisualCommandOutcome {
+    let command =
+      request.input.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).first.map(
+        String.init) ?? request.input
+    switch command {
+    case "/visual":
+      return VisualCommandOutcome(
+        output: "Already in visual mode. /exit or Ctrl+C returns to the REPL.",
+        conversation: request.conversation)
+    case "/exit", "/quit":
+      return VisualCommandOutcome(
+        output: "Leaving visual mode.",
+        conversation: request.conversation,
+        leavesVisualMode: true)
+    default:
+      break
+    }
+
+    var session = REPLSession(
+      profile: SessionProfile(definition: request.conversation.profile),
+      pendingContent: request.conversation.pendingContent)
+    session.history.replaceAll(with: request.conversation.messages)
+    var configuration: MaiConfiguration? = request.configuration
+    var catalogs = request.catalogs
+    let terminal = TerminalWriter(capturesOutput: true)
+    _ = await handleCommand(
+      request.input,
+      session: &session,
+      runtime: runtime,
+      plugins: plugins,
+      ocrProvider: ocrProvider,
+      configuration: &configuration,
+      catalogs: &catalogs,
+      visual: visual,
+      terminal: terminal)
+    var output = await terminal.drainCaptured()
+    if command == "/help" {
+      output += "\nIn visual mode, /exit returns to the REPL and the output above closes with Esc."
+    }
+    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { output = "Done." }
+    var conversation = request.conversation
+    conversation.profile = session.profile.agentDefinition
+    conversation.messages = session.history.messages
+    conversation.pendingContent = session.pendingContent
+    return VisualCommandOutcome(output: output, conversation: conversation)
+  }
+
+  private static func handleWorkspaceChatCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    workspace: inout AgentChatWorkspace,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async {
+    let parts = argument.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    guard let action = parts.first?.lowercased(), !action.isEmpty else {
+      await terminal.line(chatHelp)
+      return
+    }
+
+    switch action {
+    case "list", "chats":
+      for (index, chat) in workspace.chats.enumerated() {
+        let selected = chat.id == workspace.selectedChatID ? "*" : " "
+        await terminal.line(
+          "\(selected) \(index + 1) \(chat.id.uuidString.prefix(8)) \(chat.title) — agent \(chat.primaryAgent.id), \(chat.messages.count) messages"
+        )
+      }
+    case "new":
+      var profile = session.profile
+      var title = String(argument.dropFirst(action.count)).trimmingCharacters(
+        in: .whitespacesAndNewlines)
+      if title.hasPrefix("--agent ") {
+        let values = title.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
+          String.init)
+        guard values.count >= 2,
+          let agent = configuration?.agents.first(where: { $0.id == values[1] })
+        else {
+          await terminal.line("Usage: /chat new [--agent ID] [TITLE]")
+          return
+        }
+        profile = SessionProfile(definition: agent)
+        title = values.count == 3 ? values[2] : agent.displayName
+      }
+      if title.isEmpty { title = "Chat \(workspace.chats.count + 1)" }
+      let chat = AgentChat(title: title, primaryAgent: profile.agentDefinition)
+      workspace.upsert(chat, selecting: true)
+      session = REPLSession(chat: chat)
+      await terminal.line("Created and selected chat '\(title)' with agent \(profile.agentID).")
+    case "use", "switch":
+      let selector = String(argument.dropFirst(action.count)).trimmingCharacters(
+        in: .whitespacesAndNewlines)
+      guard !selector.isEmpty,
+        let chat = resolveChat(selector, in: workspace)
+      else {
+        await terminal.line("Usage: /chat use INDEX|ID|TITLE")
+        return
+      }
+      _ = workspace.selectChat(id: chat.id)
+      session = REPLSession(chat: chat)
+      await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
+    case "next", "previous", "prev":
+      guard workspace.chats.count > 1,
+        let current = workspace.chats.firstIndex(where: { $0.id == workspace.selectedChatID })
+      else {
+        await terminal.line("There is only one chat.")
+        return
+      }
+      let offset = action == "next" ? 1 : -1
+      let index = (current + offset + workspace.chats.count) % workspace.chats.count
+      let chat = workspace.chats[index]
+      _ = workspace.selectChat(id: chat.id)
+      session = REPLSession(chat: chat)
+      await terminal.line("Switched to '\(chat.title)' (agent \(chat.primaryAgent.id)).")
+    case "rename":
+      let title = String(argument.dropFirst(action.count)).trimmingCharacters(
+        in: .whitespacesAndNewlines)
+      guard !title.isEmpty else {
+        await terminal.line("Usage: /chat rename TITLE")
+        return
+      }
+      session.title = title
+      session.touch()
+      workspace.upsert(session.chat, selecting: true)
+      await terminal.line("Chat renamed to '\(title)'.")
+    case "close", "delete":
+      guard parts.count == 2, parts[1].lowercased() == "confirm" else {
+        await terminal.line("Closing a chat is permanent. Confirm with: /chat close confirm")
+        return
+      }
+      guard workspace.chats.count > 1 else {
+        await terminal.line("Cannot close the only chat; use /chat clear instead.")
+        return
+      }
+      let oldTitle = session.title
+      _ = workspace.removeChat(id: session.id)
+      session = REPLSession(chat: workspace.selectedChat!)
+      await terminal.line("Closed '\(oldTitle)'; switched to '\(session.title)'.")
+    case "messages":
+      await handleChatCommand("list", session: &session, terminal: terminal)
+    case "log", "edit", "remove", "rm", "undo", "trim", "clear", "help":
+      await handleChatCommand(argument, session: &session, terminal: terminal)
+    default:
+      await terminal.line("Unknown /chat action '\(action)'.\n\n\(chatHelp)")
+    }
+  }
+
+  private static func resolveChat(
+    _ selector: String,
+    in workspace: AgentChatWorkspace
+  ) -> AgentChat? {
+    if let index = Int(selector), workspace.chats.indices.contains(index - 1) {
+      return workspace.chats[index - 1]
+    }
+    if let id = UUID(uuidString: selector) {
+      return workspace.chats.first { $0.id == id }
+    }
+    let idMatches = workspace.chats.filter {
+      $0.id.uuidString.lowercased().hasPrefix(selector.lowercased())
+    }
+    if idMatches.count == 1 { return idMatches[0] }
+    let titleMatches = workspace.chats.filter {
+      $0.title.caseInsensitiveCompare(selector) == .orderedSame
+    }
+    return titleMatches.count == 1 ? titleMatches[0] : nil
   }
 
   private static func handleChatCommand(
@@ -1162,6 +1706,112 @@ private struct MaiCLI {
     }
   }
 
+  private static var defaultConfigurationPath: String {
+    NSString(string: "~/.config/pmai/config.json").expandingTildeInPath
+  }
+
+  private static func resolvedStatePath(options: CLIOptions) -> String {
+    NSString(string: options.statePath ?? "~/.config/pmai/chats.json").expandingTildeInPath
+  }
+
+  private static func resolvedHistoryPath(options: CLIOptions) -> String {
+    NSString(string: options.historyPath ?? "~/.config/pmai/history.json").expandingTildeInPath
+  }
+
+  private static func loadChatWorkspace(
+    from url: URL,
+    initialProfile: SessionProfile
+  ) throws -> AgentChatWorkspace {
+    if FileManager.default.fileExists(atPath: url.path) {
+      var workspace = try AgentChatWorkspace.load(from: url)
+      if workspace.selectedChat != nil { return workspace }
+      let chat = AgentChat(title: "Chat 1", primaryAgent: initialProfile.agentDefinition)
+      workspace.upsert(chat, selecting: true)
+      return workspace
+    }
+    let chat = AgentChat(title: "Chat 1", primaryAgent: initialProfile.agentDefinition)
+    return AgentChatWorkspace(chats: [chat], selectedChatID: chat.id)
+  }
+
+  private static func saveWorkspace(
+    _ workspace: AgentChatWorkspace,
+    to url: URL,
+    terminal: TerminalWriter
+  ) async {
+    do {
+      try workspace.save(to: url)
+    } catch {
+      await terminal.line(
+        "warning: chats were not saved: \(error.localizedDescription)",
+        to: .standardError)
+    }
+  }
+
+  private static func visualSnapshot(for workspace: AgentChatWorkspace) -> VisualWorkspaceSnapshot {
+    let conversations = workspace.chats.map { chat in
+      VisualConversationSeed(
+        id: chat.id,
+        title: chat.title,
+        profile: chat.primaryAgent,
+        messages: chat.messages,
+        pendingContent: chat.pendingContent)
+    }
+    return VisualWorkspaceSnapshot(
+      conversations: conversations,
+      layout: PaneLayout(conversation: workspace.selectedChatID ?? conversations[0].id))
+  }
+
+  private static func chatWorkspace(
+    from snapshot: VisualWorkspaceSnapshot,
+    focusedID: UUID,
+    previous: AgentChatWorkspace
+  ) -> AgentChatWorkspace {
+    let previousByID = Dictionary(uniqueKeysWithValues: previous.chats.map { ($0.id, $0) })
+    let chats = snapshot.conversations.map { conversation in
+      let old = previousByID[conversation.id]
+      return AgentChat(
+        id: conversation.id,
+        title: conversation.title,
+        primaryAgent: conversation.profile,
+        messages: conversation.messages,
+        pendingContent: conversation.pendingContent,
+        createdAt: old?.createdAt ?? Date(),
+        updatedAt: Date())
+    }
+    return AgentChatWorkspace(chats: chats, selectedChatID: focusedID)
+  }
+
+  private static func completionCandidates(
+    workspace: AgentChatWorkspace,
+    configuration: MaiConfiguration?
+  ) -> [String] {
+    var values = [
+      "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/plugins",
+      "/providers", "/models ", "/provider ", "/model ", "/agents", "/agent use ",
+      "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
+      "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
+      "/image ocr ", "/copy", "/visual", "/clear", "/chat list", "/chat new ",
+      "/chat use ", "/chat next", "/chat previous", "/chat rename ",
+      "/chat close confirm", "/chat messages", "/chat log", "/chat edit ",
+      "/chat remove ", "/chat undo", "/chat trim ", "/chat clear",
+    ]
+    for (index, chat) in workspace.chats.enumerated() {
+      values.append("/chat use \(index + 1)")
+      values.append("/chat use \(chat.id.uuidString.prefix(8))")
+      values.append("/chat use \(chat.title)")
+    }
+    for agent in configuration?.agents ?? [] {
+      values.append("/agent use \(agent.id)")
+      values.append("/agent show \(agent.id)")
+      values.append("/chat new --agent \(agent.id) ")
+    }
+    for provider in configuration?.providers ?? [] {
+      values.append("/provider \(provider.id)")
+      values.append("/models \(provider.id)")
+    }
+    return Array(Set(values))
+  }
+
   private static func loadConfiguration(
     options: CLIOptions
   ) throws -> (configuration: MaiConfiguration, path: String)? {
@@ -1304,9 +1954,10 @@ private struct MaiCLI {
     /models [PROVIDER]  List models from the current or named provider
     /provider ID        Select a provider
     /model NAME         Select a model
-    /chat               Inspect or edit the conversation transcript
+    /chat               Create, switch, rename, or edit persistent chats
     /agents             List configured agents
-    /agent ID           Select an agent and clear the conversation
+    /agent [use] ID     Set the current chat's primary agent
+    /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
     /tools              List tools available to the current agent
     /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcps               List connected MCP servers
@@ -1318,8 +1969,15 @@ private struct MaiCLI {
     """
 
   private static let chatHelp = """
-    Chat conversation management commands:
-      /chat list          Display a compact indexed message list
+    Persistent chat management commands:
+      /chat list                    List chats (index, ID, title, primary agent)
+      /chat new [TITLE]             Create a chat using the current agent
+      /chat new --agent ID [TITLE]  Create a chat using a configured agent
+      /chat use INDEX|ID|TITLE      Switch the active chat
+      /chat next|previous           Cycle through chats
+      /chat rename TITLE            Rename the active chat
+      /chat close confirm           Permanently close the active chat
+      /chat messages                Display a compact indexed message list
       /chat log           Display the full structured conversation
       /chat edit N TEXT   Replace message N's text; preserve attachments
       /chat remove N      Remove message N
@@ -1340,6 +1998,8 @@ private struct MaiCLI {
 
       Options:
         --config PATH       load plugins, providers, tools, MCPs, agents, and approvals
+        --state PATH        persist chat workspaces at this path (or PMAI_STATE)
+        --history PATH      persist editable input history (or PMAI_HISTORY)
         --plugin PATH       load a native .dylib plugin (repeatable)
         --print-config      print a complete example configuration
         --agent ID          select a configured agent
@@ -1354,6 +2014,9 @@ private struct MaiCLI {
 
       Config discovery:
         --config, PMAI_CONFIG, ./pmai.json, ~/.config/pmai/config.json
+
+      Persistent REPL state:
+        ~/.config/pmai/chats.json and ~/.config/pmai/history.json
 
       Without a config file, the offline hello and OpenAI-compatible providers
       are registered as before.
