@@ -196,6 +196,15 @@ private func environmentValue(
   names.lazy.compactMap { environment[$0] }.first { !$0.isEmpty }
 }
 
+/// Unlike the other ad-hoc settings, an explicitly exported empty API key is
+/// meaningful: it suppresses lower-priority aliases and configured secrets.
+private func environmentAPIKey(in environment: [String: String]) -> String? {
+  for name in ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"] {
+    if let value = environment[name] { return value }
+  }
+  return nil
+}
+
 private func environmentName(
   _ names: [String],
   in environment: [String: String]
@@ -980,8 +989,7 @@ private struct MaiCLI {
     }
     let apiKeyOverride =
       options.apiKeyOverride
-      ?? environmentValue(
-        ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"], in: environment)
+      ?? environmentAPIKey(in: environment)
 
     if let configuration {
       let selectedAgentID =

@@ -73,7 +73,13 @@ run:
 
 repl:
 	@set -a; \
-	if [ -f ./env.sh ]; then . ./env.sh; fi; \
+	if [ -f ./env.sh ] \
+		&& [ -z "$${PMAI_PROVIDER+x}$${MAI_PROVIDER+x}" ] \
+		&& [ -z "$${PMAI_MODEL+x}$${MAI_MODEL+x}$${OPENAI_MODEL+x}" ] \
+		&& [ -z "$${PMAI_BASE_URL+x}$${MAI_BASE_URL+x}$${OPENAI_BASE_URL+x}" ] \
+		&& [ -z "$${PMAI_API_KEY+x}$${MAI_API_KEY+x}$${OPENAI_API_KEY+x}" ]; then \
+		. ./env.sh; \
+	fi; \
 	swift run --package-path MaiCore pmai $(ARGS)
 
 repl-install:

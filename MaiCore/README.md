@@ -15,12 +15,15 @@ Run the offline REPL from the repository root:
 make repl
 ```
 
-`make repl` automatically loads an optional repository-local `env.sh`. The
-ad-hoc provider settings are `PMAI_PROVIDER`, `PMAI_MODEL`, `PMAI_BASE_URL`,
-and `PMAI_API_KEY`; the older `MAI_*` names remain supported for compatibility.
-They override the selected agent's provider for the current process; `/baseurl`
-shows the effective URL and also identifies a different persisted URL when one
-is being overridden.
+`make repl` loads an optional repository-local `env.sh` as a fallback when no
+ad-hoc provider variable is already present in the calling shell. The ad-hoc
+provider settings are `PMAI_PROVIDER`, `PMAI_MODEL`, `PMAI_BASE_URL`, and
+`PMAI_API_KEY`; the older `MAI_*` and `OPENAI_*` names remain supported for
+compatibility. These variables override the selected agent's provider for the
+current process. `/baseurl` shows the effective URL and also identifies a
+different persisted URL when one is being overridden. Export `PMAI_API_KEY=`
+to explicitly send no API key and suppress configured or legacy API-key
+fallbacks; merely unsetting it allows those fallbacks to be used.
 Keep `env.sh` local because it can contain credentials.
 
 Print a complete configuration template:

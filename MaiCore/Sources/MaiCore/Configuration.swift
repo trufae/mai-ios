@@ -98,7 +98,8 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
 
   public func resolvedAPIKey(environment: [String: String]) -> String? {
     guard let apiKeyEnvironment, !apiKeyEnvironment.isEmpty else { return apiKey }
-    return environment[apiKeyEnvironment].flatMap { $0.isEmpty ? nil : $0 } ?? apiKey
+    guard let value = environment[apiKeyEnvironment] else { return apiKey }
+    return value.isEmpty ? nil : value
   }
 }
 
