@@ -353,13 +353,13 @@ private actor TerminalWriter {
   func consume(_ event: AgentEvent) {
     switch event {
     case .modelStarted(let context, let turn) where context.depth == 0:
-      startIndicator("waiting for LLM")
+      startIndicator("")
       if turn > 1 {
         finishReply()
         closeRootLine()
       }
     case .provider(let context, .textDelta(let text)) where context.depth == 0:
-      if !wroteRootDelta { startIndicator("receiving from LLM") }
+      // if !wroteRootDelta { startIndicator("receiving from LLM") }
       if var renderer = markdown {
         let output = renderer.feed(text)
         markdown = renderer
@@ -1871,6 +1871,7 @@ private struct MaiCLI {
     guard let value else { return "-" }
     if kind == .secret { return value.stringValue?.isEmpty == false ? "(configured)" : "-" }
     if let string = value.stringValue { return string }
+    if let integer = value.intValue { return String(integer) }
     if let number = value.numberValue { return String(number) }
     if let boolean = value.boolValue { return String(boolean) }
     return value.compactJSONString

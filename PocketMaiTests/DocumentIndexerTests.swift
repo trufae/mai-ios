@@ -1,8 +1,10 @@
 import XCTest
 
 @testable import PocketMai
+@testable import MaiStandardTools
 
 final class DocumentIndexerTests: XCTestCase {
+  private typealias DocumentIndexer = MaiDocumentIndexer
   func testCFunctions() {
     let source = """
       #include <stdio.h>

@@ -117,7 +117,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
         id: "files",
         displayName: "Files",
         description:
-          "List, find, grep, read, convert, write, append, rename, delete, and change directory in one workspace.",
+          "List, find, grep, index, read, patch, write, append, rename, delete, and change directory in one workspace.",
         toolNames: Set([MaiReadTextFileTool.name] + MaiFileWorkspaceTool.toolNames),
         options: [
           .init(
@@ -158,7 +158,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
             label: "Default timeout (seconds)",
             help: "Processes are killed after this long unless a call sets timeout_seconds.",
             kind: .number,
-            defaultValue: .number(MaiRunConfiguration.defaultTimeout)),
+            defaultValue: .integer(Int(MaiRunConfiguration.defaultTimeout))),
         ]),
       ToolGroupDefinition(
         id: "weather",

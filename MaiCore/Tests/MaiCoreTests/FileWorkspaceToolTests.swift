@@ -69,6 +69,47 @@ func fileWorkspaceToolsManageFiles() async throws {
   #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("notes/done.md").path))
 }
 
+@Test("Shared Files tools index, read, and replace source line ranges")
+func fileWorkspaceToolsSupportAdvancedSourceNavigation() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-files-advanced-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root, displayName: "test-workspace"))
+  _ = try await call(
+    tool(tools, .write),
+    ["path": .string("example.swift"), "content": .string("struct Greeter {\n  func hello() {}\n}\n")])
+
+  let index = try await call(tool(tools, .readIndex), ["path": .string("example.swift")])
+  #expect(index.text.contains("1: struct Greeter"))
+  #expect(index.text.contains("2: hello"))
+
+  let range = try await call(
+    tool(tools, .readRange),
+    ["path": .string("example.swift"), "start_line": .integer(2), "end_line": .integer(2)])
+  #expect(range.text.contains("2:   func hello() {}"))
+
+  _ = try await call(
+    tool(tools, .replaceRange),
+    [
+      "path": .string("example.swift"), "start_line": .integer(2), "end_line": .integer(2),
+      "content": .string("  func goodbye() {}"),
+    ])
+  let read = try await call(tool(tools, .read), ["path": .string("example.swift")])
+  #expect(read.text.contains("goodbye"))
+
+  _ = try await call(
+    tool(tools, .patch),
+    [
+      "path": .string("example.swift"), "find": .string("func\\s+goodbye"),
+      "replace": .string("func farewell"), "regex": .bool(true),
+    ])
+  let patched = try await call(tool(tools, .read), ["path": .string("example.swift")])
+  #expect(patched.text.contains("farewell"))
+}
+
 @Test("Shared Files tools reject traversal and symlink escapes")
 func fileWorkspaceToolsStayInsideRoot() async throws {
   let base = FileManager.default.temporaryDirectory
