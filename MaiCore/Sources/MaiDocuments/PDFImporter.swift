@@ -1,7 +1,16 @@
 import Foundation
-import PDFKit
-import UIKit
-import Vision
+
+#if canImport(PDFKit)
+  import PDFKit
+#endif
+#if canImport(UIKit)
+  import UIKit
+#elseif canImport(AppKit)
+  import AppKit
+#endif
+#if canImport(Vision)
+  import Vision
+#endif
 
 /// Converts a PDF into Markdown, or renders its pages as images.
 ///
@@ -14,15 +23,18 @@ import Vision
 /// annotations give inline links. Pages that carry no text layer at all (scans)
 /// are read with Vision's on-device OCR.
 ///
-/// Everything here uses Apple frameworks only: PDFKit, Vision and UIKit.
-enum PDFImporter {
-  enum ImportError: LocalizedError {
+/// Everything here uses Apple frameworks only: PDFKit, Vision, and UIKit or
+/// AppKit. The layout reconstruction is plain Swift and builds everywhere; on
+/// platforms without PDFKit the importer reports `ImportError.unsupportedPlatform`.
+public enum PDFImporter {
+  public enum ImportError: LocalizedError, Equatable, Sendable {
     case tooLarge
     case unreadableDocument
     case lockedDocument
     case emptyDocument
+    case unsupportedPlatform
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
       switch self {
       case .tooLarge:
         "PDF attachments are limited to 25 MB."
@@ -32,22 +44,25 @@ enum PDFImporter {
         "The PDF is password protected."
       case .emptyDocument:
         "No text could be extracted from the PDF."
+      case .unsupportedPlatform:
+        "PDF import needs Apple's PDFKit, which is not available on this platform."
       }
     }
   }
 
-  static let maximumFileBytes = 25_000_000
+  public static let maximumFileBytes = 25_000_000
   /// Text extraction walks every glyph, so long documents are truncated.
-  static let maximumTextPages = 200
+  public static let maximumTextPages = 200
   /// OCR only runs on pages without a text layer, and only on a few of them.
-  static let maximumOCRPages = 10
-  static let maximumImagePages = 50
-  static let defaultImagePixelSize = 2048
+  public static let maximumOCRPages = 10
+  public static let maximumImagePages = 50
+  public static let defaultImagePixelSize = 2048
 
   /// Reads the file up front so the conversion can run off the main thread once
   /// the security-scoped access to the picked URL has been released.
-  static func data(at url: URL) throws -> Data {
-    let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+  public static func data(at url: URL) throws -> Data {
+    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+    let fileSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
     guard fileSize <= maximumFileBytes else { throw ImportError.tooLarge }
     let data = try Data(contentsOf: url)
     guard data.count <= maximumFileBytes else { throw ImportError.tooLarge }
@@ -56,114 +71,156 @@ enum PDFImporter {
 
   // MARK: - Text
 
-  static func markdown(from url: URL) throws -> String {
+  public static func markdown(from url: URL) throws -> String {
     try markdown(from: data(at: url))
   }
 
-  static func markdown(from data: Data) throws -> String {
-    let document = try open(data)
-    var lines: [Line] = []
-    var ocrBudget = maximumOCRPages
+  public static func markdown(from data: Data) throws -> String {
+    #if canImport(PDFKit)
+      let document = try open(data)
+      var lines: [Line] = []
+      var ocrBudget = maximumOCRPages
 
-    for index in 0..<min(document.pageCount, maximumTextPages) {
-      guard let page = document.page(at: index) else { continue }
-      var pageLines = textLines(on: page, pageIndex: index)
-      if pageLines.isEmpty, ocrBudget > 0 {
-        ocrBudget -= 1
-        pageLines = recognizedLines(on: page, pageIndex: index)
+      for index in 0..<min(document.pageCount, maximumTextPages) {
+        guard let page = document.page(at: index) else { continue }
+        var pageLines = textLines(on: page, pageIndex: index)
+        #if canImport(Vision)
+          if pageLines.isEmpty, ocrBudget > 0 {
+            ocrBudget -= 1
+            pageLines = recognizedLines(on: page, pageIndex: index)
+          }
+        #else
+          _ = ocrBudget
+        #endif
+        lines.append(contentsOf: pageLines)
       }
-      lines.append(contentsOf: pageLines)
-    }
 
-    let text = markdown(lines: lines)
-    guard !text.isEmpty else { throw ImportError.emptyDocument }
-    return text
+      let text = markdown(lines: lines)
+      guard !text.isEmpty else { throw ImportError.emptyDocument }
+      return text
+    #else
+      throw ImportError.unsupportedPlatform
+    #endif
   }
 
   // MARK: - Images
 
-  struct RenderedPages: Sendable {
+  public struct RenderedPages: Sendable {
     /// One PNG per page, in page order.
-    let images: [Data]
+    public let images: [Data]
     /// True when the document had more pages than `maximumImagePages`.
-    let truncated: Bool
+    public let truncated: Bool
+
+    public init(images: [Data], truncated: Bool) {
+      self.images = images
+      self.truncated = truncated
+    }
   }
 
-  static func pageImages(
+  public static func pageImages(
     from data: Data,
     maximumPixelSize: Int = defaultImagePixelSize
   ) throws -> RenderedPages {
-    let document = try open(data)
-    let count = min(document.pageCount, maximumImagePages)
-    var images: [Data] = []
-    images.reserveCapacity(count)
+    #if canImport(PDFKit)
+      let document = try open(data)
+      let count = min(document.pageCount, maximumImagePages)
+      var images: [Data] = []
+      images.reserveCapacity(count)
 
-    for index in 0..<count {
-      guard let page = document.page(at: index),
-        let png = pageImage(page, maximumPixelSize: maximumPixelSize)
-      else { continue }
-      images.append(png)
+      for index in 0..<count {
+        guard let page = document.page(at: index),
+          let png = pageImage(page, maximumPixelSize: maximumPixelSize)
+        else { continue }
+        images.append(png)
+      }
+
+      guard !images.isEmpty else { throw ImportError.unreadableDocument }
+      return RenderedPages(images: images, truncated: document.pageCount > count)
+    #else
+      throw ImportError.unsupportedPlatform
+    #endif
+  }
+
+  #if canImport(PDFKit)
+    private static func pageImage(_ page: PDFPage, maximumPixelSize: Int) -> Data? {
+      let bounds = page.bounds(for: .cropBox)
+      guard bounds.width > 0, bounds.height > 0 else { return nil }
+      // `thumbnail(of:for:)` fits the page into the requested box and applies the
+      // page rotation, so the requested box only has to carry the right aspect.
+      let rotation = ((page.rotation % 360) + 360) % 360
+      let size =
+        rotation == 90 || rotation == 270
+        ? CGSize(width: bounds.height, height: bounds.width) : bounds.size
+      let scale = min(CGFloat(maximumPixelSize) / max(size.width, size.height), 4)
+      let target = CGSize(
+        width: max(1, (size.width * scale).rounded()),
+        height: max(1, (size.height * scale).rounded()))
+      guard let image = thumbnailImage(of: page, size: target) else { return nil }
+      return pngData(image)
     }
 
-    guard !images.isEmpty else { throw ImportError.unreadableDocument }
-    return RenderedPages(images: images, truncated: document.pageCount > count)
-  }
+    private static func open(_ data: Data) throws -> PDFDocument {
+      guard let document = PDFDocument(data: data) else { throw ImportError.unreadableDocument }
+      if document.isLocked, !document.unlock(withPassword: "") {
+        throw ImportError.lockedDocument
+      }
+      guard document.pageCount > 0 else { throw ImportError.emptyDocument }
+      return document
+    }
 
-  private static func pageImage(_ page: PDFPage, maximumPixelSize: Int) -> Data? {
-    let bounds = page.bounds(for: .cropBox)
-    guard bounds.width > 0, bounds.height > 0 else { return nil }
-    // `thumbnail(of:for:)` fits the page into the requested box and applies the
-    // page rotation, so the requested box only has to carry the right aspect.
-    let rotation = ((page.rotation % 360) + 360) % 360
-    let size =
-      rotation == 90 || rotation == 270
-      ? CGSize(width: bounds.height, height: bounds.width) : bounds.size
-    let scale = min(CGFloat(maximumPixelSize) / max(size.width, size.height), 4)
-    let target = CGSize(
-      width: max(1, (size.width * scale).rounded()),
-      height: max(1, (size.height * scale).rounded()))
-    return page.thumbnail(of: target, for: .cropBox).pngData()
-  }
+    /// Renders a page into a bitmap through whichever image type PDFKit returns
+    /// on this platform.
+    static func thumbnailImage(of page: PDFPage, size: CGSize) -> CGImage? {
+      let image = page.thumbnail(of: size, for: .cropBox)
+      #if canImport(UIKit)
+        return image.cgImage
+      #else
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+      #endif
+    }
 
-  private static func open(_ data: Data) throws -> PDFDocument {
-    guard let document = PDFDocument(data: data) else { throw ImportError.unreadableDocument }
-    if document.isLocked, !document.unlock(withPassword: "") { throw ImportError.lockedDocument }
-    guard document.pageCount > 0 else { throw ImportError.emptyDocument }
-    return document
-  }
+    private static func pngData(_ image: CGImage) -> Data? {
+      #if canImport(UIKit)
+        return UIImage(cgImage: image).pngData()
+      #else
+        return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+      #endif
+    }
+  #endif
 }
 
 // MARK: - Layout model
 
 extension PDFImporter {
   /// A rectangle in page space, flipped so that `top` grows downwards.
-  struct Frame: Equatable, Sendable {
-    var left: Double
-    var right: Double
-    var top: Double
-    var bottom: Double
+  public struct Frame: Equatable, Sendable {
+    public var left: Double
+    public var right: Double
+    public var top: Double
+    public var bottom: Double
 
-    init(left: Double, right: Double, top: Double, bottom: Double) {
+    public init(left: Double, right: Double, top: Double, bottom: Double) {
       self.left = left
       self.right = right
       self.top = top
       self.bottom = bottom
     }
 
-    var width: Double { max(0, right - left) }
-    var height: Double { max(0, bottom - top) }
+    public var width: Double { max(0, right - left) }
+    public var height: Double { max(0, bottom - top) }
   }
 
   /// A stretch of text on a line that shares one style.
-  struct Run: Equatable, Sendable {
-    var text: String
-    var size: Double
-    var bold: Bool
-    var italic: Bool
-    var monospaced: Bool
-    var link: String?
+  public struct Run: Equatable, Sendable {
+    public var text: String
+    public var size: Double
+    public var bold: Bool
+    public var italic: Bool
+    public var monospaced: Bool
+    public var link: String?
 
-    init(
+    public init(
       text: String,
       size: Double = 12,
       bold: Bool = false,
@@ -190,14 +247,14 @@ extension PDFImporter {
   }
 
   /// One laid-out line of text, the unit the Markdown reconstruction works on.
-  struct Line: Sendable {
-    var runs: [Run]
-    var frame: Frame
-    var pageIndex: Int
-    var pageWidth: Double
-    var pageHeight: Double
+  public struct Line: Sendable {
+    public var runs: [Run]
+    public var frame: Frame
+    public var pageIndex: Int
+    public var pageWidth: Double
+    public var pageHeight: Double
 
-    init(
+    public init(
       runs: [Run],
       frame: Frame,
       pageIndex: Int = 0,
@@ -211,7 +268,7 @@ extension PDFImporter {
       self.pageHeight = pageHeight
     }
 
-    var text: String { runs.map(\.text).joined() }
+    public var text: String { runs.map(\.text).joined() }
 
     /// The font size covering most of the line's visible characters. Ties go to
     /// the larger size so a footnote marker cannot demote a heading.
@@ -261,7 +318,7 @@ extension PDFImporter {
 
 extension PDFImporter {
   /// Converts already-extracted lines into Markdown. Exposed for testing.
-  static func markdown(lines rawLines: [Line]) -> String {
+  public static func markdown(lines rawLines: [Line]) -> String {
     let lines = prepared(rawLines)
     guard !lines.isEmpty else { return "" }
     var builder = BlockBuilder(metrics: Metrics(lines: lines))
@@ -719,273 +776,293 @@ extension PDFImporter {
 
 // MARK: - PDFKit extraction
 
-extension PDFImporter {
-  private struct LinkTarget {
-    let text: String
-    let url: String
-    let frame: Frame
-  }
+#if canImport(PDFKit)
+  #if canImport(UIKit)
+    private typealias PDFPlatformFont = UIFont
+  #else
+    private typealias PDFPlatformFont = NSFont
+  #endif
 
-  private static func textLines(on page: PDFPage, pageIndex: Int) -> [Line] {
-    guard let attributed = page.attributedString, attributed.length > 0 else { return [] }
-    let bounds = page.bounds(for: .mediaBox)
-    let pageWidth = Double(bounds.width)
-    let pageHeight = Double(bounds.height)
-    guard pageWidth > 0, pageHeight > 0 else { return [] }
-
-    let contents = attributed.string as NSString
-    var ranges: [NSRange] = []
-    contents.enumerateSubstrings(
-      in: NSRange(location: 0, length: contents.length),
-      options: [.byLines, .substringNotRequired]
-    ) { _, range, _, _ in
-      ranges.append(range)
+  extension PDFImporter {
+    private struct LinkTarget {
+      let text: String
+      let url: String
+      let frame: Frame
     }
 
-    // `characterBounds(at:)` indexes the page's own string; keep every sample
-    // inside it even if PDFKit disagrees with the attributed string's length.
-    let limit = min(page.string?.utf16.count ?? 0, contents.length)
-    let links = linkTargets(on: page, bounds: bounds)
-    var lines: [Line] = []
-    lines.reserveCapacity(ranges.count)
-    var fallbackTop = 0.0
+    private static func textLines(on page: PDFPage, pageIndex: Int) -> [Line] {
+      guard let attributed = page.attributedString, attributed.length > 0 else { return [] }
+      let bounds = page.bounds(for: .mediaBox)
+      let pageWidth = Double(bounds.width)
+      let pageHeight = Double(bounds.height)
+      guard pageWidth > 0, pageHeight > 0 else { return [] }
 
-    for range in ranges {
-      guard range.length > 0 else { continue }
-      let text = contents.substring(with: range)
-      guard text.contains(where: { !$0.isWhitespace }) else { continue }
-
-      var runs: [Run] = []
-      attributed.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
-        let style = fontStyle(for: value as? UIFont)
-        runs.append(
-          Run(
-            text: contents.substring(with: subrange),
-            size: style.size,
-            bold: style.bold,
-            italic: style.italic,
-            monospaced: style.monospaced))
-      }
-      if runs.isEmpty { runs = [Run(text: text)] }
-
-      let size = runs.first?.size ?? 12
-      let frame = self.frame(
-        for: range, on: page, bounds: bounds, limit: limit, fallbackTop: fallbackTop, size: size)
-      fallbackTop = frame.bottom + size * 0.3
-
-      let line = Line(
-        runs: runs,
-        frame: frame,
-        pageIndex: pageIndex,
-        pageWidth: pageWidth,
-        pageHeight: pageHeight)
-      lines.append(applying(links: links, to: line))
-    }
-    return lines
-  }
-
-  /// Unions the bounds of a sample of the line's characters. PDFKit reports them
-  /// one glyph at a time, so long lines are sampled rather than walked.
-  private static func frame(
-    for range: NSRange,
-    on page: PDFPage,
-    bounds: CGRect,
-    limit: Int,
-    fallbackTop: Double,
-    size: Double
-  ) -> Frame {
-    var indexes: [Int] = []
-    let step = max(1, range.length / 8)
-    var index = range.location
-    while index < range.location + range.length {
-      indexes.append(index)
-      index += step
-    }
-    indexes.append(range.location + range.length - 1)
-
-    var union: CGRect?
-    for index in indexes where index >= 0 && index < limit {
-      let glyph = page.characterBounds(at: index)
-      guard !glyph.isNull, glyph.height > 0, glyph.width.isFinite, glyph.height.isFinite else {
-        continue
-      }
-      union = union.map { $0.union(glyph) } ?? glyph
-    }
-
-    guard let union, union.height > 0 else {
-      return Frame(
-        left: 0, right: Double(bounds.width), top: fallbackTop, bottom: fallbackTop + size * 1.2)
-    }
-
-    let top = Double(bounds.maxY - union.maxY)
-    return Frame(
-      left: Double(union.minX - bounds.minX),
-      right: Double(union.maxX - bounds.minX),
-      top: top,
-      bottom: top + Double(union.height))
-  }
-
-  private static func linkTargets(on page: PDFPage, bounds: CGRect) -> [LinkTarget] {
-    var targets: [LinkTarget] = []
-    for annotation in page.annotations {
-      guard let action = annotation.action as? PDFActionURL, let url = action.url else { continue }
-      let text =
-        page.selection(for: annotation.bounds)?.string?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      guard !text.isEmpty else { continue }
-      let top = Double(bounds.maxY - annotation.bounds.maxY)
-      targets.append(
-        LinkTarget(
-          text: normalizedText(text),
-          url: url.absoluteString,
-          frame: Frame(
-            left: Double(annotation.bounds.minX - bounds.minX),
-            right: Double(annotation.bounds.maxX - bounds.minX),
-            top: top,
-            bottom: top + Double(annotation.bounds.height))))
-    }
-    return targets
-  }
-
-  private static func applying(links: [LinkTarget], to line: Line) -> Line {
-    guard !links.isEmpty else { return line }
-    var line = line
-
-    for link in links {
-      let overlap =
-        min(line.frame.bottom, link.frame.bottom) - max(line.frame.top, link.frame.top)
-      guard overlap > min(line.frame.height, link.frame.height) * 0.4 else { continue }
-      guard min(line.frame.right, link.frame.right) > max(line.frame.left, link.frame.left) else {
-        continue
-      }
-      let text = line.text
-      guard let range = text.range(of: link.text) else { continue }
-      line.runs = marking(
-        line.runs,
-        url: link.url,
-        from: text.distance(from: text.startIndex, to: range.lowerBound),
-        length: link.text.count)
-    }
-    return line
-  }
-
-  private static func marking(
-    _ runs: [Run], url: String, from start: Int, length: Int
-  ) -> [Run] {
-    guard length > 0 else { return runs }
-    var output: [Run] = []
-    var cursor = 0
-    let end = start + length
-
-    for run in runs {
-      let characters = Array(run.text)
-      let runStart = cursor
-      cursor += characters.count
-      guard runStart < end, cursor > start else {
-        output.append(run)
-        continue
+      let contents = attributed.string as NSString
+      var ranges: [NSRange] = []
+      contents.enumerateSubstrings(
+        in: NSRange(location: 0, length: contents.length),
+        options: [.byLines, .substringNotRequired]
+      ) { _, range, _, _ in
+        ranges.append(range)
       }
 
-      let localStart = max(0, start - runStart)
-      let localEnd = min(characters.count, end - runStart)
-      guard localStart < localEnd else {
-        output.append(run)
-        continue
-      }
+      // `characterBounds(at:)` indexes the page's own string; keep every sample
+      // inside it even if PDFKit disagrees with the attributed string's length.
+      let limit = min(page.string?.utf16.count ?? 0, contents.length)
+      let links = linkTargets(on: page, bounds: bounds)
+      var lines: [Line] = []
+      lines.reserveCapacity(ranges.count)
+      var fallbackTop = 0.0
 
-      if localStart > 0 {
-        var head = run
-        head.text = String(characters[0..<localStart])
-        output.append(head)
-      }
-      var linked = run
-      linked.text = String(characters[localStart..<localEnd])
-      linked.link = url
-      output.append(linked)
-      if localEnd < characters.count {
-        var tail = run
-        tail.text = String(characters[localEnd..<characters.count])
-        output.append(tail)
-      }
-    }
-    return output
-  }
+      for range in ranges {
+        guard range.length > 0 else { continue }
+        let text = contents.substring(with: range)
+        guard text.contains(where: { !$0.isWhitespace }) else { continue }
 
-  /// PDF fonts rarely carry usable symbolic traits, so the name is the fallback.
-  private static func fontStyle(for font: UIFont?) -> (
-    size: Double, bold: Bool, italic: Bool, monospaced: Bool
-  ) {
-    guard let font else { return (12, false, false, false) }
-    let traits = font.fontDescriptor.symbolicTraits
-    let name = font.fontName.lowercased()
-    let bold =
-      traits.contains(.traitBold) || name.contains("bold") || name.contains("semibold")
-      || name.contains("black") || name.contains("heavy")
-    let italic =
-      traits.contains(.traitItalic) || name.contains("italic") || name.contains("oblique")
-    let monospaced =
-      traits.contains(.traitMonoSpace) || name.contains("mono") || name.contains("courier")
-      || name.contains("consol")
-    return (Double(font.pointSize), bold, italic, monospaced)
-  }
-}
+        var runs: [Run] = []
+        attributed.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+          let style = fontStyle(for: value as? PDFPlatformFont)
+          runs.append(
+            Run(
+              text: contents.substring(with: subrange),
+              size: style.size,
+              bold: style.bold,
+              italic: style.italic,
+              monospaced: style.monospaced))
+        }
+        if runs.isEmpty { runs = [Run(text: text)] }
 
-// MARK: - OCR
+        let size = runs.first?.size ?? 12
+        let frame = self.frame(
+          for: range, on: page, bounds: bounds, limit: limit, fallbackTop: fallbackTop, size: size)
+        fallbackTop = frame.bottom + size * 0.3
 
-extension PDFImporter {
-  /// Reads a page that carries no text layer with Vision's on-device recogniser.
-  private static func recognizedLines(on page: PDFPage, pageIndex: Int) -> [Line] {
-    let bounds = page.bounds(for: .cropBox)
-    let pageWidth = Double(bounds.width)
-    let pageHeight = Double(bounds.height)
-    guard pageWidth > 0, pageHeight > 0 else { return [] }
-
-    let scale = min(2000 / max(bounds.width, bounds.height), 4)
-    let target = CGSize(
-      width: max(1, (bounds.width * scale).rounded()),
-      height: max(1, (bounds.height * scale).rounded()))
-    guard let image = page.thumbnail(of: target, for: .cropBox).cgImage else { return [] }
-
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = true
-    do {
-      try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-    } catch {
-      return []
-    }
-    guard let observations = request.results else { return [] }
-
-    var lines: [Line] = []
-    for observation in observations {
-      guard let candidate = observation.topCandidates(1).first else { continue }
-      guard candidate.string.contains(where: { !$0.isWhitespace }) else { continue }
-
-      let box = observation.boundingBox
-      let frame = Frame(
-        left: Double(box.minX) * pageWidth,
-        right: Double(box.maxX) * pageWidth,
-        top: Double(1 - box.maxY) * pageHeight,
-        bottom: Double(1 - box.minY) * pageHeight)
-      // Recognised heights vary line by line, so they are quantised before they
-      // are used to tell headings from body text.
-      let size = max(2, (frame.height * 0.8 / 2).rounded() * 2)
-      lines.append(
-        Line(
-          runs: [Run(text: candidate.string, size: size)],
+        let line = Line(
+          runs: runs,
           frame: frame,
           pageIndex: pageIndex,
           pageWidth: pageWidth,
-          pageHeight: pageHeight))
+          pageHeight: pageHeight)
+        lines.append(applying(links: links, to: line))
+      }
+      return lines
     }
 
-    lines.sort { lhs, rhs in
-      let tolerance = min(lhs.frame.height, rhs.frame.height) * 0.5
-      if abs(lhs.frame.top - rhs.frame.top) > tolerance {
-        return lhs.frame.top < rhs.frame.top
+    /// Unions the bounds of a sample of the line's characters. PDFKit reports them
+    /// one glyph at a time, so long lines are sampled rather than walked.
+    private static func frame(
+      for range: NSRange,
+      on page: PDFPage,
+      bounds: CGRect,
+      limit: Int,
+      fallbackTop: Double,
+      size: Double
+    ) -> Frame {
+      var indexes: [Int] = []
+      let step = max(1, range.length / 8)
+      var index = range.location
+      while index < range.location + range.length {
+        indexes.append(index)
+        index += step
       }
-      return lhs.frame.left < rhs.frame.left
+      indexes.append(range.location + range.length - 1)
+
+      var union: CGRect?
+      for index in indexes where index >= 0 && index < limit {
+        let glyph = page.characterBounds(at: index)
+        guard !glyph.isNull, glyph.height > 0, glyph.width.isFinite, glyph.height.isFinite else {
+          continue
+        }
+        union = union.map { $0.union(glyph) } ?? glyph
+      }
+
+      guard let union, union.height > 0 else {
+        return Frame(
+          left: 0, right: Double(bounds.width), top: fallbackTop, bottom: fallbackTop + size * 1.2)
+      }
+
+      let top = Double(bounds.maxY - union.maxY)
+      return Frame(
+        left: Double(union.minX - bounds.minX),
+        right: Double(union.maxX - bounds.minX),
+        top: top,
+        bottom: top + Double(union.height))
     }
-    return lines
+
+    private static func linkTargets(on page: PDFPage, bounds: CGRect) -> [LinkTarget] {
+      var targets: [LinkTarget] = []
+      for annotation in page.annotations {
+        guard let action = annotation.action as? PDFActionURL, let url = action.url else {
+          continue
+        }
+        let text =
+          page.selection(for: annotation.bounds)?.string?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { continue }
+        let top = Double(bounds.maxY - annotation.bounds.maxY)
+        targets.append(
+          LinkTarget(
+            text: normalizedText(text),
+            url: url.absoluteString,
+            frame: Frame(
+              left: Double(annotation.bounds.minX - bounds.minX),
+              right: Double(annotation.bounds.maxX - bounds.minX),
+              top: top,
+              bottom: top + Double(annotation.bounds.height))))
+      }
+      return targets
+    }
+
+    private static func applying(links: [LinkTarget], to line: Line) -> Line {
+      guard !links.isEmpty else { return line }
+      var line = line
+
+      for link in links {
+        let overlap =
+          min(line.frame.bottom, link.frame.bottom) - max(line.frame.top, link.frame.top)
+        guard overlap > min(line.frame.height, link.frame.height) * 0.4 else { continue }
+        guard min(line.frame.right, link.frame.right) > max(line.frame.left, link.frame.left) else {
+          continue
+        }
+        let text = line.text
+        guard let range = text.range(of: link.text) else { continue }
+        line.runs = marking(
+          line.runs,
+          url: link.url,
+          from: text.distance(from: text.startIndex, to: range.lowerBound),
+          length: link.text.count)
+      }
+      return line
+    }
+
+    private static func marking(
+      _ runs: [Run], url: String, from start: Int, length: Int
+    ) -> [Run] {
+      guard length > 0 else { return runs }
+      var output: [Run] = []
+      var cursor = 0
+      let end = start + length
+
+      for run in runs {
+        let characters = Array(run.text)
+        let runStart = cursor
+        cursor += characters.count
+        guard runStart < end, cursor > start else {
+          output.append(run)
+          continue
+        }
+
+        let localStart = max(0, start - runStart)
+        let localEnd = min(characters.count, end - runStart)
+        guard localStart < localEnd else {
+          output.append(run)
+          continue
+        }
+
+        if localStart > 0 {
+          var head = run
+          head.text = String(characters[0..<localStart])
+          output.append(head)
+        }
+        var linked = run
+        linked.text = String(characters[localStart..<localEnd])
+        linked.link = url
+        output.append(linked)
+        if localEnd < characters.count {
+          var tail = run
+          tail.text = String(characters[localEnd..<characters.count])
+          output.append(tail)
+        }
+      }
+      return output
+    }
+
+    /// PDF fonts rarely carry usable symbolic traits, so the name is the fallback.
+    private static func fontStyle(for font: PDFPlatformFont?) -> (
+      size: Double, bold: Bool, italic: Bool, monospaced: Bool
+    ) {
+      guard let font else { return (12, false, false, false) }
+      let traits = font.fontDescriptor.symbolicTraits
+      let name = font.fontName.lowercased()
+      #if canImport(UIKit)
+        let traitBold = traits.contains(.traitBold)
+        let traitItalic = traits.contains(.traitItalic)
+        let traitMonospaced = traits.contains(.traitMonoSpace)
+      #else
+        let traitBold = traits.contains(.bold)
+        let traitItalic = traits.contains(.italic)
+        let traitMonospaced = traits.contains(.monoSpace)
+      #endif
+      let bold =
+        traitBold || name.contains("bold") || name.contains("semibold")
+        || name.contains("black") || name.contains("heavy")
+      let italic = traitItalic || name.contains("italic") || name.contains("oblique")
+      let monospaced =
+        traitMonospaced || name.contains("mono") || name.contains("courier")
+        || name.contains("consol")
+      return (Double(font.pointSize), bold, italic, monospaced)
+    }
   }
-}
+#endif
+
+// MARK: - OCR
+
+#if canImport(PDFKit) && canImport(Vision)
+  extension PDFImporter {
+    /// Reads a page that carries no text layer with Vision's on-device recogniser.
+    private static func recognizedLines(on page: PDFPage, pageIndex: Int) -> [Line] {
+      let bounds = page.bounds(for: .cropBox)
+      let pageWidth = Double(bounds.width)
+      let pageHeight = Double(bounds.height)
+      guard pageWidth > 0, pageHeight > 0 else { return [] }
+
+      let scale = min(2000 / max(bounds.width, bounds.height), 4)
+      let target = CGSize(
+        width: max(1, (bounds.width * scale).rounded()),
+        height: max(1, (bounds.height * scale).rounded()))
+      guard let image = thumbnailImage(of: page, size: target) else { return [] }
+
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      request.usesLanguageCorrection = true
+      do {
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+      } catch {
+        return []
+      }
+      guard let observations = request.results else { return [] }
+
+      var lines: [Line] = []
+      for observation in observations {
+        guard let candidate = observation.topCandidates(1).first else { continue }
+        guard candidate.string.contains(where: { !$0.isWhitespace }) else { continue }
+
+        let box = observation.boundingBox
+        let frame = Frame(
+          left: Double(box.minX) * pageWidth,
+          right: Double(box.maxX) * pageWidth,
+          top: Double(1 - box.maxY) * pageHeight,
+          bottom: Double(1 - box.minY) * pageHeight)
+        // Recognised heights vary line by line, so they are quantised before they
+        // are used to tell headings from body text.
+        let size = max(2, (frame.height * 0.8 / 2).rounded() * 2)
+        lines.append(
+          Line(
+            runs: [Run(text: candidate.string, size: size)],
+            frame: frame,
+            pageIndex: pageIndex,
+            pageWidth: pageWidth,
+            pageHeight: pageHeight))
+      }
+
+      lines.sort { lhs, rhs in
+        let tolerance = min(lhs.frame.height, rhs.frame.height) * 0.5
+        if abs(lhs.frame.top - rhs.frame.top) > tolerance {
+          return lhs.frame.top < rhs.frame.top
+        }
+        return lhs.frame.left < rhs.frame.left
+      }
+      return lines
+    }
+  }
+#endif

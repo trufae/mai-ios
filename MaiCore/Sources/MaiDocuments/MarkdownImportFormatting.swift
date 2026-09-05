@@ -5,13 +5,13 @@ import Foundation
 /// Both importers walk a very different source format but converge on the same
 /// question: how to turn a styled run of text into Markdown without letting the
 /// source text accidentally become Markdown syntax.
-enum MarkdownImportFormatting {
+public enum MarkdownImportFormatting {
   /// Wraps `text` in the Markdown markers for the given styles.
   ///
   /// Surrounding whitespace is moved outside the markers because `** bold **`
   /// is not emphasis. Code spans win over emphasis: backticks already imply a
   /// verbatim run, and nesting emphasis inside them would be literal.
-  static func decorate(
+  public static func decorate(
     _ text: String,
     bold: Bool = false,
     italic: Bool = false,
@@ -46,7 +46,7 @@ enum MarkdownImportFormatting {
     return leading + rendered + trailing
   }
 
-  static func listItem(_ body: String, level: Int, marker: String) -> String {
+  public static func listItem(_ body: String, level: Int, marker: String) -> String {
     let indent = String(repeating: "  ", count: level)
     let continuation = "\n" + indent + String(repeating: " ", count: marker.count)
     return indent + marker + body.replacingOccurrences(of: "\n", with: continuation)
@@ -54,7 +54,7 @@ enum MarkdownImportFormatting {
 
   private static let inlineEscapes: Set<Character> = ["\\", "`", "*", "[", "]"]
 
-  static func escapingInline(_ text: String) -> String {
+  public static func escapingInline(_ text: String) -> String {
     guard text.contains(where: { inlineEscapes.contains($0) }) else { return text }
     var output = ""
     output.reserveCapacity(text.count + 8)
@@ -66,7 +66,7 @@ enum MarkdownImportFormatting {
   }
 
   /// Keeps a plain paragraph from accidentally becoming a heading, quote or list.
-  static func escapingBlockStart(_ text: String) -> String {
+  public static func escapingBlockStart(_ text: String) -> String {
     guard let first = text.first else { return text }
     if first == "#" || first == ">" || first == "|" {
       return "\\" + text
@@ -86,7 +86,7 @@ enum MarkdownImportFormatting {
     return text
   }
 
-  static func trimmingTrailingWhitespace(_ text: String) -> String {
+  public static func trimmingTrailingWhitespace(_ text: String) -> String {
     var result = text
     while let last = result.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
       result.removeLast()

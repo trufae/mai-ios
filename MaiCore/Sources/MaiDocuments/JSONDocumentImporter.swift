@@ -9,14 +9,14 @@ import Foundation
 /// minimal parser lives here. Container keys are also reported as sections with
 /// the line number they start on in the rendered document, which is what the
 /// files_read_index tool shows.
-enum JSONDocumentImporter {
-  enum ImportError: LocalizedError {
+public enum JSONDocumentImporter {
+  public enum ImportError: LocalizedError, Equatable, Sendable {
     case tooLarge
     case notUTF8
     case invalidJSON(String)
     case tooDeeplyNested
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
       switch self {
       case .tooLarge:
         "JSON documents are limited to 10 MB."
@@ -30,28 +30,39 @@ enum JSONDocumentImporter {
     }
   }
 
-  static let maximumFileBytes = 10_000_000
-  static let maximumNestingDepth = 128
+  public static let maximumFileBytes = 10_000_000
+  public static let maximumNestingDepth = 128
 
-  struct Section: Equatable {
+  public struct Section: Equatable, Sendable {
     /// 1-based line in the rendered document where the section key appears.
-    let line: Int
-    let depth: Int
-    let title: String
+    public let line: Int
+    public let depth: Int
+    public let title: String
+
+    public init(line: Int, depth: Int, title: String) {
+      self.line = line
+      self.depth = depth
+      self.title = title
+    }
   }
 
-  struct RenderedDocument {
-    let text: String
-    let sections: [Section]
+  public struct RenderedDocument: Equatable, Sendable {
+    public let text: String
+    public let sections: [Section]
+
+    public init(text: String, sections: [Section]) {
+      self.text = text
+      self.sections = sections
+    }
   }
 
-  static func render(data: Data) throws -> RenderedDocument {
+  public static func render(data: Data) throws -> RenderedDocument {
     guard data.count <= maximumFileBytes else { throw ImportError.tooLarge }
     guard let text = String(data: data, encoding: .utf8) else { throw ImportError.notUTF8 }
     return try render(text: text)
   }
 
-  static func render(text: String) throws -> RenderedDocument {
+  public static func render(text: String) throws -> RenderedDocument {
     var source = text
     if source.hasPrefix("\u{FEFF}") { source.removeFirst() }
     var parser = Parser(source)
@@ -460,7 +471,8 @@ enum JSONDocumentImporter {
     }
 
     private func displayKey(_ key: String) -> String {
-      let cleaned = key
+      let cleaned =
+        key
         .replacingOccurrences(of: "\r\n", with: " ")
         .replacingOccurrences(of: "\n", with: " ")
         .replacingOccurrences(of: "\r", with: " ")

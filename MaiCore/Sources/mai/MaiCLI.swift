@@ -1,5 +1,6 @@
 import Foundation
 import MaiCore
+import MaiDocuments
 import MaiMCP
 import MaiOpenAI
 import MaiPluginHost
@@ -1043,6 +1044,9 @@ private struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/attach":
+      await attachDocument(
+        argument, session: &session, ocrProvider: ocrProvider, terminal: terminal)
     case "/copy":
       await copyToClipboard(argument, session: session, terminal: terminal)
     case "/visual":
@@ -1576,6 +1580,58 @@ private struct MaiCLI {
     }
   }
 
+  /// `/attach PATH` converts a document to text the model can read and queues it
+  /// for the next message; `/attach clear` drops everything queued so far.
+  private static func attachDocument(
+    _ argument: String,
+    session: inout REPLSession,
+    ocrProvider: any OCRProvider,
+    terminal: TerminalWriter
+  ) async {
+    var trimmed = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      await terminal.line("Usage: /attach PATH | /attach clear")
+      await terminal.line(
+        "Word and PDF files become Markdown, JSON becomes an outline, text files attach as they are, and images attach at medium size."
+      )
+      return
+    }
+    if trimmed.lowercased() == "clear" {
+      let count = session.pendingContent.count
+      session.pendingContent.removeAll()
+      await terminal.line(
+        count == 0
+          ? "No pending attachments."
+          : "Dropped \(count) pending attachment\(count == 1 ? "" : "s").")
+      return
+    }
+    if trimmed.count >= 2, let first = trimmed.first, first == "\"" || first == "'",
+      trimmed.last == first
+    {
+      trimmed = String(trimmed.dropFirst().dropLast())
+    }
+    let path = NSString(string: trimmed).expandingTildeInPath
+    let url = URL(fileURLWithPath: path)
+    do {
+      if DocumentAttachmentImporter.kind(forFilename: url.lastPathComponent) == .image {
+        session.pendingContent.append(
+          try await imageContent(path: path, mode: .medium, ocrProvider: ocrProvider))
+        await terminal.line(
+          "Image queued at medium size: \(url.lastPathComponent). Use /image for other sizes or OCR."
+        )
+        return
+      }
+      let attachment = try DocumentAttachmentImporter.attachment(at: url)
+      session.pendingContent.append(attachment.content)
+      var message = "Attached \(attachment.name) (\(attachment.characterCount) characters"
+      if let note = attachment.note { message += ", \(note)" }
+      message += "); it is sent with the next message."
+      await terminal.line(message)
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
   /// Hands the terminal to the SwiftTUI workspace and adopts its focused
   /// conversation, registrations, and configuration draft when it returns.
   private static func runVisualMode(
@@ -2076,7 +2132,8 @@ private struct MaiCLI {
       "/providers", "/models ", "/provider ", "/model ", "/agents", "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcps",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
-      "/image ocr ", "/copy", "/visual", "/clear", "/chat list", "/chat new ",
+      "/image ocr ", "/attach ", "/attach clear", "/copy", "/visual", "/clear", "/chat list",
+      "/chat new ",
       "/chat use ", "/chat next", "/chat previous", "/chat rename ",
       "/chat close confirm", "/chat messages", "/chat log", "/chat edit ",
       "/chat remove ", "/chat undo", "/chat trim ", "/chat clear",
@@ -2265,6 +2322,8 @@ private struct MaiCLI {
     /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcps               List connected MCP servers
     /image MODE PATH    Attach at tiny/small/medium/big/full size, or OCR to Markdown
+    /attach PATH        Attach a Word, PDF, JSON, or text file as Markdown/plain text
+    /attach clear       Drop the attachments queued for the next message
     /copy [N]           Copy the last reply, or the last N messages, to the clipboard
     /visual             Open the terminal workspace: split chats, providers, MCPs, tools
     /clear              Clear conversation history

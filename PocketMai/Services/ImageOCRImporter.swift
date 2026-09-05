@@ -1,5 +1,6 @@
 import Foundation
 import MaiCore
+import MaiDocuments
 import UIKit
 import Vision
 

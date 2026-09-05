@@ -72,6 +72,16 @@ the workspace makes the focused conversation the REPL conversation; the other
 conversations and the pane layout are kept in memory for the next `/visual`.
 Visual mode needs an interactive terminal and, on macOS, version 15 or later.
 
+`/attach PATH` queues a document for the next message. Word files and PDFs
+are converted to Markdown (scanned PDF pages go through on-device OCR on Apple
+platforms), JSON files become an indented outline, and other text files are
+attached verbatim; images are attached at medium size, so use `/image` for other
+sizes or OCR. `/attach clear` drops everything queued. The converters live in
+the `MaiDocuments` module, which PocketMai links as well, so the app, the CLI,
+and its visual mode share one implementation. `MaiDocuments` needs PDFKit for
+PDFs, so PDF conversion is unavailable on Linux while Word, JSON, and text work
+everywhere.
+
 `/image` always takes a mode and a path. `tiny`, `small`, `medium`, and `big`
 cap the longest edge at 100, 320, 640, and 1024 pixels; `full` preserves the
 source image. `ocr` runs the separately injected `OCRProvider` and queues its
