@@ -42,6 +42,57 @@ jobs:
           path: MaiCore/.build/release/pmai
           if-no-files-found: error
 
+  android-cli:
+    name: CLI (Android arm64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The Android Swift SDK must exactly match the host Swift toolchain.
+      - name: Set up Swift 6.3.3
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.3.3"
+
+      - name: Install Android NDK and Swift SDK
+        run: |
+          set -eu
+          ndk="$RUNNER_TEMP/android-ndk-r27d"
+          curl -fL -o "$RUNNER_TEMP/android-ndk.zip" \
+            https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
+          test -d "$ndk"
+
+          swift sdk install \
+            https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz \
+            --checksum d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5
+          android_sdk=$(find "$HOME/.swiftpm/swift-sdks" -type d -name swift-android -print -quit)
+          test -n "$android_sdk"
+          ANDROID_NDK_HOME="$ndk" "$android_sdk/scripts/setup-android-sdk.sh"
+
+      - name: Build Android arm64 release CLI
+        run: |
+          swift build --package-path MaiCore -c release --product pmai \
+            --swift-sdk aarch64-unknown-linux-android28 --static-swift-stdlib
+
+      - name: Stage Android CLI artifact
+        run: |
+          set -eu
+          output="$RUNNER_TEMP/pmai-android-arm64"
+          mkdir -p "$output"
+          cp MaiCore/.build/aarch64-unknown-linux-android28/release/pmai "$output/pmai"
+          cp "$RUNNER_TEMP/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$output/"
+          file "$output/pmai"
+          file "$output/libc++_shared.so"
+
+      - name: Upload Android CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmai-android-arm64
+          path: ${{ runner.temp }}/pmai-android-arm64
+          if-no-files-found: error
+
   build:
     name: Build (Xcode latest on macOS latest)
     runs-on: macos-latest

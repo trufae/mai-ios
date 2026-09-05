@@ -5,6 +5,12 @@ DESTINATION ?= generic/platform=iOS Simulator
 TEST_DESTINATION ?=
 DERIVED_DATA ?= build/DerivedData
 XCODE_PACKAGE_FLAGS ?= -skipPackagePluginValidation
+SUDO ?= sudo
+ifeq ($(uname),Darwin)
+STRIP ?= strip
+else
+STRIP ?= strip -s
+endif
 DEVICE ?=
 BUNDLE_ID = io.github.trufae.mai
 APP_BUNDLE ?=
@@ -72,7 +78,8 @@ repl:
 
 repl-install:
 	swift build --package-path MaiCore -c release --product pmai
-	sudo cp -f MaiCore/.build/release/pmai $(BINDIR)/pmai
+	$(SUDO) cp -f MaiCore/.build/release/pmai $(BINDIR)/pmai
+	$(SUDO) $(STRIP) $(BINDIR)/pmai
 
 plugin-fixture:
 	swift build --package-path MaiCore --product MaiFixturePlugin
