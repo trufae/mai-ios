@@ -270,5 +270,137 @@ func rootViewRenders() async throws {
   #expect(output.contains("Conversations"))
   #expect(output.contains("Rename chat"))
   #expect(output.contains("Delete chat"))
-  #expect(output.contains("Message (Return sends)"))
+  #expect(output.contains("Menu ^K"))
+  #expect(output.contains("Message, or /help (Return sends)"))
+}
+
+@Test("Transcript text wraps to the pane width and hides control characters")
+@MainActor
+func transcriptWrapsAndSanitizes() async throws {
+  let longReply = Array(repeating: "wrapped words keep flowing", count: 12).joined(separator: " ")
+  let workspace = try await makeWorkspace(
+    seed: VisualConversationSeed(
+      title: "wrap",
+      profile: helloProfile,
+      messages: [.user("col\ta\tb"), .assistant(longReply)]))
+  let output = RenderOnce.render(
+    VisualRootView(workspace: workspace).frame(height: 40),
+    width: 100,
+    environment: ["NO_COLOR": "1"],
+    isStdoutTTY: false)
+  try? output.write(
+    to: URL(fileURLWithPath: "/tmp/mai-visual-wrap-render.txt"), atomically: true, encoding: .utf8)
+  let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+  #expect(lines.allSatisfy { $0.count <= 100 })
+  #expect(output.contains("col    a    b"))
+  #expect(!output.contains("\t"))
+  // Word wrapping never splits a word, so every repetition still shows its last word.
+  let occurrences = output.components(separatedBy: "flowing").count - 1
+  #expect(occurrences == 12)
+  #expect(MessageBlock.displayText("a\tb\u{07}c\r\nd") == "a    bc\nd")
+}
+
+@Test("Slash commands typed into a pane run through the host handler, not the model")
+@MainActor
+func workspaceRunsSlashCommands() async throws {
+  let runtime = AgentRuntime()
+  try await runtime.register(HelloProvider())
+  let handler: VisualCommandHandler = { request in
+    var conversation = request.conversation
+    if request.input == "/clear" { conversation.messages = [] }
+    return VisualCommandOutcome(
+      output: "ran \(request.input) over \(request.conversation.messages.count) messages\n",
+      conversation: conversation,
+      leavesVisualMode: request.input == "/exit")
+  }
+  let workspace = VisualWorkspace(
+    launch: VisualLaunch(
+      focusedConversation: VisualConversationSeed(
+        title: "repl",
+        profile: helloProfile,
+        messages: [.system("Be brief."), .user("hi")]),
+      commandHandler: handler),
+    runtime: runtime,
+    plugins: PluginRegistry(),
+    approvals: VisualApprovalHandler())
+  let conversation = try #require(workspace.focusedConversation)
+
+  conversation.draft = "/chat list"
+  workspace.send(conversation)
+  #expect(conversation.draft.isEmpty)
+  #expect(!conversation.isRunning)
+  await conversation.commandTask?.value
+  #expect(
+    conversation.commandOutput
+      == VisualCommandOutput(command: "/chat list", text: "ran /chat list over 2 messages"))
+  #expect(conversation.transcript.count == 2)
+  #expect(!workspace.exitRequested)
+
+  conversation.draft = "/clear"
+  workspace.send(conversation)
+  await conversation.commandTask?.value
+  #expect(conversation.transcript.isEmpty)
+
+  conversation.draft = "/help"
+  workspace.send(conversation)
+  await conversation.commandTask?.value
+  #expect(conversation.commandOutput?.text.contains("/pane split") == true)
+
+  workspace.dismissCommandOutput(in: conversation)
+  #expect(conversation.commandOutput == nil)
+
+  conversation.draft = "/exit"
+  workspace.send(conversation)
+  await conversation.commandTask?.value
+  #expect(workspace.exitRequested)
+
+  let plain = try await makeWorkspace(
+    seed: VisualConversationSeed(title: "repl", profile: helloProfile))
+  let unsupported = try #require(plain.focusedConversation)
+  unsupported.draft = "/models"
+  plain.send(unsupported)
+  #expect(unsupported.commandOutput?.text.contains("not available") == true)
+  #expect(unsupported.visibleMessages.isEmpty)
+}
+
+@Test("Visual-only commands drive panes, tabs, the menu, and the sidebar")
+@MainActor
+func workspaceVisualCommands() async throws {
+  let workspace = try await makeWorkspace(
+    seed: VisualConversationSeed(title: "repl", profile: helloProfile))
+  let conversation = try #require(workspace.focusedConversation)
+
+  conversation.draft = "/pane split"
+  workspace.send(conversation)
+  #expect(workspace.layout.panes.count == 2)
+  #expect(workspace.conversations.count == 2)
+  #expect(conversation.commandOutput?.text == "Split the pane to the right.")
+
+  conversation.draft = "/pane close"
+  workspace.send(conversation)
+  #expect(workspace.layout.panes.count == 1)
+
+  conversation.draft = "/pane close"
+  workspace.send(conversation)
+  #expect(conversation.commandOutput?.text == "The last pane cannot be closed.")
+
+  conversation.draft = "/tab tools"
+  workspace.send(conversation)
+  #expect(workspace.selectedTab == .tools)
+
+  conversation.draft = "/tab nowhere"
+  workspace.send(conversation)
+  #expect(conversation.commandOutput?.text.hasPrefix("Usage: /tab") == true)
+
+  conversation.draft = "/menu"
+  workspace.send(conversation)
+  #expect(workspace.showsCommandMenu)
+
+  conversation.draft = "/sidebar"
+  workspace.send(conversation)
+  #expect(!workspace.showsSidebar)
+
+  conversation.draft = "/cancel"
+  workspace.send(conversation)
+  #expect(conversation.commandOutput?.text == "No reply is running in the focused chat.")
 }

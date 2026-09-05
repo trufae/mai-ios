@@ -2,6 +2,16 @@ import Foundation
 import MaiCore
 import Observation
 
+public struct VisualCommandOutput: Equatable, Sendable {
+  public var command: String
+  public var text: String
+
+  public init(command: String, text: String) {
+    self.command = command
+    self.text = text
+  }
+}
+
 /// One chat shown in the workspace: its agent profile, transcript, draft input,
 /// and the live state of an in-flight run.
 @MainActor @Observable
@@ -16,9 +26,12 @@ public final class VisualConversation: Identifiable {
   public var activity: [String] = []
   public var isRunning = false
   public var errorMessage: String?
+  /// The last slash command run in this pane and what it printed.
+  public var commandOutput: VisualCommandOutput?
   /// Increments whenever the visible transcript changes so views can follow it.
   public private(set) var revision = 0
   @ObservationIgnored var runTask: Task<Void, Never>?
+  @ObservationIgnored var commandTask: Task<Void, Never>?
   @ObservationIgnored private(set) var hasCustomTitle: Bool
 
   public init(seed: VisualConversationSeed, hasCustomTitle: Bool = true) {
@@ -75,6 +88,14 @@ public final class VisualConversation: Identifiable {
     transcript = AgentTranscript(messages: seed.messages)
     pendingContent = seed.pendingContent
     errorMessage = nil
+    revision &+= 1
+  }
+
+  /// Adopts the conversation state a slash command left behind, keeping the identity and title.
+  public func applyCommandResult(_ seed: VisualConversationSeed) {
+    profile = seed.profile
+    transcript = AgentTranscript(messages: seed.messages)
+    pendingContent = seed.pendingContent
     revision &+= 1
   }
 

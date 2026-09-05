@@ -48,27 +48,27 @@ use the first of `wl-copy`, `xclip`, `xsel`, `pbcopy`, or `clip.exe` found in
 `PATH`.
 
 `/visual` hands the terminal to a [SwiftTUI](https://swifttui.sh/) workspace
-built by the `MaiVisual` module and returns to the prompt on `Ctrl+C` or
-`Ctrl+Q`. The Chats tab keeps several conversations in a sidebar and shows them
-in framed panes. On macOS the shortcut modifier is the `Option` (`⌥`) key;
-other terminals label it `Alt`. `Option+N` starts a conversation in the focused
-pane, `Option+V` and `Option+S` split it right or down with a new conversation,
-`Option+X` closes a pane, `Option+arrows` move focus, `Option+B` hides the
-sidebar, `Option+K` cancels the focused reply, and `Option+C` copies the last
-reply through the terminal clipboard. The Providers, MCP, Tools, and Agents
-tabs (`Option+1` to `Option+5`) register new
-OpenAI-compatible or plugin providers, connect Streamable HTTP MCP servers,
-toggle the tools each conversation may call, register plugin tool sources,
-switch agents, and save the focused conversation as a named agent. Registrations
-apply to the running session immediately and accumulate in a configuration
-draft that is saved atomically to the loaded config path, or to
-`~/.config/pmai/config.json` when none was loaded. Provider, MCP, tool-source,
-model, system-prompt, and named-agent changes therefore survive a restart; the
-manual save control can also write the draft to a different path. Tool approvals raised while
-the workspace is open appear as a sheet instead of a stdin prompt; “Always
-(YOLO)” permits the current and subsequent calls for the session. Chats can be
-renamed from the sidebar, and deleting one requires confirmation. Leaving the
-workspace makes the focused conversation the REPL conversation; the other
+built by the `MaiVisual` module and returns to the prompt on `Ctrl+C`, `/exit`,
+or the REPL button. The Chats tab keeps several conversations in a sidebar and
+shows them in framed panes. Every action is reachable in three portable ways:
+the button toolbar above the panes (Tab moves between controls, Return
+activates, the mouse works too), the searchable command menu on `Ctrl+K` or
+`F2`, and slash commands typed into a pane: `/pane new|split|down|close|next|prev`,
+`/tab chats|providers|mcp|tools|agents`, `/menu`, `/sidebar`, and `/cancel`.
+Alt chords (`Alt+N`, `Alt+V`, `Alt+S`, `Alt+X`, `Alt+arrows`, `Alt+B`,
+`Alt+K`, `Alt+C`, `Alt+1` to `Alt+5`) are listed in the menu and work only where
+the terminal sends Alt as an Escape prefix. The REPL's own slash commands run
+unchanged on the focused pane's conversation: `/chat list`, `/model`, `/agent`,
+`/image`, `/copy`, `/clear`, and the rest. Command output appears above the
+input until Escape closes it. The Providers, MCP, Tools, and Agents tabs
+register new OpenAI-compatible or plugin providers, connect Streamable HTTP MCP
+servers, toggle the tools each conversation may call, register plugin tool
+sources, switch agents, and save the focused conversation as a named agent.
+Registrations apply to the running session immediately and are saved atomically
+to the loaded config path, or to `~/.config/pmai/config.json` when none was
+loaded. Tool approvals raised
+while the workspace is open appear as a sheet instead of a stdin prompt. Leaving
+the workspace makes the focused conversation the REPL conversation; the other
 conversations and the pane layout are kept in memory for the next `/visual`.
 Visual mode needs an interactive terminal and, on macOS, version 15 or later.
 
@@ -107,6 +107,16 @@ Configuration is discovered in this order: `--config`, `PMAI_CONFIG`,
 `./pmai.json`, and `~/.config/pmai/config.json`. Secrets should normally use
 `apiKeyEnvironment`, `bearerTokenEnvironment`, or `headerEnvironment` instead
 of being stored directly in JSON.
+
+The text REPL persists independent chats to `~/.config/pmai/chats.json` and its
+editable Up/Down input history to `~/.config/pmai/history.json`; `PMAI_STATE`,
+`PMAI_HISTORY`, `--state`, and `--history` override those paths. `/chat list`,
+`new`, `use`, `next`, `previous`, `rename`, and `close` manage chats, while
+`messages`, `log`, `edit`, `remove`, `undo`, `trim`, and `clear` operate on the
+active transcript. Tab completes commands, chat selectors, agents, and
+providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
+updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
+back to that agent in the shared configuration.
 
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Agents explicitly
