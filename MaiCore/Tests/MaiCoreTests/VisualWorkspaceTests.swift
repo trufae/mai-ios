@@ -250,12 +250,12 @@ func workspaceConfiguresToolGroups() async throws {
     approvals: VisualApprovalHandler())
   await workspace.refreshRegistries()
 
+  let conversation = try #require(workspace.focusedConversation)
   let agents = try #require(workspace.toolGroups.first { $0.id == "agents" })
   #expect(agents.toolNames == AgentRuntime.agentToolNames)
-  #expect(!workspace.isToolGroupEnabled(agents, for: try #require(workspace.focusedConversation)))
+  #expect(!workspace.isToolGroupEnabled(agents, for: conversation))
 
   let github = try #require(workspace.toolGroups.first { $0.id == "github" })
-  let conversation = try #require(workspace.focusedConversation)
   workspace.setToolGroup(agents, allowed: true, for: conversation)
   #expect(conversation.profile.toolGroupNames.contains("agents"))
   #expect(AgentRuntime.agentToolNames.isSubset(of: conversation.profile.toolNames))
@@ -266,7 +266,7 @@ func workspaceConfiguresToolGroups() async throws {
   let mastodon = try #require(workspace.toolGroups.first { $0.id == "mastodon" })
   workspace.selectedTab = .tools
   let rendered = RenderOnce.render(
-    VisualRootView(workspace: workspace).frame(height: 50),
+    VisualRootView(workspace: workspace).frame(height: 70),
     width: 150,
     environment: ["NO_COLOR": "1"],
     isStdoutTTY: false)

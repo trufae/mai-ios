@@ -1084,7 +1084,7 @@ func agentToolGroupPermission() async throws {
       provider: "scripted",
       model: "fixture",
       messages: [.user("Do not delegate")],
-      toolNames: AgentRuntime.agentToolNames,
+      toolNames: [],
       toolGroupNames: [],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(maxSubagents: 1)))
