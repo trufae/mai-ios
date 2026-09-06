@@ -275,6 +275,8 @@ private struct VisualBridge {
   var providerBaseURLs: ProviderBaseURLStore
   var memory: MemoryState
   var todo: TodoState
+  /// Tokens/s and time in use per provider:model, shared with the runtime.
+  var usageStats: ModelUsageStore
 }
 
 /// Where the current project's todo list lives. The `todo_*` tools are
@@ -860,6 +862,8 @@ struct MaiCLI {
           environment: environment)
       }
       let home = resolvedHome(options: options, environment: environment)
+      let usageStats = ModelUsageStore(url: home.usageStatsURL)
+      await runtime.configureUsageStats(usageStats)
       let project = try home.openProject(
         atWorkingDirectory: URL(
           fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
@@ -945,7 +949,8 @@ struct MaiCLI {
           implicitProviders: setup.implicitProviders,
           providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs),
           memory: memoryState,
-          todo: todoState),
+          todo: todoState,
+          usageStats: usageStats),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -1347,7 +1352,7 @@ struct MaiCLI {
   private static let commandsAllowedDuringTurn: Set<String> = [
     "/help", "/queue", "/agents", "/set", "/cwd", "/pwd", "/exit", "/quit", "/todo",
     "/providers", "/models", "/plugins", "/mcps", "/prompts", "/project", "/attach", "/image",
-    "/copy", "/export",
+    "/copy", "/export", "/stats",
   ]
 
   /// The REPL is one loop over one stream of events. Typed lines arrive from
@@ -1863,7 +1868,11 @@ struct MaiCLI {
             await terminal.recoverAfterError(error.localizedDescription)
           }
         }
-        if let turn { await terminal.note("took \(elapsedDescription(since: turn.started))") }
+        if let turn {
+          let took = "took \(elapsedDescription(since: turn.started))"
+          await terminal.note(
+            succeeded ? "✓ \(took)" : "✗ \(took)", color: succeeded ? "cyan" : "red")
+        }
         session.touch()
         workspace.upsert(session.chat, selecting: true)
         await saveWorkspace(&workspace, store: store, terminal: terminal)
@@ -2138,9 +2147,11 @@ struct MaiCLI {
         await terminal.line(queueHelp)
       case "export", "/export":
         await terminal.line(exportHelp)
+      case "stats", "/stats":
+        await terminal.line(statsHelp)
       default:
         await terminal.line(
-          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, todo, prompts, agents, chat, edit, tools, or queue."
+          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, todo, prompts, agents, chat, edit, tools, queue, export, or stats."
         )
       }
     case "/cwd", "/pwd":
@@ -2374,6 +2385,8 @@ struct MaiCLI {
       await copyToClipboard(argument, session: session, terminal: terminal)
     case "/export":
       await handleExportCommand(argument, session: session, runtime: runtime, terminal: terminal)
+    case "/stats":
+      await handleStatsCommand(argument, store: visual.usageStats, terminal: terminal)
     #if PMAI_HAS_VISUAL
       case "/visual":
         await runVisualMode(
@@ -5516,6 +5529,83 @@ struct MaiCLI {
     }
   }
 
+  /// `/stats`: the usage ledger the runtime fills after every model call,
+  /// printed as one colored bar per provider:model for speed and for time.
+  private static func handleStatsCommand(
+    _ argument: String,
+    store: ModelUsageStore,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+    switch action {
+    case "", "list", "show":
+      let report = ModelUsageReport(await store.ledger)
+      let colors = await terminal.paintsOutput
+      let lines = report.lines(width: TerminalLineEditor.terminalColumns()) { bar, color in
+        guard colors, let code = TerminalLineEditor.foregroundColorCode(color.hex) else {
+          return bar
+        }
+        return "\u{1B}[\(code)m\(bar)\u{1B}[0m"
+      }
+      await terminal.line(lines.joined(separator: "\n"))
+      if let error = await store.lastPersistenceError {
+        await terminal.line(
+          "warning: statistics could not be saved: \(error)", to: .standardError)
+      }
+    case "reset", "clear":
+      await store.reset()
+      await terminal.line("Usage statistics reset.")
+    case "rm", "remove", "delete", "forget":
+      let target = fields.count > 1 ? fields[1].trimmingCharacters(in: .whitespaces) : ""
+      guard !target.isEmpty else {
+        await terminal.line("Usage: /stats rm PROVIDER[:MODEL]")
+        return
+      }
+      if await store.remove(id: target) {
+        await terminal.line("Removed the statistics of '\(target)'.")
+        return
+      }
+      let byProvider = await store.remove(providerLabel: target)
+      if byProvider > 0 {
+        await terminal.line(
+          "Removed the statistics of \(byProvider) model\(byProvider == 1 ? "" : "s") of provider '\(target)'."
+        )
+        return
+      }
+      if let separator = target.firstIndex(of: ":") {
+        let id = ModelUsageTotals.id(
+          providerLabel: String(target[..<separator]),
+          modelID: String(target[target.index(after: separator)...]))
+        if await store.remove(id: id) {
+          await terminal.line("Removed the statistics of '\(target)'.")
+          return
+        }
+      }
+      await terminal.line("No statistics for '\(target)'. /stats lists the provider:model pairs.")
+    case "path":
+      await terminal.line(
+        await store.location?.path ?? "Statistics are kept in memory for this session only.")
+    case "help":
+      await terminal.line(statsHelp)
+    default:
+      await terminal.line("Unknown /stats action '\(action)'.\n" + statsHelp)
+    }
+  }
+
+  private static let statsHelp = """
+    Statistics commands:
+      /stats                 Rank every provider:model used by tokens/s, with time in use
+      /stats rm PROVIDER[:MODEL]  Drop the statistics of one model or a whole provider
+      /stats reset           Forget every statistic
+      /stats path            Print the file the statistics are saved in
+    The runtime records tokens (from the provider's usage, or estimated from text
+    length and marked ~) and the wall-clock time of every model call, in the REPL,
+    one-shot runs, and the visual workspace alike. Speed is visible output tokens
+    over the streaming window; time in use adds the wait for the first token.
+    """
+
   private static let exportHelp = """
     Export this chat as a file, the same formats PocketMai offers:
 
@@ -6804,6 +6894,7 @@ struct MaiCLI {
       "/agents", "/agents tree", "/agents log ", "/agents kill ", "/agents focus ",
       "/agents focus main", "/queue", "/queue push ", "/queue pop", "/queue flush",
       "/help queue", "/help export", "/export markdown ", "/export json ", "/export debug ",
+      "/stats", "/stats reset", "/stats rm ", "/stats path", "/help stats",
       "/export epub ", "/export docx ", "/set ui.subagents all", "/set ui.subagents tools",
       "/set ui.subagents stats", "/set ui.subagents none",
       "/agent use ",
@@ -7086,6 +7177,7 @@ struct MaiCLI {
     /attach clear       Drop the attachments queued for the next message
     /copy [N]           Copy the last reply, or the last N messages, to the clipboard
     /export FORMAT [PATH]  Save this chat as markdown, json, debug, epub, or docx
+    /stats              Tokens/s and time in use for every provider:model, as bars
     \(visualHelp)/clear              Clear conversation history
     /exit               Exit the REPL
 

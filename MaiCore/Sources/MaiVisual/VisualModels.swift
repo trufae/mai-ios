@@ -192,6 +192,7 @@ public enum VisualTab: String, CaseIterable, Hashable, Sendable {
   case mcp
   case tools
   case agents
+  case stats
 
   public var title: String {
     switch self {
@@ -200,6 +201,7 @@ public enum VisualTab: String, CaseIterable, Hashable, Sendable {
     case .mcp: "MCP"
     case .tools: "Tools"
     case .agents: "Agents"
+    case .stats: "Stats"
     }
   }
 }

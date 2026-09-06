@@ -1,3 +1,4 @@
+import MaiCore
 import XCTest
 
 @testable import PocketMai

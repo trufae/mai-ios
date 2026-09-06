@@ -28,6 +28,9 @@ struct VisualRootView: View {
         Tab("Agents", badge: "\(workspace.agents.count)", value: VisualTab.agents) {
           AgentsScreen(workspace: workspace)
         }
+        Tab("Stats", badge: "\(workspace.usageLedger.totals.count)", value: VisualTab.stats) {
+          StatsScreen(workspace: workspace)
+        }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       Divider()
@@ -183,6 +186,9 @@ struct VisualRootView: View {
       VisualMenuCommand(id: "tab-agents", name: "Show agents", shortcut: "/tab agents") {
         workspace.selectedTab = .agents
       },
+      VisualMenuCommand(id: "tab-stats", name: "Show model statistics", shortcut: "/tab stats") {
+        workspace.selectedTab = .stats
+      },
       VisualMenuCommand(id: "exit", name: "Back to the REPL", shortcut: "Ctrl+C or /exit") {
         workspace.requestExit()
       },
@@ -230,6 +236,8 @@ struct VisualRootView: View {
       "Toggle which tools the focused chat may call; register plugin tool sources"
     case .agents:
       "Tune the focused chat, switch agents, or save the chat as a named agent"
+    case .stats:
+      "Tokens/s and time in use per provider:model; bars are colored by provider"
     }
   }
 

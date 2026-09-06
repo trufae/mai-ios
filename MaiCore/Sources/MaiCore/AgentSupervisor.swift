@@ -312,6 +312,7 @@ public actor AgentSupervisor {
     entry.info.attention = nil
     entry.info.failure = nil
     entry.info.finishedAt = nil
+    entry.info.runStartedAt = Date()
     entry.info.isCollected = false
     entry.info.modelTurns = 0
     entry.info.toolCalls = 0

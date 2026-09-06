@@ -1,8 +1,11 @@
+import MaiCore
 import SwiftUI
 
 /// Settings → Statistics: lifetime token consumption and generation speed for
 /// every provider/model that has been used. A bar chart on top compares average
-/// speed across models; tapping a bar names it below the chart.
+/// speed across models; tapping a bar names it below the chart. The numbers,
+/// rankings, and provider colors come from MaiCore, the same code behind the
+/// pmai REPL's `/stats`.
 struct UsageStatsView: View {
   @ObservedObject private var stats = UsageStatsStore.shared
   @State private var selectedID: String?
@@ -11,7 +14,7 @@ struct UsageStatsView: View {
   @State private var hasInitializedSelections = false
   @State private var confirmingReset = false
   @State private var detailEntry: UsageStatsStore.ModelTotals?
-  @State private var deletingProvider: ProviderTotals?
+  @State private var deletingProvider: ProviderUsageTotals?
 
   private static let chartHeight: CGFloat = 120
 
@@ -36,21 +39,8 @@ struct UsageStatsView: View {
     stats.totals.sorted { $0.lastUsedAt > $1.lastUsedAt }
   }
 
-  private var providerTotals: [ProviderTotals] {
-    Dictionary(grouping: stats.totals, by: \.providerLabel)
-      .map { providerLabel, entries in
-        ProviderTotals(
-          providerLabel: providerLabel,
-          inputTokens: entries.reduce(0) { $0 + $1.inputTokens },
-          userInputTokens: entries.reduce(0) { $0 + ($1.userInputTokens ?? 0) },
-          outputTokens: entries.reduce(0) { $0 + $1.outputTokens },
-          receivedTextTokens: entries.reduce(0) { $0 + ($1.receivedTextTokens ?? 0) },
-          reasoningTokens: entries.reduce(0) { $0 + ($1.reasoningTokens ?? 0) },
-          imageInputs: entries.reduce(0) { $0 + ($1.imageInputs ?? 0) },
-          estimatedCallCount: entries.reduce(0) { $0 + $1.estimatedCallCount }
-        )
-      }
-      .sorted { $0.providerLabel.localizedCaseInsensitiveCompare($1.providerLabel) == .orderedAscending }
+  private var providerTotals: [ProviderUsageTotals] {
+    stats.ledger.providerTotals
   }
 
   private var totalInputTokens: Int {
@@ -317,7 +307,8 @@ struct UsageStatsView: View {
     .padding(.vertical, 2)
     .buttonStyle(.plain)
     .listRowBackground(
-      isSelected ? providerColor(for: entry.providerLabel).opacity(0.14) : Color.clear)
+      isSelected ? providerColor(for: entry.providerLabel).opacity(0.14) : Color.clear
+    )
     .onLongPressGesture {
       detailEntry = entry
     }
@@ -325,7 +316,7 @@ struct UsageStatsView: View {
     .accessibilityValue(isSelected ? "Selected" : "Not selected")
   }
 
-  private func providerRow(_ provider: ProviderTotals) -> some View {
+  private func providerRow(_ provider: ProviderUsageTotals) -> some View {
     let isSelected = selectedProviderLabels.contains(provider.providerLabel)
     let approx = provider.estimatedCallCount > 0 ? "~" : ""
     return Button {
@@ -362,7 +353,9 @@ struct UsageStatsView: View {
       deletingProvider = provider
     }
     .accessibilityLabel(provider.providerLabel)
-    .accessibilityValue("\(isSelected ? "Selected" : "Not selected"), \(providerDetailText(for: provider, approx: approx))")
+    .accessibilityValue(
+      "\(isSelected ? "Selected" : "Not selected"), \(providerDetailText(for: provider, approx: approx))"
+    )
   }
 
   private func fullDetailText(for entry: UsageStatsStore.ModelTotals) -> String {
@@ -409,6 +402,9 @@ struct UsageStatsView: View {
         "Generation time: \(Duration.seconds(entry.generationSeconds).formatted(.units(allowed: [.hours, .minutes, .seconds])))"
       )
     }
+    if entry.totalSeconds > 0 {
+      lines.append("Time in use: \(ModelUsageFormat.duration(entry.totalSeconds))")
+    }
     if entry.lastUsedAt > .distantPast {
       lines.append(
         "Last used: \(entry.lastUsedAt.formatted(date: .abbreviated, time: .shortened))")
@@ -434,6 +430,9 @@ struct UsageStatsView: View {
       parts.append("\(tokenText(entry.cachedTokens)) cached")
     }
     parts.append("\(entry.callCount) req")
+    if entry.totalSeconds > 0 {
+      parts.append("\(ModelUsageFormat.duration(entry.totalSeconds)) in use")
+    }
     if let promptSpeed = entry.averagePromptTokensPerSecond {
       parts.append("prompt \(speedText(promptSpeed))")
     }
@@ -443,7 +442,7 @@ struct UsageStatsView: View {
     return parts.joined(separator: " · ")
   }
 
-  private func providerDetailText(for provider: ProviderTotals, approx: String) -> String {
+  private func providerDetailText(for provider: ProviderUsageTotals, approx: String) -> String {
     var parts: [String] = []
     if provider.userInputTokens > 0 {
       parts.append("~\(tokenText(provider.userInputTokens)) sent")
@@ -457,13 +456,14 @@ struct UsageStatsView: View {
     if provider.imageInputs > 0 {
       parts.append("\(provider.imageInputs.formatted()) images")
     }
+    if provider.totalSeconds > 0 {
+      parts.append("\(ModelUsageFormat.duration(provider.totalSeconds)) in use")
+    }
     return parts.joined(separator: " · ")
   }
 
   private func sectionTitle(for entry: UsageStatsStore.ModelTotals) -> String {
-    entry.modelID.isEmpty || entry.modelID == entry.providerLabel
-      ? entry.providerLabel
-      : "\(entry.providerLabel) — \(entry.modelID)"
+    entry.title
   }
 
   private func tokenText(_ count: Int) -> String {
@@ -471,39 +471,21 @@ struct UsageStatsView: View {
   }
 
   private func speedText(_ tokensPerSecond: Double) -> String {
-    String(format: "%.1f tok/s", tokensPerSecond)
+    ModelUsageFormat.speed(tokensPerSecond)
   }
 
   private func secondsText(_ seconds: TimeInterval) -> String {
-    String(format: seconds >= 10 ? "%.1fs" : "%.2fs", seconds)
+    ModelUsageFormat.seconds(seconds)
   }
 
-  /// A label-derived hue gives every provider a distinct, repeatable chart color.
+  /// The shared palette's hue for a provider, so a provider has the same
+  /// color here as in the pmai visual workspace.
   private func providerColor(
     for providerLabel: String
   ) -> Color {
-    var hash: UInt64 = 1_469_598_103_934_665_603
-    for byte in providerLabel.utf8 {
-      hash ^= UInt64(byte)
-      hash &*= 1_099_511_628_211
-    }
-    let hue = Double(hash % 360) / 360
-    return Color(
-      hue: hue,
-      saturation: 0.68,
-      brightness: 0.88)
-  }
-
-  private struct ProviderTotals: Identifiable {
-    let providerLabel: String
-    let inputTokens: Int
-    let userInputTokens: Int
-    let outputTokens: Int
-    let receivedTextTokens: Int
-    let reasoningTokens: Int
-    let imageInputs: Int
-    let estimatedCallCount: Int
-
-    var id: String { providerLabel }
+    Color(
+      hue: ModelUsagePalette.hue(forProviderLabel: providerLabel),
+      saturation: ModelUsagePalette.saturation,
+      brightness: ModelUsagePalette.brightness)
   }
 }

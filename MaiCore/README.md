@@ -111,6 +111,8 @@ input until Escape closes it. The Providers, MCP, Tools, and Agents tabs
 register new OpenAI-compatible or plugin providers, connect Streamable HTTP MCP
 servers, toggle the tools each conversation may call, register plugin tool
 sources, switch agents, and save the focused conversation as a named agent.
+The Stats tab draws one bar per provider:model, colored by provider, for
+average output speed and for time in use, refreshed after every reply.
 Registrations apply to the running session immediately and are saved atomically
 to the loaded config path, or to `~/.config/pmai/config.json` when none was
 loaded. Tool approvals raised
@@ -250,8 +252,25 @@ Child agents print as they work, in blocks rather than character by character,
 every line prefixed with the child's pid (`agent#3 │ …`, `agent#3 → tool …`,
 `agent#3 ↲ done …`) so two children working at once stay apart. `ui.subagents`
 picks how much: `all` (replies and tool calls), `tools` (tool calls only),
-`stats` (one line per model turn), or `none`. `/agents tree` ends with a
-`Total:` row summing the turns, tools, and tokens of the whole tree.
+`stats` (one line per model turn), or `none`. Every `/agents` row says how
+long its run has been going (`5 turns · 2 tools · 2.1k tok · 1m4s`), and
+`/agents tree` ends with a `Total:` row summing the turns, tools, and tokens
+of the whole tree. When a turn ends the REPL prints `✓ took 5s` in cyan, or
+`✗ took 5s` in red when it failed or was cancelled.
+
+`/stats` ranks every provider:model pair ever used by average output speed,
+one colored bar per model, followed by the same rows ranked by time in use,
+with the request and token counts beside each bar. The runtime records every
+provider call it makes — REPL turns, one-shot runs, tool-loop rounds, child
+agents, and the visual workspace — into `ModelUsageStore`, kept in
+`~/.pmai/stats.json` (`$PMAI_HOME` relocates it) so the totals span every
+project. Tokens come from the provider's usage payload, or are estimated from
+text length and marked `~` when it reports none; speed is visible output
+tokens over the first→last token window of the stream, and time in use adds
+the wait for the first token. `/stats rm PROVIDER[:MODEL]` drops one row or a
+whole provider, `/stats reset` forgets everything, and `/stats path` prints
+the file. PocketMai's Statistics screen is built on the same `ModelUsageLedger`
+and `ModelUsageReport`, so both hosts rank, color, and describe models alike.
 
 On piped input each prompt is preceded by a colored separator so prompts remain
 easy to find in terminal scrollback. Long input scrolls horizontally and is

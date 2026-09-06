@@ -138,6 +138,7 @@ extension ChatFileStore where Chat == AgentChat {
 ///
 ///     ~/.pmai/projects.json              index of known projects
 ///     ~/.pmai/history.json               editable input history
+///     ~/.pmai/stats.json                 tokens/s and time in use per provider:model
 ///     <workdir>/.pmai/project.json       the project's own id, name, and tint
 ///     <workdir>/.pmai/chats/<id>.json    one file per chat
 ///     <workdir>/.pmai/memory.md          the project's durable memory
@@ -152,6 +153,7 @@ public struct AgentHome: Sendable {
   public static let projectFilename = "project.json"
   public static let chatsDirectoryName = "chats"
   public static let historyFilename = "history.json"
+  public static let usageStatsFilename = "stats.json"
 
   public let rootURL: URL
 
@@ -179,6 +181,12 @@ public struct AgentHome: Sendable {
 
   public var historyURL: URL {
     rootURL.appendingPathComponent(Self.historyFilename)
+  }
+
+  /// The usage ledger every project shares: a model's speed does not depend
+  /// on which directory it was asked from.
+  public var usageStatsURL: URL {
+    rootURL.appendingPathComponent(Self.usageStatsFilename)
   }
 
   /// Storage for projects whose working directory cannot hold a `.pmai` folder.

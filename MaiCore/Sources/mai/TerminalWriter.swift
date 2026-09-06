@@ -35,6 +35,8 @@ actor TerminalWriter {
   private var subagentOutput = ConfiguredTerminalUI().subagentOutput
   private var promptColor = ConfiguredTerminalUI().promptForeground
   private let colorsStatus: Bool
+  /// Whether stdout is a color terminal, for command output painted inline.
+  private let colorsOutput: Bool
   /// The persistent screen, when the REPL runs on a terminal. Output written
   /// through it lands above the prompt instead of on top of it.
   private var screen: TerminalScreen?
@@ -49,9 +51,21 @@ actor TerminalWriter {
 
   init(capturesOutput: Bool = false) {
     self.capturesOutput = capturesOutput
-    colorsStatus =
-      !capturesOutput && isatty(STDERR_FILENO) != 0
-      && ProcessInfo.processInfo.environment["NO_COLOR"] == nil
+    let noColor = ProcessInfo.processInfo.environment["NO_COLOR"] != nil
+    colorsStatus = !capturesOutput && isatty(STDERR_FILENO) != 0 && !noColor
+    colorsOutput = !capturesOutput && isatty(STDOUT_FILENO) != 0 && !noColor
+  }
+
+  /// True when `paint` will add color: output goes to a color terminal rather
+  /// than a pipe or a captured surface such as the visual workspace.
+  var paintsOutput: Bool { colorsOutput }
+
+  /// Wraps a piece of stdout text in a color, or returns it untouched where
+  /// escapes would show as noise.
+  func paint(_ text: String, color: String?) -> String {
+    guard colorsOutput, let color, let code = TerminalLineEditor.foregroundColorCode(color)
+    else { return text }
+    return "\u{1B}[\(code)m\(text)\u{1B}[0m"
   }
 
   func drainCaptured() -> String {
@@ -255,8 +269,9 @@ actor TerminalWriter {
 
   func prompt(_ value: String) { write(value) }
 
-  /// A one-line remark between replies, styled like tool status lines.
-  func note(_ value: String) { status(value) }
+  /// A one-line remark between replies, styled like tool status lines unless
+  /// a color is given.
+  func note(_ value: String, color: String? = nil) { status(value, color: color) }
 
   func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
     if capturesOutput {

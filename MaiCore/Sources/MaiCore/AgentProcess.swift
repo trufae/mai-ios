@@ -133,6 +133,9 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
   public var attention: AgentAttention?
   public var depth: Int
   public var startedAt: Date
+  /// When the current run began. A chat process is reopened for every turn,
+  /// so this moves while `startedAt` stays at the process's first run.
+  public var runStartedAt: Date
   public var updatedAt: Date
   public var finishedAt: Date?
   public var modelTurns: Int
@@ -159,6 +162,7 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     attention: AgentAttention? = nil,
     depth: Int = 0,
     startedAt: Date = Date(),
+    runStartedAt: Date? = nil,
     updatedAt: Date? = nil,
     finishedAt: Date? = nil,
     modelTurns: Int = 0,
@@ -179,6 +183,7 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     self.attention = attention
     self.depth = depth
     self.startedAt = startedAt
+    self.runStartedAt = runStartedAt ?? startedAt
     self.updatedAt = updatedAt ?? startedAt
     self.finishedAt = finishedAt
     self.modelTurns = modelTurns
@@ -192,14 +197,27 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
 
   public var needsAttention: Bool { attention != nil }
 
-  /// `#3 coder  run  5 turns · 2 tools · 2.1k tok — reading Parser.swift`
+  /// How long the current run has been going, or how long the last one took
+  /// once the process ended.
+  public func elapsedSeconds(at now: Date = Date()) -> TimeInterval {
+    max(0, (finishedAt ?? now).timeIntervalSince(runStartedAt))
+  }
+
+  /// `#3 coder  run  5 turns · 2 tools · 2.1k tok · 1m4s — reading Parser.swift`
   public var summaryLine: String {
+    summaryLine(at: Date())
+  }
+
+  public func summaryLine(at now: Date) -> String {
     var line = "\(pid) \(agentID)  [\(state.shortLabel)]"
     var facts: [String] = []
     if modelTurns > 0 { facts.append("\(modelTurns) turn\(modelTurns == 1 ? "" : "s")") }
     if toolCalls > 0 { facts.append("\(toolCalls) tool\(toolCalls == 1 ? "" : "s")") }
     if let tokens = usage?.totalTokens, tokens > 0 {
       facts.append("\(Self.compactCount(tokens)) tok")
+    }
+    if state != .starting || finishedAt != nil {
+      facts.append(ModelUsageFormat.duration(elapsedSeconds(at: now)))
     }
     if queuedMessages > 0 { facts.append("\(queuedMessages) queued") }
     if !facts.isEmpty { line += "  " + facts.joined(separator: " · ") }

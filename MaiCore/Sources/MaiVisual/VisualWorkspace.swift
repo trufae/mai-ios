@@ -121,6 +121,9 @@ public final class VisualWorkspace {
   /// The live agent process tree, refreshed when runs start and finish.
   public private(set) var agentTree = AgentProcessTree()
   public private(set) var agents: [AgentDefinition] = []
+  /// Tokens/s and time in use per provider:model, mirrored from the runtime's
+  /// usage store after every run and shown as bars on the Stats tab.
+  public private(set) var usageLedger = ModelUsageLedger()
   public var pendingApproval: VisualApprovalHandler.Pending?
   public var pendingConversationDeletion: ConversationActionRequest?
   public var pendingConversationRename: ConversationActionRequest?
@@ -190,11 +193,14 @@ public final class VisualWorkspace {
     layout.root.leaves.contains { $0.conversation == conversation.id }
   }
 
+  public var usageReport: ModelUsageReport { ModelUsageReport(usageLedger) }
+
   public func refreshRegistries() async {
     providers = await runtime.availableProviders()
     tools = await runtime.availableTools()
     agents = await runtime.availableAgents()
     await refreshAgentTree()
+    await refreshUsageStats()
     var groups: [ToolGroupDefinition] = []
     for source in configuration.toolSources where source.enabled {
       do {
@@ -363,6 +369,7 @@ public final class VisualWorkspace {
         conversation.failRun(error.localizedDescription)
       }
       await self?.refreshAgentTree()
+      await self?.refreshUsageStats()
     }
     Task { await refreshAgentTree() }
   }
@@ -398,6 +405,7 @@ public final class VisualWorkspace {
       if input.hasPrefix("/help") { output += "\n\n" + VisualWorkspace.visualCommandsHelp }
       conversation.commandOutput = VisualCommandOutput(command: input, text: output)
       conversation.commandTask = nil
+      if input.hasPrefix("/stats") { await self?.refreshUsageStats() }
       if outcome.leavesVisualMode { self?.exitRequested = true }
     }
   }
@@ -431,7 +439,7 @@ public final class VisualWorkspace {
       /pane down           Split the focused pane downwards
       /pane close          Close the focused pane
       /pane next|prev      Move focus between panes
-      /tab NAME            Show chats, providers, mcp, tools, or agents
+      /tab NAME            Show chats, providers, mcp, tools, agents, or stats
       /menu                Open the command menu (also Ctrl+K or F2)
       /sidebar             Show or hide the conversation list
       /cancel              Cancel the focused chat's reply
@@ -591,6 +599,40 @@ public final class VisualWorkspace {
 
   public func refreshAgentTree() async {
     agentTree = await runtime.supervisor.tree()
+  }
+
+  // MARK: Usage statistics
+
+  public func refreshUsageStats() async {
+    guard let store = await runtime.usageStatsStore() else {
+      usageLedger = ModelUsageLedger()
+      return
+    }
+    usageLedger = await store.ledger
+  }
+
+  public func resetUsageStats() {
+    let runtime = runtime
+    Task { [weak self] in
+      guard let store = await runtime.usageStatsStore() else {
+        self?.status = "No usage statistics are recorded in this session."
+        return
+      }
+      await store.reset()
+      await self?.refreshUsageStats()
+      self?.status = "Usage statistics reset."
+    }
+  }
+
+  public func removeUsageStats(id: String) {
+    let runtime = runtime
+    Task { [weak self] in
+      guard let store = await runtime.usageStatsStore(), await store.remove(id: id) else {
+        return
+      }
+      await self?.refreshUsageStats()
+      self?.status = "Removed the statistics of '\(id)'."
+    }
   }
 
   public func stopAgentProcess(_ pid: AgentPID) {

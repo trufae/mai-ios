@@ -482,3 +482,65 @@ func workspaceVisualCommands() async throws {
   workspace.send(conversation)
   #expect(conversation.commandOutput?.text == "No reply is running in the focused chat.")
 }
+
+@Test("The Stats tab draws a colored bar per model from the runtime's usage store")
+@MainActor
+func statsTabRendersUsageBars() async throws {
+  let runtime = AgentRuntime()
+  try await runtime.register(HelloProvider())
+  let store = ModelUsageStore()
+  await store.record(
+    ModelCallStats(
+      providerLabel: "thor", modelID: "qwen3.8:27b", inputTokens: 1_000, outputTokens: 4_000,
+      promptSeconds: 4, generationSeconds: 100))
+  await store.record(
+    ModelCallStats(
+      providerLabel: "openai", modelID: "big-pickle", inputTokens: 500, outputTokens: 400,
+      generationSeconds: 20, tokensEstimated: true))
+  await runtime.configureUsageStats(store)
+  let workspace = VisualWorkspace(
+    launch: VisualLaunch(
+      focusedConversation: VisualConversationSeed(title: "repl", profile: helloProfile)),
+    runtime: runtime,
+    plugins: PluginRegistry(),
+    approvals: VisualApprovalHandler())
+  await workspace.refreshRegistries()
+  #expect(workspace.usageLedger.totals.count == 2)
+  #expect(workspace.runVisualCommand("/tab stats") == "Showing the Stats tab.")
+  #expect(workspace.selectedTab == .stats)
+
+  let output = RenderOnce.render(
+    VisualRootView(workspace: workspace).frame(height: 30),
+    width: 120,
+    environment: ["NO_COLOR": "1"],
+    isStdoutTTY: false)
+  #expect(output.contains("Stats"))
+  #expect(output.contains("Average output speed"))
+  #expect(output.contains("Time in use"))
+  // RenderOnce swaps non-ASCII glyphs (the em dash, the bars) for ASCII.
+  #expect(output.contains("qwen3.8:27b"))
+  #expect(output.contains("40.0 tok/s"))
+  #expect(output.contains("big-pickle"))
+  #expect(output.contains("20.0 tok/s"))
+  #expect(output.contains("1m44s"))
+  #expect(output.contains("Reset statistics"))
+  #expect(output.contains("~ marks"))
+
+  // A reply recorded by the runtime shows up without leaving the tab.
+  let conversation = try #require(workspace.focusedConversation)
+  conversation.draft = "ping"
+  workspace.send(conversation)
+  await conversation.runTask?.value
+  try await Task.sleep(for: .milliseconds(50))
+  #expect(workspace.usageLedger.totals.contains { $0.providerLabel == "hello" })
+
+  workspace.resetUsageStats()
+  try await Task.sleep(for: .milliseconds(50))
+  #expect(workspace.usageLedger.isEmpty)
+  let empty = RenderOnce.render(
+    VisualRootView(workspace: workspace).frame(height: 20),
+    width: 100,
+    environment: ["NO_COLOR": "1"],
+    isStdoutTTY: false)
+  #expect(empty.contains("No model usage recorded yet"))
+}

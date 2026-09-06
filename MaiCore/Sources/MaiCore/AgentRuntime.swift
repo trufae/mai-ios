@@ -32,6 +32,9 @@ public actor AgentRuntime {
   /// grepping a file does not need the user's standing preferences, so this
   /// never reaches one.
   private var memorySection: String?
+  /// Where every completed provider call's tokens and timing are folded in.
+  /// Nil keeps the runtime silent about usage, as it was before hosts asked.
+  private var usageStats: ModelUsageStore?
 
   /// The process table every run reports into. Hosts read it for `/agents`,
   /// follow its events for notifications, and stop subtrees through it.
@@ -84,6 +87,18 @@ public actor AgentRuntime {
       throw AgentRuntimeError.agentAlreadyRegistered(id)
     }
     agents[id] = agent
+  }
+
+  /// Installs the ledger every provider call reports into: tokens from the
+  /// provider's usage payload (estimated from text length when it has none)
+  /// and the wall-clock timing of the call. Nil stops recording.
+  public func configureUsageStats(_ store: ModelUsageStore?) {
+    usageStats = store
+  }
+
+  /// The ledger installed with `configureUsageStats`, for `/stats` screens.
+  public func usageStatsStore() -> ModelUsageStore? {
+    usageStats
   }
 
   /// Installs the durable memory every top-level run should see, already
@@ -344,6 +359,7 @@ public actor AgentRuntime {
         insertSystem(prompt, into: &providerMessages)
       }
       let offersTools = !usesTextToolProtocol && !toolBudgetExhausted
+      let timing = StreamTimingRecorder()
       var providerResponse = try await provider.complete(
         ProviderRequest(
           model: request.model,
@@ -354,12 +370,32 @@ public actor AgentRuntime {
           options: request.options,
           stream: usesTextToolProtocol ? false : request.stream)
       ) { event in
+        timing.note(event)
         if usesTextToolProtocol, case .textDelta = event {
           return
         }
         await emit(.provider(context, event))
       }
+      let callEnded = Date()
       try Task.checkCancellation()
+      if let usageStats {
+        // The user's own words count once, on the turn that carried them;
+        // later turns of the same run only resend context.
+        let userInputTokens =
+          localModelTurns == 1
+          ? ModelCallStats.estimatedTokenCount(of: Self.trailingUserMessages(in: request.messages))
+          : nil
+        await usageStats.record(
+          ModelCallStats.measured(
+            providerLabel: provider.descriptor.id.rawValue,
+            modelID: request.model,
+            messages: providerMessages,
+            response: providerResponse,
+            timing: timing.observation,
+            end: callEnded,
+            userInputTokens: userInputTokens),
+          at: callEnded)
+      }
       totalUsage = totalUsage.merging(providerResponse.usage)
       await supervisor.note(pid, usage: totalUsage)
       if let usage = providerResponse.usage,
@@ -1251,6 +1287,17 @@ public actor AgentRuntime {
 
   /// Adds a system message after the configured instructions and before the
   /// conversation, so run-scoped context never enters the stored transcript.
+  /// The user messages a turn was started with: everything after the last
+  /// assistant reply.
+  static func trailingUserMessages(in messages: [AgentMessage]) -> [AgentMessage] {
+    var trailing: [AgentMessage] = []
+    for message in messages.reversed() {
+      if message.role == .assistant { break }
+      if message.role == .user { trailing.append(message) }
+    }
+    return trailing
+  }
+
   private func insertSystem(_ prompt: String, into messages: inout [AgentMessage]) {
     let index =
       messages.firstIndex { $0.role != .system && $0.role != .developer }
