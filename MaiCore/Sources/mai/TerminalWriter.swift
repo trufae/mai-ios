@@ -128,6 +128,10 @@ actor TerminalWriter {
       finishReply()
       closeRootLine()
       status("⇐ you: \(message.text)", color: promptColor)
+    case .transcriptEdited(let context, let report) where context.depth == 0:
+      finishReply()
+      closeRootLine()
+      status("✂ context: \(report.summary)", color: "magenta")
     case .finished(let context, let result) where context.depth == 0:
       if wroteRootDelta {
         finishReply()
@@ -182,6 +186,11 @@ actor TerminalWriter {
       flushChildText(pid)
       guard subagentOutput != .none else { return }
       childBlock(pid, "⇐ you: \(message.text)", color: promptColor)
+    case .transcriptEdited(let context, let report):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      guard subagentOutput != .none else { return }
+      childBlock(pid, "✂ context: \(report.summary)", color: "magenta")
     case .finished(let context, let result):
       guard let pid = context.pid else { return }
       flushChildText(pid)

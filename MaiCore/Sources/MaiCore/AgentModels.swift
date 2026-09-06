@@ -968,6 +968,9 @@ public enum AgentEvent: Equatable, Sendable {
   /// A message a person queued for this process was appended to its
   /// transcript, between two model turns of a run that was already going.
   case userMessage(AgentEventContext, AgentMessage)
+  /// The process edited its own transcript with the context tools before a
+  /// model turn; the report says what changed.
+  case transcriptEdited(AgentEventContext, AgentTranscriptEditReport)
   case finished(AgentEventContext, AgentResult)
 }
 
