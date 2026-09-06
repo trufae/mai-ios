@@ -18,6 +18,7 @@ let package = Package(
     .library(name: "MaiVisual", targets: ["MaiVisual"]),
     .library(name: "MaiDocuments", targets: ["MaiDocuments"]),
     .library(name: "MaiMarkdown", targets: ["MaiMarkdown"]),
+    .library(name: "MaiACP", targets: ["MaiACP"]),
     .library(name: "MaiFixturePlugin", type: .dynamic, targets: ["MaiFixturePlugin"]),
     .executable(name: "pmai", targets: ["MaiCLI"]),
   ],
@@ -28,6 +29,7 @@ let package = Package(
     .target(name: "MaiCore"),
     .target(name: "MaiMarkdown"),
     .target(name: "MaiOpenAI", dependencies: ["MaiCore"]),
+    .target(name: "MaiACP", dependencies: ["MaiCore"]),
     .target(name: "MaiMCP", dependencies: ["MaiCore"]),
     .target(name: "MaiStandardTools", dependencies: ["MaiCore", "MaiDocuments"]),
     .target(name: "MaiVisionOCR", dependencies: ["MaiCore"]),
@@ -55,7 +57,7 @@ let package = Package(
       name: "MaiCLI",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
-        "MaiDocuments", "MaiMarkdown",
+        "MaiDocuments", "MaiMarkdown", "MaiACP",
         .target(name: "MaiVisual", condition: .when(platforms: [.macOS, .linux])),
       ],
       path: "Sources/mai",
@@ -65,13 +67,13 @@ let package = Package(
       linkerSettings: [
         .linkedLibrary("ssl", .when(platforms: [.android])),
         .linkedLibrary("crypto", .when(platforms: [.android])),
-        .linkedLibrary("z", .when(platforms: [.android]))
+        .linkedLibrary("z", .when(platforms: [.android])),
       ]),
     .testTarget(
       name: "MaiCoreTests",
       dependencies: [
         "MaiCore", "MaiMCP", "MaiOpenAI", "MaiPluginHost", "MaiStandardTools", "MaiVisionOCR",
-        "MaiVisual", "MaiDocuments", "MaiMarkdown",
+        "MaiVisual", "MaiDocuments", "MaiMarkdown", "MaiACP",
         .product(name: "SwiftTUIRuntime", package: "swift-tui"),
         .product(name: "SwiftTUICLI", package: "swift-tui"),
       ]),

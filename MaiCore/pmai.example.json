@@ -36,6 +36,18 @@
       "kind": "openAICompatible",
       "displayName": "Local OpenAI-compatible server",
       "baseURL": "http://127.0.0.1:8080/v1"
+    },
+    {
+      "id": "gemini",
+      "kind": "acp",
+      "displayName": "Gemini (ACP)",
+      "options": {
+        "command": "gemini",
+        "args": [
+          "--acp"
+        ],
+        "permission": "auto"
+      }
     }
   ],
   "toolSources": [
@@ -191,6 +203,14 @@
       ],
       "description": "Investigates one question and answers in a few lines.",
       "enabled": true
+    },
+    {
+      "id": "gemini",
+      "displayName": "Gemini",
+      "description": "External Gemini agent driven over ACP.",
+      "enabled": true,
+      "provider": "gemini",
+      "model": "gemini"
     }
   ],
   "ui": {

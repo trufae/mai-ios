@@ -1,4 +1,5 @@
 import Foundation
+import MaiACP
 import MaiCore
 import MaiDocuments
 import MaiMCP
@@ -54,6 +55,8 @@ private struct CLIOptions {
   var printConfig = false
   /// List every known project and exit.
   var listProjects = false
+  /// Serve one protocol on stdio instead of the REPL.
+  var serve: ServeMode?
 
   init(arguments: [String], environment: [String: String]) throws {
     configPath = environment["PMAI_CONFIG"]
@@ -110,6 +113,10 @@ private struct CLIOptions {
         markdown = false
       case "--print-config":
         printConfig = true
+      case "--acp":
+        serve = .acp
+      case "--mcp":
+        serve = .mcp
       default:
         guard !argument.hasPrefix("-") else { throw CLIError.unknownOption(argument) }
         positional.append(argument)
@@ -145,6 +152,12 @@ private struct CLIOptions {
     if let maxModelTurns { limits.maxModelTurns = max(1, maxModelTurns) }
     if let maxSubagents { limits.maxSubagents = max(0, maxSubagents) }
   }
+}
+
+/// A protocol pmai speaks over stdio instead of running its REPL.
+enum ServeMode: String, Sendable {
+  case acp
+  case mcp
 }
 
 private enum CLIError: LocalizedError {
@@ -671,6 +684,9 @@ private actor TerminalWriter {
 
   func prompt(_ value: String) { write(value) }
 
+  /// A one-line remark between replies, styled like tool status lines.
+  func note(_ value: String) { status(value) }
+
   func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
     if capturesOutput {
       captured.append(value + "\n")
@@ -905,6 +921,7 @@ private struct MaiCLI {
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
       try await plugins.install(MaiMCPPlugin(), origin: "built-in")
       try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
+      try await plugins.install(MaiACPPlugin(), origin: "built-in")
       do {
         try await plugins.install(MaiVisionOCRPlugin(), origin: "built-in")
       } catch {
@@ -1004,6 +1021,14 @@ private struct MaiCLI {
       await terminal.configureToolResultColor(
         configuration?.ui.toolResultForeground ?? ConfiguredTerminalUI().toolResultForeground)
 
+      if let mode = options.serve {
+        await runServer(
+          mode,
+          runtime: runtime,
+          approvalHandler: approvalHandler,
+          agent: profile.agentDefinition)
+        return
+      }
       if let path = loaded?.path {
         await terminal.line("Loaded \(path)", to: .standardError)
       } else {
@@ -1209,6 +1234,33 @@ private struct MaiCLI {
               arguments: arguments.objectValue ?? [:],
               chats: state.reachableChats()))
         })
+    }
+  }
+
+  /// Runs pmai as a stdio server instead of the REPL: ACP for editors, MCP for
+  /// tool callers. Both speak JSON-RPC over stdin/stdout, so no output may go
+  /// there but the protocol itself; diagnostics go to stderr.
+  private static func runServer(
+    _ mode: ServeMode,
+    runtime: AgentRuntime,
+    approvalHandler: TerminalApprovalHandler,
+    agent: AgentDefinition
+  ) async {
+    let transport = StdioJSONRPCTransport.standardIO()
+    switch mode {
+    case .acp:
+      // Tool approvals belong to the editor, not to a terminal nobody is at.
+      let bridge = ACPPermissionBridge()
+      await approvalHandler.setDelegate(bridge.approvalHandler)
+      let server = ACPServer(runtime: runtime, agent: agent, bridge: bridge)
+      FileHandle.standardError.write(
+        Data("pmai ACP agent ready (\(agent.id)); waiting for a client on stdio.\n".utf8))
+      await server.serve(on: transport)
+    case .mcp:
+      let server = MCPAgentServer(runtime: runtime, agent: agent)
+      FileHandle.standardError.write(
+        Data("pmai MCP server ready (\(agent.id)); waiting for a client on stdio.\n".utf8))
+      await server.serve(on: transport)
     }
   }
 
@@ -1421,7 +1473,7 @@ private struct MaiCLI {
       "Project: \(project.displayName) · \(abbreviatedPath(project.workingDirectory)) · /project shows more"
     )
     await terminal.line(
-      "Type /help for commands. Chat: \(session.title); agent: \(session.profile.agentID)")
+      "Type /help for commands. \(promptIdentity(session)) · \(session.title)")
     let earlier = workspace.chats.filter { $0.id != session.id && $0.hasConversation }
     if !earlier.isEmpty {
       await terminal.line(
@@ -1440,8 +1492,9 @@ private struct MaiCLI {
         runtime: runtime, announced: &announcedAttention, terminal: terminal)
       let liveAgents = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
       let agentStatus = liveAgents.isEmpty ? "" : " · \(liveAgents.count) running"
+      // The title goes last so a narrow terminal truncates it, not the status.
       let promptStatus =
-        "\(project.displayName) · \(session.title) · agent: \(session.profile.agentID)\(agentStatus) · \(promptContextStatus(session))"
+        "\(project.displayName) \(promptIdentity(session))\(agentStatus) · \(promptContextStatus(session)) · \(session.title)"
       guard
         let firstLine = editor.readLine(
           prompt: "pmai> ",
@@ -1535,6 +1588,7 @@ private struct MaiCLI {
         await saveWorkspace(&workspace, store: store, terminal: terminal)
         continue
       }
+      let started = ContinuousClock.now
       _ = await submit(
         text,
         session: &session,
@@ -1542,6 +1596,7 @@ private struct MaiCLI {
         process: &chatProcessIDs[session.id],
         terminal: terminal,
         interruptHandler: interruptHandler)
+      await terminal.note("took \(elapsedDescription(since: started))")
       session.touch()
       workspace.upsert(session.chat, selecting: true)
       await saveWorkspace(&workspace, store: store, terminal: terminal)
@@ -1627,6 +1682,25 @@ private struct MaiCLI {
     }
   }
 
+  /// The agent and model a chat runs on, as `[agent] model`. The provider
+  /// stands in while no model is selected.
+  private static func promptIdentity(_ session: REPLSession) -> String {
+    let profile = session.profile
+    let model = profile.model.isEmpty ? profile.provider.rawValue : profile.model
+    return "[\(profile.agentID)] \(model)"
+  }
+
+  /// How long a turn took, as `5s`, `1m4s`, or `2h3m4s`.
+  private static func elapsedDescription(since start: ContinuousClock.Instant) -> String {
+    let parts = (ContinuousClock.now - start).components
+    let total = Int(parts.seconds) + (parts.attoseconds >= 500_000_000_000_000_000 ? 1 : 0)
+    guard total >= 1 else { return "<1s" }
+    let (hours, minutes, seconds) = (total / 3600, total % 3600 / 60, total % 60)
+    if hours > 0 { return "\(hours)h\(minutes)m\(seconds)s" }
+    if minutes > 0 { return "\(minutes)m\(seconds)s" }
+    return "\(seconds)s"
+  }
+
   /// A fast, deliberately approximate context indicator. Providers tokenize
   /// differently and do not all expose their context-window size, so showing
   /// an estimate is more honest than implying an exact percentage.
@@ -1636,7 +1710,7 @@ private struct MaiCLI {
     }
     let estimatedTokens = (characters + 2) / 3
     let messageLabel = "\(session.history.count) msg"
-    return "\(messageLabel) · ~\(compactTokenCount(estimatedTokens)) tok"
+    return "\(messageLabel) ~\(compactTokenCount(estimatedTokens)) tok"
   }
 
   private static func compactTokenCount(_ count: Int) -> String {
@@ -3141,7 +3215,7 @@ private struct MaiCLI {
         configurationPath: configurationPath,
         terminal: terminal)
 
-    case "use", "show", "add":
+    case "use", "show", "add", "acp":
       await handleAgentCommand(
         argument,
         session: &session,
@@ -3262,6 +3336,117 @@ private struct MaiCLI {
     }
   }
 
+  /// `/agent acp` registers an external ACP agent as a provider-backed agent,
+  /// so it is selectable and spawnable like any other. `list` shows the builtin
+  /// catalog and what is installed; `add NAME [COMMAND ARGS...]` persists one,
+  /// defaulting the command from the catalog when only a known name is given.
+  private static func handleAgentACPCommand(
+    _ fields: [String],
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let sub = fields.first?.lowercased() ?? "list"
+    switch sub {
+    case "list", "":
+      for agent in ACPCatalog.agents {
+        let mark = agent.isInstalled ? "\u{2705}" : "\u{274C}"
+        let configured = configuration?.providers.contains { $0.id == agent.id } == true
+        await terminal.line(
+          "\(mark) \(agent.id) — \(agent.summary)\(configured ? " [configured]" : "")")
+      }
+      await terminal.line(
+        "Add one with /agent acp add NAME [COMMAND ARG ...]; a known name needs no command.")
+
+    case "add":
+      let rest = Array(fields.dropFirst())
+      guard let name = rest.first else {
+        await terminal.line("Usage: /agent acp add NAME [COMMAND ARG ...]")
+        return
+      }
+      let provider: ConfiguredProvider
+      if rest.count >= 2 {
+        var options: [String: JSONValue] = ["command": .string(rest[1])]
+        let args = Array(rest.dropFirst(2))
+        if !args.isEmpty { options["args"] = .array(args.map(JSONValue.string)) }
+        provider = ConfiguredProvider(
+          id: name, kind: ACPConfiguredProviderFactory.providerKind, displayName: name,
+          options: options)
+      } else if let catalog = ACPCatalog.agent(name) {
+        provider = catalog.configuredProvider()
+        if !catalog.isInstalled, let install = catalog.install {
+          await terminal.line("note: '\(name)' is not installed. Install it with: \(install)")
+        }
+      } else {
+        await terminal.line(
+          "Unknown ACP agent '\(name)'. Give a command, or use a catalog name (/agent acp list).")
+        return
+      }
+      await registerACPAgent(
+        provider,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    default:
+      await terminal.line("Usage: /agent acp [list|add NAME [COMMAND ARG ...]]")
+    }
+  }
+
+  /// Persists an ACP provider and a same-named agent, registers both live, and
+  /// selects the agent for the current chat — the same shape `/agent add` uses.
+  private static func registerACPAgent(
+    _ provider: ConfiguredProvider,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    if let index = draft.providers.firstIndex(where: { $0.id == provider.id }) {
+      draft.providers[index] = provider
+    } else {
+      draft.providers.append(provider)
+    }
+    let definition = AgentDefinition(
+      id: provider.id,
+      displayName: provider.displayName ?? provider.id,
+      description: ACPCatalog.agent(provider.id)?.summary ?? "External ACP agent.",
+      instructions: "",
+      provider: ProviderID(provider.id),
+      model: provider.id)
+    if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
+      draft.agents[index] = definition
+    } else {
+      draft.agents.append(definition)
+    }
+    do {
+      let built = try await plugins.makeProvider(
+        from: provider, environment: ProcessInfo.processInfo.environment)
+      try await runtime.register(built, replacingExisting: true)
+      try await runtime.register(agent: definition, replacingExisting: true)
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      session.reset(profile: SessionProfile(definition: definition))
+      await terminal.line(
+        "ACP agent '\(provider.id)' registered and selected for this chat. It runs like any other agent."
+      )
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
   private static func handleAgentCommand(
     _ argument: String,
     session: inout REPLSession,
@@ -3283,6 +3468,18 @@ private struct MaiCLI {
         terminal: terminal)
       await terminal.line(
         "Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+      return
+    }
+
+    if action == "acp" {
+      await handleAgentACPCommand(
+        Array(fields.dropFirst()),
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
       return
     }
 
@@ -5359,6 +5556,7 @@ private struct MaiCLI {
     var values = [
       "/help", "/help set", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
       "/help memory", "/help agents", "/help chat", "/help edit", "/help tools",
+      "/agent acp list", "/agent acp add ", "/agents acp list",
       "/memory", "/memory edit", "/memory learn", "/memory learn --all", "/memory add ",
       "/memory clear", "/memory on", "/memory off", "/memory scope none",
       "/memory scope project", "/memory scope all", "/edit memory", "/edit memory-prompt",
@@ -5631,6 +5829,7 @@ private struct MaiCLI {
     /agents describe ID TEXT    Set the purpose a model reads when picking agents
     /agent [use] ID     Set the current chat's primary agent
     /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
+    /agent acp ...      Register an external ACP agent (gemini, claude, codex, ...)
     /tools              List logical tool groups for the current agent
     /proxy [on|off]     Inspect or toggle the shared tool proxy
     /mcp list           List configured MCP servers and connection state
@@ -5790,6 +5989,8 @@ private struct MaiCLI {
       /agents show [ID]          Show one definition in full
       /agents describe ID TEXT   Set the one-line purpose a model reads to pick it
       /agents enable|disable ID  Park a definition without deleting it
+      /agents acp [list]         List external ACP agents and what is installed
+      /agents acp add NAME [CMD ARG ...]  Register an ACP agent as a usable agent
       /agents log PID            Print a running or finished agent's own transcript
       /agents kill PID [REASON]  Stop an agent and everything it started
 
@@ -5829,6 +6030,8 @@ private struct MaiCLI {
         --projects          list every project pmai has been started in, then exit
         --plugin PATH       load a native .dylib plugin (repeatable)
         --print-config      print a complete example configuration
+        --acp               serve pmai as an ACP agent on stdio (for IDEs)
+        --mcp               serve pmai as an MCP server on stdio (one prompt tool)
         --agent ID          select a configured agent
         --provider ID       override the selected provider
         --model NAME        override the selected model

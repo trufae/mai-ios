@@ -274,6 +274,20 @@ list non-MCP tools and child agents they are allowed to use.
 `MaiStandardToolsPlugin` provides `echo`, date/time, calculator, network, and
 workspace-scoped Files tools.
 
+### ACP and MCP
+
+pmai speaks the Agent Client Protocol both ways and serves MCP too. `pmai --acp`
+exposes the selected agent to any ACP editor (Zed, JetBrains, …) over stdio;
+`pmai --mcp` exposes it as a single MCP tool. Diagnostics go to stderr so the
+JSON-RPC stream stays clean.
+
+The other direction treats a remote ACP agent as an ordinary MaiCore provider:
+an `AgentDefinition` whose provider is `kind: "acp"` is selectable, spawnable,
+and delegable like any other agent. `/agent acp list` shows the builtin catalog
+(gemini, qwen, opencode, goose natively; claude and codex through adapters) with
+what is installed, and `/agent acp add NAME [COMMAND ARG ...]` registers one. See
+`doc/acp.md` for the design.
+
 ### Memory
 
 Durable notes about the person an agent works with — stable facts, standing
