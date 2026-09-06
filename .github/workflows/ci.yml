@@ -38,7 +38,7 @@ jobs:
           strip -x MaiCore/.build/release/pmai
 
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: MaiCore/.build/release/pmai
@@ -95,7 +95,7 @@ jobs:
           "$bin" --help
 
       - name: Upload static CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: MaiCore/.build/release/pmai
@@ -193,7 +193,7 @@ jobs:
           file "$output/libc++_shared.so"
 
       - name: Upload Android CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pmai-android-arm64
           path: ${{ runner.temp }}/pmai-android-arm64
