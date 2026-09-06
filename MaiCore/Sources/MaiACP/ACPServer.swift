@@ -43,7 +43,7 @@ public actor ACPServer {
         await self?.handleNotification(method: method, params: params)
       })
     self.peer = peer
-    await bridge.connect(to: self)
+    bridge.connect(to: self)
     await peer.run()
   }
 

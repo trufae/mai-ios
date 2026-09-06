@@ -230,7 +230,10 @@ sends everything typed to it until `/agents focus main`. When a tool asks for
 approval the question is printed above the prompt and answered with `y`, `a`,
 `n`, `e`, or `c` at the same prompt; any other line stays an ordinary message
 and the question keeps waiting. Piped input keeps the one-line-at-a-time REPL,
-where a turn finishes before the next line is read.
+where a turn finishes before the next line is read. A line starting with `!`
+runs in the system shell with the terminal handed over — `!ls`, `!git diff`,
+`!vim notes.md` — so interactive programs work; nothing is captured or sent to
+the model, and a non-zero exit status is noted.
 
 Child agents print as they work, in blocks rather than character by character,
 every line prefixed with the child's pid (`agent#3 │ …`, `agent#3 → tool …`,

@@ -1689,6 +1689,16 @@ struct MaiCLI {
           await releaseIfIdle(workspace: workspace)
           continue
         }
+        if !heredoc, text.hasPrefix("!") {
+          if loop.activeTurn != nil {
+            await terminal.note(
+              "Shell commands wait for the running turn; Ctrl+C cancels it.")
+          } else {
+            await runShellCommand(String(text.dropFirst()), terminal: terminal)
+          }
+          await releaseIfIdle(workspace: workspace)
+          continue
+        }
         if !heredoc, text.hasPrefix("/") {
           let command = text.split(maxSplits: 1, whereSeparator: \Character.isWhitespace)
           let name = String(command[0])
@@ -1886,6 +1896,37 @@ struct MaiCLI {
     editor.install(surface: nil)
     TerminalScreen.install(nil)
     screen?.deactivate()
+  }
+
+  /// `!ls`, `!git diff`, `!vim notes.md`: runs a line in the system shell with
+  /// the terminal handed over, so interactive programs work and their output
+  /// is neither captured nor sent to the model.
+  private static func runShellCommand(_ command: String, terminal: TerminalWriter) async {
+    let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      await terminal.line("Usage: !COMMAND")
+      return
+    }
+    var waitStatus: CInt = -1
+    let launch = { waitStatus = trimmed.withCString(posixSystem) }
+    if let screen = TerminalScreen.current {
+      screen.suspendTerminal(launch)
+    } else {
+      launch()
+    }
+    guard waitStatus != -1 else {
+      await terminal.line(
+        "error: Could not run '\(trimmed)': \(String(cString: strerror(errno)))",
+        to: .standardError)
+      return
+    }
+    // The wait status packs a signal in the low bits and an exit code above.
+    let signalNumber = waitStatus & 0x7f
+    if signalNumber != 0 {
+      await terminal.note("killed by signal \(signalNumber)")
+    } else if (waitStatus >> 8) & 0xff != 0 {
+      await terminal.note("exit status \((waitStatus >> 8) & 0xff)")
+    }
   }
 
   /// Reports background agents that are waiting on somebody, once each. A
@@ -3351,8 +3392,6 @@ struct MaiCLI {
     let preferredEditor = environment["EDITOR"] ?? environment["VISUAL"] ?? "vim"
     let editor = preferredEditor.trimmingCharacters(in: .whitespacesAndNewlines)
     let command = editor.isEmpty ? "vim" : editor
-    FileHandle.standardOutput.synchronizeFile()
-    FileHandle.standardError.synchronizeFile()
     let shellCommand = "\(command) \(shellQuote(url.path))"
     var waitStatus: CInt = -1
     let launch = { waitStatus = shellCommand.withCString(posixSystem) }
@@ -6260,6 +6299,7 @@ struct MaiCLI {
     /exit               Exit the REPL
 
     Input: <<WORD starts a multiline message ending at WORD alone
+           !COMMAND runs a line in the system shell (interactive programs work)
            Up/Down or Ctrl+P/N history · Ctrl+R reverse search · Ctrl+A/E beginning/end
            Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
            The prompt stays open while a turn runs: a message typed then is queued and
