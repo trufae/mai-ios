@@ -430,6 +430,8 @@ struct SessionProfile {
   var toolCallingStrategy: ToolCallingStrategy
   var useToolProxy: Bool
   var toolDelegation: AgentToolDelegation
+  var retry: AgentRetryPolicy
+  var autocompact: AgentAutocompact
 
   init(definition: AgentDefinition) {
     agentID = definition.id
@@ -451,6 +453,8 @@ struct SessionProfile {
     toolCallingStrategy = definition.toolCallingStrategy
     useToolProxy = definition.useToolProxy
     toolDelegation = definition.toolDelegation
+    retry = definition.retry
+    autocompact = definition.autocompact
   }
 
   init(provider: ProviderID, model: String, instructions: String, stream: Bool) {
@@ -487,6 +491,8 @@ struct SessionProfile {
     toolCallingStrategy = .automatic
     useToolProxy = false
     toolDelegation = .inline
+    retry = .init()
+    autocompact = .init()
   }
 
   var agentDefinition: AgentDefinition {
@@ -509,7 +515,9 @@ struct SessionProfile {
       options: options,
       toolCallingStrategy: toolCallingStrategy,
       useToolProxy: useToolProxy,
-      toolDelegation: toolDelegation)
+      toolDelegation: toolDelegation,
+      retry: retry,
+      autocompact: autocompact)
   }
 }
 
@@ -1251,6 +1259,7 @@ struct MaiCLI {
       await runtime.configureDelegation(
         prompt: configuration.prompts?.delegation,
         workerInstructions: configuration.prompts?.worker)
+      await runtime.configureCompaction(prompt: configuration.prompts?.compact)
       let knownTools = Set(await runtime.availableTools().map(\.name))
       for var agent in configuration.agents {
         agent.toolNames.formIntersection(knownTools)
@@ -1458,9 +1467,13 @@ struct MaiCLI {
       let children = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
       if !children.isEmpty {
         let paused = children.filter { $0.state == .paused }.count
+        let queued = children.filter { $0.state == .queued }.count
+        var notes: [String] = []
+        if paused > 0 { notes.append("\(paused) paused") }
+        if queued > 0 { notes.append("\(queued) queued") }
         facts.append(
           "\(children.count) agent\(children.count == 1 ? "" : "s")"
-            + (paused > 0 ? " (\(paused) paused)" : ""))
+            + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))"))
       }
       let queued = await runtime.supervisor.queuedMessages().count
       if queued > 0 { facts.append("\(queued) queued") }
@@ -1563,24 +1576,67 @@ struct MaiCLI {
       }
       for message in messages { session.history.append(message) }
       session.refreshTitle(from: messages[0].text)
+      await beginTurn(chatRequest(), process: pid, kind: .chat)
+    }
+
+    /// The chat's next run: its whole history under the current profile.
+    func chatRequest() -> AgentRequest {
       let profile = session.profile
-      let request = AgentRequest(
-        agentID: profile.agentID,
-        provider: profile.provider,
-        model: profile.model,
-        messages: session.history.messages,
-        toolNames: profile.toolNames,
-        toolGroupNames: profile.toolGroupNames,
-        subagentNames: profile.subagentNames,
-        toolChoice: profile.toolChoice,
-        responseFormat: profile.responseFormat,
-        options: profile.options,
-        limits: profile.limits,
-        stream: profile.stream,
-        toolCallingStrategy: profile.toolCallingStrategy,
-        useToolProxy: profile.useToolProxy,
-        toolDelegation: profile.toolDelegation)
-      await beginTurn(request, process: pid, kind: .chat)
+      return AgentRequest(
+      agentID: profile.agentID,
+      provider: profile.provider,
+      model: profile.model,
+      messages: session.history.messages,
+      toolNames: profile.toolNames,
+      toolGroupNames: profile.toolGroupNames,
+      subagentNames: profile.subagentNames,
+      toolChoice: profile.toolChoice,
+      responseFormat: profile.responseFormat,
+      options: profile.options,
+      limits: profile.limits,
+      stream: profile.stream,
+      toolCallingStrategy: profile.toolCallingStrategy,
+      useToolProxy: profile.useToolProxy,
+      toolDelegation: profile.toolDelegation,
+      retry: profile.retry,
+      autocompact: profile.autocompact)
+    }
+
+    /// Picks a paused or interrupted task up where it stopped: the history is
+    /// run again with a fresh budget and nothing new said, so the model sees
+    /// its last tool results and carries on. Queued messages go with it, the
+    /// way they would with a typed one.
+    @discardableResult
+    func continueTurn() async -> Bool {
+      let pid = await mainProcess()
+      if await runtime.supervisor.hasQueuedMessages(pid) {
+        await startTurn([])
+        return true
+      }
+      guard let last = session.history.messages.last, last.role != .system else {
+        await terminal.line("Nothing to continue yet: this chat has no messages.")
+        return false
+      }
+      if last.role == .assistant, last.toolCalls.isEmpty {
+        await terminal.line(
+          "Nothing to continue: the last reply was complete. Type a message instead.")
+        return false
+      }
+      await beginTurn(chatRequest(), process: pid, kind: .chat)
+      return true
+    }
+
+    /// Folds what an interrupted run had already added into the chat, with
+    /// any tool call it never answered marked as such, so the next turn — a
+    /// typed one or /continue — starts from there instead of from before the
+    /// run. Returns how many messages were kept.
+    func keepPartialTranscript(of pid: AgentPID, reason: String) async -> Int {
+      let partial = await runtime.supervisor.transcript(pid)
+      guard !partial.isEmpty, partial != session.history.messages else { return 0 }
+      let kept = max(0, partial.count - session.history.count)
+      session.history.replaceAll(
+        with: AgentTranscriptEditor.answeringUnansweredToolCalls(in: partial, reason: reason))
+      return kept
     }
 
     /// Runs a one-off prompt with the active profile and no conversation
@@ -1778,6 +1834,23 @@ struct MaiCLI {
             await releaseIfIdle(workspace: workspace)
             continue
           }
+          if name == "/exit" || name == "/quit" {
+            loop.exiting = true
+            if let turn = loop.activeTurn {
+              turn.task.cancel()
+              continue
+            }
+            break events
+          }
+          if name == "/continue" || name == "/retry" {
+            if loop.activeTurn != nil {
+              await terminal.note("A turn is already running; Ctrl+C cancels it.")
+            } else {
+              await continueTurn()
+            }
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
           if name == "/btw" {
             if loop.activeTurn != nil {
               await terminal.note(
@@ -1788,14 +1861,6 @@ struct MaiCLI {
             }
             await releaseIfIdle(workspace: workspace)
             continue
-          }
-          if name == "/exit" || name == "/quit" {
-            loop.exiting = true
-            if let turn = loop.activeTurn {
-              turn.task.cancel()
-              continue
-            }
-            break events
           }
           if loop.activeTurn != nil, !commandsAllowedDuringTurn.contains(name),
             !(name == "/agent" && Self.isProcessCommand(argument))
@@ -1899,24 +1964,39 @@ struct MaiCLI {
         let turn = loop.activeTurn
         loop.activeTurn = nil
         var succeeded = false
+        var paused: AgentRunInterruption?
+        var kept = 0
         switch outcome {
         case .success(let result):
           if turn?.kind == .chat {
             session.history.replaceAll(with: result.transcript)
           }
           succeeded = true
+          paused = result.interruption
         case .failure(let error):
-          if error is CancellationError || interruptHandler.interruptedActiveOperation() {
+          let cancelled =
+            error is CancellationError || interruptHandler.interruptedActiveOperation()
+          if cancelled {
             await terminal.recoverAfterCancellation()
           } else {
             await terminal.recoverAfterError(error.localizedDescription)
+          }
+          // What the run did before it broke off is not thrown away: the
+          // supervisor has its transcript, and /continue picks it up.
+          if let turn, turn.kind == .chat {
+            kept = await keepPartialTranscript(
+              of: turn.pid, reason: cancelled ? "the run was cancelled" : "the run failed")
           }
         }
         if let turn {
           let prefix = turn.kind == .btw ? "btw " : ""
           let took = "\(prefix)took \(elapsedDescription(since: turn.started))"
-          await terminal.note(
-            succeeded ? "✓ \(took)" : "✗ \(took)", color: succeeded ? "cyan" : "red")
+          if let paused {
+            await terminal.note("⏸ \(took) · \(paused.summary)", color: "yellow")
+          } else {
+            await terminal.note(
+              succeeded ? "✓ \(took)" : "✗ \(took)", color: succeeded ? "cyan" : "red")
+          }
         }
         if turn?.kind == .chat {
           session.touch()
@@ -1940,6 +2020,23 @@ struct MaiCLI {
           } else if waiting > 0 {
             await terminal.note(
               "\(waiting) queued message\(waiting == 1 ? "" : "s") still waiting: /queue shows them; they go with your next message."
+            )
+          } else if let paused, turn.kind == .chat {
+            // A spent turn budget is a checkpoint, and with yolo on the person
+            // asked not to be consulted; time and token caps are theirs to lift.
+            if paused.isCheckpoint, await visual.approvalHandler.isYOLOEnabled() {
+              await terminal.note(
+                "continuing: yolo is on, so a spent turn budget does not stop the task (/set yolo off to be asked)",
+                color: "yellow")
+              await continueTurn()
+            } else {
+              await terminal.note(
+                "/continue picks the task up where it stopped · /set \(paused.settingKey) N goes further in one go"
+              )
+            }
+          } else if kept > 0, turn.kind == .chat {
+            await terminal.note(
+              "kept \(kept) message\(kept == 1 ? "" : "s") from the interrupted run · /continue resumes it"
             )
           }
         }
@@ -2078,7 +2175,9 @@ struct MaiCLI {
         stream: profile.stream,
         toolCallingStrategy: profile.toolCallingStrategy,
         useToolProxy: profile.useToolProxy,
-        toolDelegation: profile.toolDelegation)
+        toolDelegation: profile.toolDelegation,
+        retry: profile.retry,
+        autocompact: profile.autocompact)
       let existingProcess = process
       let task = Task {
         try await runtime.run(request, process: existingProcess) { event in
@@ -2090,6 +2189,11 @@ struct MaiCLI {
       let result = try await task.value
       process = await runtime.supervisor.tree().processes.first { $0.runID == result.runID }?.pid
       session.history.replaceAll(with: result.transcript)
+      if let interruption = result.interruption {
+        await terminal.note(
+          "⏸ \(interruption.summary) · send another message to continue, or raise \(interruption.settingKey)",
+          color: "yellow")
+      }
       return true
     } catch {
       if error is CancellationError || interruptHandler?.interruptedActiveOperation() == true {
@@ -2124,7 +2228,9 @@ struct MaiCLI {
       stream: profile.stream,
       toolCallingStrategy: profile.toolCallingStrategy,
       useToolProxy: profile.useToolProxy,
-      toolDelegation: profile.toolDelegation)
+      toolDelegation: profile.toolDelegation,
+      retry: profile.retry,
+      autocompact: profile.autocompact)
   }
 
   /// Visual mode runs commands in their own task already, so it can await the
@@ -2512,6 +2618,9 @@ struct MaiCLI {
       await terminal.line("Conversation cleared.")
     case "/queue":
       await terminal.line("The message queue lives at the terminal prompt.\n" + queueHelp)
+    case "/continue", "/retry":
+      await terminal.line(
+        "Use /continue at the chat prompt; in visual mode, send \"continue\" as a message.")
     default:
       await terminal.line("Unknown command. Type /help.")
     }
@@ -3498,6 +3607,7 @@ struct MaiCLI {
       draft.prompts = prompts
       do {
         try draft.save(to: URL(fileURLWithPath: configurationPath))
+        await runtime.configureCompaction(prompt: customPrompt)
         configuration = draft
         await terminal.line(
           customPrompt == nil
@@ -3602,12 +3712,15 @@ struct MaiCLI {
         await runtime.configureDelegation(
           prompt: editedConfiguration.prompts?.delegation,
           workerInstructions: editedConfiguration.prompts?.worker)
+        await runtime.configureCompaction(prompt: editedConfiguration.prompts?.compact)
         if let agent = editedConfiguration.agents.first(where: {
           $0.id == session.profile.agentID
         }) {
           session.profile.limits = agent.limits
           session.profile.toolCallingStrategy = agent.toolCallingStrategy
           session.profile.toolDelegation = agent.toolDelegation
+          session.profile.retry = agent.retry
+          session.profile.autocompact = agent.autocompact
           session.profile.systemPrompt = agent.systemPrompt
           try applySystemInstructions(
             agent.instructions,
@@ -5192,6 +5305,7 @@ struct MaiCLI {
       let enabled = await approvalHandler.isYOLOEnabled()
       await terminal.line("yolo = \(enabled ? "on" : "off")")
       await listLimitSettings(session.profile.limits, terminal: terminal)
+      await listRecoverySettings(session.profile, terminal: terminal)
       await terminal.line("toolCallingStrategy = \(session.profile.toolCallingStrategy.rawValue)")
       await terminal.line("delegation = \(session.profile.toolDelegation.rawValue)")
       await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
@@ -5210,6 +5324,16 @@ struct MaiCLI {
     if let limitKey = limitSettingKeys[key] {
       await setLimit(
         limitKey,
+        parts: parts,
+        session: &session,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+      return
+    }
+    if let recoveryKey = recoverySettingKeys[key] {
+      await setRecoverySetting(
+        recoveryKey,
         parts: parts,
         session: &session,
         configuration: &configuration,
@@ -5268,7 +5392,7 @@ struct MaiCLI {
         || levelKeys.contains(key)
     else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, limits.maxTotalTokens, limits.maxSeconds, retry.attempts, retry.delay, autocompact, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents"
       )
       return
     }
@@ -5353,6 +5477,21 @@ struct MaiCLI {
     "limits.maxmodelturns": "limits.maxModelTurns",
     "limits.maxsubagents": "limits.maxSubagents",
     "limits.maxsubagentdepth": "limits.maxSubagentDepth",
+    "limits.maxtotaltokens": "limits.maxTotalTokens",
+    "limits.maxtokens": "limits.maxTotalTokens",
+    "limits.maxseconds": "limits.maxSeconds",
+    "limits.maxtime": "limits.maxSeconds",
+  ]
+
+  /// Lowercased `/set` keys for the retry and autocompact policies.
+  private static let recoverySettingKeys = [
+    "retry.attempts": "retry.attempts",
+    "retry.count": "retry.attempts",
+    "retries": "retry.attempts",
+    "retry.delay": "retry.delay",
+    "retry.delayseconds": "retry.delay",
+    "autocompact": "autocompact",
+    "autocompact.tokens": "autocompact",
   ]
 
   private static let delegationSettingKeys: Set<String> = [
@@ -5405,22 +5544,86 @@ struct MaiCLI {
     }
   }
 
+  private static let limitSettingOrder = [
+    "limits.maxToolCalls", "limits.maxModelTurns", "limits.maxSubagents",
+    "limits.maxSubagentDepth", "limits.maxTotalTokens", "limits.maxSeconds",
+  ]
+
   private static func listLimitSettings(_ limits: AgentRunLimits, terminal: TerminalWriter) async {
-    for key in [
-      "limits.maxToolCalls", "limits.maxModelTurns", "limits.maxSubagents",
-      "limits.maxSubagentDepth",
-    ] {
+    for key in limitSettingOrder {
       await terminal.line("\(key) = \(limitValue(key, in: limits))")
     }
   }
 
-  private static func limitValue(_ key: String, in limits: AgentRunLimits) -> Int {
+  private static func limitValue(_ key: String, in limits: AgentRunLimits) -> String {
     switch key {
-    case "limits.maxToolCalls": limits.maxToolCalls
-    case "limits.maxSubagents": limits.maxSubagents
-    case "limits.maxSubagentDepth": limits.maxSubagentDepth
-    default: limits.maxModelTurns
+    case "limits.maxToolCalls": String(limits.maxToolCalls)
+    case "limits.maxSubagents": String(limits.maxSubagents)
+    case "limits.maxSubagentDepth": String(limits.maxSubagentDepth)
+    case "limits.maxTotalTokens": limits.maxTotalTokens.map(String.init) ?? "off"
+    case "limits.maxSeconds":
+      limits.maxSeconds.map { ModelUsageFormat.duration(Double($0)) } ?? "off"
+    default: String(limits.maxModelTurns)
     }
+  }
+
+  private static func listRecoverySettings(_ profile: SessionProfile, terminal: TerminalWriter)
+    async
+  {
+    await terminal.line("retry.attempts = \(profile.retry.attempts)")
+    await terminal.line("retry.delay = \(durationSetting(profile.retry.delaySeconds))")
+    await terminal.line("autocompact = \(autocompactSetting(profile.autocompact))")
+  }
+
+  private static func durationSetting(_ seconds: Double) -> String {
+    seconds == seconds.rounded() ? "\(Int(seconds))s" : "\(seconds)s"
+  }
+
+  private static func autocompactSetting(_ autocompact: AgentAutocompact) -> String {
+    autocompact.isEnabled ? "\(autocompact.tokens) tokens" : "off"
+  }
+
+  /// `90`, `90s`, `10m`, `1h`, `1h30m`: a duration in seconds, or nil.
+  static func parseDurationSeconds(_ raw: String) -> Int? {
+    let text = raw.trimmingCharacters(in: .whitespaces).lowercased()
+    if let plain = Int(text) { return plain > 0 ? plain : nil }
+    var total = 0
+    var digits = ""
+    var units = 0
+    for character in text {
+      if character.isNumber {
+        digits.append(character)
+        continue
+      }
+      guard let value = Int(digits) else { return nil }
+      switch character {
+      case "h": total += value * 3600
+      case "m": total += value * 60
+      case "s": total += value
+      default: return nil
+      }
+      digits = ""
+      units += 1
+    }
+    guard units > 0, digits.isEmpty, total > 0 else { return nil }
+    return total
+  }
+
+  /// `120000`, `120k`, `1.5m`: a token count, or nil.
+  static func parseTokenCount(_ raw: String) -> Int? {
+    var text = raw.trimmingCharacters(in: .whitespaces).lowercased()
+    text.removeAll { $0 == "_" || $0 == "," }
+    if let plain = Int(text) { return plain >= 0 ? plain : nil }
+    let multiplier: Double
+    if text.hasSuffix("k") {
+      multiplier = 1_000
+    } else if text.hasSuffix("m") {
+      multiplier = 1_000_000
+    } else {
+      return nil
+    }
+    guard let value = Double(text.dropLast()), value >= 0 else { return nil }
+    return Int((value * multiplier).rounded())
   }
 
   /// Lets the current agent hand tool work to a child, or not. Turning
@@ -5486,7 +5689,8 @@ struct MaiCLI {
   }
 
   /// Changes one run limit for the current chat and, when the chat uses a
-  /// configured agent, persists it into that agent's definition.
+  /// configured agent, persists it into that agent's definition. The token
+  /// and time caps take `off`; time takes `10m` and `1h` as well as seconds.
   private static func setLimit(
     _ key: String,
     parts: [String],
@@ -5496,20 +5700,42 @@ struct MaiCLI {
     terminal: TerminalWriter
   ) async {
     var limits = session.profile.limits
-    let current = limitValue(key, in: limits)
     guard parts.count > 1 else {
-      await terminal.line("\(key) = \(current)")
+      await terminal.line("\(key) = \(limitValue(key, in: limits))")
       return
     }
-    guard parts.count == 2, let value = Int(parts[1]), value >= 0 else {
-      await terminal.line("Usage: /set \(key) N  (a non-negative integer)")
-      return
-    }
+    let raw = parts.count == 2 ? parts[1].lowercased() : ""
+    let cleared = ["off", "none", "unlimited", "0"].contains(raw)
     switch key {
-    case "limits.maxToolCalls": limits.maxToolCalls = value
-    case "limits.maxSubagents": limits.maxSubagents = value
-    case "limits.maxSubagentDepth": limits.maxSubagentDepth = value
-    default: limits.maxModelTurns = max(1, value)
+    case "limits.maxSeconds":
+      if cleared {
+        limits.maxSeconds = nil
+      } else if let seconds = parseDurationSeconds(raw) {
+        limits.maxSeconds = seconds
+      } else {
+        await terminal.line("Usage: /set limits.maxSeconds <off|N|Nm|Nh>  (wall-clock time per run)")
+        return
+      }
+    case "limits.maxTotalTokens":
+      if cleared {
+        limits.maxTotalTokens = nil
+      } else if let tokens = parseTokenCount(raw), tokens > 0 {
+        limits.maxTotalTokens = tokens
+      } else {
+        await terminal.line("Usage: /set limits.maxTotalTokens <off|N|Nk>  (tokens per run)")
+        return
+      }
+    default:
+      guard let value = Int(raw), value >= 0 else {
+        await terminal.line("Usage: /set \(key) N  (a non-negative integer)")
+        return
+      }
+      switch key {
+      case "limits.maxToolCalls": limits.maxToolCalls = value
+      case "limits.maxSubagents": limits.maxSubagents = value
+      case "limits.maxSubagentDepth": limits.maxSubagentDepth = value
+      default: limits.maxModelTurns = max(1, value)
+      }
     }
     session.profile.limits = limits
     session.touch()
@@ -5525,6 +5751,88 @@ struct MaiCLI {
       try draft.save(to: URL(fileURLWithPath: configurationPath))
       configuration = draft
       await terminal.line("Set \(key) = \(applied) for agent '\(session.profile.agentID)'.")
+    } catch {
+      await terminal.line(
+        "Set \(key) = \(applied) for this chat; could not save the configuration: \(error.localizedDescription)",
+        to: .standardError)
+    }
+  }
+
+  /// `retry.attempts`, `retry.delay`, and `autocompact`: what a run does when
+  /// a model call fails, and when it summarizes its own conversation. Saved
+  /// on the chat's agent like the limits.
+  private static func setRecoverySetting(
+    _ key: String,
+    parts: [String],
+    session: inout REPLSession,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    var retry = session.profile.retry
+    var autocompact = session.profile.autocompact
+    func current() -> String {
+      switch key {
+      case "retry.attempts": String(retry.attempts)
+      case "retry.delay": durationSetting(retry.delaySeconds)
+      default: autocompactSetting(autocompact)
+      }
+    }
+    guard parts.count > 1 else {
+      await terminal.line("\(key) = \(current())")
+      return
+    }
+    let raw = parts.count == 2 ? parts[1].lowercased() : ""
+    switch key {
+    case "retry.attempts":
+      guard let value = Int(raw), value >= 0 else {
+        await terminal.line("Usage: /set retry.attempts N  (0 fails on the first error)")
+        return
+      }
+      retry.attempts = value
+    case "retry.delay":
+      if let seconds = Double(raw), seconds >= 0 {
+        retry.delaySeconds = seconds
+      } else if let seconds = parseDurationSeconds(raw) {
+        retry.delaySeconds = Double(seconds)
+      } else {
+        await terminal.line("Usage: /set retry.delay SECONDS  (the wait before each retry)")
+        return
+      }
+    default:
+      if ["off", "none", "0"].contains(raw) {
+        autocompact.tokens = 0
+      } else if let tokens = parseTokenCount(raw), tokens > 0 {
+        autocompact.tokens = tokens
+      } else {
+        await terminal.line(
+          "Usage: /set autocompact <off|N|Nk>  (summarize the chat once it holds about N tokens)")
+        return
+      }
+    }
+    session.profile.retry = retry
+    session.profile.autocompact = autocompact
+    session.touch()
+    var notes: [String] = []
+    if key == "autocompact", autocompact.isEnabled {
+      notes.append(
+        "Older exchanges are summarized before a model turn once the conversation is estimated at \(autocompact.tokens) tokens; the newest exchange is kept verbatim.")
+    }
+    let applied = current()
+    guard var draft = configuration, let configurationPath,
+      let index = draft.agents.firstIndex(where: { $0.id == session.profile.agentID })
+    else {
+      await terminal.line((["Set \(key) = \(applied) for this chat."] + notes).joined(separator: " "))
+      return
+    }
+    draft.agents[index].retry = retry
+    draft.agents[index].autocompact = autocompact
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      await terminal.line(
+        (["Set \(key) = \(applied) for agent '\(session.profile.agentID)'."] + notes)
+          .joined(separator: " "))
     } catch {
       await terminal.line(
         "Set \(key) = \(applied) for this chat; could not save the configuration: \(error.localizedDescription)",
@@ -5605,6 +5913,11 @@ struct MaiCLI {
           "limits.maxModelTurns": String(profile.limits.maxModelTurns),
           "limits.maxSubagents": String(profile.limits.maxSubagents),
           "limits.maxSubagentDepth": String(profile.limits.maxSubagentDepth),
+          "limits.maxTotalTokens": limitValue("limits.maxTotalTokens", in: profile.limits),
+          "limits.maxSeconds": limitValue("limits.maxSeconds", in: profile.limits),
+          "retry.attempts": String(profile.retry.attempts),
+          "retry.delay": durationSetting(profile.retry.delaySeconds),
+          "autocompact": autocompactSetting(profile.autocompact),
         ])
     }
     let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
@@ -6492,23 +6805,7 @@ struct MaiCLI {
     }
   }
 
-  private static let defaultCompactPrompt = """
-    Compact the transcript below into durable context for continuing the same chat.
-
-    Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
-
-    Preserve:
-    - User goals, preferences, constraints, and decisions
-    - Important names, projects, files, commands, code snippets, errors, and results
-    - Current state, unresolved questions, and next steps
-
-    Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
-    {{focus}}
-
-    Transcript:
-
-    {{transcript}}
-    """
+  private static let defaultCompactPrompt = AgentCompactionPrompt.template
 
   /// Ask the selected model for durable context using the configured prompt
   /// template, then replace the transcript while retaining system instructions.
@@ -6519,44 +6816,27 @@ struct MaiCLI {
     runtime: AgentRuntime,
     terminal: TerminalWriter
   ) async {
-    let entries = session.history.messages.compactMap { message -> String? in
-      guard message.role == .user || message.role == .assistant else { return nil }
-      let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { return nil }
-      return "\(message.role == .user ? "User" : "Assistant"):\n\(text)"
+    let spoken = session.history.messages.filter {
+      ($0.role == .user || $0.role == .assistant)
+        && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    guard entries.count >= 2 else {
+    guard spoken.count >= 2 else {
       await terminal.line("Nothing to compact yet.")
       return
     }
-
-    let focusInstructions =
-      focus.isEmpty
-      ? ""
-      : """
-      The user supplied this focus for compaction:
-
-      <compaction-focus>
-      \(focus)
-      </compaction-focus>
-
-      Prioritize context relevant to that focus while retaining essential state needed to continue the work.
-      """
     let configuredTemplate = promptTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let template = configuredTemplate.isEmpty ? defaultCompactPrompt : configuredTemplate
-    guard template.contains("{{transcript}}") else {
+    guard configuredTemplate.isEmpty || configuredTemplate.contains("{{transcript}}") else {
       await terminal.line(
         "error: The compact prompt must contain {{transcript}}. Edit it with /edit compact.",
         to: .standardError)
       return
     }
-    var prompt = template.replacingOccurrences(of: "{{focus}}", with: focusInstructions)
-    prompt = prompt.replacingOccurrences(
-      of: "{{transcript}}",
-      with: entries.joined(separator: "\n\n---\n\n"))
-    if !focusInstructions.isEmpty, !template.contains("{{focus}}") {
-      prompt += "\n\n" + focusInstructions
-    }
+    // The same prompt and transcript rendering autocompact uses, so a summary
+    // reads the same whether a person or the runtime asked for it.
+    let prompt = AgentCompactionPrompt.render(
+      transcript: AgentCompactionPrompt.transcript(of: session.history.messages),
+      focus: focus,
+      template: configuredTemplate)
     let profile = session.profile
     let request = AgentRequest(
       agentID: profile.agentID,
@@ -6571,7 +6851,8 @@ struct MaiCLI {
       limits: profile.limits,
       stream: false,
       toolCallingStrategy: .automatic,
-      useToolProxy: false)
+      useToolProxy: false,
+      retry: profile.retry)
     await terminal.line("Compacting conversation…")
     do {
       let result = try await runtime.run(request) { _ in }
@@ -6983,7 +7264,9 @@ struct MaiCLI {
       "/help todo", "/todo", "/todo add ", "/todo done ", "/todo edit", "/todo clear",
       "/todo path",
       "/set limits.", "/set limits.maxToolCalls ", "/set limits.maxModelTurns ",
-      "/set limits.maxSubagents ",
+      "/set limits.maxSubagents ", "/set limits.maxSeconds ", "/set limits.maxTotalTokens ",
+      "/set retry.attempts ", "/set retry.delay ", "/set autocompact ", "/set autocompact off",
+      "/continue", "/retry",
       "/set toolCallingStrategy automatic", "/set toolCallingStrategy native",
       "/set toolCallingStrategy text", "/set toolCallingStrategy xml",
       "/set toolCallingStrategy json",
@@ -7251,6 +7534,7 @@ struct MaiCLI {
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
     /btw PROMPT         Ask in a fresh context without changing this chat
+    /continue           Pick a paused or interrupted task up where it stopped (/retry is the same)
     /memory             Show, edit, learn, or scope this project's durable memory
     /todo               Show, add to, tick off, or edit this project's todo list
     /prompts            List named system prompts and which agents use them
@@ -7308,6 +7592,11 @@ struct MaiCLI {
       /set limits.maxModelTurns N  Model turns allowed per run
       /set limits.maxSubagents N   Child agents allowed at once (0 disables delegation)
       /set limits.maxSubagentDepth N  Maximum depth of the agent tree
+      /set limits.maxTotalTokens <off|N|Nk>  Tokens a run may spend before it pauses
+      /set limits.maxSeconds <off|N|Nm|Nh>   Wall-clock time a run may take before it pauses
+      /set retry.attempts N        Times a failed model call is repeated (default 2)
+      /set retry.delay SECONDS     Wait before each retry (default 5)
+      /set autocompact <off|N|Nk>  Summarize older exchanges once the chat holds ~N tokens
       /set ui.                     List terminal UI settings
       /set ui.bgline COLOR         Set the input-line background
       /set ui.fgcolor COLOR        Set the input foreground

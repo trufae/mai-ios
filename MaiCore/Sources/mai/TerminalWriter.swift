@@ -146,10 +146,23 @@ actor TerminalWriter {
       finishReply()
       closeRootLine()
       status("✂ context: \(report.summary)", color: "magenta")
+    case .compactionStarted(let context, let estimated) where context.depth == 0:
+      finishReply()
+      closeRootLine()
+      status("✂ context: ~\(compactCount(estimated)) tokens, compacting…", color: "magenta")
+    case .compactionFailed(let context, let message) where context.depth == 0:
+      status("✂ context: compaction failed: \(message)", color: "red")
+    case .retrying(let context, let attempt, let limit, let delay, let error)
+    where context.depth == 0:
+      finishReply()
+      closeRootLine()
+      status(
+        "↻ retry \(attempt)/\(limit) in \(ModelUsageFormat.duration(delay)): \(error)",
+        color: "yellow")
     case .finished(let context, let result) where context.depth == 0:
       if wroteRootDelta {
         finishReply()
-      } else {
+      } else if result.interruption == nil {
         write(render(result.response.text))
       }
       closeRootLine(force: true)
@@ -163,6 +176,16 @@ actor TerminalWriter {
       guard subagentOutput != .none else { return }
       let starter = parent.pid.map { parent.depth > 0 ? " by agent#\($0.rawValue)" : "" } ?? ""
       childBlock(pid, "↳ \(child.agentID) started\(starter)")
+    case .childQueued(let parent, let child):
+      guard let pid = child.pid else { return }
+      childAgents[pid] = child.agentID
+      childToolCalls[pid] = 0
+      childTokens[pid] = 0
+      childText[pid] = nil
+      childrenEnded.remove(pid)
+      guard subagentOutput != .none else { return }
+      let starter = parent.pid.map { parent.depth > 0 ? " by agent#\($0.rawValue)" : "" } ?? ""
+      childBlock(pid, "↳ \(child.agentID) queued\(starter): waiting for a free agent slot")
     case .childFinished:
       // The child's own `finished` event already printed its answer.
       break
@@ -205,11 +228,30 @@ actor TerminalWriter {
       flushChildText(pid)
       guard subagentOutput != .none else { return }
       childBlock(pid, "✂ context: \(report.summary)", color: "magenta")
+    case .compactionStarted(let context, let estimated):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      guard subagentOutput != .none else { return }
+      childBlock(pid, "✂ context: ~\(compactCount(estimated)) tokens, compacting…", color: "magenta")
+    case .compactionFailed(let context, let message):
+      guard let pid = context.pid, subagentOutput != .none else { return }
+      childBlock(pid, "✂ context: compaction failed: \(message)", color: "red")
+    case .retrying(let context, let attempt, let limit, let delay, let error):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      guard subagentOutput != .none else { return }
+      childBlock(
+        pid, "↻ retry \(attempt)/\(limit) in \(ModelUsageFormat.duration(delay)): \(error)",
+        color: "yellow")
     case .finished(let context, let result):
       guard let pid = context.pid else { return }
       flushChildText(pid)
       childrenEnded.insert(pid)
       guard subagentOutput != .none else { return }
+      if let interruption = result.interruption {
+        childBlock(pid, "↲ stopped: \(interruption.summary)", color: "red")
+        return
+      }
       var facts: [String] = []
       if result.modelTurns > 0 {
         facts.append("\(result.modelTurns) turn\(result.modelTurns == 1 ? "" : "s")")
