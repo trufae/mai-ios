@@ -64,6 +64,13 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
+      # Static Foundation links against the system libcurl and libxml2, whose
+      # development symlinks are missing on the arm64 runner image.
+      - name: Install static link dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev libxml2-dev
+
       # Links the Swift runtime, Foundation and libdispatch into the
       # executable so it runs on machines without a Swift toolchain. The
       # result still depends on glibc, libstdc++, libcurl and libxml2, which
