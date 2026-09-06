@@ -95,7 +95,7 @@ func workspaceSendsMessages() async throws {
   #expect(conversation.title == "repl")
 
   let scratch = workspace.makeConversation()
-  #expect(scratch.title == "Chat 2")
+  #expect(scratch.title == AgentChat.placeholderTitle)
   scratch.draft = "rename me please"
   workspace.send(scratch)
   await scratch.runTask?.value

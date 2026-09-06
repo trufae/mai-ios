@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import MaiCore
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -4344,19 +4345,18 @@ final class AppStore: ObservableObject {
     return true
   }
 
+  /// Applies the rule shared with pmai through MaiCore: an untouched
+  /// placeholder is dropped instead of being saved or listed. An unsent draft
+  /// is the app's own reason to hold on to one.
   private func isDisposableNewConversation(_ conversation: Conversation) -> Bool {
-    guard conversation.messages.isEmpty,
-      !respondingConversationIDs.contains(conversation.id),
-      conversationDrafts[conversation.id, default: ""].trimmingCharacters(
-        in: .whitespacesAndNewlines
-      )
-      .isEmpty,
-      !conversation.isPinned
-    else {
-      return false
-    }
-    let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    return title.isEmpty || title == "New chat"
+    let hasDraft = !conversationDrafts[conversation.id, default: ""]
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return !hasDraft
+      && AgentChat.isDisposable(
+        title: conversation.title,
+        hasConversation: !conversation.messages.isEmpty,
+        isBusy: respondingConversationIDs.contains(conversation.id),
+        isKept: conversation.isPinned)
   }
 
   private func createInitialConversationIfNeeded() {

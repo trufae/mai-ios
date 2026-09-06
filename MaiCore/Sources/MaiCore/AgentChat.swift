@@ -66,7 +66,7 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
 
   /// True while the chat still carries the placeholder title.
   public var hasPlaceholderTitle: Bool {
-    displayTitle == Self.placeholderTitle
+    Self.isPlaceholderTitle(title)
   }
 
   /// Messages exchanged with the model, excluding configured instructions.
@@ -78,10 +78,37 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
     messages.contains { $0.role != .system }
   }
 
-  /// An untouched placeholder: nothing was said, attached, renamed, or archived.
-  /// Such chats are dropped instead of piling up as empty entries.
+  /// An untouched placeholder: nothing was said, and nobody renamed or
+  /// archived it. Queued attachments do not count; a chat that never received
+  /// a message is dropped instead of piling up as an empty entry.
   public var isDisposable: Bool {
-    !hasConversation && pendingContent.isEmpty && !isArchived && hasPlaceholderTitle
+    Self.isDisposable(
+      title: title,
+      hasConversation: hasConversation,
+      isBusy: false,
+      isKept: isArchived)
+  }
+
+  /// The rule every host applies before listing or persisting a chat: an
+  /// empty chat is never worth keeping unless someone deliberately marked it.
+  /// `isKept` covers chats set aside on purpose, such as archived or pinned
+  /// ones; `isBusy` covers a reply still being produced. Hosts layer their own
+  /// transient input on top, as PocketMai does with unsent drafts. PocketMai
+  /// and pmai share this so an empty chat left behind on either platform
+  /// disappears the same way.
+  public static func isDisposable(
+    title: String,
+    hasConversation: Bool,
+    isBusy: Bool,
+    isKept: Bool
+  ) -> Bool {
+    !hasConversation && !isBusy && !isKept && isPlaceholderTitle(title)
+  }
+
+  /// Blank titles and the placeholder itself count as "never named".
+  public static func isPlaceholderTitle(_ title: String) -> Bool {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty || trimmed == placeholderTitle
   }
 
   public mutating func assignPrimaryAgent(
@@ -130,11 +157,20 @@ public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
 }
 
 /// A persistable collection of independent chats and the chat selected by a host.
+///
+/// The workspace remembers which chats changed or disappeared since it was
+/// last committed, so an `AgentChatStore` writes and deletes only those files.
 public struct AgentChatWorkspace: Codable, Equatable, Sendable {
   public var version: Int
   public private(set) var selectedChatID: UUID?
   public private(set) var chats: [AgentChat]
+  /// Chats added or changed since the last commit.
+  public private(set) var modifiedChatIDs: Set<UUID>
+  /// Chats removed since the last commit whose files should go away.
+  public private(set) var removedChatIDs: Set<UUID>
 
+  /// A freshly built workspace treats every chat as new, so committing it to
+  /// a store writes them all; stores mark what they load as committed.
   public init(
     version: Int = 1,
     chats: [AgentChat] = [],
@@ -146,6 +182,8 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
       selectedChatID.flatMap { id in
         chats.contains(where: { $0.id == id }) ? id : nil
       } ?? chats.first?.id
+    modifiedChatIDs = Set(chats.map(\.id))
+    removedChatIDs = []
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -160,6 +198,13 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
       version: try container.decodeIfPresent(Int.self, forKey: .version) ?? 1,
       chats: try container.decodeIfPresent([AgentChat].self, forKey: .chats) ?? [],
       selectedChatID: try container.decodeIfPresent(UUID.self, forKey: .selectedChatID))
+  }
+
+  /// Change tracking is bookkeeping, not content: two workspaces holding the
+  /// same chats and selection are equal however they got there.
+  public static func == (lhs: AgentChatWorkspace, rhs: AgentChatWorkspace) -> Bool {
+    lhs.version == rhs.version && lhs.selectedChatID == rhs.selectedChatID
+      && lhs.chats == rhs.chats
   }
 
   public var selectedChat: AgentChat? {
@@ -186,6 +231,16 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
     activeChats.first { $0.hasConversation }
   }
 
+  public var hasUncommittedChanges: Bool {
+    !modifiedChatIDs.isEmpty || !removedChatIDs.isEmpty
+  }
+
+  /// Forgets the recorded changes once a store has written them.
+  public mutating func markCommitted() {
+    modifiedChatIDs.removeAll()
+    removedChatIDs.removeAll()
+  }
+
   @discardableResult
   public mutating func selectChat(id: UUID) -> Bool {
     guard chats.contains(where: { $0.id == id }) else { return false }
@@ -195,10 +250,15 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
 
   public mutating func upsert(_ chat: AgentChat, selecting: Bool = false) {
     if let index = chats.firstIndex(where: { $0.id == chat.id }) {
-      chats[index] = chat
+      if chats[index] != chat {
+        chats[index] = chat
+        modifiedChatIDs.insert(chat.id)
+      }
     } else {
       chats.append(chat)
+      modifiedChatIDs.insert(chat.id)
     }
+    removedChatIDs.remove(chat.id)
     if selecting || selectedChatID == nil { selectedChatID = chat.id }
   }
 
@@ -206,6 +266,8 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
   public mutating func removeChat(id: UUID) -> AgentChat? {
     guard let index = chats.firstIndex(where: { $0.id == id }) else { return nil }
     let removed = chats.remove(at: index)
+    modifiedChatIDs.remove(id)
+    removedChatIDs.insert(id)
     if selectedChatID == id {
       selectedChatID = chats.isEmpty ? nil : chats[min(index, chats.count - 1)].id
     }
@@ -241,7 +303,9 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
   @discardableResult
   public mutating func setArchived(_ archived: Bool, id: UUID, at date: Date = Date()) -> Bool {
     guard let index = chats.firstIndex(where: { $0.id == id }) else { return false }
+    guard chats[index].isArchived != archived else { return true }
     chats[index].setArchived(archived, at: date)
+    modifiedChatIDs.insert(id)
     return true
   }
 
@@ -250,6 +314,8 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
     return lhs.createdAt > rhs.createdAt
   }
 
+  /// Reads a single-file workspace, the layout pmai used before per-project
+  /// chat directories. Every chat counts as modified so a store can adopt it.
   public static func load(from url: URL) throws -> AgentChatWorkspace {
     try JSONDecoder().decode(AgentChatWorkspace.self, from: Data(contentsOf: url))
   }

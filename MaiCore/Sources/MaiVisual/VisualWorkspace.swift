@@ -125,7 +125,6 @@ public final class VisualWorkspace {
   public private(set) var isFetchingModels = false
   private var approvalQueue: [VisualApprovalHandler.Pending] = []
   private var presentedApprovalID: UUID?
-  private var conversationCounter: Int
 
   public var pendingApprovalCount: Int {
     (pendingApproval == nil ? 0 : 1) + approvalQueue.count
@@ -158,7 +157,6 @@ public final class VisualWorkspace {
       conversations = restored
       self.layout = layout
       selectedTab = snapshot.selectedTab
-      conversationCounter = restored.count
       let focusedID = layout.focusedConversation
       restored.first { $0.id == focusedID }?.replace(with: launch.focusedConversation)
     } else {
@@ -166,7 +164,6 @@ public final class VisualWorkspace {
       conversations = [conversation]
       layout = PaneLayout(conversation: conversation.id)
       selectedTab = .chats
-      conversationCounter = 1
     }
   }
 
@@ -215,12 +212,11 @@ public final class VisualWorkspace {
 
   @discardableResult
   public func makeConversation(profile: AgentDefinition? = nil) -> VisualConversation {
-    conversationCounter += 1
     let base =
       profile ?? focusedConversation?.profile ?? conversations.first?.profile
       ?? AgentDefinition(id: "main", instructions: "", provider: .hello, model: "")
     let seed = VisualConversationSeed(
-      title: "Chat \(conversationCounter)",
+      title: AgentChat.placeholderTitle,
       profile: base,
       messages: VisualConversation.initialHistory(for: base))
     let conversation = VisualConversation(seed: seed, hasCustomTitle: false)

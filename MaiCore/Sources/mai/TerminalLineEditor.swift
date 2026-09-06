@@ -251,6 +251,14 @@ final class TerminalLineEditor {
 
   private static func colorCode(_ rawValue: String, background: Bool) -> String? {
     let value = rawValue.lowercased()
+    if value.hasPrefix("#"), value.count == 7 {
+      let hex = String(value.dropFirst())
+      guard hex.allSatisfy(\.isHexDigit), let packed = Int(hex, radix: 16) else { return nil }
+      let red = (packed >> 16) & 0xFF
+      let green = (packed >> 8) & 0xFF
+      let blue = packed & 0xFF
+      return "\(background ? 48 : 38);2;\(red);\(green);\(blue)"
+    }
     if value.hasPrefix("rgb:"), value.count == 7 {
       let hex = String(value.dropFirst(4))
       guard hex.allSatisfy(\.isHexDigit), let packed = Int(hex, radix: 16) else { return nil }

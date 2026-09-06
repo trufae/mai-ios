@@ -25,6 +25,9 @@ private func posixSystem(_ command: UnsafePointer<CChar>) -> CInt
 
 private struct CLIOptions {
   var configPath: String?
+  /// Root holding the project index and shared state; nil follows PMAI_HOME or ~/.pmai.
+  var homePath: String?
+  /// Directory holding this project's chat files; nil uses .pmai/chats in the project.
   var statePath: String?
   var historyPath: String?
   var agentOverride: String?
@@ -47,6 +50,8 @@ private struct CLIOptions {
   var pluginPaths: [String] = []
   var initialPrompt: String?
   var printConfig = false
+  /// List every known project and exit.
+  var listProjects = false
 
   init(arguments: [String], environment: [String: String]) throws {
     configPath = environment["PMAI_CONFIG"]
@@ -63,6 +68,10 @@ private struct CLIOptions {
         statePath = try Self.value(after: argument, in: arguments, index: &index)
       case "--history":
         historyPath = try Self.value(after: argument, in: arguments, index: &index)
+      case "--home":
+        homePath = try Self.value(after: argument, in: arguments, index: &index)
+      case "--projects":
+        listProjects = true
       case "--agent":
         agentOverride = try Self.value(after: argument, in: arguments, index: &index)
       case "--provider":
@@ -746,6 +755,11 @@ private struct MaiCLI {
         FileHandle.standardOutput.write(Data("\n".utf8))
         return
       }
+      if options.listProjects {
+        let home = resolvedHome(options: options, environment: environment)
+        print(projectListing(try home.loadProjectIndex(), currentID: nil, now: Date()))
+        return
+      }
 
       let loaded = try loadConfiguration(options: options)
       let configurationPath = loaded?.path ?? defaultConfigurationPath
@@ -823,7 +837,12 @@ private struct MaiCLI {
           options: options,
           environment: environment)
       }
-      let stateURL = URL(fileURLWithPath: resolvedStatePath(options: options))
+      let home = resolvedHome(options: options, environment: environment)
+      let project = try home.openProject(
+        atWorkingDirectory: URL(
+          fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+      let store = resolvedChatStore(options: options, home: home, project: project)
+      importLegacyChats(into: store, project: project, options: options, environment: environment)
       let providerOverride =
         options.providerOverride
         ?? environmentValue(["PMAI_PROVIDER", "MAI_PROVIDER"], in: environment).map {
@@ -833,7 +852,7 @@ private struct MaiCLI {
         options.modelOverride
         ?? environmentValue(["PMAI_MODEL", "MAI_MODEL", "OPENAI_MODEL"], in: environment)
       var workspace = try loadChatWorkspace(
-        from: stateURL,
+        from: store,
         initialProfile: profile,
         configuredAgents: configuration?.agents ?? [],
         providerOverride: providerOverride,
@@ -866,14 +885,16 @@ private struct MaiCLI {
           runtime: runtime,
           terminal: terminal)
         workspace.upsert(session.chat, selecting: true)
-        try workspace.save(to: stateURL)
+        try store.commit(&workspace)
         if !succeeded { exit(1) }
         return
       }
       await runREPL(
         workspace: &workspace,
-        stateURL: stateURL,
-        historyURL: URL(fileURLWithPath: resolvedHistoryPath(options: options)),
+        store: store,
+        home: home,
+        project: project,
+        historyURL: resolvedHistoryURL(options: options, home: home, environment: environment),
         runtime: runtime,
         plugins: plugins,
         ocrProvider: ocrProvider,
@@ -1185,7 +1206,9 @@ private struct MaiCLI {
 
   private static func runREPL(
     workspace: inout AgentChatWorkspace,
-    stateURL: URL,
+    store: AgentChatStore,
+    home: AgentHome,
+    project: AgentProject,
     historyURL: URL,
     runtime: AgentRuntime,
     plugins: PluginRegistry,
@@ -1197,26 +1220,30 @@ private struct MaiCLI {
   ) async {
     var configuration = configuration
     var catalogs = catalogs
+    var project = project
     var session = REPLSession(chat: workspace.selectedChat!)
     let editor = TerminalLineEditor(historyURL: historyURL)
     let interruptHandler = TerminalInterruptHandler()
     await terminal.line("pmai — MaiCore agent REPL")
     await terminal.line(
+      "Project: \(project.displayName) · \(abbreviatedPath(project.workingDirectory)) · /project shows more"
+    )
+    await terminal.line(
       "Type /help for commands. Chat: \(session.title); agent: \(session.profile.agentID)")
     let earlier = workspace.chats.filter { $0.id != session.id && $0.hasConversation }
     if !earlier.isEmpty {
       await terminal.line(
-        "\(earlier.count) earlier chat\(earlier.count == 1 ? "" : "s"): /chat list shows them, /chat use N switches."
+        "\(earlier.count) earlier chat\(earlier.count == 1 ? "" : "s") in this project: /chat list shows them, /chat use N switches."
       )
     }
 
     while true {
-      let ui = configuration?.ui ?? .init()
+      let ui = tintedUI(configuration?.ui ?? .init(), project: project)
       editor.configure(ui: ui)
       await terminal.configureToolResultLines(ui.toolResultLines)
       await terminal.configureToolResultColor(ui.toolResultForeground)
       let promptStatus =
-        "\(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
+        "\(project.displayName) · \(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
       guard
         let firstLine = editor.readLine(
           prompt: "pmai> ",
@@ -1226,7 +1253,7 @@ private struct MaiCLI {
           separator: promptStatus)
       else {
         workspace.upsert(session.chat, selecting: true)
-        await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
+        await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
         return
       }
       var input = firstLine
@@ -1243,13 +1270,23 @@ private struct MaiCLI {
             "warning: End of input before heredoc delimiter '\(delimiter)'.",
             to: .standardError)
           workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
+          await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
           return
         }
       }
       let text = isHeredoc ? input : input.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
       if !isHeredoc, text.hasPrefix("/") {
+        if text == "/project" || text.hasPrefix("/project ") {
+          await handleProjectCommand(
+            String(text.dropFirst("/project".count)).trimmingCharacters(
+              in: .whitespacesAndNewlines),
+            project: &project,
+            home: home,
+            store: store,
+            terminal: terminal)
+          continue
+        }
         if text == "/chat" || text.hasPrefix("/chat ") {
           workspace.upsert(session.chat, selecting: true)
           await handleWorkspaceChatCommand(
@@ -1261,7 +1298,7 @@ private struct MaiCLI {
             configuration: configuration,
             terminal: terminal)
           workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
+          await saveWorkspace(&workspace, store: store, terminal: terminal)
           continue
         }
         #if PMAI_HAS_VISUAL
@@ -1282,7 +1319,7 @@ private struct MaiCLI {
           terminal: terminal)
         {
           workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
+          await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
           return
         }
         #if PMAI_HAS_VISUAL
@@ -1297,7 +1334,7 @@ private struct MaiCLI {
           session.touch()
           workspace.upsert(session.chat, selecting: true)
         #endif
-        await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
+        await saveWorkspace(&workspace, store: store, terminal: terminal)
         continue
       }
       _ = await submit(
@@ -1308,7 +1345,7 @@ private struct MaiCLI {
         interruptHandler: interruptHandler)
       session.touch()
       workspace.upsert(session.chat, selecting: true)
-      await saveWorkspace(&workspace, to: stateURL, terminal: terminal)
+      await saveWorkspace(&workspace, store: store, terminal: terminal)
     }
   }
 
@@ -3619,6 +3656,179 @@ private struct MaiCLI {
   /// Chats grouped the way the PocketMai sidebar groups them: active chats
   /// under Today / Yesterday / This week / Last week / date headers, newest
   /// first, then the archived ones. Indexes match `/chat use N`.
+  private static func handleProjectCommand(
+    _ argument: String,
+    project: inout AgentProject,
+    home: AgentHome,
+    store: AgentChatStore,
+    terminal: TerminalWriter
+  ) async {
+    let parts = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = parts.first?.lowercased() ?? "info"
+    let rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+
+    switch action {
+    case "info", "show":
+      await terminal.line(projectInfo(project, home: home, store: store))
+    case "list", "ls", "projects":
+      do {
+        await terminal.line(
+          projectListing(try home.loadProjectIndex(), currentID: project.id, now: Date()))
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+    case "name", "rename":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /project name NAME")
+        return
+      }
+      project.rename(to: rest)
+      await saveProject(
+        project, home: home, terminal: terminal,
+        success: "Project renamed to '\(project.displayName)'.")
+    case "tint", "color", "colour":
+      let presets = AgentProjectTint.presetNames.joined(separator: ", ")
+      guard !rest.isEmpty else {
+        await terminal.line(
+          "Tint: \(project.tint?.rawValue ?? "none"). Presets: \(presets); or #RRGGBB; none clears it."
+        )
+        return
+      }
+      if ["none", "off", "default", "-"].contains(rest.lowercased()) {
+        project.tint = nil
+        await saveProject(project, home: home, terminal: terminal, success: "Project tint cleared.")
+        return
+      }
+      guard let tint = AgentProjectTint(rawValue: rest) else {
+        await terminal.line("Unknown tint '\(rest)'. Use one of \(presets), or #RRGGBB.")
+        return
+      }
+      project.tint = tint
+      await saveProject(
+        project, home: home, terminal: terminal, success: "Project tint set to \(tint.rawValue).")
+    case "forget":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /project forget INDEX|PATH|NAME")
+        return
+      }
+      do {
+        let index = try home.loadProjectIndex()
+        guard let target = resolveProject(rest, in: index) else {
+          await terminal.line("No project matches '\(rest)'. /project list shows them.")
+          return
+        }
+        guard target.id != project.id else {
+          await terminal.line("'\(target.displayName)' is the open project; it stays listed.")
+          return
+        }
+        _ = try home.forgetProject(id: target.id)
+        await terminal.line(
+          "Forgot '\(target.displayName)'. Its files in \(target.workingDirectory) were left alone."
+        )
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+    case "help":
+      await terminal.line(projectHelp)
+    default:
+      await terminal.line("Unknown /project action '\(action)'.\n\n\(projectHelp)")
+    }
+  }
+
+  private static func saveProject(
+    _ project: AgentProject,
+    home: AgentHome,
+    terminal: TerminalWriter,
+    success: String
+  ) async {
+    do {
+      try home.saveProject(project)
+      await terminal.line(success)
+    } catch {
+      await terminal.line(
+        "warning: the project was not saved: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  private static func resolveProject(_ selector: String, in index: AgentProjectIndex)
+    -> AgentProject?
+  {
+    let ordered = index.orderedProjects
+    if let number = Int(selector), number >= 1, number <= ordered.count {
+      return ordered[number - 1]
+    }
+    let path = AgentProject.standardizedPath(selector)
+    if let match = index.project(atWorkingDirectory: path) { return match }
+    let lowered = selector.lowercased()
+    if let match = ordered.first(where: { $0.id.uuidString.lowercased().hasPrefix(lowered) }) {
+      return match
+    }
+    return ordered.first { $0.displayName.lowercased() == lowered }
+  }
+
+  private static func projectInfo(
+    _ project: AgentProject,
+    home: AgentHome,
+    store: AgentChatStore
+  ) -> String {
+    let summaries = (try? store.loadSummaries()) ?? []
+    let archived = summaries.filter(\.isArchived).count
+    let nameNote = project.hasCustomName ? "" : " (from the directory; /project name NAME renames it)"
+    return [
+      "Name:      \(project.displayName)\(nameNote)",
+      "Directory: \(project.workingDirectory)",
+      "Tint:      \(project.tint?.rawValue ?? "none")",
+      "Chats:     \(summaries.count - archived) active, \(archived) archived",
+      "Storage:   \(store.directoryURL.path)",
+      "Index:     \(home.projectIndexURL.path)",
+      "ID:        \(project.id.uuidString)",
+      "Created:   \(ChatDatePresentation.timestamp(project.createdAt))",
+      "Opened:    \(ChatDatePresentation.timestamp(project.lastOpenedAt))",
+    ].joined(separator: "\n")
+  }
+
+  private static func projectListing(
+    _ index: AgentProjectIndex,
+    currentID: UUID?,
+    now: Date
+  ) -> String {
+    let projects = index.orderedProjects
+    guard !projects.isEmpty else {
+      return "No projects yet. pmai registers the directory it is started in."
+    }
+    var lines = ["Projects, most recently opened first:"]
+    for (offset, project) in projects.enumerated() {
+      let marker = project.id == currentID ? "*" : " "
+      let number = offset < 9 ? " \(offset + 1)" : "\(offset + 1)"
+      var notes: [String] = []
+      if let tint = project.tint { notes.append(tint.rawValue) }
+      if !project.workingDirectoryExists { notes.append("missing") }
+      lines.append(
+        [
+          "\(marker) \(number)", padded(project.displayName, width: 24),
+          padded(abbreviatedPath(project.workingDirectory), width: 44),
+          padded(notes.joined(separator: ", "), width: 12),
+          ChatDatePresentation.compactTimestamp(project.lastOpenedAt, relativeTo: now),
+        ].joined(separator: "  "))
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  /// Shortens a path the way shells print it: `~` for home, and the head
+  /// elided when it is still too long, keeping the tail people recognize.
+  private static func abbreviatedPath(_ path: String, width: Int = 44) -> String {
+    var shown = path
+    let home = NSHomeDirectory()
+    if shown == home {
+      shown = "~"
+    } else if shown.hasPrefix(home + "/") {
+      shown = "~" + shown.dropFirst(home.count)
+    }
+    guard shown.count > width else { return shown }
+    return "…" + shown.suffix(width - 1)
+  }
+
   private static func chatListing(
     _ workspace: AgentChatWorkspace,
     scope: ChatListScope,
@@ -4037,38 +4247,136 @@ private struct MaiCLI {
     NSString(string: "~/.config/pmai/config.json").expandingTildeInPath
   }
 
-  private static func resolvedStatePath(options: CLIOptions) -> String {
-    NSString(string: options.statePath ?? "~/.config/pmai/chats.json").expandingTildeInPath
+  /// Where pmai kept chats and history before projects existed.
+  private static let legacyStateDirectory = "~/.config/pmai"
+
+  private static func resolvedHome(options: CLIOptions, environment: [String: String])
+    -> AgentHome
+  {
+    if let path = options.homePath {
+      return AgentHome(
+        rootURL: URL(
+          fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true))
+    }
+    return AgentHome.resolve(environment: environment)
   }
 
-  private static func resolvedHistoryPath(options: CLIOptions) -> String {
-    NSString(string: options.historyPath ?? "~/.config/pmai/history.json").expandingTildeInPath
+  /// Pre-project state is adopted only into the default home: a relocated
+  /// home is a deliberate fresh setup, and scratch runs must not touch the
+  /// files under the real home directory.
+  private static func usesDefaultHome(options: CLIOptions, environment: [String: String])
+    -> Bool
+  {
+    options.homePath == nil
+      && (environment[AgentHome.environmentVariable] ?? "").trimmingCharacters(
+        in: .whitespacesAndNewlines
+      ).isEmpty
+  }
+
+  private static func resolvedChatStore(
+    options: CLIOptions,
+    home: AgentHome,
+    project: AgentProject
+  ) -> AgentChatStore {
+    if let path = options.statePath {
+      return AgentChatStore(
+        directoryURL: URL(
+          fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true))
+    }
+    return home.chatStore(for: project)
+  }
+
+  /// The shared input history, copied once from its pre-project location.
+  private static func resolvedHistoryURL(
+    options: CLIOptions,
+    home: AgentHome,
+    environment: [String: String]
+  ) -> URL {
+    if let path = options.historyPath {
+      return URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+    }
+    let url = home.historyURL
+    let legacy = URL(
+      fileURLWithPath: NSString(string: "\(legacyStateDirectory)/history.json")
+        .expandingTildeInPath)
+    if usesDefaultHome(options: options, environment: environment),
+      !FileManager.default.fileExists(atPath: url.path),
+      FileManager.default.fileExists(atPath: legacy.path)
+    {
+      try? FileManager.default.createDirectory(at: home.rootURL, withIntermediateDirectories: true)
+      try? FileManager.default.copyItem(at: legacy, to: url)
+    }
+    return url
+  }
+
+  /// Adopts the single-file workspace pmai kept before projects existed into
+  /// the first project started afterwards, then sets the file aside so it is
+  /// imported only once.
+  private static func importLegacyChats(
+    into store: AgentChatStore,
+    project: AgentProject,
+    options: CLIOptions,
+    environment: [String: String]
+  ) {
+    guard options.statePath == nil, usesDefaultHome(options: options, environment: environment)
+    else { return }
+    let legacy = URL(
+      fileURLWithPath: NSString(string: "\(legacyStateDirectory)/chats.json").expandingTildeInPath)
+    guard FileManager.default.fileExists(atPath: legacy.path) else { return }
+    do {
+      var workspace = try AgentChatWorkspace.load(from: legacy)
+      let count = workspace.chats.filter { !$0.isDisposable }.count
+      try store.commit(&workspace)
+      let imported = legacy.appendingPathExtension("imported")
+      try? FileManager.default.removeItem(at: imported)
+      try FileManager.default.moveItem(at: legacy, to: imported)
+      FileHandle.standardError.write(
+        Data(
+          "Imported \(count) earlier chat\(count == 1 ? "" : "s") from \(legacy.path) into project '\(project.displayName)'.\n"
+            .utf8))
+    } catch {
+      FileHandle.standardError.write(
+        Data(
+          "warning: earlier chats in \(legacy.path) were not imported: \(error.localizedDescription)\n"
+            .utf8))
+    }
+  }
+
+  /// A project tint colors the prompt so the terminal shows which project is open.
+  private static func tintedUI(_ ui: ConfiguredTerminalUI, project: AgentProject)
+    -> ConfiguredTerminalUI
+  {
+    guard let tint = project.tint else { return ui }
+    var tinted = ui
+    tinted.promptForeground = tint.hex
+    return tinted
   }
 
   private static func loadChatWorkspace(
-    from url: URL,
+    from store: AgentChatStore,
     initialProfile: SessionProfile,
     configuredAgents: [AgentDefinition],
     providerOverride: ProviderID?,
     modelOverride: String?,
     options: CLIOptions
   ) throws -> AgentChatWorkspace {
-    var workspace = AgentChatWorkspace()
-    if FileManager.default.fileExists(atPath: url.path) {
-      workspace = try AgentChatWorkspace.load(from: url)
-      synchronizeConfiguredAgentSettings(in: &workspace, agents: configuredAgents)
-      let overridesLimits =
-        options.maxToolCalls != nil || options.maxModelTurns != nil
-        || options.maxSubagents != nil
-      if providerOverride != nil || modelOverride != nil || overridesLimits {
-        for var chat in workspace.chats {
-          if let providerOverride { chat.primaryAgent.provider = providerOverride }
-          if let modelOverride { chat.primaryAgent.model = modelOverride }
-          options.applyLimitOverrides(to: &chat.primaryAgent.limits)
-          workspace.upsert(chat)
-        }
+    var workspace = try store.loadWorkspace { url, error in
+      FileHandle.standardError.write(
+        Data(
+          "warning: skipped unreadable chat \(url.lastPathComponent): \(error.localizedDescription)\n"
+            .utf8))
+    }
+    synchronizeConfiguredAgentSettings(in: &workspace, agents: configuredAgents)
+    let overridesLimits =
+      options.maxToolCalls != nil || options.maxModelTurns != nil
+      || options.maxSubagents != nil
+    if providerOverride != nil || modelOverride != nil || overridesLimits {
+      for var chat in workspace.chats {
+        if let providerOverride { chat.primaryAgent.provider = providerOverride }
+        if let modelOverride { chat.primaryAgent.model = modelOverride }
+        options.applyLimitOverrides(to: &chat.primaryAgent.limits)
+        workspace.upsert(chat)
       }
-      workspace.removeDisposableChats()
     }
     // Like the PocketMai app, every launch opens a fresh chat and keeps the
     // earlier ones one `/chat use` away; `--resume` reopens the latest instead.
@@ -4132,17 +4440,19 @@ private struct MaiCLI {
     return chat
   }
 
-  /// Persists the workspace without untouched placeholder chats. The selected
-  /// placeholder survives while the REPL runs and is dropped when it closes.
+  /// Commits the workspace to the project's chat store. The selected
+  /// placeholder stays in memory while the REPL runs and is dropped when it
+  /// closes; the store never writes a placeholder, so an empty chat leaves no
+  /// file behind however the process ends.
   private static func saveWorkspace(
     _ workspace: inout AgentChatWorkspace,
-    to url: URL,
+    store: AgentChatStore,
     terminal: TerminalWriter,
     closing: Bool = false
   ) async {
     workspace.removeDisposableChats(keeping: closing ? nil : workspace.selectedChatID)
     do {
-      try workspace.save(to: url)
+      try store.commit(&workspace)
     } catch {
       await terminal.line(
         "warning: chats were not saved: \(error.localizedDescription)",
@@ -4223,8 +4533,12 @@ private struct MaiCLI {
       "/chat use ", "/chat next", "/chat previous", "/chat info", "/chat rename ",
       "/chat archive", "/chat unarchive ", "/chat close confirm", "/chat messages",
       "/chat log", "/chat edit ", "/chat remove ", "/chat undo", "/chat trim ",
-      "/chat clear",
+      "/chat clear", "/project", "/project info", "/project list", "/project name ",
+      "/project tint ", "/project tint none", "/project forget ",
     ]
+    for tint in AgentProjectTint.presetNames {
+      values.append("/project tint \(tint)")
+    }
     #if PMAI_HAS_VISUAL
       values.append("/visual")
     #endif
@@ -4452,7 +4766,8 @@ private struct MaiCLI {
     /model NAME         Select a model
     /prompts            List reusable prompts and their agent associations
     /prompt [NAME]      Show or select the current agent's system prompt
-    /chat               List, switch, archive, rename, or edit persistent chats
+    /chat               List, switch, archive, rename, or edit this project's chats
+    /project            Show, list, rename, or tint the project (the start directory)
     /edit TARGET        Edit a prompt, config, MCP list, or message in $EDITOR
     /agents             List configured agents
     /agent [use] ID     Set the current chat's primary agent
@@ -4499,8 +4814,22 @@ private struct MaiCLI {
     -1 selects the last message, -2 the second-to-last, and so on.
     Removing a tool call or result also removes its linked tool transaction.
     pmai opens a fresh chat on every launch and names it after the first
-    message; chats that never received a message are dropped. Start with
-    --resume to reopen the most recently updated chat instead.
+    message; chats that never received a message are never written. Start
+    with --resume to reopen the most recently updated chat instead. Chats
+    belong to the project rooted at the start directory; /project shows it.
+    """
+
+  private static let projectHelp = """
+    Project commands (a project is the directory pmai was started in):
+      /project [info]          Show the project's name, tint, directory, and chat counts
+      /project list            List every project pmai has been started in, recent first
+      /project name NAME       Rename the project; the directory name is the default
+      /project tint COLOR      Color the prompt: a preset such as mint, or #RRGGBB; none clears it
+      /project forget INDEX|PATH|NAME  Drop another project from the list; its files stay
+
+    Chats live in .pmai/chats inside the project directory; the list of
+    projects lives in ~/.pmai/projects.json (or under $PMAI_HOME). /cd changes
+    where tools run, not which project the chats belong to.
     """
 
   private static let mcpCommandHelp = """
@@ -4561,8 +4890,10 @@ private struct MaiCLI {
 
       Options:
         --config PATH       load plugins, providers, tools, MCPs, agents, and approvals
-        --state PATH        persist chat workspaces at this path (or PMAI_STATE)
+        --home DIR          keep the project index and shared state in DIR (or PMAI_HOME)
+        --state DIR         keep this project's chats in DIR, not ./.pmai/chats (or PMAI_STATE)
         --history PATH      persist editable input history (or PMAI_HISTORY)
+        --projects          list every project pmai has been started in, then exit
         --plugin PATH       load a native .dylib plugin (repeatable)
         --print-config      print a complete example configuration
         --agent ID          select a configured agent
@@ -4586,7 +4917,9 @@ private struct MaiCLI {
         --config, PMAI_CONFIG, ./pmai.json, ~/.config/pmai/config.json
 
       Persistent REPL state:
-        ~/.config/pmai/chats.json and ~/.config/pmai/history.json
+        Chats belong to the project rooted at the current directory and are
+        kept one file per chat in ./.pmai/chats; ~/.pmai/projects.json lists
+        every project and ~/.pmai/history.json holds the input history.
 
       Without a config file, the offline hello and OpenAI-compatible providers
       are registered as before.

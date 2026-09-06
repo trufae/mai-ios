@@ -85,7 +85,7 @@ func agentChatDisposable() {
 
   var attached = chat
   attached.pendingContent = [.text("queued")]
-  #expect(!attached.isDisposable)
+  #expect(attached.isDisposable, "queued attachments alone do not make a conversation")
 
   var archived = chat
   archived.setArchived(true)

@@ -6,3 +6,4 @@ DerivedData/
 xcuserdata/
 env.sh
 env-*.sh
+.pmai/

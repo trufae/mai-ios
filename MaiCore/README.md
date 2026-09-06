@@ -163,12 +163,28 @@ Configuration is discovered in this order: `--config`, `PMAI_CONFIG`,
 `apiKeyEnvironment`, `bearerTokenEnvironment`, or `headerEnvironment` instead
 of being stored directly in JSON.
 
-The text REPL persists independent chats to `~/.config/pmai/chats.json` and its
-editable Up/Down input history to `~/.config/pmai/history.json`; `PMAI_STATE`,
-`PMAI_HISTORY`, `--state`, and `--history` override those paths. Like the
-PocketMai app, every launch opens a fresh chat that is named after its first
-message; chats that never receive a message are dropped rather than piling up,
-and `--resume` reopens the most recently updated chat instead. `/chat list`
+Chats belong to a project, the directory pmai was started in, mirroring the
+chat folders PocketMai keeps with a name, a tint, and a working folder. The
+project's own file and its chats live in `.pmai/` inside that directory (one
+JSON file per chat under `.pmai/chats/`, so add `.pmai/` to your gitignore),
+while the list of every project ever opened lives outside them in
+`~/.pmai/projects.json` next to the shared `~/.pmai/history.json`. `PMAI_HOME`
+or `--home` relocate that root, `PMAI_STATE` or `--state DIR` relocate one
+project's chat directory, and `--projects` prints the project list without
+starting the REPL. A directory that cannot be written keeps its files under
+`~/.pmai/projects/<id>/` instead. `/project` shows the open project,
+`/project list` shows them all, `/project name` and `/project tint` set the
+name and the prompt color, and `/project forget` drops an entry from the
+list. When the default home is in use, chats found in the pre-project
+`~/.config/pmai/chats.json` are imported into the first project opened
+afterwards and the file is renamed `chats.json.imported`.
+
+The persistence rules are shared with the PocketMai app through MaiCore's
+`AgentChat`, `AgentChatStore`, `AgentProject`, and `AgentHome`: every launch
+opens a fresh chat that is named after its first message, a chat that never
+receives a message, attachment, name, or archive flag is disposable, and a
+disposable chat is never written or listed, whichever way the process ends.
+`--resume` reopens the most recently updated chat instead. `/chat list`
 shows the earlier chats grouped by day (Today, Yesterday, This week, Last week,
 then dates), newest first, with their agent, size, and last-update time, and
 lists archived chats last; `/chat list active` and `/chat list archived` narrow
