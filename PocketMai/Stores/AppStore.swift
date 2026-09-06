@@ -1034,17 +1034,24 @@ final class AppStore: ObservableObject {
       return
     }
 
+    rebuildConversationFromDefaults(at: index)
+    if selectedConversationID == placeholderID {
+      setSelectedConversationID(placeholderID, remember: false)
+    }
+  }
+
+  /// Replaces an empty conversation with one made from the current defaults,
+  /// keeping its identity and dates.
+  private func rebuildConversationFromDefaults(at index: Int) {
     let previous = conversations[index]
     var refreshed = makeNewConversation()
     refreshed.id = previous.id
     refreshed.title = previous.title
     refreshed.createdAt = previous.createdAt
     refreshed.updatedAt = previous.updatedAt
+    refreshed.languageOverrideIdentifier = previous.languageOverrideIdentifier
     conversations[index] = refreshed
     sortConversations()
-    if selectedConversationID == placeholderID {
-      setSelectedConversationID(placeholderID, remember: false)
-    }
   }
 
   private func loadStartupConversationIfNeeded() async {
@@ -3457,11 +3464,68 @@ final class AppStore: ObservableObject {
       clearAllFollowUpSuggestions()
     }
     applyBackgroundActivitySettings()
+    // The selected agent's snapshot follows every change to the live fields,
+    // so a switch to another agent and back restores what was just set.
+    var synced = settings
+    synced.syncSelectedAgent()
+    if synced != settings {
+      settings = synced
+    }
     guard hasLoadedPersistedSettings else {
       pendingSettingsSave = true
       return
     }
     persistence.saveSettings(settings)
+  }
+
+  // MARK: - Agents
+
+  /// Switches the live settings to another agent. The agent being left keeps
+  /// what was configured while it was selected.
+  func selectAgent(_ id: UUID) {
+    guard settings.selectedAgentID != id, settings.selectAgent(id) else { return }
+    saveSettings()
+    refreshSelectedDisposableConversationDefaults()
+  }
+
+  /// Adds an agent copied from the selected one and switches to it, so the
+  /// settings edited next belong to the new agent.
+  func addAgent(named name: String, description: String, canSpawnSubagents: Bool) {
+    let agent = settings.addAgent(
+      named: name, description: description, canSpawnSubagents: canSpawnSubagents)
+    settings.selectAgent(agent.id)
+    saveSettings()
+    refreshSelectedDisposableConversationDefaults()
+  }
+
+  func removeAgent(_ id: UUID) {
+    let wasSelected = settings.selectedAgentID == id
+    guard settings.removeAgent(id) else { return }
+    saveSettings()
+    if wasSelected {
+      refreshSelectedDisposableConversationDefaults()
+    }
+  }
+
+  func updateAgent(_ id: UUID, name: String, description: String, canSpawnSubagents: Bool) {
+    settings.updateAgent(
+      id, name: name, description: description, canSpawnSubagents: canSpawnSubagents)
+    saveSettings()
+  }
+
+  /// After the selected agent changes, an empty chat created from the previous
+  /// defaults is rebuilt from the new ones, so typing into it uses the agent
+  /// that is now selected. Chats with messages keep their own settings.
+  private func refreshSelectedDisposableConversationDefaults() {
+    guard let id = selectedConversationID,
+      let index = indexedConversationIndex(for: id),
+      isDisposableNewConversation(conversations[index]),
+      !conversationUsesNewConversationDefaults(conversations[index])
+    else {
+      return
+    }
+    rebuildConversationFromDefaults(at: index)
+    setSelectedConversationID(id, remember: false)
   }
 
   var activeLongRunningOperationTimeoutRequest: LongRunningOperationTimeoutRequest? {

@@ -3129,6 +3129,10 @@ struct AppSettings: Codable, Equatable, Sendable {
   var conversationFolders: [ConversationFolder] = []
   var conversationFolderDefaults: [String: ConversationFolderDefaults] = [:]
   var selectedConversationFolderID: String = ConversationFolder.defaultID
+  /// Named sets of the agent-scoped settings; see `AgentSettings`. The
+  /// selected one mirrors the live fields above.
+  var agents: [AgentProfile] = [.stock()]
+  var selectedAgentID: UUID = AgentProfile.stockID
 
   static let defaults = AppSettings()
 
@@ -3276,6 +3280,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     case openAPIServer
     case recentChatLanguageIdentifiers
     case conversationFolders, conversationFolderDefaults, selectedConversationFolderID
+    case agents, selectedAgentID
   }
 
   init(from decoder: Decoder) throws {
@@ -3411,6 +3416,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         [String: ConversationFolderDefaults].self,
         forKey: .conversationFolderDefaults)) ?? [:],
       knownFolderIDs: knownConversationFolderIDs)
+    agents = (try? c.decode([AgentProfile].self, forKey: .agents)) ?? []
+    selectedAgentID =
+      (try? c.decode(UUID.self, forKey: .selectedAgentID)) ?? AgentProfile.stockID
+    normalizeAgents()
   }
 }
 

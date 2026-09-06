@@ -321,6 +321,7 @@ struct SettingsView: View {
   var body: some View {
     NavigationStack(path: $navigationPath) {
       Form {
+        agentsSection
         providerSection
         appearanceSection
         toolsSection
@@ -612,6 +613,24 @@ struct SettingsView: View {
   @ViewBuilder
   private var yoloModeContent: some View {
     Toggle("YOLO mode", isOn: settingsBinding(\.yoloModeEnabled))
+  }
+
+  private var agentsSection: some View {
+    Section {
+      NavigationLink {
+        AgentManagerView(store: store, storeObservation: storeObservation)
+      } label: {
+        LabeledContent {
+          Text(store.settings.selectedAgent.name)
+        } label: {
+          Label("Manage Agents", systemImage: "person.2")
+        }
+      }
+    } footer: {
+      Text(
+        "Providers, prompts, tools, and advanced options below belong to the selected agent."
+      )
+    }
   }
 
   private var providerSection: some View {
