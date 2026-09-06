@@ -1339,8 +1339,17 @@ struct MaiCLI {
 
   /// What outlives one event of the loop: the turn in flight, who typed text
   /// goes to, and the tool calls waiting for an answer.
+  private enum REPLTurnKind {
+    case chat
+    case btw
+  }
+
   private struct REPLLoop {
-    var activeTurn: (task: Task<AgentResult, any Error>, started: ContinuousClock.Instant, pid: AgentPID)?
+    var activeTurn:
+      (
+        task: Task<AgentResult, any Error>, started: ContinuousClock.Instant, pid: AgentPID,
+        kind: REPLTurnKind
+      )?
     var focus: REPLMessageTarget = .main
     var approvals: [(request: ApprovalRequest, reply: REPLApprovalReply)] = []
     var editingApproval: (request: ApprovalRequest, reply: REPLApprovalReply)?
@@ -1441,8 +1450,10 @@ struct MaiCLI {
       var facts: [String] = []
       if let turn = loop.activeTurn {
         let activity = await runtime.supervisor.info(turn.pid)?.activity ?? ""
+        let prefix = turn.kind == .btw ? "btw " : ""
         facts.append(
-          activity.isEmpty || activity == "thinking" ? "thinking" : "running \(activity)")
+          prefix + (activity.isEmpty || activity == "thinking" ? "thinking" : "running \(activity)")
+        )
       }
       let children = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
       if !children.isEmpty {
@@ -1517,6 +1528,27 @@ struct MaiCLI {
       return pid
     }
 
+    func beginTurn(_ request: AgentRequest, process pid: AgentPID, kind: REPLTurnKind) async {
+      await terminal.resetResponse()
+      let task = Task {
+        try await runtime.run(request, process: pid) { event in
+          await terminal.consume(event)
+        }
+      }
+      interruptHandler.activate { task.cancel() }
+      loop.activeTurn = (task, ContinuousClock.now, pid, kind)
+      Task {
+        let outcome: Result<AgentResult, any Error>
+        do {
+          outcome = .success(try await task.value)
+        } catch {
+          outcome = .failure(error)
+        }
+        continuation.yield(.turnFinished(outcome))
+      }
+      await refreshStatus()
+    }
+
     /// Starts one turn with whatever is queued for the chat followed by the
     /// texts just typed. The turn runs in its own task; the loop hears about
     /// its end as an event.
@@ -1531,7 +1563,6 @@ struct MaiCLI {
       }
       for message in messages { session.history.append(message) }
       session.refreshTitle(from: messages[0].text)
-      await terminal.resetResponse()
       let profile = session.profile
       let request = AgentRequest(
         agentID: profile.agentID,
@@ -1549,23 +1580,20 @@ struct MaiCLI {
         toolCallingStrategy: profile.toolCallingStrategy,
         useToolProxy: profile.useToolProxy,
         toolDelegation: profile.toolDelegation)
-      let task = Task {
-        try await runtime.run(request, process: pid) { event in
-          await terminal.consume(event)
-        }
+      await beginTurn(request, process: pid, kind: .chat)
+    }
+
+    /// Runs a one-off prompt with the active profile and no conversation
+    /// messages. It is a real turn so streaming, tools, approvals, and Ctrl+C
+    /// work normally, but its transcript never replaces the chat's.
+    func startBTW(_ text: String) async {
+      guard let request = btwRequest(text, profile: session.profile) else {
+        await terminal.line("Usage: /btw PROMPT")
+        return
       }
-      interruptHandler.activate { task.cancel() }
-      loop.activeTurn = (task, ContinuousClock.now, pid)
-      Task {
-        let outcome: Result<AgentResult, any Error>
-        do {
-          outcome = .success(try await task.value)
-        } catch {
-          outcome = .failure(error)
-        }
-        continuation.yield(.turnFinished(outcome))
-      }
-      await refreshStatus()
+      let pid = await runtime.allocateProcess(
+        agentID: session.profile.agentID, task: "btw: \(text)")
+      await beginTurn(request, process: pid, kind: .btw)
     }
 
     /// Sends typed text where it belongs: to the chat as a new turn when it
@@ -1750,6 +1778,17 @@ struct MaiCLI {
             await releaseIfIdle(workspace: workspace)
             continue
           }
+          if name == "/btw" {
+            if loop.activeTurn != nil {
+              await terminal.note(
+                "/btw waits for the running turn; Ctrl+C cancels it. Messages typed now are queued."
+              )
+            } else {
+              await startBTW(argument)
+            }
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
           if name == "/exit" || name == "/quit" {
             loop.exiting = true
             if let turn = loop.activeTurn {
@@ -1862,7 +1901,9 @@ struct MaiCLI {
         var succeeded = false
         switch outcome {
         case .success(let result):
-          session.history.replaceAll(with: result.transcript)
+          if turn?.kind == .chat {
+            session.history.replaceAll(with: result.transcript)
+          }
           succeeded = true
         case .failure(let error):
           if error is CancellationError || interruptHandler.interruptedActiveOperation() {
@@ -1872,16 +1913,26 @@ struct MaiCLI {
           }
         }
         if let turn {
-          let took = "took \(elapsedDescription(since: turn.started))"
+          let prefix = turn.kind == .btw ? "btw " : ""
+          let took = "\(prefix)took \(elapsedDescription(since: turn.started))"
           await terminal.note(
             succeeded ? "✓ \(took)" : "✗ \(took)", color: succeeded ? "cyan" : "red")
         }
-        session.touch()
-        workspace.upsert(session.chat, selecting: true)
-        await saveWorkspace(&workspace, store: store, terminal: terminal)
+        if turn?.kind == .chat {
+          session.touch()
+          workspace.upsert(session.chat, selecting: true)
+          await saveWorkspace(&workspace, store: store, terminal: terminal)
+        }
         if loop.exiting { break events }
         if let turn {
-          let waiting = await runtime.supervisor.queuedMessages(for: turn.pid).count
+          let queuedPID =
+            turn.kind == .chat ? turn.pid : chatProcessIDs[session.id]
+          let waiting: Int
+          if let queuedPID {
+            waiting = await runtime.supervisor.queuedMessages(for: queuedPID).count
+          } else {
+            waiting = 0
+          }
           if waiting > 0, succeeded {
             // Typed after the run's last look at its inbox: it becomes the
             // next turn right away, the way it would have joined this one.
@@ -2050,6 +2101,57 @@ struct MaiCLI {
     }
   }
 
+  /// Builds the throwaway context used by `/btw`: the active agent's system
+  /// prompt plus this one question, with none of the chat's transcript or
+  /// pending attachments.
+  private static func btwRequest(_ text: String, profile: SessionProfile) -> AgentRequest? {
+    let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !prompt.isEmpty else { return nil }
+    var messages = AgentChat.initialHistory(for: profile.agentDefinition)
+    messages.append(.user(prompt))
+    return AgentRequest(
+      agentID: profile.agentID,
+      provider: profile.provider,
+      model: profile.model,
+      messages: messages,
+      toolNames: profile.toolNames,
+      toolGroupNames: profile.toolGroupNames,
+      subagentNames: profile.subagentNames,
+      toolChoice: profile.toolChoice,
+      responseFormat: profile.responseFormat,
+      options: profile.options,
+      limits: profile.limits,
+      stream: profile.stream,
+      toolCallingStrategy: profile.toolCallingStrategy,
+      useToolProxy: profile.useToolProxy,
+      toolDelegation: profile.toolDelegation)
+  }
+
+  /// Visual mode runs commands in their own task already, so it can await the
+  /// isolated turn directly. The REPL starts the same request in its event loop
+  /// to keep approvals and Ctrl+C responsive.
+  private static func handleBTWCommand(
+    _ text: String,
+    session: REPLSession,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async {
+    guard let request = btwRequest(text, profile: session.profile) else {
+      await terminal.line("Usage: /btw PROMPT")
+      return
+    }
+    await terminal.resetResponse()
+    do {
+      _ = try await runtime.run(request) { event in
+        await terminal.consume(event)
+      }
+    } catch is CancellationError {
+      await terminal.recoverAfterCancellation()
+    } catch {
+      await terminal.recoverAfterError(error.localizedDescription)
+    }
+  }
+
   /// The agent and model a chat runs on, as `[agent] model`. The provider
   /// stands in while no model is selected.
   private static func promptIdentity(_ session: REPLSession) -> String {
@@ -2207,6 +2309,8 @@ struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/btw":
+      await handleBTWCommand(argument, session: session, runtime: runtime, terminal: terminal)
     case "/todo":
       await handleTodoCommand(argument, todo: visual.todo, terminal: terminal)
     case "/memory":
@@ -6870,6 +6974,7 @@ struct MaiCLI {
   ) -> [String] {
     var values = [
       "/help", "/help set", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
+      "/btw ",
       "/help memory", "/help agents", "/help chat", "/help edit", "/help tools",
       "/agent acp list", "/agent acp add ", "/agents acp list",
       "/memory", "/memory edit", "/memory learn", "/memory learn --all", "/memory add ",
@@ -7145,6 +7250,7 @@ struct MaiCLI {
     /provider ID       Select a provider
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
+    /btw PROMPT         Ask in a fresh context without changing this chat
     /memory             Show, edit, learn, or scope this project's durable memory
     /todo               Show, add to, tick off, or edit this project's todo list
     /prompts            List named system prompts and which agents use them

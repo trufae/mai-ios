@@ -86,6 +86,12 @@ if (ready) {
 EOF
 ```
 
+`/btw PROMPT` asks the active agent a one-off question in a fresh context. It
+keeps the agent's system prompt, provider, model, tools, settings, and durable
+memory, but receives none of the current chat transcript or queued attachments.
+The answer is shown normally and then discarded, so the current chat is
+unchanged.
+
 `/copy` puts the last assistant reply on the system clipboard as plain text,
 without reasoning blocks. `/copy N` copies the last `N` conversation messages
 instead; several messages are labelled `User:`, `Assistant:`, and `Tool:`, while
