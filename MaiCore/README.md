@@ -138,9 +138,16 @@ recognized text as a Markdown attachment:
 ```
 
 The CLI installs `MaiVisionOCRPlugin`, whose on-device `VisionOCRProvider` is
-selected with `kind: "vision"`. Other hosts can omit that module or provide a
-different OCR implementation without coupling it to their chat/model provider;
-PocketMai does this to preserve its layout-aware Markdown OCR.
+selected with `kind: "vision"` on Apple platforms. The same plugin registers
+`kind: "tesseract"`, which spawns a locally installed `tesseract` binary, so
+OCR also works on Linux when the `tesseract-ocr` package is present. The CLI
+picks the configured `ocrProviders` entry, then whatever the platform offers;
+when nothing is usable it still starts and reports the reason the first time
+`/image ocr` runs. A `tesseract` entry accepts `command` (defaults to
+`tesseract`, or `TESSERACT_COMMAND`) and `languages` (for example `eng+spa`,
+or `TESSERACT_LANGUAGES`) in its `options`. Other hosts can omit that module or
+provide a different OCR implementation without coupling it to their chat/model
+provider; PocketMai does this to preserve its layout-aware Markdown OCR.
 
 The CLI also loads trusted native plugins from repeated `--plugin PATH` options
 or from the configuration's `plugins` array. Relative config paths are resolved

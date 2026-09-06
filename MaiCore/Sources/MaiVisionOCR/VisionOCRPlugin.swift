@@ -59,10 +59,26 @@ public struct MaiVisionOCRPlugin: MaiPlugin {
 
   public init() {}
 
+  /// The OCR factory kind hosts should prefer on this platform.
+  public static var preferredFactoryKind: String {
+#if canImport(Vision)
+    return VisionConfiguredOCRProviderFactory.factoryKind
+#else
+    return TesseractOCRProvider.factoryKind
+#endif
+  }
+
   public func register(in registry: PluginRegistry) async throws {
 #if canImport(Vision)
     try await registry.register(
       ocrFactory: VisionConfiguredOCRProviderFactory(),
+      from: manifest.id)
+#endif
+    // Platforms without Apple's Vision framework still satisfy the declared
+    // capability by spawning a locally installed tesseract binary on demand.
+#if os(macOS) || os(Linux) || os(Android) || os(Windows)
+    try await registry.register(
+      ocrFactory: TesseractConfiguredOCRProviderFactory(),
       from: manifest.id)
 #endif
   }
@@ -70,7 +86,8 @@ public struct MaiVisionOCRPlugin: MaiPlugin {
 
 #if canImport(Vision)
 public struct VisionConfiguredOCRProviderFactory: ConfiguredOCRProviderFactory {
-  public let kind = "vision"
+  public static let factoryKind = "vision"
+  public let kind = VisionConfiguredOCRProviderFactory.factoryKind
 
   public init() {}
 
