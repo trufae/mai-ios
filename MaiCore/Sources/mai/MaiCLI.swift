@@ -3124,6 +3124,15 @@ struct MaiCLI {
       await terminal.line("Removed: \(removed.title)\n\(list.listing)")
       await storeTodo(list, in: todo, terminal: terminal)
 
+    case "sweep":
+      let removed = list.removeCompleted()
+      guard removed > 0 else {
+        await terminal.line("No completed todo items.")
+        return
+      }
+      await terminal.line("Removed \(removed) completed todo item\(removed == 1 ? "" : "s").")
+      await storeTodo(list, in: todo, terminal: terminal)
+
     case "edit":
       guard
         let edited = await editTemporaryText(
@@ -7450,8 +7459,8 @@ struct MaiCLI {
       "/memory", "/memory edit", "/memory learn", "/memory learn --all", "/memory add ",
       "/memory clear", "/memory on", "/memory off", "/memory scope none",
       "/memory scope project", "/memory scope all", "/edit memory", "/edit memory-prompt",
-      "/help todo", "/todo", "/todo add ", "/todo done ", "/todo edit", "/todo clear",
-      "/todo path",
+      "/help todo", "/todo", "/todo add ", "/todo done ", "/todo edit", "/todo sweep",
+      "/todo clear", "/todo path",
       "/set limits.", "/set limits.maxToolCalls ", "/set limits.maxModelTurns ",
       "/set limits.maxSubagents ", "/set limits.maxSeconds ", "/set limits.maxTotalTokens ",
       "/set retry.attempts ", "/set retry.delay ", "/set autocompact ", "/set autocompact off",
@@ -7918,6 +7927,7 @@ struct MaiCLI {
       /todo add TEXT             Append one pending item
       /todo done NUMBER|TEXT     Mark an item done by number or title fragment
       /todo remove NUMBER|TEXT   Drop an item by number or title fragment
+      /todo sweep                Remove every completed item
       /todo edit                 Edit the list in $EDITOR
       /todo clear                Remove every item
       /todo path                 Print where the file lives

@@ -100,6 +100,22 @@ func todoRemove() {
   #expect(list.listing.contains("2. [ ] write docs"))
 }
 
+@Test("Sweeping completed items preserves pending work in order")
+func todoRemoveCompleted() {
+  var list = AgentTodoList(items: [
+    AgentTodoItem(title: "write tests"),
+    AgentTodoItem(title: "old task", isDone: true),
+    AgentTodoItem(title: "write docs"),
+    AgentTodoItem(title: "shipped", isDone: true),
+  ])
+
+  #expect(list.removeCompleted() == 2)
+  #expect(list.items.map(\.title) == ["write tests", "write docs"])
+  #expect(list.pendingCount == 2)
+  #expect(list.doneCount == 0)
+  #expect(list.removeCompleted() == 0)
+}
+
 @Test("The todo tools add, list, and tick off items")
 func todoTools() {
   var list = AgentTodoList()

@@ -160,6 +160,14 @@ public struct AgentTodoList: Codable, Equatable, Sendable {
     return items.remove(at: index)
   }
 
+  /// Drops every completed item while preserving the order of pending work.
+  @discardableResult
+  public mutating func removeCompleted() -> Int {
+    let count = doneCount
+    items.removeAll(where: \.isDone)
+    return count
+  }
+
   public mutating func removeAll() {
     items.removeAll()
   }
