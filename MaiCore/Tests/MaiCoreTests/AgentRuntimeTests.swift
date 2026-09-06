@@ -861,7 +861,7 @@ func textToolRepairAndRespond() async throws {
   #expect(await provider.requests.first?.messages.contains { $0.text.contains("respond") } == true)
 }
 
-@Test("Token budgets are shared and enforced")
+@Test("A token budget spent by the final answer still delivers that answer")
 func tokenBudget() async throws {
   let provider = ScriptedProvider(responses: [
     ProviderResponse(
@@ -871,14 +871,17 @@ func tokenBudget() async throws {
   ])
   let runtime = AgentRuntime()
   try await runtime.register(provider)
-  await #expect(throws: AgentRuntimeError.limitExceeded("token budget")) {
-    try await runtime.run(
-      AgentRequest(
-        provider: "scripted",
-        model: "fixture",
-        messages: [.user("hello")],
-        limits: AgentRunLimits(maxTotalTokens: 5)))
-  }
+  // The budget stops the next model call; an answer already paid for is
+  // never thrown away.
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("hello")],
+      limits: AgentRunLimits(maxTotalTokens: 5)))
+  #expect(result.response.text == "too expensive")
+  #expect(result.isComplete)
+  #expect(result.usage?.totalTokens == 6)
 }
 
 @Test("Subagents run with isolated transcripts and shared bounded lifecycle")
@@ -995,9 +998,12 @@ func launchedSubagentRun() async throws {
         maxSubagents: 1,
         maxSubagentDepth: 1)),
     process: orchestrator)
-  let rejectedResult = try #require(rejected.transcript.flatMap(\.toolResults).first)
-  #expect(rejectedResult.isError)
-  #expect(rejectedResult.text.contains("already has 1 background agent"))
+  // The only slot is taken, so the second child is queued rather than refused;
+  // it starts by itself once the first one ends.
+  let queuedResult = try #require(rejected.transcript.flatMap(\.toolResults).first)
+  #expect(!queuedResult.isError)
+  #expect(queuedResult.text.hasPrefix("Queued researcher as"))
+  #expect(queuedResult.structuredContent?.objectValue?["status"] == .string("queued"))
 
   try await Task.sleep(for: .milliseconds(120))
   let collected = try await runtime.run(

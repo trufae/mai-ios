@@ -328,6 +328,38 @@ public actor AgentSupervisor {
     entries[pid]?.handle = handle
   }
 
+  /// Lets a registered child run when fewer than `limit` of its parent
+  /// agent's other children are running and no older sibling is still
+  /// waiting; otherwise marks it `queued` and answers false. The runtime asks
+  /// again from the child's own task until the answer is yes, the way a
+  /// paused run polls `isPaused`, so a slot that frees up is taken in pid
+  /// order and a stopped child simply stops asking.
+  func admit(_ pid: AgentPID, limit: Int) -> Bool {
+    guard var entry = entries[pid], !entry.info.state.isTerminal else { return false }
+    guard let parent = entry.info.parent, let agentID = entries[parent]?.info.agentID else {
+      return true
+    }
+    let snapshot = tree()
+    let running = snapshot.liveChildren(ofAgent: agentID).filter { $0.pid != pid }.count
+    let olderWaiting = snapshot.queuedChildren(ofAgent: agentID).contains { $0.pid < pid }
+    if running < limit, !olderWaiting {
+      guard entry.info.state == .queued else { return true }
+      entry.info.state = .starting
+      // The wait was not the run; what a listing shows as elapsed starts now.
+      entry.info.runStartedAt = Date()
+      entry.info.updatedAt = Date()
+      entries[pid] = entry
+      publish(.changed(entry.info))
+      return true
+    }
+    guard entry.info.state != .queued else { return false }
+    entry.info.state = .queued
+    entry.info.updatedAt = Date()
+    entries[pid] = entry
+    publish(.changed(entry.info))
+    return false
+  }
+
   /// The task running one process, so a caller can await it without holding
   /// the supervisor for the whole run.
   func handle(_ pid: AgentPID) -> Task<AgentResult, Error>? {
@@ -394,6 +426,17 @@ public actor AgentSupervisor {
     entry.info.usage = result.usage ?? entry.info.usage
     entry.handle = nil
     entries[pid] = entry
+    // A run a limit paused is listed as stopped, with the limit as its reason,
+    // so a person can tell it from one that answered.
+    if let interruption = result.interruption {
+      transition(
+        pid,
+        to: .interrupted,
+        failure: interruption.summary,
+        attention: announce ? .error(interruption.summary) : nil,
+        finished: true)
+      return
+    }
     // A background answer nobody asked for yet is exactly the case a host
     // should surface; a blocking child's answer goes straight to its parent.
     let attention: AgentAttention? =

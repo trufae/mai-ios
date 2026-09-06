@@ -37,6 +37,8 @@ public actor AgentRuntime {
   /// Nil keeps the built-in text, so MaiCore works without configuration.
   private var delegationTemplate: String?
   private var workerInstructions: String?
+  /// The compaction prompt autocompact renders; nil keeps the built-in one.
+  private var compactionTemplate: String?
   /// Durable notes added to the system prompt of top-level runs. A child agent
   /// grepping a file does not need the user's standing preferences, so this
   /// never reaches one.
@@ -122,6 +124,12 @@ public actor AgentRuntime {
     delegationTemplate = prompt?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
     self.workerInstructions =
       workerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
+  }
+
+  /// Installs the template autocompact summarizes with, the same one a host
+  /// uses for `/chat compact`. Empty or nil restores `AgentCompactionPrompt`.
+  public func configureCompaction(prompt: String?) {
+    compactionTemplate = prompt?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
   }
 
   @discardableResult
@@ -315,14 +323,41 @@ public actor AgentRuntime {
     let usesTextToolProtocol = textToolMode != nil
     var transcript = request.messages
     var totalUsage: TokenUsage?
+    /// What the provider counted on the last call, for the autocompact
+    /// estimate. Cleared when a summary changes the transcript's shape.
+    var lastUsage: TokenUsage?
     var localModelTurns = 0
     var localToolCalls = 0
     var repeatedCalls: [ToolCallKey: Int] = [:]
     var completedToolRuns: [ToolCallKey: String] = [:]
 
+    /// A limit met at a turn boundary pauses the run instead of failing it.
+    /// The transcript ends in a user message or in tool results, so running
+    /// it again picks the task up exactly where it stopped.
+    func pause(_ interruption: AgentRunInterruption) async -> AgentResult {
+      // Only what this run said counts as its reply; an older assistant
+      // message would be printed twice by a host that streams.
+      let response =
+        transcript.dropFirst(request.messages.count).last { $0.role == .assistant }
+        ?? .assistant("")
+      let result = AgentResult(
+        runID: context.runID,
+        agentID: request.agentID,
+        provider: request.provider,
+        response: response,
+        transcript: transcript,
+        usage: totalUsage,
+        stopReason: .unknown,
+        modelTurns: localModelTurns,
+        toolCalls: localToolCalls,
+        interruption: interruption)
+      await emit(.finished(context, result))
+      return result
+    }
+
     await emit(.started(context, provider.descriptor))
     await supervisor.note(pid, state: .running, transcript: transcript)
-    while localModelTurns < request.limits.maxModelTurns {
+    while true {
       try Task.checkCancellation()
       try await holdWhilePaused(pid)
       // Edits the agent asked for with the context tools land first, so the
@@ -331,6 +366,7 @@ public actor AgentRuntime {
       if !edits.isEmpty {
         let applied = AgentTranscriptEditor.apply(edits, to: transcript)
         transcript = applied.messages
+        lastUsage = nil
         await emit(.transcriptEdited(context, applied.report))
         await supervisor.note(pid, transcript: transcript)
       }
@@ -345,8 +381,47 @@ public actor AgentRuntime {
         }
         await supervisor.note(pid, transcript: transcript)
       }
-      guard await budget.claimModelTurn() else {
-        throw AgentRuntimeError.limitExceeded("model turns")
+      // A conversation past the agent's autocompact threshold is folded here,
+      // before the limits are checked, so a run that pauses next hands its
+      // host the smaller transcript too.
+      if request.autocompact.isEnabled {
+        let estimate = AgentAutocompaction.estimatedTokens(of: transcript, lastUsage: lastUsage)
+        if estimate >= request.autocompact.tokens,
+          let selection = AgentAutocompaction.selection(in: transcript)
+        {
+          await emit(.compactionStarted(context, estimatedTokens: estimate))
+          await supervisor.note(pid, activity: "compacting")
+          do {
+            let summary = try await summarize(
+              selection, of: transcript, provider: provider, request: request, budget: budget,
+              context: context, pid: pid, emit: emit)
+            totalUsage = totalUsage.merging(summary.response.usage)
+            await supervisor.note(pid, usage: totalUsage)
+            if let usage = summary.response.usage { await budget.record(tokens: usage.totalTokens) }
+            let text = summary.response.message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw CompactionError.emptySummary }
+            let applied = AgentTranscriptEditor.apply(
+              [.compact(messageIDs: selection, summary: text)], to: transcript)
+            transcript = applied.messages
+            lastUsage = nil
+            await emit(.transcriptEdited(context, applied.report))
+            await supervisor.note(pid, transcript: transcript)
+          } catch is RunDeadlineExceeded {
+            return await pause(budget.timeInterruption)
+          } catch is CancellationError {
+            throw CancellationError()
+          } catch {
+            // The run goes on with what it has; the next boundary tries again
+            // once the conversation has grown.
+            await emit(.compactionFailed(context, error.localizedDescription))
+          }
+        }
+      }
+      if localModelTurns >= request.limits.maxModelTurns {
+        return await pause(.modelTurns(limit: request.limits.maxModelTurns))
+      }
+      if let interruption = await budget.claimModelTurn() {
+        return await pause(interruption)
       }
       localModelTurns += 1
       await emit(.modelStarted(context, turn: localModelTurns))
@@ -368,24 +443,31 @@ public actor AgentRuntime {
         insertSystem(prompt, into: &providerMessages)
       }
       let offersTools = !usesTextToolProtocol && !toolBudgetExhausted
-      let timing = StreamTimingRecorder()
-      var providerResponse = try await provider.complete(
-        ProviderRequest(
-          model: request.model,
-          messages: providerMessages,
-          tools: offersTools ? definitions : [],
-          toolChoice: definitions.isEmpty || !offersTools ? .none : request.toolChoice,
-          responseFormat: request.responseFormat,
-          options: request.options,
-          stream: usesTextToolProtocol ? false : request.stream)
-      ) { event in
-        timing.note(event)
-        if usesTextToolProtocol, case .textDelta = event {
-          return
+      let providerRequest = ProviderRequest(
+        model: request.model,
+        messages: providerMessages,
+        tools: offersTools ? definitions : [],
+        toolChoice: definitions.isEmpty || !offersTools ? .none : request.toolChoice,
+        responseFormat: request.responseFormat,
+        options: request.options,
+        stream: usesTextToolProtocol ? false : request.stream)
+      let call: ProviderCall
+      do {
+        call = try await complete(
+          providerRequest, with: provider, retry: request.retry, budget: budget,
+          context: context, pid: pid, emit: emit
+        ) { event in
+          if usesTextToolProtocol, case .textDelta = event {
+            return
+          }
+          await emit(.provider(context, event))
         }
-        await emit(.provider(context, event))
+      } catch is RunDeadlineExceeded {
+        // Time ran out inside the call. The reply is lost, but the transcript
+        // is whole, so the pause is as clean as one at the top of the loop.
+        return await pause(budget.timeInterruption)
       }
-      let callEnded = Date()
+      var providerResponse = call.response
       try Task.checkCancellation()
       if let usageStats {
         // The user's own words count once, on the turn that carried them;
@@ -400,18 +482,15 @@ public actor AgentRuntime {
             modelID: request.model,
             messages: providerMessages,
             response: providerResponse,
-            timing: timing.observation,
-            end: callEnded,
+            timing: call.timing,
+            end: call.ended,
             userInputTokens: userInputTokens),
-          at: callEnded)
+          at: call.ended)
       }
       totalUsage = totalUsage.merging(providerResponse.usage)
+      lastUsage = providerResponse.usage
       await supervisor.note(pid, usage: totalUsage)
-      if let usage = providerResponse.usage,
-        !(await budget.record(tokens: usage.totalTokens))
-      {
-        throw AgentRuntimeError.limitExceeded("token budget")
-      }
+      if let usage = providerResponse.usage { await budget.record(tokens: usage.totalTokens) }
 
       if let textToolMode, !toolBudgetExhausted {
         let decision = AgentToolLoopPolicy.evaluate(
@@ -485,7 +564,18 @@ public actor AgentRuntime {
         try Task.checkCancellation()
         try await holdWhilePaused(pid)
         let result: ToolResult
-        if localToolCalls < request.limits.maxToolCalls, await budget.claimToolCall() {
+        if budget.deadlinePassed {
+          // Out of time between two calls: the rest are answered rather than
+          // run, so the transcript stays sendable and the pause at the top of
+          // the loop is clean.
+          await emit(.toolStarted(context, call))
+          result = ToolResult(
+            callID: call.id,
+            text:
+              "Error: the run's time limit was reached before this call ran; it was not executed.",
+            isError: true)
+          await emit(.toolFinished(context, result))
+        } else if localToolCalls < request.limits.maxToolCalls, await budget.claimToolCall() {
           localToolCalls += 1
           await supervisor.note(pid, toolCalls: localToolCalls, activity: call.name)
           // Repeating a call is often right — the directory changed, a file
@@ -529,7 +619,133 @@ public actor AgentRuntime {
         await supervisor.note(pid, transcript: transcript)
       }
     }
-    throw AgentRuntimeError.limitExceeded("model turns")
+  }
+
+  private struct ProviderCall {
+    var response: ProviderResponse
+    var timing: StreamTimingObservation
+    var ended: Date
+  }
+
+  /// One provider call under the run's retry policy and deadline. A failure
+  /// that is not a cancellation is repeated after the policy's delay, up to
+  /// its attempts, each announced with `retrying`; the deadline cuts a call
+  /// short with `RunDeadlineExceeded`. Cancellation passes through untouched.
+  private func complete(
+    _ providerRequest: ProviderRequest,
+    with provider: any ChatProvider,
+    retry: AgentRetryPolicy,
+    budget: RunBudget,
+    context: AgentEventContext,
+    pid: AgentPID,
+    emit: @escaping AgentEventHandler,
+    onEvent: @escaping ProviderEventHandler
+  ) async throws -> ProviderCall {
+    var attempt = 0
+    while true {
+      let timing = StreamTimingRecorder()
+      do {
+        let response = try await withDeadline(budget.deadline) {
+          try await provider.complete(providerRequest) { event in
+            timing.note(event)
+            await onEvent(event)
+          }
+        }
+        return ProviderCall(response: response, timing: timing.observation, ended: Date())
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch is RunDeadlineExceeded {
+        throw RunDeadlineExceeded()
+      } catch {
+        guard attempt < retry.attempts else { throw error }
+        attempt += 1
+        await emit(
+          .retrying(
+            context, attempt: attempt, limit: retry.attempts, delaySeconds: retry.delaySeconds,
+            error: error.localizedDescription))
+        await supervisor.note(pid, activity: "retrying")
+        if retry.delaySeconds > 0 {
+          try await Task.sleep(for: .seconds(retry.delaySeconds))
+        }
+        if budget.deadlinePassed { throw RunDeadlineExceeded() }
+      }
+    }
+  }
+
+  /// Asks the run's own model for a summary of the selected messages, with
+  /// the configured compaction prompt and the automatic focus.
+  private func summarize(
+    _ selection: [String],
+    of transcript: [AgentMessage],
+    provider: any ChatProvider,
+    request: AgentRequest,
+    budget: RunBudget,
+    context: AgentEventContext,
+    pid: AgentPID,
+    emit: @escaping AgentEventHandler
+  ) async throws -> ProviderCall {
+    let selected = Set(selection)
+    let prompt = AgentCompactionPrompt.render(
+      transcript: AgentCompactionPrompt.transcript(of: transcript.filter { selected.contains($0.id) }),
+      focus: AgentCompactionPrompt.automaticFocus,
+      template: compactionTemplate)
+    let call = try await complete(
+      ProviderRequest(
+        model: request.model,
+        messages: [.user(prompt)],
+        tools: [],
+        toolChoice: .none,
+        responseFormat: .text,
+        options: request.options,
+        stream: false),
+      with: provider, retry: request.retry, budget: budget, context: context, pid: pid,
+      emit: emit
+    ) { _ in }
+    if let usageStats {
+      await usageStats.record(
+        ModelCallStats.measured(
+          providerLabel: provider.descriptor.id.rawValue,
+          modelID: request.model,
+          messages: [.user(prompt)],
+          response: call.response,
+          timing: call.timing,
+          end: call.ended),
+        at: call.ended)
+    }
+    return call
+  }
+
+  private enum CompactionError: LocalizedError {
+    case emptySummary
+
+    var errorDescription: String? {
+      switch self {
+      case .emptySummary: "the model returned an empty summary"
+      }
+    }
+  }
+
+  /// Thrown inside a run when `limits.maxSeconds` passes; never leaves the
+  /// runtime, which turns it into a paused result.
+  private struct RunDeadlineExceeded: Error {}
+
+  /// Runs `body`, or throws `RunDeadlineExceeded` once `deadline` passes and
+  /// cancels the body. No deadline runs the body as it is.
+  private func withDeadline<T: Sendable>(
+    _ deadline: ContinuousClock.Instant?,
+    _ body: @escaping @Sendable () async throws -> T
+  ) async throws -> T {
+    guard let deadline else { return try await body() }
+    return try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask { try await body() }
+      group.addTask {
+        try await Task.sleep(until: deadline, clock: .continuous)
+        throw RunDeadlineExceeded()
+      }
+      defer { group.cancelAll() }
+      guard let first = try await group.next() else { throw RunDeadlineExceeded() }
+      return first
+    }
   }
 
   private func execute(
@@ -751,42 +967,43 @@ public actor AgentRuntime {
     }
 
     let wait = arguments["wait"]?.coercedBoolValue ?? (legacyName != Self.agentLaunchToolName)
-    if !wait {
-      let running = await supervisor.tree().liveChildren(ofAgent: parent.agentID).count
-      guard running < request.limits.maxSubagents else {
-        return await fail(
-          call,
-          "\(parent.agentID) already has \(running) background agent\(running == 1 ? "" : "s") running (limit \(request.limits.maxSubagents)).",
-          parent: parent, emit: emit)
-      }
-    }
-    guard await budget.claimSubagent(depth: depth + 1) else {
+    guard request.limits.maxSubagents > 0 else {
       return await fail(
-        call, "the subagent budget or depth limit for this run is reached.",
+        call, "this agent may not start children (limits.maxSubagents is 0).",
+        parent: parent, emit: emit)
+    }
+    guard await budget.allowsChild(depth: depth + 1) else {
+      return await fail(
+        call, "the subagent depth limit for this run is reached.",
         parent: parent, emit: emit)
     }
 
+    // A child past the concurrency limit is not refused: it is registered as
+    // queued and starts on its own when a sibling ends, so the model can hand
+    // out all the work it has and collect the answers as they come.
     let launched = await launch(
       definition: definition,
       brief: brief,
       parent: parent,
       depth: depth,
+      limit: request.limits.maxSubagents,
       budget: budget,
       background: !wait,
       emit: emit)
 
     guard wait else {
+      let slots = request.limits.maxSubagents
+      let text =
+        launched.queued
+        ? "Queued \(definition.id) as \(launched.pid): all \(slots) subagent slot\(slots == 1 ? " is" : "s are") busy, so it starts when one frees up. Poll \(Self.agentStatusToolName), then \(Self.agentResultToolName) with pid \"\(launched.pid.rawValue)\"."
+        : "Started \(definition.id) as \(launched.pid). Poll \(Self.agentStatusToolName), then \(Self.agentResultToolName) with pid \"\(launched.pid.rawValue)\"."
       let result = ToolResult(
         callID: call.id,
-        content: [
-          .text(
-            "Started \(definition.id) as \(launched.pid). Poll \(Self.agentStatusToolName), then \(Self.agentResultToolName) with pid \"\(launched.pid.rawValue)\"."
-          )
-        ],
+        content: [.text(text)],
         structuredContent: .object([
           "pid": .string(String(launched.pid.rawValue)),
           "agent": .string(definition.id),
-          "status": .string("running"),
+          "status": .string(launched.queued ? "queued" : "running"),
         ]))
       await emit(.toolFinished(parent, result))
       return result
@@ -800,10 +1017,7 @@ public actor AgentRuntime {
       }
       await supervisor.collect(launched.pid)
       await emit(.childFinished(parent, child: child))
-      let result = ToolResult(
-        callID: call.id,
-        content: childAnswer(child),
-        structuredContent: childSummary(launched.pid, agentID: definition.id, result: child))
+      let result = childResult(call.id, pid: launched.pid, agentID: definition.id, result: child)
       await emit(.toolFinished(parent, result))
       return result
     } catch is CancellationError {
@@ -872,10 +1086,7 @@ public actor AgentRuntime {
 
     if let finished = await supervisor.result(pid) {
       await supervisor.collect(pid)
-      let result = ToolResult(
-        callID: call.id,
-        content: childAnswer(finished),
-        structuredContent: childSummary(pid, agentID: finished.agentID, result: finished))
+      let result = childResult(call.id, pid: pid, agentID: finished.agentID, result: finished)
       await emit(.toolFinished(parent, result))
       return result
     }
@@ -901,10 +1112,7 @@ public actor AgentRuntime {
         handle.cancel()
       }
       await supervisor.collect(pid)
-      let result = ToolResult(
-        callID: call.id,
-        content: childAnswer(child),
-        structuredContent: childSummary(pid, agentID: child.agentID, result: child))
+      let result = childResult(call.id, pid: pid, agentID: child.agentID, result: child)
       await emit(.toolFinished(parent, result))
       return result
     } catch is CancellationError {
@@ -950,10 +1158,11 @@ public actor AgentRuntime {
     brief: AgentTaskBrief,
     parent: AgentEventContext,
     depth: Int,
+    limit: Int,
     budget: RunBudget,
     background: Bool,
     emit: @escaping AgentEventHandler
-  ) async -> (pid: AgentPID, task: Task<AgentResult, Error>) {
+  ) async -> (pid: AgentPID, task: Task<AgentResult, Error>, queued: Bool) {
     let prompt = AgentDelegationPrompt.render(
       brief,
       agent: definition.id,
@@ -974,12 +1183,22 @@ public actor AgentRuntime {
       agentID: definition.id,
       depth: depth + 1,
       pid: childPID)
-    await emit(.childStarted(parent, child: childContext))
+    // Whether the child runs now or waits is settled here, so the tool result
+    // the parent gets says which; a queued child announces `childStarted`
+    // itself once a slot frees up.
+    let admitted = await supervisor.admit(childPID, limit: limit)
+    await emit(
+      admitted
+        ? .childStarted(parent, child: childContext) : .childQueued(parent, child: childContext))
     // Every child's events reach the host, background or not, tagged with the
     // child's own context and pid. How they are shown — prefixed, folded into
     // one line, or dropped — is the host's call, not the runtime's.
     let task = Task {
       do {
+        if !admitted {
+          try await awaitSlot(childPID, limit: limit, budget: budget)
+          await emit(.childStarted(parent, child: childContext))
+        }
         let child = try await runInternal(
           childRequest,
           runID: childRunID,
@@ -988,23 +1207,36 @@ public actor AgentRuntime {
           depth: depth + 1,
           budget: budget,
           emit: emit)
-        await budget.releaseSubagent()
         await supervisor.finish(childPID, result: child, announce: background)
         return child
       } catch is CancellationError {
-        await budget.releaseSubagent()
         await supervisor.fail(
           childPID, state: .cancelled, message: "Cancelled", announce: background)
         throw CancellationError()
+      } catch is RunDeadlineExceeded {
+        let message = "\(budget.timeInterruption.summary) while queued"
+        await supervisor.fail(
+          childPID, state: .interrupted, message: message, announce: background)
+        throw AgentRuntimeError.limitExceeded("time")
       } catch {
-        await budget.releaseSubagent()
         await supervisor.fail(
           childPID, state: .failed, message: error.localizedDescription, announce: background)
         throw error
       }
     }
     await supervisor.attach(task, to: childPID)
-    return (childPID, task)
+    return (childPID, task, !admitted)
+  }
+
+  /// Where a queued child waits for a subagent slot, in its own task: it asks
+  /// the supervisor again every 100ms until it is admitted, so stopping it
+  /// with `agent_stop` ends the wait like any other cancellation, and the
+  /// run's deadline applies to time spent waiting as well.
+  private func awaitSlot(_ pid: AgentPID, limit: Int, budget: RunBudget) async throws {
+    while !(await supervisor.admit(pid, limit: limit)) {
+      if budget.deadlinePassed { throw RunDeadlineExceeded() }
+      try await Task.sleep(for: .milliseconds(100))
+    }
   }
 
   /// The agent MaiCore invents when a delegating agent does not name a child:
@@ -1032,7 +1264,9 @@ public actor AgentRuntime {
       options: request.options,
       toolCallingStrategy: request.toolCallingStrategy,
       useToolProxy: request.useToolProxy,
-      toolDelegation: .inline)
+      toolDelegation: .inline,
+      retry: request.retry,
+      autocompact: request.autocompact)
   }
 
   private func fail(
@@ -1068,12 +1302,34 @@ public actor AgentRuntime {
     var value: [String: JSONValue] = [
       "pid": .string(String(pid.rawValue)),
       "agent": .string(agentID),
-      "status": .string("completed"),
+      "status": .string(result.interruption == nil ? "completed" : "interrupted"),
       "turns": .integer(result.modelTurns),
       "tools": .integer(result.toolCalls),
     ]
     if let tokens = result.usage?.totalTokens { value["tokens"] = .integer(tokens) }
+    if let interruption = result.interruption { value["error"] = .string(interruption.summary) }
     return .object(value)
+  }
+
+  /// The tool result a parent gets for a child that ended. A child a limit
+  /// paused before it answered comes back as an error carrying whatever it
+  /// said last, so the parent can decide whether to start it again with a
+  /// narrower brief.
+  private func childResult(
+    _ callID: String,
+    pid: AgentPID,
+    agentID: String,
+    result child: AgentResult
+  ) -> ToolResult {
+    let summary = childSummary(pid, agentID: agentID, result: child)
+    guard let interruption = child.interruption else {
+      return ToolResult(callID: callID, content: childAnswer(child), structuredContent: summary)
+    }
+    var text = "Error: agent '\(agentID)' \(pid) stopped before answering: \(interruption.summary)."
+    let last = child.response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !last.isEmpty { text += "\nIts last message:\n\(last)" }
+    return ToolResult(
+      callID: callID, content: [.text(text)], structuredContent: summary, isError: true)
   }
 
   /// Only the child's answer travels back: its tool traffic and reasoning stay
@@ -1299,7 +1555,9 @@ public actor AgentRuntime {
       stream: definition.stream,
       toolCallingStrategy: definition.toolCallingStrategy,
       useToolProxy: definition.useToolProxy,
-      toolDelegation: definition.toolDelegation)
+      toolDelegation: definition.toolDelegation,
+      retry: definition.retry,
+      autocompact: definition.autocompact)
   }
 
   static let toolBudgetExhaustedPrompt =
@@ -1407,25 +1665,49 @@ public enum AgentRuntimeError: LocalizedError, Equatable, Sendable {
   }
 }
 
+/// What one run and every child it starts share: the turn and token counts
+/// against the root's limits, and the deadline. Concurrency of children is
+/// the supervisor's business, since background children outlive the run.
 private actor RunBudget {
   private let limits: AgentRunLimits
   private var modelTurns = 0
   private var toolCalls = 0
-  private var subagents = 0
   private var tokens = 0
+  /// When `limits.maxSeconds` runs out, fixed at the start of the run.
+  nonisolated let deadline: ContinuousClock.Instant?
 
   init(limits: AgentRunLimits) {
     self.limits = limits
+    deadline = limits.maxSeconds.map { ContinuousClock.now + .seconds($0) }
   }
 
-  func claimModelTurn() -> Bool {
-    guard modelTurns < limits.maxModelTurns else { return false }
+  nonisolated var deadlinePassed: Bool {
+    deadline.map { ContinuousClock.now >= $0 } ?? false
+  }
+
+  nonisolated var timeInterruption: AgentRunInterruption {
+    .time(limitSeconds: limits.maxSeconds ?? 0)
+  }
+
+  /// Nil once a turn is claimed; otherwise the limit that stops the run.
+  func claimModelTurn() -> AgentRunInterruption? {
+    if let interruption = exhausted() { return interruption }
     modelTurns += 1
-    return true
+    return nil
+  }
+
+  /// The limit already reached, if any, without claiming anything.
+  func exhausted() -> AgentRunInterruption? {
+    if deadlinePassed { return timeInterruption }
+    if let maximum = limits.maxTotalTokens, tokens >= maximum {
+      return .totalTokens(limit: maximum)
+    }
+    if modelTurns >= limits.maxModelTurns { return .modelTurns(limit: limits.maxModelTurns) }
+    return nil
   }
 
   func canClaimModelTurn() -> Bool {
-    modelTurns < limits.maxModelTurns
+    exhausted() == nil
   }
 
   func claimToolCall() -> Bool {
@@ -1434,20 +1716,12 @@ private actor RunBudget {
     return true
   }
 
-  func claimSubagent(depth: Int) -> Bool {
-    guard depth <= limits.maxSubagentDepth, subagents < limits.maxSubagents else { return false }
-    subagents += 1
-    return true
+  func allowsChild(depth: Int) -> Bool {
+    depth <= limits.maxSubagentDepth
   }
 
-  func releaseSubagent() {
-    subagents = max(0, subagents - 1)
-  }
-
-  func record(tokens newTokens: Int) -> Bool {
+  func record(tokens newTokens: Int) {
     tokens += max(0, newTokens)
-    guard let maximum = limits.maxTotalTokens else { return true }
-    return tokens <= maximum
   }
 }
 

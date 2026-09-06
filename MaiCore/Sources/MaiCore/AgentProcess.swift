@@ -44,6 +44,9 @@ public struct AgentPID: RawRepresentable, Hashable, Codable, Sendable, Comparabl
 /// until `resume`, keeping its transcript, its children, and its inbox.
 public enum AgentProcessState: String, Codable, Equatable, Sendable {
   case starting
+  /// Registered, but every subagent slot of its parent is taken; the run
+  /// starts by itself when a sibling ends.
+  case queued
   case running
   case waitingForApproval
   case waitingForInput
@@ -52,10 +55,13 @@ public enum AgentProcessState: String, Codable, Equatable, Sendable {
   case completed
   case failed
   case cancelled
+  /// A run limit stopped the process at a turn boundary. Its transcript is
+  /// whole, so a host can run it again to carry on.
+  case interrupted
 
   public var isTerminal: Bool {
     switch self {
-    case .completed, .failed, .cancelled: true
+    case .completed, .failed, .cancelled, .interrupted: true
     default: false
     }
   }
@@ -72,6 +78,7 @@ public enum AgentProcessState: String, Codable, Equatable, Sendable {
   public var shortLabel: String {
     switch self {
     case .starting: "start"
+    case .queued: "queued"
     case .running: "run"
     case .waitingForApproval: "approve?"
     case .waitingForInput: "input?"
@@ -80,6 +87,7 @@ public enum AgentProcessState: String, Codable, Equatable, Sendable {
     case .completed: "done"
     case .failed: "failed"
     case .cancelled: "killed"
+    case .interrupted: "stopped"
     }
   }
 }
@@ -283,12 +291,25 @@ public struct AgentProcessTree: Equatable, Sendable {
 
   /// Every running child started by any run of the named agent. Background
   /// children outlive the turn that started them, so the concurrency limit is
-  /// counted per definition rather than per run.
+  /// counted per definition rather than per run. A queued child holds no
+  /// slot yet, so it is not counted here.
   public func liveChildren(ofAgent agentID: String) -> [AgentProcessInfo] {
     processes.filter { process in
-      guard !process.state.isTerminal, let parent = process.parent else { return false }
+      guard !process.state.isTerminal, process.state != .queued, let parent = process.parent
+      else { return false }
       return info(parent)?.agentID == agentID
     }
+  }
+
+  /// Children of the named agent still waiting for a subagent slot, oldest
+  /// first: the order in which they will start.
+  public func queuedChildren(ofAgent agentID: String) -> [AgentProcessInfo] {
+    processes
+      .filter { process in
+        guard process.state == .queued, let parent = process.parent else { return false }
+        return info(parent)?.agentID == agentID
+      }
+      .sorted { $0.pid < $1.pid }
   }
 
   public func isDescendant(_ pid: AgentPID, of ancestor: AgentPID) -> Bool {

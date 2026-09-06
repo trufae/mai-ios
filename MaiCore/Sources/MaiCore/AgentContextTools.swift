@@ -85,6 +85,29 @@ public enum AgentTranscriptEditor {
     return (transcript.messages, report)
   }
 
+  /// A transcript cut off inside a tool exchange — by Ctrl+C, a crash, a
+  /// dropped connection — ends with calls nobody answered, which providers
+  /// reject. This answers each with an error that says so, so the transcript
+  /// can be run again and the model knows those steps did not happen.
+  public static func answeringUnansweredToolCalls(
+    in messages: [AgentMessage],
+    reason: String
+  ) -> [AgentMessage] {
+    let answered = Set(messages.flatMap(\.toolResults).map(\.callID))
+    var repaired = messages
+    for (index, message) in messages.enumerated().reversed() where message.role == .assistant {
+      let pending = message.toolCalls.filter { !answered.contains($0.id) }
+      guard !pending.isEmpty else { continue }
+      let results = pending.map {
+        ContentPart.toolResult(
+          ToolResult(callID: $0.id, text: "Error: not executed; \(reason).", isError: true))
+      }
+      repaired.insert(AgentMessage(role: .tool, content: results), at: index + 1)
+      break
+    }
+    return repaired
+  }
+
   /// A summary reads as something the conversation already covered, in the
   /// user's voice so every provider accepts it wherever it lands.
   static func summaryMessage(_ summary: String) -> AgentMessage {

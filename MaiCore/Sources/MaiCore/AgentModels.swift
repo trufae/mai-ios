@@ -700,29 +700,39 @@ public struct ProviderResponse: Codable, Equatable, Sendable {
   public var reasoning: String { message.reasoning }
 }
 
+/// How much one run may do. Reaching a limit is not an error: the run stops
+/// at its next turn boundary with `AgentResult.interruption` set and a
+/// transcript a host can continue from, so a long task is paused, not lost.
 public struct AgentRunLimits: Codable, Equatable, Sendable {
   public var maxModelTurns: Int
   public var maxToolCalls: Int
+  /// Children that may run at once. A child started past this number waits
+  /// in the `queued` state for a slot instead of being refused.
   public var maxSubagents: Int
   public var maxSubagentDepth: Int
   public var maxTotalTokens: Int?
+  /// Wall-clock seconds the whole run, children included, may take. Nil
+  /// leaves it open-ended.
+  public var maxSeconds: Int?
 
   public init(
     maxModelTurns: Int = 50,
     maxToolCalls: Int = 50,
     maxSubagents: Int = 0,
     maxSubagentDepth: Int = 2,
-    maxTotalTokens: Int? = nil
+    maxTotalTokens: Int? = nil,
+    maxSeconds: Int? = nil
   ) {
     self.maxModelTurns = max(1, maxModelTurns)
     self.maxToolCalls = max(0, maxToolCalls)
     self.maxSubagents = max(0, maxSubagents)
     self.maxSubagentDepth = max(0, maxSubagentDepth)
     self.maxTotalTokens = maxTotalTokens.map { max(1, $0) }
+    self.maxSeconds = maxSeconds.flatMap { $0 > 0 ? $0 : nil }
   }
 
   private enum CodingKeys: String, CodingKey {
-    case maxModelTurns, maxToolCalls, maxSubagents, maxSubagentDepth, maxTotalTokens
+    case maxModelTurns, maxToolCalls, maxSubagents, maxSubagentDepth, maxTotalTokens, maxSeconds
   }
 
   public init(from decoder: Decoder) throws {
@@ -732,7 +742,100 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
       maxToolCalls: try container.decodeIfPresent(Int.self, forKey: .maxToolCalls) ?? 50,
       maxSubagents: try container.decodeIfPresent(Int.self, forKey: .maxSubagents) ?? 0,
       maxSubagentDepth: try container.decodeIfPresent(Int.self, forKey: .maxSubagentDepth) ?? 2,
-      maxTotalTokens: try container.decodeIfPresent(Int.self, forKey: .maxTotalTokens))
+      maxTotalTokens: try container.decodeIfPresent(Int.self, forKey: .maxTotalTokens),
+      maxSeconds: try container.decodeIfPresent(Int.self, forKey: .maxSeconds))
+  }
+}
+
+/// What to do when a model call fails for a reason that is not the run's own
+/// doing — a dropped connection, a 5xx, a rate limit. The call is repeated
+/// after `delaySeconds`, up to `attempts` more times, before the run fails.
+public struct AgentRetryPolicy: Codable, Equatable, Sendable {
+  public static let defaultAttempts = 2
+  public static let defaultDelaySeconds = 5.0
+
+  /// Extra tries after the first failure. Zero fails on the first error.
+  public var attempts: Int
+  public var delaySeconds: Double
+
+  public init(attempts: Int = defaultAttempts, delaySeconds: Double = defaultDelaySeconds) {
+    self.attempts = max(0, attempts)
+    self.delaySeconds = max(0, delaySeconds)
+  }
+
+  /// Never retry, for callers that want the first error immediately.
+  public static let none = AgentRetryPolicy(attempts: 0, delaySeconds: 0)
+
+  private enum CodingKeys: String, CodingKey { case attempts, delaySeconds }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      attempts: try container.decodeIfPresent(Int.self, forKey: .attempts) ?? Self.defaultAttempts,
+      delaySeconds: try container.decodeIfPresent(Double.self, forKey: .delaySeconds)
+        ?? Self.defaultDelaySeconds)
+  }
+}
+
+/// When the runtime folds the older part of a transcript into a summary on
+/// its own, before a model turn, so a long task keeps fitting in the model's
+/// context. Context windows differ per model and most providers do not say
+/// how big theirs is, so the trigger is an absolute token count rather than
+/// a percentage.
+public struct AgentAutocompact: Codable, Equatable, Sendable {
+  /// Estimated tokens in the conversation at which compaction runs. Zero
+  /// turns it off.
+  public var tokens: Int
+
+  public init(tokens: Int = 0) {
+    self.tokens = max(0, tokens)
+  }
+
+  public var isEnabled: Bool { tokens > 0 }
+
+  private enum CodingKeys: String, CodingKey { case tokens }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(tokens: try container.decodeIfPresent(Int.self, forKey: .tokens) ?? 0)
+  }
+}
+
+/// Why a run stopped before the model gave a final answer. The transcript in
+/// the result ends at a turn boundary — a user message or the results of the
+/// last tool calls — so running it again picks the task up where it paused.
+public enum AgentRunInterruption: Equatable, Sendable {
+  /// `limits.maxModelTurns` was reached.
+  case modelTurns(limit: Int)
+  /// `limits.maxTotalTokens` was reached.
+  case totalTokens(limit: Int)
+  /// `limits.maxSeconds` passed.
+  case time(limitSeconds: Int)
+
+  /// `model turn limit (50) reached`
+  public var summary: String {
+    switch self {
+    case .modelTurns(let limit): "model turn limit (\(limit)) reached"
+    case .totalTokens(let limit): "token budget (\(limit)) spent"
+    case .time(let seconds): "time limit (\(ModelUsageFormat.duration(Double(seconds)))) reached"
+    }
+  }
+
+  /// The `/set` key a person would raise to get further in one go.
+  public var settingKey: String {
+    switch self {
+    case .modelTurns: "limits.maxModelTurns"
+    case .totalTokens: "limits.maxTotalTokens"
+    case .time: "limits.maxSeconds"
+    }
+  }
+
+  /// A turn budget is a checkpoint: continuing costs nothing but another
+  /// budget. Time and token caps are what a person set to stop the spend,
+  /// so a host should not continue past them on its own.
+  public var isCheckpoint: Bool {
+    if case .modelTurns = self { return true }
+    return false
   }
 }
 
@@ -763,6 +866,10 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var useToolProxy: Bool
   /// Whether this agent runs its tools itself or delegates them to a child.
   public var toolDelegation: AgentToolDelegation
+  /// How failed model calls are repeated before the run gives up.
+  public var retry: AgentRetryPolicy
+  /// When the runtime summarizes the older part of a conversation by itself.
+  public var autocompact: AgentAutocompact
 
   public init(
     id: String,
@@ -783,7 +890,9 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     options: GenerationOptions = .init(),
     toolCallingStrategy: ToolCallingStrategy = .automatic,
     useToolProxy: Bool = false,
-    toolDelegation: AgentToolDelegation = .inline
+    toolDelegation: AgentToolDelegation = .inline,
+    retry: AgentRetryPolicy = .init(),
+    autocompact: AgentAutocompact = .init()
   ) {
     self.id = id
     self.displayName = displayName ?? id
@@ -804,6 +913,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.toolCallingStrategy = toolCallingStrategy
     self.useToolProxy = useToolProxy
     self.toolDelegation = toolDelegation
+    self.retry = retry
+    self.autocompact = autocompact
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -812,6 +923,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy, toolDelegation
     case description
     case isEnabled = "enabled"
+    case retry, autocompact
   }
 
   public init(from decoder: Decoder) throws {
@@ -842,7 +954,10 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       useToolProxy: try container.decodeIfPresent(Bool.self, forKey: .useToolProxy) ?? false,
       toolDelegation: try container.decodeIfPresent(
         AgentToolDelegation.self,
-        forKey: .toolDelegation) ?? .inline)
+        forKey: .toolDelegation) ?? .inline,
+      retry: try container.decodeIfPresent(AgentRetryPolicy.self, forKey: .retry) ?? .init(),
+      autocompact: try container.decodeIfPresent(AgentAutocompact.self, forKey: .autocompact)
+        ?? .init())
   }
 }
 
@@ -865,6 +980,8 @@ public struct AgentRequest: Sendable {
   public var toolCallingStrategy: ToolCallingStrategy
   public var useToolProxy: Bool
   public var toolDelegation: AgentToolDelegation
+  public var retry: AgentRetryPolicy
+  public var autocompact: AgentAutocompact
 
   public init(
     agentID: String = "main",
@@ -881,7 +998,9 @@ public struct AgentRequest: Sendable {
     stream: Bool = true,
     toolCallingStrategy: ToolCallingStrategy = .automatic,
     useToolProxy: Bool = false,
-    toolDelegation: AgentToolDelegation = .inline
+    toolDelegation: AgentToolDelegation = .inline,
+    retry: AgentRetryPolicy = .init(),
+    autocompact: AgentAutocompact = .init()
   ) {
     self.agentID = agentID
     self.provider = provider
@@ -898,6 +1017,8 @@ public struct AgentRequest: Sendable {
     self.toolCallingStrategy = toolCallingStrategy
     self.useToolProxy = useToolProxy
     self.toolDelegation = toolDelegation
+    self.retry = retry
+    self.autocompact = autocompact
   }
 }
 
@@ -911,6 +1032,9 @@ public struct AgentResult: Equatable, Sendable {
   public var stopReason: ProviderStopReason
   public var modelTurns: Int
   public var toolCalls: Int
+  /// Set when a run limit stopped the run before the model answered. The
+  /// transcript is complete up to that point and can be run again to go on.
+  public var interruption: AgentRunInterruption?
 
   public init(
     runID: UUID,
@@ -921,7 +1045,8 @@ public struct AgentResult: Equatable, Sendable {
     usage: TokenUsage?,
     stopReason: ProviderStopReason,
     modelTurns: Int,
-    toolCalls: Int
+    toolCalls: Int,
+    interruption: AgentRunInterruption? = nil
   ) {
     self.runID = runID
     self.agentID = agentID
@@ -932,9 +1057,13 @@ public struct AgentResult: Equatable, Sendable {
     self.stopReason = stopReason
     self.modelTurns = modelTurns
     self.toolCalls = toolCalls
+    self.interruption = interruption
   }
 
   public var reasoning: String { response.reasoning }
+
+  /// True when the model gave its final answer; false when a limit paused it.
+  public var isComplete: Bool { interruption == nil }
 }
 
 public struct AgentEventContext: Codable, Equatable, Sendable {
@@ -970,6 +1099,9 @@ public enum AgentEvent: Equatable, Sendable {
   case toolStarted(AgentEventContext, ToolCall)
   case toolFinished(AgentEventContext, ToolResult)
   case childStarted(AgentEventContext, child: AgentEventContext)
+  /// A child was registered but every subagent slot is taken; it starts on
+  /// its own, and reports `childStarted`, when a sibling ends.
+  case childQueued(AgentEventContext, child: AgentEventContext)
   case childFinished(AgentEventContext, child: AgentResult)
   /// A message a person queued for this process was appended to its
   /// transcript, between two model turns of a run that was already going.
@@ -977,6 +1109,18 @@ public enum AgentEvent: Equatable, Sendable {
   /// The process edited its own transcript with the context tools before a
   /// model turn; the report says what changed.
   case transcriptEdited(AgentEventContext, AgentTranscriptEditReport)
+  /// A model call failed and will be repeated after `delaySeconds`; `attempt`
+  /// counts from one up to `limit`.
+  case retrying(AgentEventContext, attempt: Int, limit: Int, delaySeconds: Double, error: String)
+  /// The conversation is estimated to hold this many tokens, which is past
+  /// the agent's autocompact threshold, so a summary is being written. The
+  /// outcome arrives as `transcriptEdited` or `compactionFailed`.
+  case compactionStarted(AgentEventContext, estimatedTokens: Int)
+  /// The summary could not be produced; the run goes on with the transcript
+  /// it had.
+  case compactionFailed(AgentEventContext, String)
+  /// The run ended. `AgentResult.interruption` says whether it answered or a
+  /// limit paused it.
   case finished(AgentEventContext, AgentResult)
 }
 
