@@ -552,6 +552,24 @@ public struct ConfiguredMemory: Codable, Equatable, Sendable {
   }
 }
 
+/// Optional behaviours a person switches on with `/set use.*`.
+public struct ConfiguredUse: Codable, Equatable, Sendable {
+  /// Adds the working tree's AGENTS.md files — from the working directory up
+  /// to the repository root — to the system prompt of every run.
+  public var agentsmd: Bool
+
+  public init(agentsmd: Bool = false) {
+    self.agentsmd = agentsmd
+  }
+
+  private enum CodingKeys: String, CodingKey { case agentsmd }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(agentsmd: try container.decodeIfPresent(Bool.self, forKey: .agentsmd) ?? false)
+  }
+}
+
 public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var version: Int
   public var defaultAgent: String?
@@ -565,6 +583,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var memory: ConfiguredMemory
   public var ui: ConfiguredTerminalUI
   public var approvals: ConfiguredApprovals
+  public var use: ConfiguredUse
 
   public init(
     version: Int = 1,
@@ -578,7 +597,8 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     prompts: ConfiguredPrompts? = nil,
     memory: ConfiguredMemory = .init(),
     ui: ConfiguredTerminalUI = .init(),
-    approvals: ConfiguredApprovals = .init()
+    approvals: ConfiguredApprovals = .init(),
+    use: ConfiguredUse = .init()
   ) {
     self.version = version
     self.defaultAgent = defaultAgent
@@ -592,12 +612,13 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     self.memory = memory
     self.ui = ui
     self.approvals = approvals
+    self.use = use
   }
 
   private enum CodingKeys: String, CodingKey {
     case version, defaultAgent, plugins, providers, toolSources, ocrProviders, mcpServers, agents,
       prompts, memory, ui,
-      approvals
+      approvals, use
   }
 
   public init(from decoder: Decoder) throws {
@@ -619,7 +640,8 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
       memory: try container.decodeIfPresent(ConfiguredMemory.self, forKey: .memory) ?? .init(),
       ui: try container.decodeIfPresent(ConfiguredTerminalUI.self, forKey: .ui) ?? .init(),
       approvals: try container.decodeIfPresent(ConfiguredApprovals.self, forKey: .approvals)
-        ?? .init())
+        ?? .init(),
+      use: try container.decodeIfPresent(ConfiguredUse.self, forKey: .use) ?? .init())
   }
 
   public static func load(from url: URL) throws -> MaiConfiguration {

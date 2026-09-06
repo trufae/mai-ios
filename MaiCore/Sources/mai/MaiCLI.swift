@@ -878,6 +878,7 @@ struct MaiCLI {
       memoryState.adopt(project: project, settings: configuration?.memory ?? .init())
       todoState.focus(project: project)
       await runtime.configureMemory(memoryState.promptSection)
+      await runtime.configureProjectInstructions(projectInstructionsSection(configuration))
       let store = resolvedChatStore(options: options, home: home, project: project)
       importLegacyChats(into: store, project: project, options: options, environment: environment)
       let providerOverride =
@@ -1486,6 +1487,7 @@ struct MaiCLI {
       visual.memory.focus(project: project, chatID: session.id)
       visual.todo.focus(project: project)
       await runtime.configureMemory(visual.memory.promptSection)
+      await runtime.configureProjectInstructions(Self.projectInstructionsSection(configuration))
     }
 
     func statusLine() async -> String {
@@ -5492,12 +5494,26 @@ struct MaiCLI {
       await terminal.line("toolCallingStrategy = \(session.profile.toolCallingStrategy.rawValue)")
       await terminal.line("delegation = \(session.profile.toolDelegation.rawValue)")
       await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
+      await listUseSettings(configuration?.use ?? .init(), terminal: terminal)
       return
     }
     let key = parts[0].lowercased()
     let displayedKey = key == "ui.toolresultlines" ? "ui.toolResultLines" : key
     if key == "ui" || key == "ui." {
       await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
+      return
+    }
+    if key == "use" || key == "use." {
+      await listUseSettings(configuration?.use ?? .init(), terminal: terminal)
+      return
+    }
+    if key == "use.agentsmd" {
+      await setAgentsMarkdown(
+        parts: parts,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
       return
     }
     if key == "limits" || key == "limits." {
@@ -5575,7 +5591,7 @@ struct MaiCLI {
         || levelKeys.contains(key)
     else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, limits.maxTotalTokens, limits.maxSeconds, retry.attempts, retry.delay, autocompact, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, limits.maxTotalTokens, limits.maxSeconds, retry.attempts, retry.delay, autocompact, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents, use.agentsmd"
       )
       return
     }
@@ -6021,6 +6037,76 @@ struct MaiCLI {
         "Set \(key) = \(applied) for this chat; could not save the configuration: \(error.localizedDescription)",
         to: .standardError)
     }
+  }
+
+  private static func listUseSettings(_ use: ConfiguredUse, terminal: TerminalWriter) async {
+    await terminal.line("use.agentsmd = \(use.agentsmd ? "on" : "off")")
+  }
+
+  /// `/set use.agentsmd [on|off]`: shows or changes whether the working
+  /// tree's AGENTS.md files go into every run's system prompt, and says which
+  /// files that means from here.
+  private static func setAgentsMarkdown(
+    parts: [String],
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let directory = URL(
+      fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let located = AgentInstructionsFile.locate(from: directory)
+    let enabled = configuration?.use.agentsmd ?? false
+    guard parts.count > 1 else {
+      await terminal.line(
+        "use.agentsmd = \(enabled ? "on" : "off") · \(agentsMarkdownSummary(located, directory: directory))"
+      )
+      return
+    }
+    guard parts.count == 2, let wanted = booleanSetting(parts[1]) else {
+      await terminal.line("Usage: /set use.agentsmd <on|off>")
+      return
+    }
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    draft.use.agentsmd = wanted
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return
+    }
+    await runtime.configureProjectInstructions(
+      wanted ? AgentInstructionsFile.promptSection(files: located) : nil)
+    await terminal.line(
+      "Set use.agentsmd = \(wanted ? "on" : "off"). \(agentsMarkdownSummary(located, directory: directory))"
+    )
+  }
+
+  /// Which AGENTS.md files apply from `directory`, as one line, each path
+  /// relative to it: `AGENTS.md`, `../AGENTS.md`, and so on up the tree.
+  private static func agentsMarkdownSummary(_ files: [URL], directory: URL) -> String {
+    guard !files.isEmpty else {
+      return "No AGENTS.md from \(directory.path) up to the repository root."
+    }
+    let base = directory.standardizedFileURL.pathComponents
+    let names = files.map { file -> String in
+      let target = file.standardizedFileURL.pathComponents
+      let shared = zip(base, target).prefix { $0 == $1 }.count
+      let ups = Array(repeating: "..", count: base.count - shared)
+      return (ups + target.dropFirst(shared)).joined(separator: "/")
+    }
+    return "AGENTS.md from here up to the repository root: \(names.joined(separator: ", "))."
+  }
+
+  /// The AGENTS.md block for the working directory, when `use.agentsmd` is on.
+  private static func projectInstructionsSection(_ configuration: MaiConfiguration?) -> String? {
+    guard configuration?.use.agentsmd == true else { return nil }
+    return AgentInstructionsFile.promptSection(
+      from: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
   }
 
   private static func listUISettings(_ ui: ConfiguredTerminalUI, terminal: TerminalWriter) async {
@@ -7470,7 +7556,7 @@ struct MaiCLI {
       "/set toolCallingStrategy json",
       "/set ui.bgline rgb:024", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
-      "/set ui.fgtoolresult yellow",
+      "/set ui.fgtoolresult yellow", "/set use.", "/set use.agentsmd on", "/set use.agentsmd off",
       "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
       "/set ui.toolResultLines all", "/set ui.toolResultLines ",
       "/cwd", "/pwd", "/cd ", "/plugins",
@@ -7808,6 +7894,8 @@ struct MaiCLI {
       /set ui.markdown BOOL        Render replies as styled markdown (on/off)
       /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
       /set ui.subagents LEVEL      What child agents print: all, tools, stats, or none
+      /set use.agentsmd BOOL       Put the working tree's AGENTS.md files — this directory up to
+                                   the repository root — into every run's system prompt (on/off)
 
     YOLO mode lasts for this session. Agent and UI settings are persisted in the
     active configuration. COLOR accepts a named ANSI color, rgb:RGB, or none.

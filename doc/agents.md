@@ -295,6 +295,7 @@ forwards only depth-0 events to the editor.
 /set limits.maxTotalTokens 120k   token cap on a run (off to lift)
 /set retry.attempts N             repeats of a failed model call; /set retry.delay 5
 /set autocompact 120k             summarize older exchanges once the chat holds ~N tokens
+/set use.agentsmd on              add the tree's AGENTS.md files (here up to the repo root) to every run's prompt
 /continue                         run a paused, failed, or cancelled task on from where it stopped
 /edit delegation                  edit the brief template
 /edit worker                      edit the derived worker's instructions

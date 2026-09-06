@@ -43,6 +43,7 @@ public actor AgentRuntime {
   /// grepping a file does not need the user's standing preferences, so this
   /// never reaches one.
   private var memorySection: String?
+  private var instructionsSection: String?
   /// Where every completed provider call's tokens and timing are folded in.
   /// Nil keeps the runtime silent about usage, as it was before hosts asked.
   private var usageStats: ModelUsageStore?
@@ -116,6 +117,14 @@ public actor AgentRuntime {
   /// wrapped in its envelope by `AgentMemory.promptSection`. Nil removes it.
   public func configureMemory(_ section: String?) {
     memorySection = section?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
+  }
+
+  /// Installs the project's AGENTS.md text, already wrapped by
+  /// `AgentInstructionsFile.promptSection`. Runs at every depth see it: a
+  /// child working in the same tree needs the same rules. Nil removes it.
+  public func configureProjectInstructions(_ section: String?) {
+    instructionsSection =
+      section?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
   }
 
   /// Installs host-configured delegation text. Empty or nil values restore the
@@ -432,6 +441,9 @@ public actor AgentRuntime {
       let toolBudgetExhausted =
         !definitions.isEmpty && localToolCalls >= request.limits.maxToolCalls
       var providerMessages = transcript
+      if let instructionsSection {
+        insertSystem(instructionsSection, into: &providerMessages)
+      }
       if let memorySection, depth == 0 {
         insertSystem(memorySection, into: &providerMessages)
       }
