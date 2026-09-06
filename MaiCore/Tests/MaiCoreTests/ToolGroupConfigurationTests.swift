@@ -39,4 +39,5 @@ func legacyAgentToolGroups() throws {
 
   #expect(agent.toolGroupNames.isEmpty)
   #expect(agent.toolNames == ["weather"])
+  #expect(agent.systemPrompt == nil)
 }

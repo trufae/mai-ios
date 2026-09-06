@@ -459,6 +459,29 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   }
 }
 
+/// Host-level prompt templates that are shared by every configured agent.
+public struct ConfiguredPrompts: Codable, Equatable, Sendable {
+  /// Template used by chat compaction. `{{transcript}}` is required and
+  /// `{{focus}}` is replaced when `/chat compact` receives optional guidance.
+  public var compact: String?
+  /// Reusable system prompts referenced by `AgentDefinition.systemPrompt`.
+  public var system: [String: String]
+
+  public init(compact: String? = nil, system: [String: String] = [:]) {
+    self.compact = compact
+    self.system = system
+  }
+
+  private enum CodingKeys: String, CodingKey { case compact, system }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      compact: try container.decodeIfPresent(String.self, forKey: .compact),
+      system: try container.decodeIfPresent([String: String].self, forKey: .system) ?? [:])
+  }
+}
+
 public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var version: Int
   public var defaultAgent: String?
@@ -468,6 +491,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var ocrProviders: [ConfiguredOCRProvider]
   public var mcpServers: [ConfiguredMCPServer]
   public var agents: [AgentDefinition]
+  public var prompts: ConfiguredPrompts?
   public var ui: ConfiguredTerminalUI
   public var approvals: ConfiguredApprovals
 
@@ -480,6 +504,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     ocrProviders: [ConfiguredOCRProvider] = [],
     mcpServers: [ConfiguredMCPServer] = [],
     agents: [AgentDefinition] = [],
+    prompts: ConfiguredPrompts? = nil,
     ui: ConfiguredTerminalUI = .init(),
     approvals: ConfiguredApprovals = .init()
   ) {
@@ -491,13 +516,14 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     self.ocrProviders = ocrProviders
     self.mcpServers = mcpServers
     self.agents = agents
+    self.prompts = prompts
     self.ui = ui
     self.approvals = approvals
   }
 
   private enum CodingKeys: String, CodingKey {
     case version, defaultAgent, plugins, providers, toolSources, ocrProviders, mcpServers, agents,
-      ui,
+      prompts, ui,
       approvals
   }
 
@@ -516,6 +542,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
       mcpServers: try container.decodeIfPresent([ConfiguredMCPServer].self, forKey: .mcpServers)
         ?? [],
       agents: try container.decodeIfPresent([AgentDefinition].self, forKey: .agents) ?? [],
+      prompts: try container.decodeIfPresent(ConfiguredPrompts.self, forKey: .prompts),
       ui: try container.decodeIfPresent(ConfiguredTerminalUI.self, forKey: .ui) ?? .init(),
       approvals: try container.decodeIfPresent(ConfiguredApprovals.self, forKey: .approvals)
         ?? .init())
@@ -550,6 +577,17 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
 
   public func validate() throws {
     guard version == 1 else { throw MaiConfigurationError.unsupportedVersion(version) }
+    if let compact = prompts?.compact?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !compact.isEmpty, !compact.contains("{{transcript}}")
+    {
+      throw MaiConfigurationError.missingPromptPlaceholder(
+        prompt: "compact", placeholder: "{{transcript}}")
+    }
+    for name in prompts?.system.keys ?? [String: String]().keys {
+      guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw MaiConfigurationError.emptyIdentifier("system prompt")
+      }
+    }
     try Self.requireUnique(providers.map(\.id), kind: "provider")
     try Self.requireUnique(toolSources.map(\.id), kind: "tool source")
     try Self.requireUnique(ocrProviders.map(\.id), kind: "OCR provider")
@@ -564,10 +602,35 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
       guard providerIDs.contains(agent.provider.rawValue) else {
         throw MaiConfigurationError.unknownProvider(agent.provider.rawValue)
       }
+      if let prompt = agent.systemPrompt,
+        prompts?.system[prompt] == nil
+      {
+        throw MaiConfigurationError.unknownPrompt(prompt)
+      }
       for child in agent.subagentNames where !agentIDs.contains(child) {
         throw MaiConfigurationError.unknownAgent(child)
       }
     }
+  }
+
+  /// Gives legacy inline-instruction agents a reusable, same-named system
+  /// prompt and refreshes associated agents from the prompt catalog.
+  @discardableResult
+  public mutating func associateSystemPrompts() -> Bool {
+    let originalPrompts = prompts
+    var configured = prompts ?? ConfiguredPrompts()
+    let previousAgents = agents
+    for index in agents.indices {
+      let name = agents[index].systemPrompt ?? agents[index].id
+      if let text = configured.system[name] {
+        agents[index].instructions = text
+      } else {
+        configured.system[name] = agents[index].instructions
+      }
+      agents[index].systemPrompt = name
+    }
+    prompts = originalPrompts == nil && configured == ConfiguredPrompts() ? nil : configured
+    return originalPrompts != prompts || previousAgents != agents
   }
 
   private static func requireUnique(_ values: [String], kind: String) throws {
@@ -594,6 +657,8 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
   case missingEnvironmentVariable(String)
+  case missingPromptPlaceholder(prompt: String, placeholder: String)
+  case unknownPrompt(String)
 
   public var errorDescription: String? {
     switch self {
@@ -619,6 +684,10 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "Agent '\(agent)' references unknown tool '\(tool)'."
     case .missingEnvironmentVariable(let name):
       "Required environment variable '\(name)' is not set."
+    case .missingPromptPlaceholder(let prompt, let placeholder):
+      "The \(prompt) prompt must contain \(placeholder)."
+    case .unknownPrompt(let prompt):
+      "Unknown system prompt '\(prompt)'."
     }
   }
 }

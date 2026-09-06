@@ -740,6 +740,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var id: String
   public var displayName: String
   public var instructions: String
+  /// Name of the reusable system prompt that supplies `instructions`.
+  public var systemPrompt: String?
   public var provider: ProviderID
   public var model: String
   public var toolNames: Set<String>
@@ -757,6 +759,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     id: String,
     displayName: String? = nil,
     instructions: String,
+    systemPrompt: String? = nil,
     provider: ProviderID,
     model: String,
     toolNames: Set<String> = [],
@@ -773,6 +776,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.id = id
     self.displayName = displayName ?? id
     self.instructions = instructions
+    self.systemPrompt = systemPrompt
     self.provider = provider
     self.model = model
     self.toolNames = toolNames
@@ -788,8 +792,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, displayName, instructions, provider, model, toolNames, toolGroupNames, subagentNames,
-      stream, limits
+    case id, displayName, instructions, systemPrompt, provider, model, toolNames, toolGroupNames,
+      subagentNames, stream, limits
     case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy
   }
 
@@ -800,6 +804,7 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       id: id,
       displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
       instructions: try container.decodeIfPresent(String.self, forKey: .instructions) ?? "",
+      systemPrompt: try container.decodeIfPresent(String.self, forKey: .systemPrompt),
       provider: try container.decode(ProviderID.self, forKey: .provider),
       model: try container.decodeIfPresent(String.self, forKey: .model) ?? "",
       toolNames: try container.decodeIfPresent(Set<String>.self, forKey: .toolNames) ?? [],

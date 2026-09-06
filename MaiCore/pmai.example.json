@@ -1,6 +1,14 @@
 {
   "version": 1,
   "defaultAgent": "hello",
+  "prompts": {
+    "compact": "Compact the transcript for continuing the chat.\n\nFocus: {{focus}}\n\n{{transcript}}",
+    "system": {
+      "hello": "Exercise the offline MaiCore provider.",
+      "main": "You are a helpful assistant. Use tools when needed.",
+      "researcher": "Investigate the delegated task and return a concise result."
+    }
+  },
   "plugins": [
     {
       "path": "./plugins/example.dylib",
@@ -85,6 +93,7 @@
       "id": "hello",
       "displayName": "Offline hello",
       "instructions": "Exercise the offline MaiCore provider.",
+      "systemPrompt": "hello",
       "provider": "hello",
       "model": ""
     },
@@ -92,6 +101,7 @@
       "id": "main",
       "displayName": "Main agent",
       "instructions": "You are a helpful assistant. Use tools when needed.",
+      "systemPrompt": "main",
       "provider": "openai",
       "model": "your-model",
       "toolNames": [
@@ -155,6 +165,7 @@
       "id": "researcher",
       "displayName": "Researcher",
       "instructions": "Investigate the delegated task and return a concise result.",
+      "systemPrompt": "researcher",
       "provider": "openai",
       "model": "your-model",
       "toolNames": [

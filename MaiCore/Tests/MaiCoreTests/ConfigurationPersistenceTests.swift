@@ -23,9 +23,13 @@ func configurationSaveRoundTrip() throws {
       AgentDefinition(
         id: "local",
         instructions: "Be concise.",
+        systemPrompt: "concise",
         provider: "endpoint",
         model: "local-model")
     ],
+    prompts: ConfiguredPrompts(
+      compact: "Summarize this conversation:\n\n{{transcript}}",
+      system: ["concise": "Be concise."]),
     ui: ConfiguredTerminalUI(
       backgroundLine: "magenta",
       foreground: "bright-white",
@@ -38,4 +42,49 @@ func configurationSaveRoundTrip() throws {
 
   #expect(FileManager.default.fileExists(atPath: url.path))
   #expect(try MaiConfiguration.load(from: url) == configuration)
+}
+
+@Test("Configurations without prompt templates keep using built-in defaults")
+func configurationPromptDefaults() throws {
+  let configuration = try JSONDecoder().decode(
+    MaiConfiguration.self,
+    from: Data(#"{"version":1}"#.utf8))
+
+  #expect(configuration.prompts == nil)
+}
+
+@Test("Compact prompt templates require the transcript placeholder")
+func compactPromptRequiresTranscript() {
+  let configuration = MaiConfiguration(
+    prompts: ConfiguredPrompts(compact: "Summarize the chat."))
+
+  #expect(
+    throws: MaiConfigurationError.missingPromptPlaceholder(
+      prompt: "compact", placeholder: "{{transcript}}")
+  ) {
+    try configuration.validate()
+  }
+}
+
+@Test("Inline agent instructions migrate to associated reusable prompts")
+func inlineInstructionsBecomeSystemPrompts() {
+  var configuration = MaiConfiguration(
+    providers: [ConfiguredProvider(id: "hello", kind: .hello)],
+    agents: [
+      AgentDefinition(
+        id: "main",
+        instructions: "Be concise.",
+        provider: "hello",
+        model: "")
+    ])
+
+  let didMigrate = configuration.associateSystemPrompts()
+  #expect(didMigrate)
+  #expect(configuration.agents[0].systemPrompt == "main")
+  #expect(configuration.prompts?.system["main"] == "Be concise.")
+
+  configuration.prompts?.system["main"] = "Be extremely concise."
+  let didRefresh = configuration.associateSystemPrompts()
+  #expect(didRefresh)
+  #expect(configuration.agents[0].instructions == "Be extremely concise.")
 }

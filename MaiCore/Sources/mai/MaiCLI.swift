@@ -37,6 +37,8 @@ private struct CLIOptions {
   var maxModelTurns: Int?
   var maxSubagents: Int?
   var stream = true
+  /// Permit all tool calls without prompting for this process.
+  var yolo = false
   /// Reopen the most recently updated chat instead of starting a fresh one.
   var resume = false
   /// Render replies as markdown; nil follows the configuration and the tty.
@@ -87,6 +89,8 @@ private struct CLIOptions {
         pluginPaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--no-stream":
         stream = false
+      case "-y", "--yolo":
+        yolo = true
       case "--resume", "--continue":
         resume = true
       case "--markdown":
@@ -250,6 +254,7 @@ struct SessionProfile {
   var provider: ProviderID
   var model: String
   var instructions: String
+  var systemPrompt: String?
   var toolNames: Set<String>
   var toolGroupNames: Set<String>
   var subagentNames: Set<String>
@@ -266,6 +271,7 @@ struct SessionProfile {
     provider = definition.provider
     model = definition.model
     instructions = definition.instructions
+    systemPrompt = definition.systemPrompt
     toolNames = definition.toolNames
     toolGroupNames = definition.toolGroupNames
     subagentNames = definition.subagentNames
@@ -283,6 +289,7 @@ struct SessionProfile {
     self.provider = provider
     self.model = model
     self.instructions = instructions
+    systemPrompt = nil
     toolNames = Set(
       [
         MaiEchoTool.name,
@@ -311,6 +318,7 @@ struct SessionProfile {
     AgentDefinition(
       id: agentID,
       instructions: instructions,
+      systemPrompt: systemPrompt,
       provider: provider,
       model: model,
       toolNames: toolNames,
@@ -648,10 +656,11 @@ private final class TerminalInterruptHandler: @unchecked Sendable {
 private actor TerminalApprovalHandler: ApprovalHandler {
   private let configuration: ConfiguredApprovals
   private var delegate: (any ApprovalHandler)?
-  private var yoloEnabled = false
+  private var yoloEnabled: Bool
 
-  init(configuration: ConfiguredApprovals) {
+  init(configuration: ConfiguredApprovals, yoloEnabled: Bool = false) {
     self.configuration = configuration
+    self.yoloEnabled = yoloEnabled
   }
 
   /// Routes `ask` decisions elsewhere while another surface owns the terminal.
@@ -741,20 +750,23 @@ private struct MaiCLI {
       let loaded = try loadConfiguration(options: options)
       let configurationPath = loaded?.path ?? defaultConfigurationPath
       var configuration = loaded?.configuration
-      if var existing = configuration,
-        !existing.toolSources.contains(where: {
+      if var existing = configuration {
+        var changed = existing.associateSystemPrompts()
+        if !existing.toolSources.contains(where: {
           $0.kind == MaiStandardToolsPlugin.factoryKind
-        })
-      {
-        existing.toolSources.append(
-          ConfiguredToolSource(
-            id: "standard-tools",
-            kind: MaiStandardToolsPlugin.factoryKind))
-        try existing.save(to: URL(fileURLWithPath: configurationPath))
+        }) {
+          existing.toolSources.append(
+            ConfiguredToolSource(
+              id: "standard-tools",
+              kind: MaiStandardToolsPlugin.factoryKind))
+          changed = true
+        }
+        if changed { try existing.save(to: URL(fileURLWithPath: configurationPath)) }
         configuration = existing
       }
       let approvalHandler = TerminalApprovalHandler(
-        configuration: configuration?.approvals ?? .init())
+        configuration: configuration?.approvals ?? .init(),
+        yoloEnabled: options.yolo)
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
@@ -789,12 +801,12 @@ private struct MaiCLI {
         configuration: configuration,
         options: options,
         environment: environment)
-      let profile = try selectedProfile(
+      var profile = try selectedProfile(
         configuration: configuration,
         options: options,
         environment: environment)
       if configuration == nil {
-        configuration = MaiConfiguration(
+        var created = MaiConfiguration(
           defaultAgent: profile.agentID,
           providers: setup.implicitProviders,
           toolSources: [
@@ -803,7 +815,13 @@ private struct MaiCLI {
               kind: MaiStandardToolsPlugin.factoryKind)
           ],
           agents: [profile.agentDefinition])
-        try configuration?.save(to: URL(fileURLWithPath: configurationPath))
+        created.associateSystemPrompts()
+        try created.save(to: URL(fileURLWithPath: configurationPath))
+        configuration = created
+        profile = try selectedProfile(
+          configuration: created,
+          options: options,
+          environment: environment)
       }
       let stateURL = URL(fileURLWithPath: resolvedStatePath(options: options))
       let providerOverride =
@@ -1102,7 +1120,10 @@ private struct MaiCLI {
       var profile = SessionProfile(definition: definition)
       if let providerOverride { profile.provider = providerOverride }
       if let modelOverride { profile.model = modelOverride }
-      if let system = options.systemOverride { profile.instructions = system }
+      if let system = options.systemOverride {
+        profile.instructions = system
+        profile.systemPrompt = nil
+      }
       profile.stream = options.stream && profile.stream
       options.applyLimitOverrides(to: &profile.limits)
       return profile
@@ -1130,6 +1151,36 @@ private struct MaiCLI {
       options: MarkdownLayoutOptions(
         width: TerminalLineEditor.terminalColumns(), unicode: detected.unicode),
       widthProvider: { TerminalLineEditor.terminalColumns() })
+  }
+
+  private enum HeredocResult {
+    case content(String)
+    case cancelled
+    case endOfFile
+  }
+
+  private static func heredocDelimiter(in input: String) -> String? {
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("<<") else { return nil }
+    let delimiter = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+    guard !delimiter.isEmpty, !delimiter.contains(where: \.isWhitespace) else { return nil }
+    return delimiter
+  }
+
+  private static func readHeredoc(
+    until delimiter: String,
+    editor: TerminalLineEditor
+  ) -> HeredocResult {
+    var lines: [String] = []
+    while true {
+      guard
+        let line = editor.readLine(
+          prompt: "...> ", completions: [], rememberInput: false)
+      else { return .endOfFile }
+      if editor.wasInterrupted { return .cancelled }
+      if line == delimiter { return .content(lines.joined(separator: "\n")) }
+      lines.append(line)
+    }
   }
 
   private static func runREPL(
@@ -1167,7 +1218,7 @@ private struct MaiCLI {
       let promptStatus =
         "\(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
       guard
-        let input = editor.readLine(
+        let firstLine = editor.readLine(
           prompt: "pmai> ",
           completions: completionCandidates(
             workspace: workspace,
@@ -1178,9 +1229,27 @@ private struct MaiCLI {
         await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
         return
       }
-      let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { continue }
-      if text.hasPrefix("/") {
+      var input = firstLine
+      var isHeredoc = false
+      if let delimiter = heredocDelimiter(in: firstLine) {
+        switch readHeredoc(until: delimiter, editor: editor) {
+        case .content(let content):
+          input = content
+          isHeredoc = true
+        case .cancelled:
+          continue
+        case .endOfFile:
+          await terminal.line(
+            "warning: End of input before heredoc delimiter '\(delimiter)'.",
+            to: .standardError)
+          workspace.upsert(session.chat, selecting: true)
+          await saveWorkspace(&workspace, to: stateURL, terminal: terminal, closing: true)
+          return
+        }
+      }
+      let text = isHeredoc ? input : input.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+      if !isHeredoc, text.hasPrefix("/") {
         if text == "/chat" || text.hasPrefix("/chat ") {
           workspace.upsert(session.chat, selecting: true)
           await handleWorkspaceChatCommand(
@@ -1401,8 +1470,23 @@ private struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/prompts":
+      await showPrompts(session: session, configuration: configuration, terminal: terminal)
+    case "/prompt":
+      await handlePromptCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/chat":
-      await handleChatCommand(argument, session: &session, runtime: runtime, terminal: terminal)
+      await handleChatCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        compactPrompt: configuration?.prompts?.compact,
+        terminal: terminal)
     case "/edit":
       await handleEditCommand(
         argument,
@@ -1855,6 +1939,146 @@ private struct MaiCLI {
     return id.allSatisfy { $0.isLetter || $0.isNumber || "._-".contains($0) }
   }
 
+  private static func resolvedSystemPromptName(
+    _ requested: String,
+    configuration: MaiConfiguration?
+  ) -> String? {
+    let names = configuration?.prompts?.system.keys ?? [String: String]().keys
+    if names.contains(requested) { return requested }
+    let matches = names.filter { $0.caseInsensitiveCompare(requested) == .orderedSame }
+    return matches.count == 1 ? matches[0] : nil
+  }
+
+  private static func showPrompts(
+    session: REPLSession,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async {
+    let compact = configuration?.prompts?.compact?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    var lines = [
+      "Prompts:", "  compact  compact  \(compact?.isEmpty == false ? "custom" : "built-in")",
+    ]
+    let prompts = configuration?.prompts?.system ?? [:]
+    for name in prompts.keys.sorted() {
+      let selected = session.profile.systemPrompt == name ? "*" : " "
+      let agents = configuration?.agents.filter { $0.systemPrompt == name }.map(\.id).sorted() ?? []
+      let usage = agents.isEmpty ? "unused" : "agents: \(agents.joined(separator: ", "))"
+      lines.append("\(selected) \(name)  system  \(usage)")
+    }
+    if prompts.isEmpty { lines.append("  No named system prompts.") }
+    await terminal.line(lines.joined(separator: "\n"))
+  }
+
+  private static func handlePromptCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let requested = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+    if requested.isEmpty {
+      let name = session.profile.systemPrompt ?? "inline"
+      await terminal.line("System prompt for agent '\(session.profile.agentID)': \(name)")
+      await terminal.line(
+        session.profile.instructions.isEmpty ? "(empty)" : session.profile.instructions)
+      return
+    }
+    guard
+      let name = resolvedSystemPromptName(requested, configuration: configuration),
+      let instructions = configuration?.prompts?.system[name]
+    else {
+      await terminal.line("Unknown system prompt '\(requested)'. Use /prompts.")
+      return
+    }
+    let previous = session.profile.instructions
+    do {
+      try applySystemInstructions(instructions, replacing: previous, session: &session)
+      session.profile.systemPrompt = name
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return
+    }
+    if await persistAgentProfile(
+      session: session,
+      configuration: &configuration,
+      configurationPath: configurationPath,
+      runtime: runtime,
+      terminal: terminal)
+    {
+      await terminal.line(
+        "Agent '\(session.profile.agentID)' now uses system prompt '\(name)'.")
+    }
+  }
+
+  private static func applySystemInstructions(
+    _ instructions: String,
+    replacing previous: String,
+    session: inout REPLSession
+  ) throws {
+    session.profile.instructions = instructions
+    if let index = session.history.messages.firstIndex(where: {
+      $0.role == .system && $0.text == previous
+    }) {
+      if instructions.isEmpty {
+        _ = try session.history.removeMessage(at: index)
+      } else {
+        try session.history.editMessage(at: index, text: instructions)
+      }
+    } else if !instructions.isEmpty {
+      session.history.replaceAll(with: [.system(instructions)] + session.history.messages)
+    }
+    session.touch()
+  }
+
+  private static func editSystemPrompt(
+    named requested: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    let trimmed = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      await terminal.line("Usage: /edit prompt [NAME]")
+      return
+    }
+    let name = resolvedSystemPromptName(trimmed, configuration: draft) ?? trimmed
+    var prompts = draft.prompts ?? ConfiguredPrompts()
+    let previous = prompts.system[name] ?? ""
+    guard
+      let edited = await editTemporaryText(
+        previous, suffix: "system-prompt.md", terminal: terminal)
+    else { return }
+    let instructions = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+    prompts.system[name] = instructions
+    draft.prompts = prompts
+    for index in draft.agents.indices where draft.agents[index].systemPrompt == name {
+      draft.agents[index].instructions = instructions
+    }
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      for agent in draft.agents where agent.systemPrompt == name {
+        try await runtime.register(agent: agent, replacingExisting: true)
+      }
+      if session.profile.systemPrompt == name {
+        try applySystemInstructions(
+          instructions, replacing: session.profile.instructions, session: &session)
+      }
+      await terminal.line("System prompt '\(name)' saved to \(configurationPath).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
   private static func shellWords(_ input: String) throws -> [String] {
     enum Quote { case single, double }
     var words: [String] = []
@@ -1917,40 +2141,53 @@ private struct MaiCLI {
       await terminal.line(editHelp)
       return
     }
+    let fields = target.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields[0].lowercased()
+    let actionArgument = fields.count == 2 ? fields[1] : ""
 
-    switch target.lowercased() {
+    switch action {
     case "prompt", "system":
-      let previousInstructions = session.profile.instructions
-      guard
-        let edited = await editTemporaryText(
-          previousInstructions, suffix: "prompt.txt", terminal: terminal)
-      else { return }
-      session.profile.instructions = edited.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let index = session.history.messages.firstIndex(where: {
-        $0.role == .system && $0.text == previousInstructions
-      }) {
-        do {
-          if session.profile.instructions.isEmpty {
-            _ = try session.history.removeMessage(at: index)
-          } else {
-            try session.history.editMessage(at: index, text: session.profile.instructions)
-          }
-        } catch {
-          await terminal.line("error: \(error.localizedDescription)", to: .standardError)
-          return
-        }
-      } else if !session.profile.instructions.isEmpty {
-        session.history.replaceAll(
-          with: [.system(session.profile.instructions)] + session.history.messages)
-      }
-      if await persistAgentProfile(
-        session: session,
+      await editSystemPrompt(
+        named: actionArgument.isEmpty
+          ? session.profile.systemPrompt ?? session.profile.agentID : actionArgument,
+        session: &session,
+        runtime: runtime,
         configuration: &configuration,
         configurationPath: configurationPath,
-        runtime: runtime,
         terminal: terminal)
-      {
-        await terminal.line("System prompt updated.")
+
+    case "compact":
+      guard var draft = configuration, let configurationPath else {
+        await terminal.line("error: No writable configuration is active.", to: .standardError)
+        return
+      }
+      let previous = draft.prompts?.compact ?? defaultCompactPrompt
+      guard
+        let edited = await editTemporaryText(
+          previous, suffix: "compact-prompt.md", terminal: terminal)
+      else { return }
+      let candidate = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard candidate.isEmpty || candidate.contains("{{transcript}}") else {
+        await terminal.line(
+          "error: The compact prompt must contain {{transcript}}; no changes were saved.",
+          to: .standardError)
+        return
+      }
+      let customPrompt =
+        candidate.isEmpty || candidate == defaultCompactPrompt ? nil : candidate
+      var prompts = draft.prompts ?? ConfiguredPrompts()
+      prompts.compact = customPrompt
+      draft.prompts = prompts
+      do {
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        configuration = draft
+        await terminal.line(
+          customPrompt == nil
+            ? "Compact prompt restored to the built-in default."
+            : "Compact prompt saved to \(configurationPath).")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
 
     case "config":
@@ -1961,7 +2198,10 @@ private struct MaiCLI {
       let url = URL(fileURLWithPath: configurationPath)
       guard await launchEditor(at: url, terminal: terminal) else { return }
       do {
-        let editedConfiguration = try MaiConfiguration.load(from: url)
+        var editedConfiguration = try MaiConfiguration.load(from: url)
+        if editedConfiguration.associateSystemPrompts() {
+          try editedConfiguration.save(to: url)
+        }
         for agent in editedConfiguration.agents {
           try await runtime.register(agent: agent, replacingExisting: true)
         }
@@ -1970,7 +2210,11 @@ private struct MaiCLI {
         }) {
           session.profile.limits = agent.limits
           session.profile.toolCallingStrategy = agent.toolCallingStrategy
-          session.touch()
+          session.profile.systemPrompt = agent.systemPrompt
+          try applySystemInstructions(
+            agent.instructions,
+            replacing: session.profile.instructions,
+            session: &session)
         }
         configuration = editedConfiguration
         await terminal.line(
@@ -2004,6 +2248,16 @@ private struct MaiCLI {
       }
 
     default:
+      if let name = resolvedSystemPromptName(target, configuration: configuration) {
+        await editSystemPrompt(
+          named: name,
+          session: &session,
+          runtime: runtime,
+          configuration: &configuration,
+          configurationPath: configurationPath,
+          terminal: terminal)
+        return
+      }
       guard let index = editableMessageIndex(target, in: session.history) else {
         await terminal.line("Unknown edit target '\(target)'.\n\n\(editHelp)")
         return
@@ -2263,10 +2517,19 @@ private struct MaiCLI {
       definition.provider = providerID
       definition.model = fields[4] == "-" ? "" : fields[4]
       definition.instructions = fields[5] == "-" ? "" : fields[5]
+      let promptName = draft.agents.first(where: { $0.id == name })?.systemPrompt ?? name
+      definition.systemPrompt = promptName
+      var prompts = draft.prompts ?? ConfiguredPrompts()
+      prompts.system[promptName] = definition.instructions
+      draft.prompts = prompts
       if let index = draft.agents.firstIndex(where: { $0.id == name }) {
         draft.agents[index] = definition
       } else {
         draft.agents.append(definition)
+      }
+      for index in draft.agents.indices
+      where draft.agents[index].systemPrompt == definition.systemPrompt {
+        draft.agents[index].instructions = definition.instructions
       }
       if draft.defaultAgent == nil { draft.defaultAgent = name }
 
@@ -2347,8 +2610,9 @@ private struct MaiCLI {
     await terminal.line("Base URL: \(baseURL?.absoluteString ?? "-")")
     await terminal.line("Model: \(definition.model.isEmpty ? "-" : definition.model)")
     await terminal.line("Tool calling: \(definition.toolCallingStrategy.rawValue)")
+    await terminal.line("System prompt: \(definition.systemPrompt ?? "inline")")
     await terminal.line(
-      "System prompt: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
+      "Instructions: \(definition.instructions.isEmpty ? "-" : definition.instructions)")
   }
 
   @discardableResult
@@ -2364,6 +2628,14 @@ private struct MaiCLI {
       return false
     }
     let definition = session.profile.agentDefinition
+    if let promptName = definition.systemPrompt {
+      var prompts = draft.prompts ?? ConfiguredPrompts()
+      prompts.system[promptName] = definition.instructions
+      draft.prompts = prompts
+      for index in draft.agents.indices where draft.agents[index].systemPrompt == promptName {
+        draft.agents[index].instructions = definition.instructions
+      }
+    }
     if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
       draft.agents[index] = definition
     } else {
@@ -2372,7 +2644,13 @@ private struct MaiCLI {
     if draft.defaultAgent == nil { draft.defaultAgent = definition.id }
     do {
       try draft.save(to: URL(fileURLWithPath: configurationPath))
-      try await runtime.register(agent: definition, replacingExisting: true)
+      let affectedAgents =
+        definition.systemPrompt.map { promptName in
+          draft.agents.filter { $0.systemPrompt == promptName }
+        } ?? [definition]
+      for agent in affectedAgents {
+        try await runtime.register(agent: agent, replacingExisting: true)
+      }
       configuration = draft
       return true
     } catch {
@@ -3292,9 +3570,19 @@ private struct MaiCLI {
         await terminal.line("Closed '\(closed.displayTitle)'; started a new chat.")
       }
     case "messages":
-      await handleChatCommand("list", session: &session, runtime: runtime, terminal: terminal)
+      await handleChatCommand(
+        "list",
+        session: &session,
+        runtime: runtime,
+        compactPrompt: configuration?.prompts?.compact,
+        terminal: terminal)
     case "log", "edit", "remove", "rm", "undo", "trim", "compact", "clear", "help":
-      await handleChatCommand(argument, session: &session, runtime: runtime, terminal: terminal)
+      await handleChatCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        compactPrompt: configuration?.prompts?.compact,
+        terminal: terminal)
     default:
       await terminal.line("Unknown /chat action '\(action)'.\n\n\(chatHelp)")
     }
@@ -3433,6 +3721,7 @@ private struct MaiCLI {
     _ argument: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
+    compactPrompt: String?,
     terminal: TerminalWriter
   ) async {
     let parts = argument.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
@@ -3458,7 +3747,7 @@ private struct MaiCLI {
         })
     case "edit":
       guard parts.count == 3, let index = chatIndex(parts[1], count: session.history.count) else {
-        await terminal.line("Usage: /chat edit N TEXT")
+        await terminal.line("Usage: /chat edit INDEX TEXT")
         return
       }
       do {
@@ -3469,7 +3758,7 @@ private struct MaiCLI {
       }
     case "remove", "delete", "rm":
       guard parts.count >= 2, let index = chatIndex(parts[1], count: session.history.count) else {
-        await terminal.line("Usage: /chat remove N")
+        await terminal.line("Usage: /chat remove INDEX")
         return
       }
       await removeChatMessage(at: index, session: &session, terminal: terminal)
@@ -3488,7 +3777,7 @@ private struct MaiCLI {
       await removeChatMessage(at: index, session: &session, terminal: terminal)
     case "trim":
       guard parts.count >= 2, let index = chatIndex(parts[1], count: session.history.count) else {
-        await terminal.line("Usage: /chat trim N")
+        await terminal.line("Usage: /chat trim INDEX")
         return
       }
       do {
@@ -3505,7 +3794,11 @@ private struct MaiCLI {
       }
     case "compact":
       await compactChat(
-        focus: actionArgument, session: &session, runtime: runtime, terminal: terminal)
+        focus: actionArgument,
+        promptTemplate: compactPrompt,
+        session: &session,
+        runtime: runtime,
+        terminal: terminal)
     case "clear":
       session.reset()
       await terminal.line("Conversation cleared.")
@@ -3531,11 +3824,29 @@ private struct MaiCLI {
     }
   }
 
-  /// CLI counterpart to the iOS compaction flow: ask the selected model for a
-  /// durable summary, then replace the transcript while retaining the active
-  /// agent's system instructions.
+  private static let defaultCompactPrompt = """
+    Compact the transcript below into durable context for continuing the same chat.
+
+    Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
+
+    Preserve:
+    - User goals, preferences, constraints, and decisions
+    - Important names, projects, files, commands, code snippets, errors, and results
+    - Current state, unresolved questions, and next steps
+
+    Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+    {{focus}}
+
+    Transcript:
+
+    {{transcript}}
+    """
+
+  /// Ask the selected model for durable context using the configured prompt
+  /// template, then replace the transcript while retaining system instructions.
   private static func compactChat(
     focus: String,
+    promptTemplate: String?,
     session: inout REPLSession,
     runtime: AgentRuntime,
     terminal: TerminalWriter
@@ -3555,7 +3866,6 @@ private struct MaiCLI {
       focus.isEmpty
       ? ""
       : """
-
       The user supplied this focus for compaction:
 
       <compaction-focus>
@@ -3564,23 +3874,21 @@ private struct MaiCLI {
 
       Prioritize context relevant to that focus while retaining essential state needed to continue the work.
       """
-    let prompt = """
-      Compact the transcript below into durable context for continuing the same chat.
-
-      Output only the compacted context. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about the task.
-
-      Preserve:
-      - User goals, preferences, constraints, and decisions
-      - Important names, projects, files, commands, code snippets, errors, and results
-      - Current state, unresolved questions, and next steps
-
-      Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
-      \(focusInstructions)
-
-      Transcript:
-
-      \(entries.joined(separator: "\n\n---\n\n"))
-      """
+    let configuredTemplate = promptTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let template = configuredTemplate.isEmpty ? defaultCompactPrompt : configuredTemplate
+    guard template.contains("{{transcript}}") else {
+      await terminal.line(
+        "error: The compact prompt must contain {{transcript}}. Edit it with /edit compact.",
+        to: .standardError)
+      return
+    }
+    var prompt = template.replacingOccurrences(of: "{{focus}}", with: focusInstructions)
+    prompt = prompt.replacingOccurrences(
+      of: "{{transcript}}",
+      with: entries.joined(separator: "\n\n---\n\n"))
+    if !focusInstructions.isEmpty, !template.contains("{{focus}}") {
+      prompt += "\n\n" + focusInstructions
+    }
     let profile = session.profile
     let request = AgentRequest(
       agentID: profile.agentID,
@@ -3621,8 +3929,9 @@ private struct MaiCLI {
   }
 
   private static func chatIndex(_ raw: String, count: Int) -> Int? {
-    guard let value = Int(raw), value > 0, value <= count else { return nil }
-    return value - 1
+    guard let value = Int(raw), value != 0 else { return nil }
+    let index = value > 0 ? value - 1 : count + value
+    return (0..<count).contains(index) ? index : nil
   }
 
   private static func conversationLog(
@@ -3781,10 +4090,34 @@ private struct MaiCLI {
     let configuredByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
     for var chat in workspace.chats {
       guard let configured = configuredByID[chat.primaryAgent.id] else { continue }
-      chat.primaryAgent.limits = configured.limits
-      chat.primaryAgent.toolCallingStrategy = configured.toolCallingStrategy
+      applyConfiguredAgentSettings(configured, to: &chat)
       workspace.upsert(chat)
     }
+  }
+
+  private static func applyConfiguredAgentSettings(
+    _ configured: AgentDefinition,
+    to chat: inout AgentChat
+  ) {
+    let previousInstructions = chat.primaryAgent.instructions
+    chat.primaryAgent.limits = configured.limits
+    chat.primaryAgent.toolCallingStrategy = configured.toolCallingStrategy
+    chat.primaryAgent.instructions = configured.instructions
+    chat.primaryAgent.systemPrompt = configured.systemPrompt
+    guard previousInstructions != configured.instructions else { return }
+    var transcript = AgentTranscript(messages: chat.messages)
+    if let index = transcript.messages.firstIndex(where: {
+      $0.role == .system && $0.text == previousInstructions
+    }) {
+      if configured.instructions.isEmpty {
+        _ = try? transcript.removeMessage(at: index)
+      } else {
+        _ = try? transcript.editMessage(at: index, text: configured.instructions)
+      }
+    } else if !configured.instructions.isEmpty {
+      transcript.replaceAll(with: [.system(configured.instructions)] + transcript.messages)
+    }
+    chat.messages = transcript.messages
   }
 
   private static func chatApplyingConfiguredAgentSettings(
@@ -3795,8 +4128,7 @@ private struct MaiCLI {
       let configured = configuration?.agents.first(where: { $0.id == chat.primaryAgent.id })
     else { return chat }
     var chat = chat
-    chat.primaryAgent.limits = configured.limits
-    chat.primaryAgent.toolCallingStrategy = configured.toolCallingStrategy
+    applyConfiguredAgentSettings(configured, to: &chat)
     return chat
   }
 
@@ -3879,11 +4211,12 @@ private struct MaiCLI {
       "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
       "/set ui.toolResultLines all", "/set ui.toolResultLines ",
       "/cwd", "/pwd", "/cd ", "/plugins",
-      "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/agents",
+      "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/prompts", "/prompt",
+      "/agents",
       "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
       "/mcp add ", "/mcp enable ", "/mcp disable ",
-      "/edit prompt", "/edit config", "/edit mcps", "/chat compact ",
+      "/edit prompt", "/edit compact", "/edit config", "/edit mcps", "/chat compact ",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
       "/image ocr ", "/attach ", "/attach clear", "/copy", "/clear", "/chat list",
       "/chat list active", "/chat list archived", "/chat list all", "/chat new ",
@@ -3906,6 +4239,11 @@ private struct MaiCLI {
       values.append("/agent use \(agent.id)")
       values.append("/agent show \(agent.id)")
       values.append("/chat new --agent \(agent.id) ")
+    }
+    for name in configuration?.prompts?.system.keys.sorted() ?? [] {
+      values.append("/prompt \(name)")
+      values.append("/edit prompt \(name)")
+      values.append("/edit \(name)")
     }
     for provider in configuration?.providers ?? [] {
       values.append("/provider \(provider.id)")
@@ -4041,11 +4379,13 @@ private struct MaiCLI {
         AgentDefinition(
           id: "hello",
           instructions: "Exercise the offline MaiCore provider.",
+          systemPrompt: "hello",
           provider: "hello",
           model: ""),
         AgentDefinition(
           id: "main",
           instructions: "You are a helpful assistant. Use tools when needed.",
+          systemPrompt: "main",
           provider: "openai",
           model: "your-model",
           toolNames: Set(
@@ -4068,11 +4408,17 @@ private struct MaiCLI {
         AgentDefinition(
           id: "researcher",
           instructions: "Investigate the delegated task and return a concise result.",
+          systemPrompt: "researcher",
           provider: "openai",
           model: "your-model",
           toolNames: [MaiCurrentTimeTool.name],
           toolGroupNames: ["datetime"]),
       ],
+      prompts: ConfiguredPrompts(system: [
+        "hello": "Exercise the offline MaiCore provider.",
+        "main": "You are a helpful assistant. Use tools when needed.",
+        "researcher": "Investigate the delegated task and return a concise result.",
+      ]),
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
 
@@ -4104,6 +4450,8 @@ private struct MaiCLI {
     /provider ID       Select a provider
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
+    /prompts            List reusable prompts and their agent associations
+    /prompt [NAME]      Show or select the current agent's system prompt
     /chat               List, switch, archive, rename, or edit persistent chats
     /edit TARGET        Edit a prompt, config, MCP list, or message in $EDITOR
     /agents             List configured agents
@@ -4122,7 +4470,8 @@ private struct MaiCLI {
     \(visualHelp)/clear              Clear conversation history
     /exit               Exit the REPL
 
-    Input: Ctrl+A/E beginning/end · Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
+    Input: <<WORD starts a multiline message ending at WORD alone
+           Ctrl+A/E beginning/end · Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
     """
 
   private static let chatHelp = """
@@ -4139,13 +4488,15 @@ private struct MaiCLI {
       /chat close confirm           Permanently close the active chat
       /chat messages                Display a compact indexed message list
       /chat log           Display the full structured conversation
-      /chat edit N TEXT   Replace message N's text; preserve attachments
-      /chat remove N      Remove message N
-      /chat undo [N]      Remove the last conversation message or message N
-      /chat trim N        Keep through message N and remove everything after it
+      /chat edit INDEX TEXT  Replace a message's text; preserve attachments
+      /chat remove INDEX  Remove a message
+      /chat undo [INDEX]  Remove the last conversation message or selected message
+      /chat trim INDEX    Keep through the selected message; remove newer messages
       /chat compact [FOCUS]  Summarize the chat, prioritizing what FOCUS says to preserve
       /chat clear         Clear the conversation and restore configured instructions
 
+    Message indexes are 1-based. Negative indexes count back from the end;
+    -1 selects the last message, -2 the second-to-last, and so on.
     Removing a tool call or result also removes its linked tool transaction.
     pmai opens a fresh chat on every launch and names it after the first
     message; chats that never received a message are dropped. Start with
@@ -4172,13 +4523,17 @@ private struct MaiCLI {
     """
 
   private static let editHelp = """
-    /edit prompt             Edit the current agent's system prompt
+    /edit prompt [NAME]      Edit/create a named system prompt (current when omitted)
+    /edit NAME               Edit an existing named system prompt
+    /edit compact            Edit the global chat-compaction prompt template
     /edit config             Edit the active configuration file
     /edit mcps               Edit the configured MCP server list as JSON
     /edit N|MESSAGE_ID       Edit conversation message N or its full message ID
 
-    Uses $EDITOR, then $VISUAL, then vim. Agent limits and tool-calling strategy
-    apply immediately; provider, plugin, tool, and MCP changes require a restart.
+    The compact template must contain {{transcript}}; {{focus}} is optional.
+    Clearing it restores the built-in default. Uses $EDITOR, then $VISUAL, then
+    vim. Agent limits and tool-calling strategy apply immediately; provider,
+    plugin, tool, and MCP changes require a restart.
     """
 
   private static let toolHelp = """
@@ -4221,6 +4576,7 @@ private struct MaiCLI {
         --max-subagents N   concurrent background agents (default 0/off)
         --image PATH        attach an image (repeatable)
         --no-stream         disable response streaming
+        -y, --yolo          permit all tool calls without prompting for this session
         --resume            reopen the most recently updated chat instead of a fresh one
         --markdown          render replies as markdown even when piped
         --no-markdown       print replies verbatim

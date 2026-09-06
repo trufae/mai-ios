@@ -200,7 +200,8 @@ public final class VisualWorkspace {
             kind: source.kind,
             context: source.context(environment: environment)))
       } catch {
-        status = "warning: tool groups for '\(source.id)' are unavailable: \(error.localizedDescription)"
+        status =
+          "warning: tool groups for '\(source.id)' are unavailable: \(error.localizedDescription)"
       }
     }
     let groupedNames = Set(groups.flatMap(\.toolNames))
@@ -580,7 +581,8 @@ public final class VisualWorkspace {
     _ group: ToolGroupDefinition,
     options: [String: JSONValue]
   ) async throws {
-    guard let index = configuration.toolSources.firstIndex(where: { $0.id == group.sourceID }) else {
+    guard let index = configuration.toolSources.firstIndex(where: { $0.id == group.sourceID })
+    else {
       throw VisualWorkspaceError.missingField("tool source for \(group.displayName)")
     }
     var source = configuration.toolSources[index]
@@ -893,6 +895,15 @@ public final class VisualWorkspace {
 
   private func persistAgentProfile(for conversation: VisualConversation) {
     let definition = conversation.profile
+    if let promptName = definition.systemPrompt {
+      var prompts = configuration.prompts ?? ConfiguredPrompts()
+      prompts.system[promptName] = definition.instructions
+      configuration.prompts = prompts
+      for index in configuration.agents.indices
+      where configuration.agents[index].systemPrompt == promptName {
+        configuration.agents[index].instructions = definition.instructions
+      }
+    }
     upsert(definition, into: &configuration.agents)
     if configuration.defaultAgent == nil {
       configuration.defaultAgent = definition.id
@@ -901,8 +912,14 @@ public final class VisualWorkspace {
     do {
       try saveConfiguration()
       let runtime = runtime
+      let affectedAgents =
+        definition.systemPrompt.map { promptName in
+          configuration.agents.filter { $0.systemPrompt == promptName }
+        } ?? [definition]
       Task {
-        try? await runtime.register(agent: definition, replacingExisting: true)
+        for agent in affectedAgents {
+          try? await runtime.register(agent: agent, replacingExisting: true)
+        }
       }
     } catch {
       status = "error: \(error.localizedDescription)"

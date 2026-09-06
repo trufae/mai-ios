@@ -45,12 +45,44 @@ session. Use `/model NAME` to select one of the returned model IDs.
 Use `/chat list` for a compact indexed history or `/chat log` for the complete
 structured transcript, including attachments, reasoning, tool calls, tool
 results, and structured MCP output. The current in-memory conversation can be
-changed at any point with `/chat edit N TEXT`, `/chat remove N`, `/chat undo
-[N]`, `/chat trim N`, `/chat compact [FOCUS]`, and `/chat clear`. Compaction
-accepts optional guidance describing the information the summary should
-prioritize. Trimming keeps messages through `N`;
-linked tool-call transactions are kept structurally valid when removing or
-trimming messages.
+changed at any point with `/chat edit INDEX TEXT`, `/chat remove INDEX`,
+`/chat undo [INDEX]`, `/chat trim INDEX`, `/chat compact [FOCUS]`, and `/chat
+clear`. Positive message indexes are 1-based; negative indexes count back from
+the end, so `-1` selects the last message. Compaction accepts optional guidance
+describing the information the summary should prioritize. Trimming keeps
+messages through the selected index and removes newer ones; linked tool-call
+transactions are kept structurally valid when removing or trimming messages.
+
+`/prompts` lists the reusable system prompts and their agent associations, plus
+the compact prompt. `/prompt` shows the active agent's system prompt and
+`/prompt NAME` associates another named system prompt with that agent. `/edit
+prompt [NAME]` edits or creates a named system prompt; with no name it edits the
+active agent's prompt. `/edit NAME` is a shortcut for an existing named prompt.
+Agents store the association in `systemPrompt`, while older inline
+`instructions` are migrated to a same-named prompt automatically.
+
+`/edit compact` opens the chat-compaction template. Prompts are saved under
+`prompts` in the active configuration (normally `~/.config/pmai/config.json`).
+The compact template must contain `{{transcript}}`. `{{focus}}` is replaced with
+guidance passed to `/chat compact FOCUS`; if omitted, the focus is appended.
+Clearing the compact template restores its built-in default.
+
+Start `pmai` with `-y` (or `--yolo`) to permit all tool calls without approval
+prompts for that process. This is the startup equivalent of `/set yolo on`.
+
+The REPL accepts heredoc-style multiline messages. Enter `<<WORD`, type the
+message verbatim, then put `WORD` alone on its own line. The delimiter can be
+any non-whitespace word; heredoc content is always sent as a message rather
+than interpreted as a slash command:
+
+```text
+pmai> <<EOF
+Explain this code:
+if (ready) {
+  run();
+}
+EOF
+```
 
 `/copy` puts the last assistant reply on the system clipboard as plain text,
 without reasoning blocks. `/copy N` copies the last `N` conversation messages

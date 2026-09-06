@@ -27,12 +27,17 @@ final class TerminalLineEditor {
     self.ui = ui
   }
 
-  func readLine(prompt: String, completions: [String], separator: String? = nil) -> String? {
+  func readLine(
+    prompt: String,
+    completions: [String],
+    separator: String? = nil,
+    rememberInput: Bool = true
+  ) -> String? {
     wasInterrupted = false
     guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
       FileHandle.standardOutput.write(Data(prompt.utf8))
       guard let line = Swift.readLine(strippingNewline: true) else { return nil }
-      remember(line)
+      if rememberInput { remember(line) }
       return line
     }
 
@@ -40,7 +45,7 @@ final class TerminalLineEditor {
     guard tcgetattr(STDIN_FILENO, &original) == 0 else {
       FileHandle.standardOutput.write(Data(prompt.utf8))
       guard let line = Swift.readLine(strippingNewline: true) else { return nil }
-      remember(line)
+      if rememberInput { remember(line) }
       return line
     }
     var raw = original
@@ -93,7 +98,7 @@ final class TerminalLineEditor {
       case 10, 13:
         renderSubmittedLine(prompt: prompt, bytes: bytes)
         let line = String(decoding: bytes, as: UTF8.self)
-        remember(line)
+        if rememberInput { remember(line) }
         return line
       case 27:
         handleEscape(
