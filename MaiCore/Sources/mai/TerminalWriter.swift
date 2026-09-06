@@ -1,0 +1,371 @@
+import Foundation
+import MaiCore
+import MaiMarkdown
+
+/// Everything the REPL prints goes through here, so a streamed reply, a tool
+/// line, and a block from a child agent are written one at a time and never
+/// interleave.
+///
+/// The top-level agent streams as it always has. Children are different: each
+/// one's text is collected until a natural boundary — a tool call, the next
+/// model turn, the end of the run — and then printed as one block, every line
+/// prefixed with the child's pid (`agent#3`), so two children working at once
+/// stay readable and the prefix says who said what.
+actor TerminalWriter {
+  private var wroteRootDelta = false
+  private var rootLineOpen = false
+  /// When set, output is collected for another surface instead of hitting the tty.
+  private let capturesOutput: Bool
+  private var captured: [String] = []
+  /// Styles assistant markdown when set; nil prints replies verbatim.
+  private var markdown: MarkdownTerminalRenderer?
+  private var outputEndedLine = true
+  private var toolResultLines = ConfiguredTerminalUI().toolResultLines
+  private var toolResultColor = ConfiguredTerminalUI().toolResultForeground
+  private var subagentOutput = ConfiguredTerminalUI().subagentOutput
+  private var promptColor = ConfiguredTerminalUI().promptForeground
+  private let colorsStatus: Bool
+  /// The persistent screen, when the REPL runs on a terminal. Output written
+  /// through it lands above the prompt instead of on top of it.
+  private var screen: TerminalScreen?
+  /// Text each child has streamed since its last block boundary.
+  private var childText: [AgentPID: String] = [:]
+  private var childAgents: [AgentPID: String] = [:]
+  private var childToolCalls: [AgentPID: Int] = [:]
+  private var childTokens: [AgentPID: Int] = [:]
+  /// Children whose end has been printed, so a supervisor notice does not
+  /// repeat what the run's own event already said.
+  private var childrenEnded: Set<AgentPID> = []
+
+  init(capturesOutput: Bool = false) {
+    self.capturesOutput = capturesOutput
+    colorsStatus =
+      !capturesOutput && isatty(STDERR_FILENO) != 0
+      && ProcessInfo.processInfo.environment["NO_COLOR"] == nil
+  }
+
+  func drainCaptured() -> String {
+    let text = captured.joined()
+    captured.removeAll()
+    return text
+  }
+
+  func attach(screen: TerminalScreen?) {
+    self.screen = capturesOutput ? nil : screen
+  }
+
+  /// Installs the renderer for replies. Captured output stays verbatim because
+  /// it is shown by surfaces that do not interpret escape sequences.
+  func configureMarkdown(_ renderer: MarkdownTerminalRenderer?) {
+    markdown = capturesOutput ? nil : renderer
+  }
+
+  func configureToolResultLines(_ count: Int) {
+    toolResultLines = max(-1, count)
+  }
+
+  func configureToolResultColor(_ color: String) {
+    toolResultColor = color
+  }
+
+  func configureSubagentOutput(_ level: SubagentOutputLevel) {
+    subagentOutput = level
+  }
+
+  func configurePromptColor(_ color: String) {
+    promptColor = color
+  }
+
+  var markdownRenderer: MarkdownTerminalRenderer? { markdown }
+
+  /// Renders a complete text the way replies are rendered.
+  func render(_ text: String) -> String {
+    markdown?.render(text) ?? text
+  }
+
+  func resetResponse() {
+    wroteRootDelta = false
+    rootLineOpen = false
+    markdown?.reset()
+  }
+
+  func consume(_ event: AgentEvent) {
+    switch event {
+    case .modelStarted(let context, let turn) where context.depth == 0:
+      if turn > 1 {
+        finishReply()
+        closeRootLine()
+      }
+    case .provider(let context, .textDelta(let text)) where context.depth == 0:
+      if var renderer = markdown {
+        let output = renderer.feed(text)
+        markdown = renderer
+        write(output)
+      } else {
+        write(text)
+      }
+      wroteRootDelta = true
+      rootLineOpen = true
+    case .toolStarted(let context, let call) where context.depth == 0:
+      finishReply()
+      closeRootLine()
+      status("→ tool \(call.name) \(call.arguments.compactJSONString)", color: "green")
+    case .toolFinished(let context, let result) where context.depth == 0:
+      status(
+        ToolResultPreview.render(result, maxLines: toolResultLines),
+        color: result.isError ? "red" : toolResultColor)
+    case .userMessage(let context, let message) where context.depth == 0:
+      finishReply()
+      closeRootLine()
+      status("⇐ you: \(message.text)", color: promptColor)
+    case .finished(let context, let result) where context.depth == 0:
+      if wroteRootDelta {
+        finishReply()
+      } else {
+        write(render(result.response.text))
+      }
+      closeRootLine(force: true)
+    case .childStarted(let parent, let child):
+      guard let pid = child.pid else { return }
+      childAgents[pid] = child.agentID
+      childToolCalls[pid] = 0
+      childTokens[pid] = 0
+      childText[pid] = nil
+      childrenEnded.remove(pid)
+      guard subagentOutput != .none else { return }
+      let starter = parent.pid.map { parent.depth > 0 ? " by agent#\($0.rawValue)" : "" } ?? ""
+      childBlock(pid, "↳ \(child.agentID) started\(starter)")
+    case .childFinished:
+      // The child's own `finished` event already printed its answer.
+      break
+    case .modelStarted(let context, let turn):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      guard subagentOutput == .stats else { return }
+      var facts = ["turn \(turn)"]
+      let tools = childToolCalls[pid] ?? 0
+      if tools > 0 { facts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
+      if let tokens = childTokens[pid], tokens > 0 { facts.append("\(compactCount(tokens)) tok") }
+      childBlock(pid, "· " + facts.joined(separator: " · "))
+    case .provider(let context, .textDelta(let text)):
+      guard let pid = context.pid, subagentOutput == .all else { return }
+      childText[pid, default: ""] += text
+    case .provider(let context, .usage(let usage)):
+      guard let pid = context.pid else { return }
+      childTokens[pid, default: 0] += usage.totalTokens
+    case .toolStarted(let context, let call):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      childToolCalls[pid, default: 0] += 1
+      guard subagentOutput == .all || subagentOutput == .tools else { return }
+      childBlock(pid, "→ tool \(call.name) \(call.arguments.compactJSONString)", color: "green")
+    case .toolFinished(let context, let result):
+      guard let pid = context.pid, subagentOutput == .all || subagentOutput == .tools else {
+        return
+      }
+      childBlock(
+        pid,
+        ToolResultPreview.render(result, maxLines: toolResultLines),
+        color: result.isError ? "red" : toolResultColor)
+    case .userMessage(let context, let message):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      guard subagentOutput != .none else { return }
+      childBlock(pid, "⇐ you: \(message.text)", color: promptColor)
+    case .finished(let context, let result):
+      guard let pid = context.pid else { return }
+      flushChildText(pid)
+      childrenEnded.insert(pid)
+      guard subagentOutput != .none else { return }
+      var facts: [String] = []
+      if result.modelTurns > 0 {
+        facts.append("\(result.modelTurns) turn\(result.modelTurns == 1 ? "" : "s")")
+      }
+      if result.toolCalls > 0 {
+        facts.append("\(result.toolCalls) tool\(result.toolCalls == 1 ? "" : "s")")
+      }
+      if let tokens = result.usage?.totalTokens, tokens > 0 {
+        facts.append("\(compactCount(tokens)) tok")
+      }
+      let summary = facts.isEmpty ? "" : " · " + facts.joined(separator: " · ")
+      let answer = AgentProcessInfo.oneLine(result.response.text, limit: 120)
+      childBlock(pid, "↲ done\(summary)" + (answer.isEmpty ? "" : ": \(answer)"))
+    default:
+      break
+    }
+  }
+
+  /// A child ended without an answer — it failed or was stopped — which the
+  /// run itself never reports, so the supervisor's notice is printed instead.
+  func processEnded(_ info: AgentProcessInfo) {
+    guard info.depth > 0, !childrenEnded.contains(info.pid) else { return }
+    childrenEnded.insert(info.pid)
+    flushChildText(info.pid)
+    guard subagentOutput != .none else { return }
+    let reason = info.failure.map { ": \($0)" } ?? ""
+    childBlock(info.pid, "✗ \(info.state.shortLabel)\(reason)", color: "red")
+  }
+
+  /// Prints what a tool call is waiting on, for the person to answer at the
+  /// prompt whenever they get to it.
+  func approvalRequest(_ request: ApprovalRequest) {
+    finishReply()
+    closeRootLine()
+    let who = request.run.depth > 0 ? request.run.pid.map { "agent#\($0.rawValue) " } ?? "" : ""
+    let kind = request.tool.annotations.approval.rawValue
+    status(
+      """
+      ? \(who)wants to run \(kind) tool '\(request.tool.name)'
+      ? arguments: \(request.call.arguments.compactJSONString)
+      ? answer y (yes) · a (always) · n (no) · e (edit arguments) · c (cancel run); anything else is a normal message
+      """,
+      color: "yellow")
+  }
+
+  func recoverAfterError(_ message: String) {
+    finishReply()
+    closeRootLine()
+    status("error: \(message)")
+  }
+
+  func recoverAfterCancellation() {
+    finishReply()
+    closeRootLine()
+    status("cancelled")
+  }
+
+  func prompt(_ value: String) { write(value) }
+
+  /// A one-line remark between replies, styled like tool status lines.
+  func note(_ value: String) { status(value) }
+
+  func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
+    if capturesOutput {
+      captured.append(value + "\n")
+      return
+    }
+    emit(value + "\n", to: handle)
+    if handle === FileHandle.standardOutput { outputEndedLine = true }
+  }
+
+  // MARK: - Child blocks
+
+  private func flushChildText(_ pid: AgentPID) {
+    guard let text = childText.removeValue(forKey: pid) else { return }
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    var trimmed = lines
+    while trimmed.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { trimmed.removeLast() }
+    while trimmed.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { trimmed.removeFirst() }
+    guard !trimmed.isEmpty else { return }
+    childBlock(pid, trimmed.map { "│ " + $0 }.joined(separator: "\n"))
+  }
+
+  /// One block from one child: every line carries the pid, and the whole
+  /// block is written in one go so nothing else lands in the middle of it.
+  private func childBlock(_ pid: AgentPID, _ text: String, color: String? = nil) {
+    finishReply()
+    closeRootLine()
+    let prefix = childPrefix(pid)
+    let body = styledLines(text, color: color).map { prefix + $0 }.joined(separator: "\n")
+    emitStatus(body)
+  }
+
+  private func childPrefix(_ pid: AgentPID) -> String {
+    let label = "agent#\(pid.rawValue) "
+    guard colorsStatus, let code = TerminalLineEditor.foregroundColorCode(Self.childColor(pid))
+    else { return label }
+    return "\u{1B}[\(code)m\(label)\u{1B}[0m"
+  }
+
+  private static let childColors = [
+    "cyan", "magenta", "blue", "green", "bright-cyan", "bright-magenta", "bright-blue",
+    "bright-green",
+  ]
+
+  private static func childColor(_ pid: AgentPID) -> String {
+    childColors[abs(pid.rawValue) % childColors.count]
+  }
+
+  private func compactCount(_ count: Int) -> String {
+    AgentProcessInfo.compactCount(count)
+  }
+
+  // MARK: - Writing
+
+  /// Writes what the markdown renderer still holds for the current reply.
+  private func finishReply() {
+    guard var renderer = markdown else { return }
+    let output = renderer.flush()
+    markdown = renderer
+    write(output)
+  }
+
+  private func write(_ value: String) {
+    guard !value.isEmpty else { return }
+    outputEndedLine = value.hasSuffix("\n")
+    if capturesOutput {
+      captured.append(value)
+      return
+    }
+    emit(value, to: .standardOutput)
+  }
+
+  private func emit(_ value: String, to handle: FileHandle) {
+    if let screen {
+      screen.write(value, to: handle)
+    } else {
+      handle.write(Data(value.utf8))
+    }
+  }
+
+  private func status(_ value: String, color: String? = nil) {
+    if capturesOutput {
+      captured.append(value + "\n")
+      return
+    }
+    emitStatus(styledLines(value, color: color).joined(separator: "\n"))
+  }
+
+  private func emitStatus(_ styled: String) {
+    if capturesOutput {
+      captured.append(styled + "\n")
+      return
+    }
+    emit(styled + "\n", to: .standardError)
+  }
+
+  /// Colours a status text line by line: unified diffs get their own tint,
+  /// everything else the requested colour.
+  private func styledLines(_ value: String, color: String?) -> [String] {
+    let lines = value.components(separatedBy: "\n")
+    guard colorsStatus else { return lines }
+    let hasUnifiedDiff = lines.indices.dropLast().contains { index in
+      let line = lines[index].drop(while: { $0.isWhitespace })
+      let next = lines[index + 1].drop(while: { $0.isWhitespace })
+      return line.hasPrefix("--- ") && next.hasPrefix("+++ ")
+    }
+    return lines.map { line in
+      let marker = line.drop(while: { $0.isWhitespace })
+      if hasUnifiedDiff, marker.hasPrefix("-") && !marker.hasPrefix("--- ") {
+        return "\u{1B}[38;2;255;217;221;48;2;66;31;36m\(line)\u{1B}[0m"
+      }
+      if hasUnifiedDiff, marker.hasPrefix("+") && !marker.hasPrefix("+++ ") {
+        return "\u{1B}[38;2;217;247;227;48;2;22;58;36m\(line)\u{1B}[0m"
+      }
+      guard let color, let code = TerminalLineEditor.foregroundColorCode(color) else {
+        return line
+      }
+      return "\u{1B}[\(code)m\(line)\u{1B}[0m"
+    }
+  }
+
+  private func closeRootLine(force: Bool = false) {
+    // The screen sees every write, including the echo of a submitted line,
+    // so it knows better than this actor whether the output row is open.
+    let ended = screen?.outputIsAtLineStart ?? outputEndedLine
+    if (rootLineOpen || force) && !ended {
+      write("\n")
+    }
+    rootLineOpen = false
+  }
+}

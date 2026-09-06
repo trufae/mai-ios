@@ -138,6 +138,8 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
   public var failure: String?
   /// True once a parent has taken the answer through `agent_result`.
   public var isCollected: Bool
+  /// Messages a person queued for this process that it has not read yet.
+  public var queuedMessages: Int
 
   public var id: AgentPID { pid }
 
@@ -159,7 +161,8 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     usage: TokenUsage? = nil,
     activity: String = "",
     failure: String? = nil,
-    isCollected: Bool = false
+    isCollected: Bool = false,
+    queuedMessages: Int = 0
   ) {
     self.pid = pid
     self.parent = parent
@@ -179,6 +182,7 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     self.activity = activity
     self.failure = failure
     self.isCollected = isCollected
+    self.queuedMessages = queuedMessages
   }
 
   public var needsAttention: Bool { attention != nil }
@@ -192,6 +196,7 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     if let tokens = usage?.totalTokens, tokens > 0 {
       facts.append("\(Self.compactCount(tokens)) tok")
     }
+    if queuedMessages > 0 { facts.append("\(queuedMessages) queued") }
     if !facts.isEmpty { line += "  " + facts.joined(separator: " · ") }
     let detail = attention?.summary ?? failure ?? activity
     let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -199,13 +204,15 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     return line
   }
 
-  static func oneLine(_ text: String, limit: Int) -> String {
+  /// One line of at most `limit` characters, whitespace collapsed.
+  public static func oneLine(_ text: String, limit: Int) -> String {
     let compact = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     guard compact.count > limit else { return compact }
     return String(compact.prefix(max(1, limit - 1))) + "…"
   }
 
-  static func compactCount(_ count: Int) -> String {
+  /// `950`, `1.2k`, `12.0k`: a count short enough for a status line.
+  public static func compactCount(_ count: Int) -> String {
     guard count >= 1_000 else { return String(count) }
     let tenths = (count + 50) / 100
     return "\(tenths / 10).\(tenths % 10)k"

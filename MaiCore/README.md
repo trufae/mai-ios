@@ -218,13 +218,35 @@ live runtime and the new URL is saved immediately. `/provider baseurl URL`
 remains an alias. In `/visual`, open the Providers tab, choose **Edit** beside a
 configured provider, change **Base URL**, and choose **Update**.
 
-Each prompt is preceded by a colored separator so prompts remain easy to find
-in terminal scrollback. Long input scrolls horizontally and is printed in full
-when submitted. `/set ui.` lists the persisted terminal styling options;
-`ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, `ui.bgcolor`, and
-`ui.fgtoolresult` accept named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold`
-and `ui.markdown` accept `on` or `off`. `ui.toolResultLines` accepts `all` or a
-line count (the default is `all`; `0` restores the compact status-only display).
+On a terminal the prompt never goes away: the bottom two rows are reserved for
+a status line (project, agent, what is running, how much is queued) and the
+input line, and everything else scrolls above them. A message typed while a
+turn runs is queued and joins the conversation at the agent's next model turn —
+after the tool results it is about to read — so a running agent can be steered
+without stopping it. `/queue` lists what is waiting, `/queue push TEXT` adds
+without sending, `/queue pop` drops the newest, and `/queue flush` drops all.
+`@PID TEXT` sends one message to a running child agent, and `/agents focus PID`
+sends everything typed to it until `/agents focus main`. When a tool asks for
+approval the question is printed above the prompt and answered with `y`, `a`,
+`n`, `e`, or `c` at the same prompt; any other line stays an ordinary message
+and the question keeps waiting. Piped input keeps the one-line-at-a-time REPL,
+where a turn finishes before the next line is read.
+
+Child agents print as they work, in blocks rather than character by character,
+every line prefixed with the child's pid (`agent#3 │ …`, `agent#3 → tool …`,
+`agent#3 ↲ done …`) so two children working at once stay apart. `ui.subagents`
+picks how much: `all` (replies and tool calls), `tools` (tool calls only),
+`stats` (one line per model turn), or `none`. `/agents tree` ends with a
+`Total:` row summing the turns, tools, and tokens of the whole tree.
+
+On piped input each prompt is preceded by a colored separator so prompts remain
+easy to find in terminal scrollback. Long input scrolls horizontally and is
+printed in full when submitted. `/set ui.` lists the persisted terminal styling
+options; `ui.bgline` colors the status line (or the separator), `ui.fgprompt`,
+`ui.bgprompt`, `ui.fgcolor`, `ui.bgcolor`, and `ui.fgtoolresult` accept named
+ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` and `ui.markdown` accept `on`
+or `off`. `ui.toolResultLines` accepts `all` or a line count (the default is
+`all`; `0` restores the compact status-only display).
 Successful tool results are yellow by default, tool starts remain green, and
 failed results are red. Unified diff removals and additions, including output
 from `files_patch`, use dark red and dark green backgrounds. `/set limits.`
@@ -365,7 +387,14 @@ draws them, `/agents log PID` prints one agent's own transcript, and
 subagents can start more, so the result is a tree, bounded by
 `limits.maxSubagentDepth` and `limits.maxSubagents` across the whole tree.
 A chat is one process for its whole life, so a child started in the background
-three turns ago is still addressable by the run that started it.
+three turns ago is still addressable by the run that started it. Every process
+has an inbox: `AgentSupervisor.post(_:to:)` queues a user message, and the run
+appends it to its transcript at its next model turn — emitting
+`AgentEvent.userMessage` — or goes round once more when it arrives while the
+model is answering. Hosts pre-register a chat's process with
+`AgentRuntime.allocateProcess(agentID:)` so messages can be queued before the
+first turn, and read a child's events (tagged with the child's pid, background
+or not) to show its work.
 
 Subagents are disabled by default: set an agent's `limits.maxSubagents` above
 zero. `agent_start` takes a three-part brief — `context`, `task`, and `output` —

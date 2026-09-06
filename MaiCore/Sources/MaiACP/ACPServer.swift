@@ -151,12 +151,15 @@ public actor ACPServer {
   // MARK: - Streaming out
 
   private func forward(_ event: AgentEvent, session id: String) async {
+    // Child agents report through the same handler; the editor gets the served
+    // agent's own stream, and children stay behind the tool result they become.
     switch event {
-    case .provider(_, .textDelta(let text)) where !text.isEmpty:
+    case .provider(let context, .textDelta(let text)) where context.depth == 0 && !text.isEmpty:
       await update(session: id, kind: .agentMessageChunk, text: text)
-    case .provider(_, .reasoningDelta(let text)) where !text.isEmpty:
+    case .provider(let context, .reasoningDelta(let text))
+    where context.depth == 0 && !text.isEmpty:
       await update(session: id, kind: .agentThoughtChunk, text: text)
-    case .toolStarted(_, let call):
+    case .toolStarted(let context, let call) where context.depth == 0:
       await toolUpdate(session: id, name: call.name)
     default:
       break

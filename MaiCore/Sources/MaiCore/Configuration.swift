@@ -393,6 +393,20 @@ public struct ConfiguredApprovals: Codable, Equatable, Sendable {
   }
 }
 
+/// How much of a child agent's run the text REPL prints. Every level keeps the
+/// lines that say a child started and what it answered; the levels differ in
+/// what is shown in between.
+public enum SubagentOutputLevel: String, Codable, CaseIterable, Sendable {
+  /// The child's replies and tool calls, as blocks prefixed with its pid.
+  case all
+  /// Only the tool calls and their results.
+  case tools
+  /// One line per model turn with the running counts.
+  case stats
+  /// Nothing while the child runs.
+  case none
+}
+
 public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public var backgroundLine: String
   public var foreground: String
@@ -406,6 +420,8 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public var markdown: Bool
   /// Number of leading tool-result lines printed by the text REPL. Negative shows all.
   public var toolResultLines: Int
+  /// What the text REPL prints while child agents run.
+  public var subagentOutput: SubagentOutputLevel
 
   public init(
     backgroundLine: String = "rgb:024",
@@ -416,7 +432,8 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     toolResultForeground: String = "yellow",
     bold: Bool = false,
     markdown: Bool = true,
-    toolResultLines: Int = -1
+    toolResultLines: Int = -1,
+    subagentOutput: SubagentOutputLevel = .all
   ) {
     self.backgroundLine = backgroundLine
     self.foreground = foreground
@@ -427,6 +444,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     self.bold = bold
     self.markdown = markdown
     self.toolResultLines = max(-1, toolResultLines)
+    self.subagentOutput = subagentOutput
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -439,6 +457,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     case bold
     case markdown
     case toolResultLines
+    case subagentOutput = "subagents"
   }
 
   public init(from decoder: Decoder) throws {
@@ -455,7 +474,9 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
         String.self, forKey: .toolResultForeground) ?? "yellow",
       bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false,
       markdown: try container.decodeIfPresent(Bool.self, forKey: .markdown) ?? true,
-      toolResultLines: try container.decodeIfPresent(Int.self, forKey: .toolResultLines) ?? -1)
+      toolResultLines: try container.decodeIfPresent(Int.self, forKey: .toolResultLines) ?? -1,
+      subagentOutput: try container.decodeIfPresent(
+        SubagentOutputLevel.self, forKey: .subagentOutput) ?? .all)
   }
 }
 

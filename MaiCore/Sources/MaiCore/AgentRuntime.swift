@@ -166,6 +166,19 @@ public actor AgentRuntime {
     return try await run(request, emit: emit)
   }
 
+  /// Registers an idle top-level process for a conversation before any turn
+  /// runs, so a host can queue messages for it and list it, then pass the pid
+  /// to `run(_:process:emit:)` when the first turn starts.
+  public func allocateProcess(agentID: String, task: String = "") async -> AgentPID {
+    await supervisor.register(
+      runID: UUID(),
+      parent: nil,
+      agentID: agentID,
+      displayName: agentID,
+      task: task,
+      depth: 0)
+  }
+
   /// Runs one turn. Pass the pid an earlier turn returned as `process` to keep
   /// a conversation's identity — and the background children it started —
   /// across turns; a stale or omitted pid starts a fresh process.
@@ -269,6 +282,17 @@ public actor AgentRuntime {
     await supervisor.note(pid, state: .running, transcript: transcript)
     while localModelTurns < request.limits.maxModelTurns {
       try Task.checkCancellation()
+      // Anything a person queued for this process since the last turn joins
+      // the conversation here, after the tool results the model is about to
+      // read, so a running agent can be steered without stopping it.
+      let injected = await supervisor.drainInbox(pid)
+      if !injected.isEmpty {
+        for message in injected {
+          transcript.append(message)
+          await emit(.userMessage(context, message))
+        }
+        await supervisor.note(pid, transcript: transcript)
+      }
       guard await budget.claimModelTurn() else {
         throw AgentRuntimeError.limitExceeded("model turns")
       }
@@ -360,6 +384,16 @@ public actor AgentRuntime {
 
       let calls = providerResponse.message.toolCalls
       if calls.isEmpty {
+        // A message that arrived while the model was answering is not left
+        // behind for a run that is about to end: the loop goes round once more
+        // so the answer takes it into account. A run out of turns ends anyway
+        // and leaves the message queued for its host.
+        if localModelTurns < request.limits.maxModelTurns,
+          await budget.canClaimModelTurn(),
+          await supervisor.hasQueuedMessages(pid)
+        {
+          continue
+        }
         let result = AgentResult(
           runID: context.runID,
           agentID: request.agentID,
@@ -853,10 +887,9 @@ public actor AgentRuntime {
       depth: depth + 1,
       pid: childPID)
     await emit(.childStarted(parent, child: childContext))
-    // A background child's output would interleave with whatever the host is
-    // printing for the parent, so only a waited-for child streams through.
-    let silence: AgentEventHandler = { _ in }
-    let childEmit: AgentEventHandler = background ? silence : emit
+    // Every child's events reach the host, background or not, tagged with the
+    // child's own context and pid. How they are shown — prefixed, folded into
+    // one line, or dropped — is the host's call, not the runtime's.
     let task = Task {
       do {
         let child = try await runInternal(
@@ -866,7 +899,7 @@ public actor AgentRuntime {
           parentRunID: parent.runID,
           depth: depth + 1,
           budget: budget,
-          emit: childEmit)
+          emit: emit)
         await budget.releaseSubagent()
         await supervisor.finish(childPID, result: child, announce: background)
         return child
@@ -1275,6 +1308,10 @@ private actor RunBudget {
     guard modelTurns < limits.maxModelTurns else { return false }
     modelTurns += 1
     return true
+  }
+
+  func canClaimModelTurn() -> Bool {
+    modelTurns < limits.maxModelTurns
   }
 
   func claimToolCall() -> Bool {

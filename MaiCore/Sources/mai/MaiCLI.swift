@@ -611,184 +611,6 @@ struct REPLSession {
   }
 }
 
-private actor TerminalWriter {
-  private var wroteRootDelta = false
-  private var rootLineOpen = false
-  /// When set, output is collected for another surface instead of hitting the tty.
-  private let capturesOutput: Bool
-  private var captured: [String] = []
-  /// Styles assistant markdown when set; nil prints replies verbatim.
-  private var markdown: MarkdownTerminalRenderer?
-  private var outputEndedLine = true
-  private var toolResultLines = ConfiguredTerminalUI().toolResultLines
-  private var toolResultColor = ConfiguredTerminalUI().toolResultForeground
-  private let colorsStatus: Bool
-
-  init(capturesOutput: Bool = false) {
-    self.capturesOutput = capturesOutput
-    colorsStatus =
-      !capturesOutput && isatty(STDERR_FILENO) != 0
-      && ProcessInfo.processInfo.environment["NO_COLOR"] == nil
-  }
-
-  func drainCaptured() -> String {
-    let text = captured.joined()
-    captured.removeAll()
-    return text
-  }
-
-  /// Installs the renderer for replies. Captured output stays verbatim because
-  /// it is shown by surfaces that do not interpret escape sequences.
-  func configureMarkdown(_ renderer: MarkdownTerminalRenderer?) {
-    markdown = capturesOutput ? nil : renderer
-  }
-
-  func configureToolResultLines(_ count: Int) {
-    toolResultLines = max(-1, count)
-  }
-
-  func configureToolResultColor(_ color: String) {
-    toolResultColor = color
-  }
-
-  var markdownRenderer: MarkdownTerminalRenderer? { markdown }
-
-  /// Renders a complete text the way replies are rendered.
-  func render(_ text: String) -> String {
-    markdown?.render(text) ?? text
-  }
-
-  func resetResponse() {
-    wroteRootDelta = false
-    rootLineOpen = false
-    markdown?.reset()
-  }
-
-  func consume(_ event: AgentEvent) {
-    switch event {
-    case .modelStarted(let context, let turn) where context.depth == 0 && turn > 1:
-      finishReply()
-      closeRootLine()
-    case .provider(let context, .textDelta(let text)) where context.depth == 0:
-      if var renderer = markdown {
-        let output = renderer.feed(text)
-        markdown = renderer
-        write(output)
-      } else {
-        write(text)
-      }
-      wroteRootDelta = true
-      rootLineOpen = true
-    case .toolStarted(let context, let call) where context.depth == 0:
-      finishReply()
-      closeRootLine()
-      status("→ tool \(call.name) \(call.arguments.compactJSONString)", color: "green")
-    case .toolFinished(let context, let result) where context.depth == 0:
-      status(
-        ToolResultPreview.render(result, maxLines: toolResultLines),
-        color: result.isError ? "red" : toolResultColor)
-    case .childStarted(_, let child):
-      finishReply()
-      closeRootLine()
-      status("↳ child \(child.agentID) [\(child.runID.uuidString.prefix(8))]")
-    case .childFinished(_, let child):
-      status("↲ child \(child.agentID): \(child.response.text.prefix(100))")
-    case .finished(let context, let result) where context.depth == 0:
-      if wroteRootDelta {
-        finishReply()
-      } else {
-        write(render(result.response.text))
-      }
-      closeRootLine(force: true)
-    default:
-      break
-    }
-  }
-
-  func recoverAfterError(_ message: String) {
-    finishReply()
-    closeRootLine()
-    status("error: \(message)")
-  }
-
-  func recoverAfterCancellation() {
-    finishReply()
-    closeRootLine()
-    status("cancelled")
-  }
-
-  func prompt(_ value: String) { write(value) }
-
-  /// A one-line remark between replies, styled like tool status lines.
-  func note(_ value: String) { status(value) }
-
-  func line(_ value: String = "", to handle: FileHandle = .standardOutput) {
-    if capturesOutput {
-      captured.append(value + "\n")
-      return
-    }
-    handle.write(Data((value + "\n").utf8))
-    if handle === FileHandle.standardOutput { outputEndedLine = true }
-  }
-
-  /// Writes what the markdown renderer still holds for the current reply.
-  private func finishReply() {
-    guard var renderer = markdown else { return }
-    let output = renderer.flush()
-    markdown = renderer
-    write(output)
-  }
-
-  private func write(_ value: String) {
-    guard !value.isEmpty else { return }
-    outputEndedLine = value.hasSuffix("\n")
-    if capturesOutput {
-      captured.append(value)
-      return
-    }
-    FileHandle.standardOutput.write(Data(value.utf8))
-  }
-
-  private func status(_ value: String, color: String? = nil) {
-    if capturesOutput {
-      captured.append(value + "\n")
-      return
-    }
-    let output: String
-    if colorsStatus {
-      let lines = value.components(separatedBy: "\n")
-      let hasUnifiedDiff = lines.indices.dropLast().contains { index in
-        let line = lines[index].drop(while: { $0.isWhitespace })
-        let next = lines[index + 1].drop(while: { $0.isWhitespace })
-        return line.hasPrefix("--- ") && next.hasPrefix("+++ ")
-      }
-      output = lines.map { line in
-        let marker = line.drop(while: { $0.isWhitespace })
-        if hasUnifiedDiff, marker.hasPrefix("-") && !marker.hasPrefix("--- ") {
-          return "\u{1B}[38;2;255;217;221;48;2;66;31;36m\(line)\u{1B}[0m"
-        }
-        if hasUnifiedDiff, marker.hasPrefix("+") && !marker.hasPrefix("+++ ") {
-          return "\u{1B}[38;2;217;247;227;48;2;22;58;36m\(line)\u{1B}[0m"
-        }
-        guard let color, let code = TerminalLineEditor.foregroundColorCode(color) else {
-          return line
-        }
-        return "\u{1B}[\(code)m\(line)\u{1B}[0m"
-      }.joined(separator: "\n")
-    } else {
-      output = value
-    }
-    FileHandle.standardError.write(Data((output + "\n").utf8))
-  }
-
-  private func closeRootLine(force: Bool = false) {
-    if (rootLineOpen || force) && !outputEndedLine {
-      write("\n")
-    }
-    rootLineOpen = false
-  }
-}
-
 private final class TerminalInterruptHandler: @unchecked Sendable {
   private let source: DispatchSourceSignal
   private let lock = NSLock()
@@ -833,9 +655,15 @@ private final class TerminalInterruptHandler: @unchecked Sendable {
 }
 
 private actor TerminalApprovalHandler: ApprovalHandler {
+  typealias Prompter = @Sendable (ApprovalRequest) async throws -> ApprovalDecision
+
   private let configuration: ConfiguredApprovals
   private var delegate: (any ApprovalHandler)?
   private var yoloEnabled: Bool
+  /// Asks through the REPL's own prompt while the persistent screen owns the
+  /// terminal, so a question from a child agent never fights the line editor
+  /// for stdin.
+  private var prompter: Prompter?
 
   init(configuration: ConfiguredApprovals, yoloEnabled: Bool = false) {
     self.configuration = configuration
@@ -855,6 +683,10 @@ private actor TerminalApprovalHandler: ApprovalHandler {
     yoloEnabled
   }
 
+  func setPrompter(_ prompter: Prompter?) {
+    self.prompter = prompter
+  }
+
   func decide(_ request: ApprovalRequest) async throws -> ApprovalDecision {
     if yoloEnabled {
       return .approve(arguments: request.call.arguments)
@@ -869,6 +701,7 @@ private actor TerminalApprovalHandler: ApprovalHandler {
       return .deny(reason: "Denied by configuration.")
     case .ask:
       if let delegate { return try await delegate.decide(request) }
+      if let prompter { return try await prompter(request) }
       guard isatty(STDIN_FILENO) != 0 else {
         return .deny(reason: "Interactive approval requires a terminal.")
       }
@@ -908,7 +741,7 @@ private actor TerminalApprovalHandler: ApprovalHandler {
 }
 
 @main
-private struct MaiCLI {
+struct MaiCLI {
   static func main() async {
     if CommandLine.arguments.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" }) {
       printUsage()
@@ -1059,6 +892,10 @@ private struct MaiCLI {
         configuration?.ui.toolResultLines ?? ConfiguredTerminalUI().toolResultLines)
       await terminal.configureToolResultColor(
         configuration?.ui.toolResultForeground ?? ConfiguredTerminalUI().toolResultForeground)
+      await terminal.configureSubagentOutput(
+        configuration?.ui.subagentOutput ?? ConfiguredTerminalUI().subagentOutput)
+      await terminal.configurePromptColor(
+        configuration?.ui.promptForeground ?? ConfiguredTerminalUI().promptForeground)
 
       if let mode = options.serve {
         await runServer(
@@ -1479,36 +1316,33 @@ private struct MaiCLI {
       widthProvider: { TerminalLineEditor.terminalColumns() })
   }
 
-  private enum HeredocResult {
-    case content(String)
-    case cancelled
-    case endOfFile
+  /// What outlives one event of the loop: the turn in flight, who typed text
+  /// goes to, and the tool calls waiting for an answer.
+  private struct REPLLoop {
+    var activeTurn: (task: Task<AgentResult, any Error>, started: ContinuousClock.Instant, pid: AgentPID)?
+    var focus: REPLMessageTarget = .main
+    var approvals: [(request: ApprovalRequest, reply: REPLApprovalReply)] = []
+    var editingApproval: (request: ApprovalRequest, reply: REPLApprovalReply)?
+    /// True while the input thread waits for the loop before reading again.
+    var readerParked = true
+    var exiting = false
   }
 
-  private static func heredocDelimiter(in input: String) -> String? {
-    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.hasPrefix("<<") else { return nil }
-    let delimiter = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-    guard !delimiter.isEmpty, !delimiter.contains(where: \.isWhitespace) else { return nil }
-    return delimiter
-  }
+  /// Commands that are safe while a turn runs: they read state, or change
+  /// things the running request already copied.
+  private static let commandsAllowedDuringTurn: Set<String> = [
+    "/help", "/queue", "/agents", "/set", "/cwd", "/pwd", "/exit", "/quit", "/todo",
+    "/providers", "/models", "/plugins", "/mcps", "/prompts", "/project", "/attach", "/image",
+    "/copy",
+  ]
 
-  private static func readHeredoc(
-    until delimiter: String,
-    editor: TerminalLineEditor
-  ) -> HeredocResult {
-    var lines: [String] = []
-    while true {
-      guard
-        let line = editor.readLine(
-          prompt: "...> ", completions: [], rememberInput: false)
-      else { return .endOfFile }
-      if editor.wasInterrupted { return .cancelled }
-      if line == delimiter { return .content(lines.joined(separator: "\n")) }
-      lines.append(line)
-    }
-  }
-
+  /// The REPL is one loop over one stream of events. Typed lines arrive from
+  /// a thread of their own, so the prompt stays on screen while a turn runs;
+  /// a turn ending, a tool asking for approval, and a change in the process
+  /// table arrive on the same stream. On a terminal the prompt lives on two
+  /// reserved rows under the output (`TerminalScreen`); piped input keeps the
+  /// one-line-at-a-time behaviour, where a turn finishes before the next line
+  /// is read.
   private static func runREPL(
     workspace: inout AgentChatWorkspace,
     store: AgentChatStore,
@@ -1529,11 +1363,10 @@ private struct MaiCLI {
     var session = REPLSession(chat: workspace.selectedChat!)
     let editor = TerminalLineEditor(historyURL: historyURL)
     let interruptHandler = TerminalInterruptHandler()
-    // Announcing an agent's request for attention while the line editor owns
-    // the screen would corrupt it, so the check happens between prompts.
     var announcedAttention: Set<AgentPID> = []
     // One process per chat, not per turn: a background agent started three
-    // turns ago is still the current run's child, so it stays collectable.
+    // turns ago is still the current run's child, so it stays collectable,
+    // and a message typed while a turn runs has a pid to wait in.
     var chatProcessIDs: [UUID: AgentPID] = [:]
     await terminal.line("pmai — MaiCore agent REPL")
     await terminal.line(
@@ -1548,127 +1381,511 @@ private struct MaiCLI {
       )
     }
 
-    while true {
+    let (events, continuation) = AsyncStream<REPLEvent>.makeStream()
+    let reader = REPLInputReader(editor: editor, continuation: continuation)
+    let screen = TerminalScreen()
+    if let screen {
+      screen.configure(ui: tintedUI(configuration?.ui ?? .init(), project: project))
+      screen.activate()
+      TerminalScreen.install(screen)
+      editor.install(surface: screen)
+      await terminal.attach(screen: screen)
+      await visual.approvalHandler.setPrompter { request in
+        try await withCheckedThrowingContinuation { pending in
+          continuation.yield(.approval(request, REPLApprovalReply(pending)))
+        }
+      }
+    }
+    let supervisorFeed = Task {
+      for await change in await runtime.supervisor.events() {
+        continuation.yield(.supervisor(change))
+      }
+    }
+    var loop = REPLLoop()
+
+    func refreshTerminalSettings() async {
       let ui = tintedUI(configuration?.ui ?? .init(), project: project)
       editor.configure(ui: ui)
+      screen?.configure(ui: ui)
       await terminal.configureToolResultLines(ui.toolResultLines)
       await terminal.configureToolResultColor(ui.toolResultForeground)
+      await terminal.configureSubagentOutput(ui.subagentOutput)
+      await terminal.configurePromptColor(ui.promptForeground)
       visual.memory.focus(project: project, chatID: session.id)
       visual.todo.focus(project: project)
       await runtime.configureMemory(visual.memory.promptSection)
-      await announceAgentAttention(
-        runtime: runtime, announced: &announcedAttention, terminal: terminal)
-      let liveAgents = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
-      let agentStatus = liveAgents.isEmpty ? "" : " · \(liveAgents.count) running"
+    }
+
+    func statusLine() async -> String {
+      var facts: [String] = []
+      if let turn = loop.activeTurn {
+        let activity = await runtime.supervisor.info(turn.pid)?.activity ?? ""
+        facts.append(
+          activity.isEmpty || activity == "thinking" ? "thinking" : "running \(activity)")
+      }
+      let children = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
+      if !children.isEmpty {
+        facts.append("\(children.count) agent\(children.count == 1 ? "" : "s")")
+      }
+      let queued = await runtime.supervisor.queuedMessages().count
+      if queued > 0 { facts.append("\(queued) queued") }
+      if case .agent(let pid) = loop.focus { facts.append("→ agent#\(pid.rawValue)") }
+      if let editing = loop.editingApproval {
+        facts.append("json for \(editing.request.tool.name)?")
+      } else if let waiting = loop.approvals.first {
+        let who = waiting.request.run.pid.map { "agent#\($0.rawValue) " } ?? ""
+        facts.append("approve? \(who)\(waiting.request.tool.name) [y/a/n/e/c]")
+      }
+      let detail = facts.isEmpty ? "" : " · " + facts.joined(separator: " · ")
       // The title goes last so a narrow terminal truncates it, not the status.
-      let promptStatus =
-        "\(project.displayName) \(promptIdentity(session))\(agentStatus) · \(promptContextStatus(session)) · \(session.title)"
-      guard
-        let firstLine = editor.readLine(
-          prompt: "pmai> ",
-          completions: completionCandidates(
-            workspace: workspace,
-            configuration: configuration),
-          separator: promptStatus)
-      else {
-        workspace.upsert(session.chat, selecting: true)
-        await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
+      return
+        "\(project.displayName) \(promptIdentity(session))\(detail) · \(promptContextStatus(session)) · \(session.title)"
+    }
+
+    func promptText() -> String {
+      if loop.editingApproval != nil { return "json> " }
+      if let waiting = loop.approvals.first {
+        let who = waiting.request.run.pid.map { "#\($0.rawValue) " } ?? ""
+        return "approve \(who)\(waiting.request.tool.name)? [y/a/n/e/c] "
+      }
+      if case .agent(let pid) = loop.focus { return "agent#\(pid.rawValue)> " }
+      return "pmai> "
+    }
+
+    func refreshStatus() async {
+      guard let screen else { return }
+      screen.setStatus(await statusLine())
+    }
+
+    /// Lets the input thread read the next line. Settings that the editor
+    /// reads are refreshed here, while the thread is parked and cannot race.
+    func releaseReader(workspace: AgentChatWorkspace) async {
+      guard loop.readerParked, !loop.exiting else { return }
+      await refreshTerminalSettings()
+      if screen == nil {
+        // Announcing while the classic editor owns the row would corrupt it,
+        // so on a plain terminal this happens between prompts.
+        await announceAgentAttention(
+          runtime: runtime, announced: &announcedAttention, terminal: terminal)
+      }
+      let status = await statusLine()
+      screen?.setStatus(status)
+      loop.readerParked = false
+      reader.resume(
+        with: REPLInputReader.Prompt(
+          text: promptText(),
+          completions: completionCandidates(workspace: workspace, configuration: configuration),
+          separator: screen == nil ? status : nil))
+    }
+
+    /// On a plain terminal a turn owns the screen, so the next line waits for
+    /// it; on the persistent screen the prompt is always open.
+    func releaseIfIdle(workspace: AgentChatWorkspace) async {
+      if screen != nil || loop.activeTurn == nil {
+        await releaseReader(workspace: workspace)
+      }
+    }
+
+    func mainProcess() async -> AgentPID {
+      if let pid = chatProcessIDs[session.id] { return pid }
+      let pid = await runtime.allocateProcess(agentID: session.profile.agentID, task: session.title)
+      chatProcessIDs[session.id] = pid
+      return pid
+    }
+
+    /// Starts one turn with whatever is queued for the chat followed by the
+    /// texts just typed. The turn runs in its own task; the loop hears about
+    /// its end as an event.
+    func startTurn(_ texts: [String]) async {
+      let pid = await mainProcess()
+      var messages = await runtime.supervisor.drainInbox(pid)
+      messages.append(contentsOf: texts.map { AgentMessage.user($0) })
+      guard !messages.isEmpty else { return }
+      if !session.pendingContent.isEmpty {
+        messages[0].content.append(contentsOf: session.pendingContent)
+        session.pendingContent.removeAll()
+      }
+      for message in messages { session.history.append(message) }
+      session.refreshTitle(from: messages[0].text)
+      await terminal.resetResponse()
+      let profile = session.profile
+      let request = AgentRequest(
+        agentID: profile.agentID,
+        provider: profile.provider,
+        model: profile.model,
+        messages: session.history.messages,
+        toolNames: profile.toolNames,
+        subagentNames: profile.subagentNames,
+        toolChoice: profile.toolChoice,
+        responseFormat: profile.responseFormat,
+        options: profile.options,
+        limits: profile.limits,
+        stream: profile.stream,
+        toolCallingStrategy: profile.toolCallingStrategy,
+        useToolProxy: profile.useToolProxy,
+        toolDelegation: profile.toolDelegation)
+      let task = Task {
+        try await runtime.run(request, process: pid) { event in
+          await terminal.consume(event)
+        }
+      }
+      interruptHandler.activate { task.cancel() }
+      loop.activeTurn = (task, ContinuousClock.now, pid)
+      Task {
+        let outcome: Result<AgentResult, any Error>
+        do {
+          outcome = .success(try await task.value)
+        } catch {
+          outcome = .failure(error)
+        }
+        continuation.yield(.turnFinished(outcome))
+      }
+      await refreshStatus()
+    }
+
+    /// Sends typed text where it belongs: to the chat as a new turn when it
+    /// is idle, or into an inbox the running agent reads at its next turn.
+    func deliver(_ text: String, to target: REPLMessageTarget) async {
+      switch target {
+      case .main:
+        guard loop.activeTurn != nil else {
+          await startTurn([text])
+          return
+        }
+        let pid = await mainProcess()
+        await runtime.supervisor.post(.user(text), to: pid)
+        let waiting = await runtime.supervisor.queuedMessages(for: pid).count
+        await terminal.note(
+          "queued (\(waiting) waiting): it joins the conversation at the next model turn · /queue")
+      case .agent(let pid):
+        guard let info = await runtime.supervisor.info(pid) else {
+          await terminal.note("No agent #\(pid.rawValue). /agents tree lists the running ones.")
+          return
+        }
+        if info.depth == 0 {
+          await deliver(text, to: .main)
+          return
+        }
+        guard !info.state.isTerminal else {
+          await terminal.note(
+            "agent#\(pid.rawValue) (\(info.agentID)) has finished; /agents log \(pid.rawValue) shows what it did."
+          )
+          if loop.focus == .agent(pid) { loop.focus = .main }
+          return
+        }
+        await runtime.supervisor.post(.user(text), to: pid)
+        let waiting = await runtime.supervisor.queuedMessages(for: pid).count
+        await terminal.note(
+          "queued for agent#\(pid.rawValue) (\(info.agentID)) (\(waiting) waiting): delivered at its next model turn"
+        )
+      }
+      await refreshStatus()
+    }
+
+    /// Treats a typed line as the answer to the approval at the head of the
+    /// queue when it reads as one; anything else stays an ordinary line and
+    /// the question keeps waiting.
+    func answerApproval(_ text: String) async -> Bool {
+      if let editing = loop.editingApproval {
+        loop.editingApproval = nil
+        if let data = text.data(using: .utf8),
+          let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+          value.objectValue != nil
+        {
+          editing.reply.resume(with: .approve(arguments: value))
+          await terminal.note("approved \(editing.request.tool.name) with the edited arguments")
+        } else {
+          editing.reply.resume(with: .deny(reason: "Edited arguments were not a JSON object."))
+          await terminal.note("denied \(editing.request.tool.name): the arguments were not a JSON object")
+        }
+        return true
+      }
+      guard let waiting = loop.approvals.first else { return false }
+      let tool = waiting.request.tool.name
+      switch text.lowercased() {
+      case "y", "yes":
+        waiting.reply.resume(with: .approve(arguments: waiting.request.call.arguments))
+        await terminal.note("approved \(tool)")
+      case "a", "always":
+        await visual.approvalHandler.setYOLOEnabled(true)
+        waiting.reply.resume(with: .approve(arguments: waiting.request.call.arguments))
+        await terminal.note("approved \(tool); YOLO mode is on for this session")
+      case "n", "no":
+        waiting.reply.resume(with: .deny(reason: "Denied by user."))
+        await terminal.note("denied \(tool)")
+      case "e", "edit":
+        loop.approvals.removeFirst()
+        loop.editingApproval = waiting
+        await terminal.note("Type the replacement JSON arguments for \(tool):")
+        return true
+      case "c", "cancel":
+        waiting.reply.resume(with: .cancelRun)
+        await terminal.note("cancelling the run that asked for \(tool)")
+      default:
+        return false
+      }
+      loop.approvals.removeFirst()
+      return true
+    }
+
+    func handleFocus(_ argument: String) async {
+      let trimmed = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else {
+        switch loop.focus {
+        case .main:
+          await terminal.line("Messages go to this chat. /agents focus PID sends them to a running agent.")
+        case .agent(let pid):
+          await terminal.line("Messages go to agent#\(pid.rawValue). /agents focus main returns to the chat.")
+        }
         return
       }
-      var input = firstLine
-      var isHeredoc = false
-      if let delimiter = heredocDelimiter(in: firstLine) {
-        switch readHeredoc(until: delimiter, editor: editor) {
-        case .content(let content):
-          input = content
-          isHeredoc = true
-        case .cancelled:
-          continue
-        case .endOfFile:
-          await terminal.line(
-            "warning: End of input before heredoc delimiter '\(delimiter)'.",
-            to: .standardError)
-          workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
-          return
-        }
+      guard let target = focusTarget(trimmed) else {
+        await terminal.line("Usage: /agents focus <PID|main>")
+        return
       }
-      let text = isHeredoc ? input : input.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-      if !isHeredoc, text.hasPrefix("/") {
-        if text == "/project" || text.hasPrefix("/project ") {
-          await handleProjectCommand(
-            String(text.dropFirst("/project".count)).trimmingCharacters(
-              in: .whitespacesAndNewlines),
-            project: &project,
-            home: home,
-            store: store,
-            terminal: terminal)
-          continue
-        }
-        if text == "/chat" || text.hasPrefix("/chat ") {
-          workspace.upsert(session.chat, selecting: true)
-          await handleWorkspaceChatCommand(
-            String(text.dropFirst("/chat".count)).trimmingCharacters(
-              in: .whitespacesAndNewlines),
-            session: &session,
-            workspace: &workspace,
-            runtime: runtime,
-            configuration: configuration,
-            terminal: terminal)
-          workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, store: store, terminal: terminal)
-          continue
-        }
-        #if PMAI_HAS_VISUAL
-          if text == "/visual" {
-            workspace.upsert(session.chat, selecting: true)
-            session.visualSnapshot = visualSnapshot(for: workspace)
-          }
-        #endif
-        if await handleCommand(
-          text,
-          session: &session,
-          runtime: runtime,
-          plugins: plugins,
-          ocrProvider: ocrProvider,
-          configuration: &configuration,
-          catalogs: &catalogs,
-          visual: visual,
-          terminal: terminal)
-        {
-          workspace.upsert(session.chat, selecting: true)
-          await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
+      switch target {
+      case .main:
+        loop.focus = .main
+        await terminal.line("Messages go to this chat again.")
+      case .agent(let pid):
+        guard let info = await runtime.supervisor.info(pid) else {
+          await terminal.line("No agent #\(pid.rawValue). /agents tree lists the running ones.")
           return
         }
-        #if PMAI_HAS_VISUAL
-          if text == "/visual", let snapshot = session.visualSnapshot {
-            workspace = chatWorkspace(from: snapshot, focusedID: session.id, previous: workspace)
-            session = REPLSession(chat: workspace.selectedChat!)
-          } else {
+        guard info.depth > 0, !info.state.isTerminal else {
+          await terminal.line(
+            info.depth == 0
+              ? "agent#\(pid.rawValue) is this chat; /agents focus main is the same thing."
+              : "agent#\(pid.rawValue) (\(info.agentID)) has finished; pick a running one from /agents tree."
+          )
+          return
+        }
+        loop.focus = .agent(pid)
+        await terminal.line(
+          "Messages go to agent#\(pid.rawValue) (\(info.agentID)) until /agents focus main; @main TEXT still reaches the chat."
+        )
+      }
+    }
+
+    reader.start()
+    await releaseReader(workspace: workspace)
+
+    events: for await event in events {
+      switch event {
+      case .line(let raw, let heredoc):
+        loop.readerParked = true
+        let text = heredoc ? raw : raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+          await releaseIfIdle(workspace: workspace)
+          continue
+        }
+        if !heredoc, await answerApproval(text) {
+          await refreshStatus()
+          await releaseIfIdle(workspace: workspace)
+          continue
+        }
+        if !heredoc, let addressed = addressedMessage(text) {
+          await deliver(addressed.body, to: addressed.target)
+          await releaseIfIdle(workspace: workspace)
+          continue
+        }
+        if !heredoc, text.hasPrefix("/") {
+          let command = text.split(maxSplits: 1, whereSeparator: \Character.isWhitespace)
+          let name = String(command[0])
+          let argument =
+            command.count > 1
+            ? command[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+          if name == "/queue" {
+            let main = await mainProcess()
+            await handleQueueCommand(
+              argument, focus: loop.focus, main: main, runtime: runtime, terminal: terminal)
+            await refreshStatus()
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/agents" || name == "/agent",
+            argument == "focus" || argument.hasPrefix("focus ")
+          {
+            await handleFocus(String(argument.dropFirst("focus".count)))
+            await refreshStatus()
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/exit" || name == "/quit" {
+            loop.exiting = true
+            if let turn = loop.activeTurn {
+              turn.task.cancel()
+              continue
+            }
+            break events
+          }
+          if loop.activeTurn != nil, !commandsAllowedDuringTurn.contains(name) {
+            await terminal.note(
+              "\(name) waits for the running turn; Ctrl+C cancels it. Messages typed now are queued."
+            )
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/project" {
+            await handleProjectCommand(
+              argument,
+              project: &project,
+              home: home,
+              store: store,
+              terminal: terminal)
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/chat" {
+            workspace.upsert(session.chat, selecting: true)
+            await handleWorkspaceChatCommand(
+              argument,
+              session: &session,
+              workspace: &workspace,
+              runtime: runtime,
+              configuration: configuration,
+              terminal: terminal)
+            workspace.upsert(session.chat, selecting: true)
+            await saveWorkspace(&workspace, store: store, terminal: terminal)
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          #if PMAI_HAS_VISUAL
+            if text == "/visual" {
+              workspace.upsert(session.chat, selecting: true)
+              session.visualSnapshot = visualSnapshot(for: workspace)
+            }
+          #endif
+          if await handleCommand(
+            text,
+            session: &session,
+            runtime: runtime,
+            plugins: plugins,
+            ocrProvider: ocrProvider,
+            configuration: &configuration,
+            catalogs: &catalogs,
+            visual: visual,
+            terminal: terminal)
+          {
+            loop.exiting = true
+            break events
+          }
+          #if PMAI_HAS_VISUAL
+            if text == "/visual", let snapshot = session.visualSnapshot {
+              workspace = chatWorkspace(from: snapshot, focusedID: session.id, previous: workspace)
+              session = REPLSession(chat: workspace.selectedChat!)
+            } else {
+              session.touch()
+              workspace.upsert(session.chat, selecting: true)
+            }
+          #else
             session.touch()
             workspace.upsert(session.chat, selecting: true)
+          #endif
+          await saveWorkspace(&workspace, store: store, terminal: terminal)
+          await releaseIfIdle(workspace: workspace)
+          continue
+        }
+        await deliver(text, to: loop.focus)
+        await releaseIfIdle(workspace: workspace)
+
+      case .interrupt:
+        loop.readerParked = true
+        if let turn = loop.activeTurn {
+          turn.task.cancel()
+        } else if let waiting = loop.approvals.first {
+          loop.approvals.removeFirst()
+          waiting.reply.fail(CancellationError())
+        } else if loop.editingApproval != nil {
+          loop.editingApproval?.reply.resume(with: .deny(reason: "Edit cancelled."))
+          loop.editingApproval = nil
+        } else if screen != nil {
+          await terminal.note("Nothing to cancel. /exit or Ctrl+D quits.")
+        }
+        await refreshStatus()
+        await releaseIfIdle(workspace: workspace)
+
+      case .endOfFile:
+        loop.readerParked = true
+        loop.exiting = true
+        if let turn = loop.activeTurn {
+          turn.task.cancel()
+          continue
+        }
+        break events
+
+      case .turnFinished(let outcome):
+        interruptHandler.deactivate()
+        let turn = loop.activeTurn
+        loop.activeTurn = nil
+        var succeeded = false
+        switch outcome {
+        case .success(let result):
+          session.history.replaceAll(with: result.transcript)
+          succeeded = true
+        case .failure(let error):
+          if error is CancellationError || interruptHandler.interruptedActiveOperation() {
+            await terminal.recoverAfterCancellation()
+          } else {
+            await terminal.recoverAfterError(error.localizedDescription)
           }
-        #else
-          session.touch()
-          workspace.upsert(session.chat, selecting: true)
-        #endif
+        }
+        if let turn { await terminal.note("took \(elapsedDescription(since: turn.started))") }
+        session.touch()
+        workspace.upsert(session.chat, selecting: true)
         await saveWorkspace(&workspace, store: store, terminal: terminal)
-        continue
+        if loop.exiting { break events }
+        if let turn {
+          let waiting = await runtime.supervisor.queuedMessages(for: turn.pid).count
+          if waiting > 0, succeeded {
+            // Typed after the run's last look at its inbox: it becomes the
+            // next turn right away, the way it would have joined this one.
+            await startTurn([])
+          } else if waiting > 0 {
+            await terminal.note(
+              "\(waiting) queued message\(waiting == 1 ? "" : "s") still waiting: /queue shows them; they go with your next message."
+            )
+          }
+        }
+        await refreshStatus()
+        await releaseIfIdle(workspace: workspace)
+
+      case .approval(let request, let reply):
+        loop.approvals.append((request, reply))
+        await terminal.approvalRequest(request)
+        await refreshStatus()
+
+      case .supervisor(let change):
+        switch change {
+        case .finished(let info) where info.depth > 0:
+          await terminal.processEnded(info)
+          if loop.focus == .agent(info.pid) {
+            loop.focus = .main
+            await terminal.note("agent#\(info.pid.rawValue) has ended; messages go to this chat again.")
+          }
+        case .attention where screen != nil:
+          await announceAgentAttention(
+            runtime: runtime, announced: &announcedAttention, terminal: terminal,
+            skippingApprovals: true)
+        default:
+          break
+        }
+        await refreshStatus()
       }
-      let started = ContinuousClock.now
-      _ = await submit(
-        text,
-        session: &session,
-        runtime: runtime,
-        process: &chatProcessIDs[session.id],
-        terminal: terminal,
-        interruptHandler: interruptHandler)
-      await terminal.note("took \(elapsedDescription(since: started))")
-      session.touch()
-      workspace.upsert(session.chat, selecting: true)
-      await saveWorkspace(&workspace, store: store, terminal: terminal)
     }
+
+    for waiting in loop.approvals { waiting.reply.fail(CancellationError()) }
+    loop.editingApproval?.reply.fail(CancellationError())
+    reader.stop()
+    supervisorFeed.cancel()
+    continuation.finish()
+    await visual.approvalHandler.setPrompter(nil)
+    workspace.upsert(session.chat, selecting: true)
+    await saveWorkspace(&workspace, store: store, terminal: terminal, closing: true)
+    await terminal.attach(screen: nil)
+    editor.install(surface: nil)
+    TerminalScreen.install(nil)
+    screen?.deactivate()
   }
 
   /// Reports background agents that are waiting on somebody, once each. A
@@ -1676,9 +1893,15 @@ private struct MaiCLI {
   private static func announceAgentAttention(
     runtime: AgentRuntime,
     announced: inout Set<AgentPID>,
-    terminal: TerminalWriter
+    terminal: TerminalWriter,
+    skippingApprovals: Bool = false
   ) async {
-    let waiting = await runtime.supervisor.processesNeedingAttention()
+    // On the persistent screen an approval is already a question at the
+    // prompt, so only the other kinds of attention need a line here.
+    let waiting = await runtime.supervisor.processesNeedingAttention().filter { process in
+      guard skippingApprovals, case .approval = process.attention else { return true }
+      return false
+    }
     let pids = Set(waiting.map(\.pid))
     announced.formIntersection(pids)
     for process in waiting where !announced.contains(process.pid) {
@@ -1845,9 +2068,11 @@ private struct MaiCLI {
         await terminal.line(editHelp)
       case "tools", "/tools":
         await terminal.line(toolHelp)
+      case "queue", "/queue":
+        await terminal.line(queueHelp)
       default:
         await terminal.line(
-          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, agents, chat, edit, or tools."
+          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, agents, chat, edit, tools, or queue."
         )
       }
     case "/cwd", "/pwd":
@@ -2094,6 +2319,8 @@ private struct MaiCLI {
     case "/clear":
       session.reset()
       await terminal.line("Conversation cleared.")
+    case "/queue":
+      await terminal.line("The message queue lives at the terminal prompt.\n" + queueHelp)
     default:
       await terminal.line("Unknown command. Type /help.")
     }
@@ -3127,7 +3354,13 @@ private struct MaiCLI {
     FileHandle.standardOutput.synchronizeFile()
     FileHandle.standardError.synchronizeFile()
     let shellCommand = "\(command) \(shellQuote(url.path))"
-    let waitStatus = shellCommand.withCString(posixSystem)
+    var waitStatus: CInt = -1
+    let launch = { waitStatus = shellCommand.withCString(posixSystem) }
+    if let screen = TerminalScreen.current {
+      screen.suspendTerminal(launch)
+    } else {
+      launch()
+    }
     guard waitStatus != -1 else {
       await terminal.line(
         "error: Could not launch editor '\(command)': \(String(cString: strerror(errno)))",
@@ -3415,7 +3648,16 @@ private struct MaiCLI {
   private static func agentTreeLines(runtime: AgentRuntime) async -> [String] {
     let tree = await runtime.supervisor.tree()
     guard !tree.isEmpty else { return [] }
-    return ["Running agents:"] + tree.lines()
+    return ["Running agents:"] + tree.lines() + [agentTreeTotal(tree)]
+  }
+
+  /// One row summing what the whole tree has spent so far.
+  static func agentTreeTotal(_ tree: AgentProcessTree) -> String {
+    let turns = tree.processes.reduce(0) { $0 + $1.modelTurns }
+    let tools = tree.processes.reduce(0) { $0 + $1.toolCalls }
+    let tokens = tree.processes.reduce(0) { $0 + ($1.usage?.totalTokens ?? 0) }
+    return
+      "Total: \(turns) turn\(turns == 1 ? "" : "s"), \(tools) tool\(tools == 1 ? "" : "s"), \(tokens) token\(tokens == 1 ? "" : "s")"
   }
 
   private static func setAgentEnabled(
@@ -4170,9 +4412,13 @@ private struct MaiCLI {
     ]
     let booleanKeys = ["ui.bold", "ui.markdown"]
     let countKeys = ["ui.toolresultlines"]
-    guard colorKeys.contains(key) || booleanKeys.contains(key) || countKeys.contains(key) else {
+    let levelKeys = ["ui.subagents"]
+    guard
+      colorKeys.contains(key) || booleanKeys.contains(key) || countKeys.contains(key)
+        || levelKeys.contains(key)
+    else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents"
       )
       return
     }
@@ -4197,6 +4443,15 @@ private struct MaiCLI {
       }
       ui.toolResultLines = value
       await terminal.configureToolResultLines(value)
+    } else if levelKeys.contains(key) {
+      guard let level = SubagentOutputLevel(rawValue: parts[1].lowercased()) else {
+        await terminal.line(
+          "Usage: /set ui.subagents <\(SubagentOutputLevel.allCases.map(\.rawValue).joined(separator: "|"))>"
+        )
+        return
+      }
+      ui.subagentOutput = level
+      await terminal.configureSubagentOutput(level)
     } else if booleanKeys.contains(key) {
       guard let enabled = booleanSetting(parts[1]) else {
         await terminal.line("Usage: /set \(key) <on|off>")
@@ -4429,7 +4684,7 @@ private struct MaiCLI {
   private static func listUISettings(_ ui: ConfiguredTerminalUI, terminal: TerminalWriter) async {
     for key in [
       "ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt", "ui.bold",
-      "ui.fgtoolresult", "ui.markdown", "ui.toolResultLines",
+      "ui.fgtoolresult", "ui.markdown", "ui.toolResultLines", "ui.subagents",
     ] {
       await terminal.line("\(key) = \(uiSetting(key, in: ui))")
     }
@@ -4447,6 +4702,7 @@ private struct MaiCLI {
     case "ui.bold": return ui.bold ? "on" : "off"
     case "ui.markdown": return ui.markdown ? "on" : "off"
     case "ui.toolresultlines": return ui.toolResultLines < 0 ? "all" : String(ui.toolResultLines)
+    case "ui.subagents": return ui.subagentOutput.rawValue
     default: return "-"
     }
     return value.isEmpty ? "none" : value
@@ -4552,6 +4808,9 @@ private struct MaiCLI {
         await terminal.line("Visual mode needs an interactive terminal.", to: .standardError)
         return
       }
+      let screen = TerminalScreen.current
+      screen?.deactivate()
+      defer { screen?.resume() }
       let launch = VisualLaunch(
         focusedConversation: session.visualSeed(),
         snapshot: session.visualSnapshot,
@@ -5719,7 +5978,10 @@ private struct MaiCLI {
       "/set ui.toolResultLines all", "/set ui.toolResultLines ",
       "/cwd", "/pwd", "/cd ", "/plugins",
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/prompts", "/prompt",
-      "/agents",
+      "/agents", "/agents tree", "/agents log ", "/agents kill ", "/agents focus ",
+      "/agents focus main", "/queue", "/queue push ", "/queue pop", "/queue flush",
+      "/help queue", "/set ui.subagents all", "/set ui.subagents tools",
+      "/set ui.subagents stats", "/set ui.subagents none",
       "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
       "/mcp add ", "/mcp enable ", "/mcp disable ",
@@ -5977,6 +6239,8 @@ private struct MaiCLI {
     /agents tree        Show running agents as a tree of pids
     /agents kill PID    Stop a running agent and everything it started
     /agents log PID     Print a running or finished agent's own transcript
+    /agents focus PID   Send what you type to a running agent (focus main returns)
+    /queue              List, push, pop, or flush messages waiting for an agent
     /agents enable|disable ID   Park an agent setup without deleting it
     /agents describe ID TEXT    Set the purpose a model reads when picking agents
     /agent [use] ID     Set the current chat's primary agent
@@ -5998,6 +6262,9 @@ private struct MaiCLI {
     Input: <<WORD starts a multiline message ending at WORD alone
            Up/Down or Ctrl+P/N history · Ctrl+R reverse search · Ctrl+A/E beginning/end
            Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
+           The prompt stays open while a turn runs: a message typed then is queued and
+           joins the conversation at the next model turn. @PID TEXT reaches one agent.
+           Child agents print in blocks prefixed agent#PID; /set ui.subagents picks how much.
     """
 
   private static let setHelp = """
@@ -6021,6 +6288,7 @@ private struct MaiCLI {
       /set ui.bold BOOL            Render input in bold (on/off)
       /set ui.markdown BOOL        Render replies as styled markdown (on/off)
       /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
+      /set ui.subagents LEVEL      What child agents print: all, tools, stats, or none
 
     YOLO mode lasts for this session. Agent and UI settings are persisted in the
     active configuration. COLOR accepts a named ANSI color, rgb:RGB, or none.
@@ -6161,6 +6429,11 @@ private struct MaiCLI {
       /agents acp add NAME [CMD ARG ...]  Register an ACP agent as a usable agent
       /agents log PID            Print a running or finished agent's own transcript
       /agents kill PID [REASON]  Stop an agent and everything it started
+      /agents focus PID|main     Send what you type to one running agent, or back to the chat
+
+    While agents run, what you type is queued for them and read at their next
+    model turn: /queue lists it, @PID TEXT addresses one agent once. Their
+    output prints in blocks prefixed agent#PID; /set ui.subagents picks how much.
 
     Where tools run is per definition: /set delegation subagent moves them into
     a child so this chat keeps only the answers. /set limits.maxSubagents and

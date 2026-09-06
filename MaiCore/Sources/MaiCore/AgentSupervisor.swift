@@ -10,6 +10,21 @@ public enum AgentSupervisorEvent: Equatable, Sendable {
   case finished(AgentProcessInfo)
 }
 
+/// A user message waiting for the next model turn of one process.
+public struct AgentQueuedMessage: Equatable, Sendable, Identifiable {
+  public var id: UUID
+  public var pid: AgentPID
+  public var message: AgentMessage
+  public var queuedAt: Date
+
+  public init(id: UUID = UUID(), pid: AgentPID, message: AgentMessage, queuedAt: Date = Date()) {
+    self.id = id
+    self.pid = pid
+    self.message = message
+    self.queuedAt = queuedAt
+  }
+}
+
 /// The process table for one session: which agents are running, how they are
 /// related, what they are waiting for, and how to stop them.
 ///
@@ -28,6 +43,8 @@ public actor AgentSupervisor {
   /// dropped. A finished process with live descendants is always kept.
   private let finishedRetention: Int
   private var entries: [AgentPID: Entry] = [:]
+  /// Messages posted to a process that its run has not read yet, oldest first.
+  private var inboxes: [AgentPID: [AgentQueuedMessage]] = [:]
   private var nextPID = 1
   private var subscribers: [UUID: AsyncStream<AgentSupervisorEvent>.Continuation] = [:]
 
@@ -100,6 +117,92 @@ public actor AgentSupervisor {
   /// Forgets terminal processes that nothing depends on any more.
   public func prune() {
     pruneFinished()
+  }
+
+  // MARK: - Inbox
+
+  /// Queues a message for a process. The run reads it at its next model turn —
+  /// in the middle of a tool loop if that is where it is — so a person can
+  /// steer a running agent instead of waiting for it to finish. A message for
+  /// an idle top-level process stays queued until its host starts the next
+  /// turn. Returns nil when the pid is unknown.
+  @discardableResult
+  public func post(_ message: AgentMessage, to pid: AgentPID) -> AgentQueuedMessage? {
+    guard entries[pid] != nil else { return nil }
+    let queued = AgentQueuedMessage(pid: pid, message: message)
+    inboxes[pid, default: []].append(queued)
+    noteInboxChanged(pid)
+    return queued
+  }
+
+  /// What is waiting for one process, oldest first.
+  public func queuedMessages(for pid: AgentPID) -> [AgentQueuedMessage] {
+    inboxes[pid] ?? []
+  }
+
+  /// Everything waiting for any process, oldest first.
+  public func queuedMessages() -> [AgentQueuedMessage] {
+    inboxes.values.flatMap { $0 }.sorted { $0.queuedAt < $1.queuedAt }
+  }
+
+  public func hasQueuedMessages(_ pid: AgentPID) -> Bool {
+    !(inboxes[pid]?.isEmpty ?? true)
+  }
+
+  /// Drops one queued message before the run reads it.
+  @discardableResult
+  public func discardQueuedMessage(id: UUID) -> AgentQueuedMessage? {
+    for (pid, queue) in inboxes {
+      guard let index = queue.firstIndex(where: { $0.id == id }) else { continue }
+      let removed = queue[index]
+      inboxes[pid]?.remove(at: index)
+      noteInboxChanged(pid)
+      return removed
+    }
+    return nil
+  }
+
+  /// Drops the most recently queued message of a process — or of any process
+  /// when no pid is given — before the run reads it.
+  @discardableResult
+  public func discardLastQueuedMessage(for pid: AgentPID? = nil) -> AgentQueuedMessage? {
+    let target = pid ?? queuedMessages().last?.pid
+    guard let target, let removed = inboxes[target]?.popLast() else { return nil }
+    noteInboxChanged(target)
+    return removed
+  }
+
+  /// Empties the inbox of one process, or of every process when no pid is
+  /// given. Returns what was dropped.
+  @discardableResult
+  public func clearQueuedMessages(for pid: AgentPID? = nil) -> [AgentQueuedMessage] {
+    let targets = pid.map { [$0] } ?? Array(inboxes.keys)
+    var dropped: [AgentQueuedMessage] = []
+    for target in targets {
+      guard let queue = inboxes.removeValue(forKey: target), !queue.isEmpty else { continue }
+      dropped.append(contentsOf: queue)
+      noteInboxChanged(target)
+    }
+    return dropped.sorted { $0.queuedAt < $1.queuedAt }
+  }
+
+  /// Takes everything queued for a process, for the run to append to its
+  /// transcript. Hosts that start a turn themselves use this to fold queued
+  /// messages into the request.
+  public func drainInbox(_ pid: AgentPID) -> [AgentMessage] {
+    guard let queue = inboxes.removeValue(forKey: pid), !queue.isEmpty else { return [] }
+    noteInboxChanged(pid)
+    return queue.map(\.message)
+  }
+
+  private func noteInboxChanged(_ pid: AgentPID) {
+    guard var entry = entries[pid] else { return }
+    let count = inboxes[pid]?.count ?? 0
+    guard entry.info.queuedMessages != count else { return }
+    entry.info.queuedMessages = count
+    entry.info.updatedAt = Date()
+    entries[pid] = entry
+    publish(.changed(entry.info))
   }
 
   // MARK: - Runtime API
@@ -247,6 +350,7 @@ public actor AgentSupervisor {
 
   func forget(_ pid: AgentPID) {
     entries[pid] = nil
+    inboxes[pid] = nil
   }
 
   // MARK: - Internals
@@ -263,7 +367,11 @@ public actor AgentSupervisor {
     entry.info.failure = failure ?? entry.info.failure
     entry.info.attention = attention
     entry.info.updatedAt = Date()
-    if finished { entry.info.finishedAt = Date() }
+    if finished {
+      entry.info.finishedAt = Date()
+      // "thinking" or a tool name describes a run in progress, not one that ended.
+      entry.info.activity = ""
+    }
     entries[pid] = entry
     publish(finished ? .finished(entry.info) : .changed(entry.info))
     if attention != nil { publish(.attention(entry.info)) }
@@ -292,6 +400,7 @@ public actor AgentSupervisor {
     }
     for process in ordered.prefix(removable.count - finishedRetention) {
       entries[process.pid] = nil
+      inboxes[process.pid] = nil
     }
   }
 }

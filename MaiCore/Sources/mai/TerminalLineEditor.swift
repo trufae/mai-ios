@@ -11,6 +11,77 @@ import MaiCore
   import Darwin
 #endif
 
+/// Where a line editor draws. The classic surface owns the current row of a
+/// scrolling terminal, the way a shell prompt does; `TerminalScreen` owns a
+/// row that stays below the output while agents print.
+protocol LineEditorSurface: AnyObject {
+  /// Draws the whole input row: `styled` after clearing it, `width` columns
+  /// wide, with the caret `caretBack` columns left of its end.
+  func drawInput(styled: String, width: Int, caretBack: Int)
+  /// The line was accepted: it stays on screen as a record and the row is free.
+  func acceptInput(styled: String)
+  /// Ctrl+C threw the line away.
+  func cancelInput()
+  /// Text that belongs with the output, such as completion candidates.
+  func emit(_ text: String)
+  /// The line drawn above a fresh prompt, or nothing.
+  func drawSeparator(styled: String?)
+  func bell()
+  /// Hands the terminal back to the shell for Ctrl+Z and takes it again.
+  func suspendProcess()
+}
+
+/// The surface of a plain scrolling terminal: everything happens on the row
+/// the cursor is on, and the editor owns the tty mode while it reads.
+private final class ClassicEditorSurface: LineEditorSurface {
+  private var cooked: termios
+  private var raw: termios
+
+  init(cooked: termios, raw: termios) {
+    self.cooked = cooked
+    self.raw = raw
+  }
+
+  func drawInput(styled: String, width: Int, caretBack: Int) {
+    write("\r\u{1B}[2K" + styled)
+    if caretBack > 0 { write("\u{1B}[\(caretBack)D") }
+  }
+
+  func acceptInput(styled: String) {
+    write("\r\u{1B}[2K" + styled + "\n")
+  }
+
+  func cancelInput() {
+    write("\r\u{1B}[2K^C\n")
+  }
+
+  func emit(_ text: String) {
+    write("\n" + text)
+  }
+
+  func drawSeparator(styled: String?) {
+    guard let styled else { return }
+    write("\r\u{1B}[2K" + styled + "\n")
+  }
+
+  func bell() {
+    write("\u{7}")
+  }
+
+  func suspendProcess() {
+    // ISIG is disabled while editing so Ctrl+Z arrives as a byte. Restore the
+    // shell's terminal mode before stopping, then re-enter raw mode after `fg`.
+    write("\r\u{1B}[2K^Z\n")
+    _ = tcsetattr(STDIN_FILENO, TCSADRAIN, &cooked)
+    _ = kill(getpid(), SIGTSTP)
+    _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
+  }
+
+  private func write(_ value: String) {
+    FileHandle.standardOutput.write(Data(value.utf8))
+  }
+}
+
 /// Small dependency-free line editor for the REPL. Non-interactive input keeps
 /// normal `readLine` behaviour, while terminals gain history and completion.
 final class TerminalLineEditor {
@@ -33,6 +104,12 @@ final class TerminalLineEditor {
   private let maximumHistory = 500
   private var ui = ConfiguredTerminalUI()
   private(set) var wasInterrupted = false
+  /// A surface that owns the tty for the whole session. While one is
+  /// installed the editor neither changes the terminal mode nor draws a
+  /// separator; the surface keeps the row and the status line.
+  private var persistentSurface: LineEditorSurface?
+  /// Where the current `readLine` draws.
+  private var surface: LineEditorSurface?
 
   init(historyURL: URL? = nil) {
     self.historyURL = historyURL
@@ -43,6 +120,10 @@ final class TerminalLineEditor {
     self.ui = ui
   }
 
+  func install(surface: LineEditorSurface?) {
+    persistentSurface = surface
+  }
+
   func readLine(
     prompt: String,
     completions: [String],
@@ -50,6 +131,12 @@ final class TerminalLineEditor {
     rememberInput: Bool = true
   ) -> String? {
     wasInterrupted = false
+    if let persistentSurface {
+      surface = persistentSurface
+      defer { surface = nil }
+      return readInteractive(
+        prompt: prompt, completions: completions, separator: nil, rememberInput: rememberInput)
+    }
     guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
       FileHandle.standardOutput.write(Data(prompt.utf8))
       guard let line = Swift.readLine(strippingNewline: true) else { return nil }
@@ -69,7 +156,18 @@ final class TerminalLineEditor {
     raw.c_iflag &= ~tcflag_t(IXON | ICRNL)
     guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return nil }
     defer { _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) }
+    surface = ClassicEditorSurface(cooked: original, raw: raw)
+    defer { surface = nil }
+    return readInteractive(
+      prompt: prompt, completions: completions, separator: separator, rememberInput: rememberInput)
+  }
 
+  private func readInteractive(
+    prompt: String,
+    completions: [String],
+    separator: String?,
+    rememberInput: Bool
+  ) -> String? {
     var bytes: [UInt8] = []
     var cursor = 0
     var historyIndex: Int?
@@ -84,11 +182,11 @@ final class TerminalLineEditor {
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 3:  // Ctrl+C
         wasInterrupted = true
-        write("\r\u{1B}[2K^C\n")
+        surface?.cancelInput()
         return ""
       case 4:  // Ctrl+D
         if bytes.isEmpty {
-          write("\n")
+          surface?.acceptInput(styled: "")
           return nil
         }
       case 5:  // Ctrl+E
@@ -130,7 +228,7 @@ final class TerminalLineEditor {
           redraw(prompt: prompt, bytes: bytes, cursor: cursor)
         case .interrupted:
           wasInterrupted = true
-          write("\r\u{1B}[2K^C\n")
+          surface?.cancelInput()
           return ""
         case .submitted(let line):
           renderSubmittedLine(prompt: prompt, bytes: line)
@@ -138,7 +236,7 @@ final class TerminalLineEditor {
           if rememberInput { remember(submitted) }
           return submitted
         case .endOfFile:
-          write("\n")
+          surface?.acceptInput(styled: "")
           return nil
         }
       case 23:  // Ctrl+W
@@ -149,7 +247,7 @@ final class TerminalLineEditor {
         historyIndex = nil
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 26:  // Ctrl+Z
-        suspend(original: &original, raw: &raw)
+        surface?.suspendProcess()
         drawSeparator(separator)
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 10, 13:
@@ -179,7 +277,7 @@ final class TerminalLineEditor {
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       }
     }
-    write("\n")
+    surface?.acceptInput(styled: "")
     return nil
   }
 
@@ -303,7 +401,7 @@ final class TerminalLineEditor {
           state.failed = false
         } else {
           state.failed = true
-          write("\u{7}")
+          surface?.bell()
         }
       case 27:  // An escape sequence accepts the match for editing.
         let selection = reverseSearchSelection(state, original: original)
@@ -324,13 +422,13 @@ final class TerminalLineEditor {
           cursor: acceptedCursor)
       case 127, 8:
         guard let previous = undoStack.popLast() else {
-          write("\u{7}")
+          surface?.bell()
           continue
         }
         state = previous
       default:
         guard byte >= 32 else {
-          write("\u{7}")
+          surface?.bell()
           continue
         }
         let character = readCharacter(startingWith: byte)
@@ -344,7 +442,7 @@ final class TerminalLineEditor {
           state.failed = false
         } else {
           state.failed = true
-          write("\u{7}")
+          surface?.bell()
         }
       }
       redrawReverseSearch(state, original: original)
@@ -387,7 +485,7 @@ final class TerminalLineEditor {
     let line = String(decoding: bytes, as: UTF8.self)
     let matches = candidates.filter { $0.hasPrefix(line) }.sorted()
     guard !matches.isEmpty else {
-      write("\u{7}")
+      surface?.bell()
       return
     }
     let replacement: String
@@ -396,7 +494,7 @@ final class TerminalLineEditor {
     } else {
       replacement = commonPrefix(matches)
       if replacement == line {
-        write("\n" + matches.joined(separator: "  ") + "\n")
+        surface?.emit(matches.joined(separator: "  ") + "\n")
       }
     }
     bytes = Array(replacement.utf8)
@@ -418,29 +516,34 @@ final class TerminalLineEditor {
     let hasInputBackground = Self.colorCode(ui.background, background: true) != nil
     let paddingWidth = hasInputBackground ? max(0, inputWidth - displayWidth(visibleInput)) : 0
     let padding = String(repeating: " ", count: paddingWidth)
-    write(
-      "\r\u{1B}[2K" + promptStyle + visiblePrompt + resetStyle + inputStyle + visibleInput
-        + padding + resetStyle)
+    let styled =
+      promptStyle + visiblePrompt + resetStyle + inputStyle + visibleInput + padding + resetStyle
+    let width = displayWidth(visiblePrompt) + displayWidth(visibleInput) + paddingWidth
     let suffixWidth = displayWidth(bytes[cursor..<visibleRange.upperBound])
-    let moveLeft = suffixWidth + paddingWidth
-    if moveLeft > 0 { write("\u{1B}[\(moveLeft)D") }
+    surface?.drawInput(styled: styled, width: width, caretBack: suffixWidth + paddingWidth)
+  }
+
+  /// The prompt and line as they appear once accepted, for the surface to keep.
+  func styledLine(prompt: String, text: String) -> String {
+    let promptStyle = style(foreground: ui.promptForeground, background: ui.promptBackground)
+    let inputStyle = style(foreground: ui.foreground, background: ui.background, bold: ui.bold)
+    return promptStyle + prompt + resetStyle + inputStyle + text + resetStyle
   }
 
   private func renderSubmittedLine(prompt: String, bytes: [UInt8]) {
-    let promptStyle = style(foreground: ui.promptForeground, background: ui.promptBackground)
-    let inputStyle = style(foreground: ui.foreground, background: ui.background, bold: ui.bold)
-    let line = String(decoding: bytes, as: UTF8.self)
-    write(
-      "\r\u{1B}[2K" + promptStyle + prompt + resetStyle + inputStyle + line + resetStyle + "\n")
+    surface?.acceptInput(
+      styled: styledLine(prompt: prompt, text: String(decoding: bytes, as: UTF8.self)))
   }
 
   private func drawSeparator(_ text: String?) {
-    guard let background = Self.colorCode(ui.backgroundLine, background: true) else { return }
+    guard persistentSurface == nil,
+      let background = Self.colorCode(ui.backgroundLine, background: true)
+    else { return }
     let width = max(1, Self.terminalColumns() - 1)
     let content = truncatedPrompt(text.map { " \($0) " } ?? "", maximumWidth: width)
     let padding = String(repeating: " ", count: max(0, width - displayWidth(content)))
-    write(
-      "\r\u{1B}[2K\u{1B}[\(background)m" + content + padding + resetStyle + "\n")
+    surface?.drawSeparator(
+      styled: "\u{1B}[\(background)m" + content + padding + resetStyle)
   }
 
   private var resetStyle: String { "\u{1B}[0m" }
@@ -503,6 +606,10 @@ final class TerminalLineEditor {
     colorCode(value, background: false)
   }
 
+  static func backgroundColorCode(_ value: String) -> String? {
+    colorCode(value, background: true)
+  }
+
   static func terminalColumns() -> Int {
     var size = winsize()
     guard ioctl(STDOUT_FILENO, UInt(TIOCGWINSZ), &size) == 0, size.ws_col > 0 else { return 80 }
@@ -556,6 +663,12 @@ final class TerminalLineEditor {
   }
 
   private func displayWidth(_ value: String) -> Int {
+    Self.displayWidth(of: value)
+  }
+
+  /// Terminal columns a string occupies: wide and emoji characters take two,
+  /// combining marks none.
+  static func displayWidth(of value: String) -> Int {
     value.reduce(into: 0) { width, character in
       let scalars = character.unicodeScalars
       if scalars.allSatisfy({
@@ -573,7 +686,7 @@ final class TerminalLineEditor {
     }
   }
 
-  private func isWide(_ value: UInt32) -> Bool {
+  private static func isWide(_ value: UInt32) -> Bool {
     switch value {
     case 0x1100...0x115F, 0x2329...0x232A, 0x2E80...0xA4CF, 0xAC00...0xD7A3,
       0xF900...0xFAFF, 0xFE10...0xFE19, 0xFE30...0xFE6F, 0xFF00...0xFF60,
@@ -600,15 +713,6 @@ final class TerminalLineEditor {
   private func readByte() -> UInt8? {
     var byte: UInt8 = 0
     return read(STDIN_FILENO, &byte, 1) == 1 ? byte : nil
-  }
-
-  private func suspend(original: inout termios, raw: inout termios) {
-    // ISIG is disabled while editing so Ctrl+Z arrives as a byte. Restore the
-    // shell's terminal mode before stopping, then re-enter raw mode after `fg`.
-    write("\r\u{1B}[2K^Z\n")
-    _ = tcsetattr(STDIN_FILENO, TCSADRAIN, &original)
-    _ = kill(getpid(), SIGTSTP)
-    _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
   }
 
   private func previousCharacterStart(in bytes: [UInt8], before position: Int) -> Int {
@@ -679,9 +783,5 @@ final class TerminalLineEditor {
   private static func loadHistory(from url: URL?) -> [String] {
     guard let url, let data = try? Data(contentsOf: url) else { return [] }
     return (try? JSONDecoder().decode([String].self, from: data)) ?? []
-  }
-
-  private func write(_ value: String) {
-    FileHandle.standardOutput.write(Data(value.utf8))
   }
 }

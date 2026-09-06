@@ -965,6 +965,9 @@ public enum AgentEvent: Equatable, Sendable {
   case toolFinished(AgentEventContext, ToolResult)
   case childStarted(AgentEventContext, child: AgentEventContext)
   case childFinished(AgentEventContext, child: AgentResult)
+  /// A message a person queued for this process was appended to its
+  /// transcript, between two model turns of a run that was already going.
+  case userMessage(AgentEventContext, AgentMessage)
   case finished(AgentEventContext, AgentResult)
 }
 
