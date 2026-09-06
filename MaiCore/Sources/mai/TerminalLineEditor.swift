@@ -86,6 +86,24 @@ final class TerminalLineEditor {
           bytes: &bytes,
           cursor: &cursor,
           candidates: completions)
+      case 14:  // Ctrl+N
+        guard
+          recallNextHistoryEntry(
+            bytes: &bytes,
+            cursor: &cursor,
+            historyIndex: &historyIndex,
+            draft: &draft)
+        else { continue }
+        redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+      case 16:  // Ctrl+P
+        guard
+          recallPreviousHistoryEntry(
+            bytes: &bytes,
+            cursor: &cursor,
+            historyIndex: &historyIndex,
+            draft: &draft)
+        else { continue }
+        redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 23:  // Ctrl+W
         guard cursor > 0 else { continue }
         let start = previousWordStart(in: bytes, before: cursor)
@@ -138,25 +156,21 @@ final class TerminalLineEditor {
     guard readByte() == 91, let code = readByte() else { return }
     switch code {
     case 65:  // Up
-      guard !history.isEmpty else { return }
-      if historyIndex == nil {
-        draft = bytes
-        historyIndex = history.count - 1
-      } else if historyIndex! > 0 {
-        historyIndex! -= 1
-      }
-      bytes = Array(history[historyIndex!].utf8)
-      cursor = bytes.count
+      guard
+        recallPreviousHistoryEntry(
+          bytes: &bytes,
+          cursor: &cursor,
+          historyIndex: &historyIndex,
+          draft: &draft)
+      else { return }
     case 66:  // Down
-      guard let index = historyIndex else { return }
-      if index + 1 < history.count {
-        historyIndex = index + 1
-        bytes = Array(history[index + 1].utf8)
-      } else {
-        historyIndex = nil
-        bytes = draft
-      }
-      cursor = bytes.count
+      guard
+        recallNextHistoryEntry(
+          bytes: &bytes,
+          cursor: &cursor,
+          historyIndex: &historyIndex,
+          draft: &draft)
+      else { return }
     case 67:  // Right
       cursor = nextCharacterEnd(in: bytes, after: cursor)
     case 68:  // Left
@@ -173,6 +187,42 @@ final class TerminalLineEditor {
       return
     }
     redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+  }
+
+  private func recallPreviousHistoryEntry(
+    bytes: inout [UInt8],
+    cursor: inout Int,
+    historyIndex: inout Int?,
+    draft: inout [UInt8]
+  ) -> Bool {
+    guard !history.isEmpty else { return false }
+    if historyIndex == nil {
+      draft = bytes
+      historyIndex = history.count - 1
+    } else if historyIndex! > 0 {
+      historyIndex! -= 1
+    }
+    bytes = Array(history[historyIndex!].utf8)
+    cursor = bytes.count
+    return true
+  }
+
+  private func recallNextHistoryEntry(
+    bytes: inout [UInt8],
+    cursor: inout Int,
+    historyIndex: inout Int?,
+    draft: inout [UInt8]
+  ) -> Bool {
+    guard let index = historyIndex else { return false }
+    if index + 1 < history.count {
+      historyIndex = index + 1
+      bytes = Array(history[index + 1].utf8)
+    } else {
+      historyIndex = nil
+      bytes = draft
+    }
+    cursor = bytes.count
+    return true
   }
 
   private func complete(

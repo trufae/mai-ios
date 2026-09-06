@@ -245,10 +245,11 @@ terminal width. `--no-markdown` or `ui.markdown off` prints replies verbatim,
 output that is not a terminal stays verbatim unless `--markdown` is given, and
 `NO_COLOR` keeps the structure without colors. The visual workspace renders the
 same markdown inside its panes.
-`Ctrl+A` and `Ctrl+E` move to the beginning and end, `Ctrl+W` deletes the
-previous word, and `Ctrl+C` cancels the active model or tool run without leaving
-the REPL. `Ctrl+Z` suspends pmai with the terminal restored; run `fg` in the
-shell to resume the same input or active run.
+Up/Down or `Ctrl+P`/`Ctrl+N` move through input history. `Ctrl+A` and `Ctrl+E`
+move to the beginning and end, `Ctrl+W` deletes the previous word, and `Ctrl+C`
+cancels the active model or tool run without leaving the REPL. `Ctrl+Z` suspends
+pmai with the terminal restored; run `fg` in the shell to resume the same input
+or active run.
 
 Native tools are presented as plugin-defined capability groups instead of one
 checkbox per provider-visible function. `/tools` lists the groups, `/tools
