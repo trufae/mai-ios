@@ -103,9 +103,9 @@ public struct MaiFileWorkspaceTool: AgentTool {
       case .list:
         return try workspace.list(arguments)
       case .find:
-        return try workspace.find(arguments)
+        return try await workspace.find(arguments)
       case .grep:
-        return try workspace.grep(arguments)
+        return try await workspace.grep(arguments)
       case .read:
         return try workspace.read(arguments)
       case .readDocument:
@@ -172,7 +172,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case .find:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Find files and folders by an approximate name in '\(workspaceName)'.",
+        description:
+          "Find files and folders by an approximate name in '\(workspaceName)'. By default this searches project source using Git or Mercurial ignore rules when available, and otherwise skips hidden, dependency, build, and cache directories.",
         parameters: [
           ToolParameterDef(
             name: "query",
@@ -186,6 +187,18 @@ public struct MaiFileWorkspaceTool: AgentTool {
               "Folder to search, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
             required: false),
           ToolParameterDef(
+            name: "depth",
+            type: "integer",
+            description:
+              "Maximum result depth below path, 1-100. Depth 1 searches only direct children. Omit for any depth.",
+            required: false),
+          ToolParameterDef(
+            name: "include_ignored",
+            type: "boolean",
+            description:
+              "Also search hidden, VCS-ignored, dependency, build, and cache paths. Default: false.",
+            required: false),
+          ToolParameterDef(
             name: "limit",
             type: "integer",
             description: "Maximum results, 1-500. Default: 100.",
@@ -196,7 +209,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case .grep:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "Search UTF-8 files for text or a regular expression in '\(workspaceName)'.",
+        description:
+          "Search UTF-8 files for text or a regular expression in '\(workspaceName)'. By default this searches project source using Git or Mercurial ignore rules when available, and otherwise skips hidden, dependency, build, and cache directories.",
         parameters: [
           ToolParameterDef(
             name: "query",
@@ -218,6 +232,18 @@ public struct MaiFileWorkspaceTool: AgentTool {
             name: "case_sensitive",
             type: "boolean",
             description: "Use case-sensitive matching. Default: smart case.",
+            required: false),
+          ToolParameterDef(
+            name: "depth",
+            type: "integer",
+            description:
+              "Maximum file depth below path, 1-100. Depth 1 searches only direct files. Omit for any depth.",
+            required: false),
+          ToolParameterDef(
+            name: "include_ignored",
+            type: "boolean",
+            description:
+              "Also search hidden, VCS-ignored, dependency, build, and cache paths. Default: false.",
             required: false),
           ToolParameterDef(
             name: "limit",
@@ -462,12 +488,38 @@ public struct MaiFileWorkspaceTool: AgentTool {
 }
 
 private struct MaiFileWorkspace: Sendable {
+  private enum RepositoryKind: String {
+    case git
+    case mercurial
+
+    var marker: String {
+      switch self {
+      case .git: ".git"
+      case .mercurial: ".hg"
+      }
+    }
+  }
+
+  private struct VersionControlledEntries {
+    var name: String
+    var entries: [(URL, URLResourceValues)]
+    var truncated: Bool
+  }
+
   private static let defaultReadLimit = 120_000
   private static let maximumReadLimit = 500_000
   private static let maximumWriteBytes = 1_000_000
   private static let maximumEditableFileBytes = 10_000_000
   private static let maximumSourceFileBytes = 50_000_000
   private static let maximumListEntries = 500
+  private static let maximumSearchEntries = 10_000
+  private static let searchResourceKeys: Set<URLResourceKey> = [
+    .fileSizeKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+  ]
+  private static let commonNonSourceDirectories: Set<String> = [
+    "__pycache__", "bower_components", "build", "carthage", "cmakefiles", "coverage",
+    "deriveddata", "dist", "node_modules", "obj", "out", "pods", "target", "vendor", "venv",
+  ]
   private static let functionMutationLock = NSLock()
 
   let configuration: MaiFileWorkspaceConfiguration
@@ -564,18 +616,23 @@ private struct MaiFileWorkspace: Sendable {
       ]))
   }
 
-  func find(_ arguments: [String: JSONValue]) throws -> ToolOutput {
+  func find(_ arguments: [String: JSONValue]) async throws -> ToolOutput {
     let query = try requiredText(arguments, key: "query")
     let rawPath = arguments["path"]?.stringValue ?? ""
     let directory = try resolve(rawPath, allowRoot: true, mustExist: true)
     try requireDirectory(directory, displayPath: displayPath(rawPath))
     let limit = boundedLimit(arguments["limit"]?.intValue, default: 100)
+    let depth = try searchDepth(arguments)
+    let includeIgnored = arguments["include_ignored"]?.coercedBoolValue == true
     var matches: [(url: URL, score: Int, kind: String)] = []
     var scanned = 0
-    try enumerateFiles(at: directory) { url, values, enumerator in
+    var hitScanLimit = false
+    let visit: (URL, URLResourceValues, FileManager.DirectoryEnumerator?) throws -> Bool = {
+      url, values, enumerator in
       scanned += 1
-      guard scanned <= 10_000 else {
-        enumerator.skipDescendants()
+      guard scanned <= Self.maximumSearchEntries else {
+        hitScanLimit = true
+        enumerator?.skipDescendants()
         return false
       }
       let relative = relativePath(url)
@@ -583,6 +640,26 @@ private struct MaiFileWorkspace: Sendable {
       let kind = values.isDirectory == true ? "directory" : "file"
       matches.append((url, score, kind))
       return true
+    }
+    let searchMethod: String
+    if !includeIgnored,
+      let controlled = try await versionControlledEntries(
+        at: directory, maximumDepth: depth, includeDirectories: true,
+        limit: Self.maximumSearchEntries + 1)
+    {
+      searchMethod = controlled.name
+      hitScanLimit = controlled.truncated
+      for (url, values) in controlled.entries {
+        try Task.checkCancellation()
+        guard try visit(url, values, nil) else { break }
+      }
+    } else {
+      searchMethod = includeIgnored ? "filesystem" : "filtered-filesystem"
+      try enumerateFiles(
+        at: directory, maximumDepth: depth, includeIgnored: includeIgnored
+      ) { url, values, enumerator in
+        try visit(url, values, enumerator)
+      }
     }
     matches.sort {
       $0.score == $1.score
@@ -607,16 +684,19 @@ private struct MaiFileWorkspace: Sendable {
       structuredContent: .object([
         "query": .string(query),
         "matches": .array(rows),
-        "scanned": .integer(min(scanned, 10_000)),
-        "truncated": .bool(matches.count > selected.count || scanned > 10_000),
+        "scanned": .integer(min(scanned, Self.maximumSearchEntries)),
+        "searchMethod": .string(searchMethod),
+        "truncated": .bool(matches.count > selected.count || hitScanLimit),
       ]))
   }
 
-  func grep(_ arguments: [String: JSONValue]) throws -> ToolOutput {
+  func grep(_ arguments: [String: JSONValue]) async throws -> ToolOutput {
     let query = try requiredText(arguments, key: "query")
     let rawPath = arguments["path"]?.stringValue ?? ""
     let target = try resolve(rawPath, allowRoot: true, mustExist: true)
     let limit = boundedLimit(arguments["limit"]?.intValue, default: 100)
+    let depth = try searchDepth(arguments)
+    let includeIgnored = arguments["include_ignored"]?.coercedBoolValue == true
     let caseSensitive =
       arguments["case_sensitive"]?.coercedBoolValue ?? query.contains(where: \.isUppercase)
     let useRegex = arguments["regex"]?.coercedBoolValue == true
@@ -637,7 +717,7 @@ private struct MaiFileWorkspace: Sendable {
     var scannedFiles = 0
     var hitLimit = false
     let scanFile: (URL, URLResourceValues) throws -> Bool = { url, values in
-      guard rows.count < limit, scannedFiles < 10_000 else {
+      guard rows.count < limit, scannedFiles < Self.maximumSearchEntries else {
         hitLimit = true
         return false
       }
@@ -681,11 +761,28 @@ private struct MaiFileWorkspace: Sendable {
     let targetValues = try target.resourceValues(forKeys: [
       .fileSizeKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
     ])
+    var searchMethod = "file"
     if targetValues.isDirectory == true {
-      try enumerateFiles(at: target) { url, values, enumerator in
-        let shouldContinue = try scanFile(url, values)
-        if !shouldContinue { enumerator.skipDescendants() }
-        return shouldContinue
+      if !includeIgnored,
+        let controlled = try await versionControlledEntries(
+          at: target, maximumDepth: depth, includeDirectories: false,
+          limit: Self.maximumSearchEntries + 1)
+      {
+        searchMethod = controlled.name
+        if controlled.truncated { hitLimit = true }
+        for (url, values) in controlled.entries {
+          try Task.checkCancellation()
+          guard try scanFile(url, values) else { break }
+        }
+      } else {
+        searchMethod = includeIgnored ? "filesystem" : "filtered-filesystem"
+        try enumerateFiles(
+          at: target, maximumDepth: depth, includeIgnored: includeIgnored
+        ) { url, values, enumerator in
+          let shouldContinue = try scanFile(url, values)
+          if !shouldContinue { enumerator.skipDescendants() }
+          return shouldContinue
+        }
       }
     } else {
       _ = try scanFile(target, targetValues)
@@ -696,6 +793,7 @@ private struct MaiFileWorkspace: Sendable {
         "query": .string(query),
         "matches": .array(rows),
         "scannedFiles": .integer(scannedFiles),
+        "searchMethod": .string(searchMethod),
         "truncated": .bool(hitLimit),
       ]))
   }
@@ -1206,13 +1304,15 @@ private struct MaiFileWorkspace: Sendable {
     if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
       // An absolute path is fine as long as it points inside the workspace:
       // models often repeat the directory a shell command just printed.
-      candidate = URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath)
+      candidate =
+        URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath)
         .standardizedFileURL
       if !isInside(candidate) {
         candidate = candidate.resolvingSymlinksInPath().standardizedFileURL
       }
     } else {
-      candidate = rootURL.appendingPathComponent(trimmed.isEmpty ? "." : trimmed)
+      candidate =
+        rootURL.appendingPathComponent(trimmed.isEmpty ? "." : trimmed)
         .standardizedFileURL
     }
     guard isInside(candidate) else { throw MaiFileWorkspaceError.outsideWorkspace(rawPath) }
@@ -1239,22 +1339,31 @@ private struct MaiFileWorkspace: Sendable {
 
   private func enumerateFiles(
     at directory: URL,
+    maximumDepth: Int? = nil,
+    includeIgnored: Bool = false,
     _ visit: (URL, URLResourceValues, FileManager.DirectoryEnumerator) throws -> Bool
   ) throws {
-    let keys: Set<URLResourceKey> = [
-      .fileSizeKey, .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-    ]
+    let options: FileManager.DirectoryEnumerationOptions =
+      includeIgnored ? [] : [.skipsHiddenFiles, .skipsPackageDescendants]
     guard
       let enumerator = FileManager.default.enumerator(
         at: directory,
-        includingPropertiesForKeys: Array(keys),
-        options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        includingPropertiesForKeys: Array(Self.searchResourceKeys),
+        options: options)
     else {
       throw MaiFileWorkspaceError.notDirectory(relativePath(directory))
     }
     while let url = enumerator.nextObject() as? URL {
       try Task.checkCancellation()
-      let values = try url.resourceValues(forKeys: keys)
+      let values = try url.resourceValues(forKeys: Self.searchResourceKeys)
+      if let maximumDepth, pathDepth(of: url, below: directory) > maximumDepth {
+        if values.isDirectory == true { enumerator.skipDescendants() }
+        continue
+      }
+      if !includeIgnored, shouldExcludeFromSourceSearch(url, values: values, below: directory) {
+        if values.isDirectory == true { enumerator.skipDescendants() }
+        continue
+      }
       if values.isSymbolicLink == true {
         if values.isDirectory == true { enumerator.skipDescendants() }
         let resolved = url.resolvingSymlinksInPath().standardizedFileURL
@@ -1269,6 +1378,162 @@ private struct MaiFileWorkspace: Sendable {
       }
       guard try visit(url, values, enumerator) else { break }
     }
+  }
+
+  /// Returns tracked and untracked-but-not-ignored files. Directories are
+  /// reconstructed from those paths so files_find retains its folder matches.
+  /// Failure to detect or invoke a VCS is intentionally a cache miss: callers
+  /// use the portable filtered filesystem walk instead.
+  private func versionControlledEntries(
+    at directory: URL,
+    maximumDepth: Int?,
+    includeDirectories: Bool,
+    limit: Int
+  ) async throws -> VersionControlledEntries? {
+    #if os(macOS) || os(Linux)
+      guard let repository = repository(containing: directory) else { return nil }
+      let environment = ProcessInfo.processInfo.environment
+      let command = repository.kind == .git ? "git" : "hg"
+      guard let executable = try? MaiHostProcess.resolve(command, environment: environment) else {
+        return nil
+      }
+      let relativeDirectory = path(relativeTo: repository.url, child: directory) ?? "."
+      var arguments: [String]
+      switch repository.kind {
+      case .git:
+        arguments = [
+          "ls-files", "--cached", "--others", "--exclude-standard", "--deduplicate", "-z",
+          "--",
+        ]
+      case .mercurial:
+        arguments = [
+          "status", "--modified", "--added", "--clean", "--unknown", "--no-status",
+          "--print0",
+        ]
+      }
+      if relativeDirectory != "." { arguments.append(relativeDirectory) }
+
+      let outcome: MaiHostProcessOutcome
+      do {
+        outcome = try await MaiHostProcess.run(
+          executable: executable.executable,
+          arguments: executable.arguments + arguments,
+          workingDirectory: repository.url,
+          environment: environment,
+          stdin: nil,
+          timeout: 5,
+          outputLimit: 8_000_000)
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        return nil
+      }
+      guard outcome.exitCode == 0, !outcome.timedOut, outcome.stdoutDropped == 0 else {
+        return nil
+      }
+
+      var candidates = Set<URL>()
+      for bytes in outcome.stdout.split(separator: 0, omittingEmptySubsequences: true) {
+        let relative = String(decoding: bytes, as: UTF8.self)
+        let file = repository.url.appendingPathComponent(relative).standardizedFileURL
+        guard isInside(file), isInside(file, directory: directory) else { continue }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory),
+          !isDirectory.boolValue,
+          let values = try? file.resourceValues(forKeys: Self.searchResourceKeys),
+          !isInHiddenRootEntry(file),
+          !shouldExcludeFromSourceSearch(file, values: values, below: directory)
+        else { continue }
+        candidates.insert(file)
+        if includeDirectories {
+          var parent = file.deletingLastPathComponent().standardizedFileURL
+          while parent.path != directory.path, isInside(parent, directory: directory) {
+            candidates.insert(parent)
+            parent = parent.deletingLastPathComponent().standardizedFileURL
+          }
+        }
+      }
+
+      let eligible = candidates.filter { candidate in
+        maximumDepth.map { pathDepth(of: candidate, below: directory) <= $0 } ?? true
+      }
+      .sorted {
+        $0.path.localizedStandardCompare($1.path) == .orderedAscending
+      }
+      let selected = eligible.prefix(limit)
+      let entries = selected.compactMap { url -> (URL, URLResourceValues)? in
+        guard let values = try? url.resourceValues(forKeys: Self.searchResourceKeys) else {
+          return nil
+        }
+        return (url, values)
+      }
+      return VersionControlledEntries(
+        name: repository.kind.rawValue,
+        entries: entries,
+        truncated: eligible.count > selected.count)
+    #else
+      return nil
+    #endif
+  }
+
+  private func repository(containing directory: URL) -> (kind: RepositoryKind, url: URL)? {
+    var candidate = directory.standardizedFileURL
+    while true {
+      for kind in [RepositoryKind.git, .mercurial]
+      where FileManager.default.fileExists(
+        atPath: candidate.appendingPathComponent(kind.marker).path)
+      {
+        return (kind, candidate)
+      }
+      let parent = candidate.deletingLastPathComponent().standardizedFileURL
+      guard parent.path != candidate.path else { break }
+      candidate = parent
+    }
+    return nil
+  }
+
+  private func searchDepth(_ arguments: [String: JSONValue]) throws -> Int? {
+    guard let depth = arguments["depth"]?.intValue else { return nil }
+    guard (1...100).contains(depth) else { throw MaiFileWorkspaceError.invalidSearchDepth }
+    return depth
+  }
+
+  private func shouldExcludeFromSourceSearch(
+    _ url: URL,
+    values: URLResourceValues,
+    below directory: URL
+  ) -> Bool {
+    guard let relative = path(relativeTo: directory, child: url) else { return true }
+    let components = relative.split(separator: "/").map(String.init)
+    guard !components.contains(where: { $0.hasPrefix(".") }) else { return true }
+    let directoryNames = values.isDirectory == true ? components : Array(components.dropLast())
+    return directoryNames.contains {
+      Self.commonNonSourceDirectories.contains($0.lowercased())
+    }
+  }
+
+  private func pathDepth(of url: URL, below directory: URL) -> Int {
+    path(relativeTo: directory, child: url)?.split(separator: "/").count ?? .max
+  }
+
+  private func path(relativeTo directory: URL, child: URL) -> String? {
+    let parentPath = directory.standardizedFileURL.path
+    let childPath = child.standardizedFileURL.path
+    guard childPath.hasPrefix(parentPath + "/") else { return nil }
+    return String(childPath.dropFirst(parentPath.count + 1))
+  }
+
+  private func isInside(_ url: URL, directory: URL) -> Bool {
+    let parentPath = directory.standardizedFileURL.path
+    let childPath = url.standardizedFileURL.path
+    return childPath.hasPrefix(parentPath + "/")
+  }
+
+  private func isInHiddenRootEntry(_ url: URL) -> Bool {
+    guard let relative = path(relativeTo: rootURL, child: url),
+      let first = relative.split(separator: "/").first
+    else { return false }
+    return configuration.hiddenRootEntryNames.contains(String(first))
   }
 
   private func requireDirectory(_ url: URL, displayPath: String) throws {
@@ -1428,6 +1693,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
   case lineOutOfRange(Int, Int)
   case writeDisabled
   case invalidPattern(String)
+  case invalidSearchDepth
   case invalidMatchCount
   case emptyPatchMatch
   case patchMatchCount(Int, Int)
@@ -1460,6 +1726,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .lineOutOfRange(let line, let count): "Line \(line) is outside this file's \(count) lines."
     case .writeDisabled: "File changes are disabled for this tool source."
     case .invalidPattern(let detail): "Invalid regular expression: \(detail)"
+    case .invalidSearchDepth: "depth must be between 1 and 100."
     case .invalidMatchCount: "expected_matches must be between 1 and 100."
     case .emptyPatchMatch: "The regular expression must not match an empty range."
     case .patchMatchCount(let expected, let actual):

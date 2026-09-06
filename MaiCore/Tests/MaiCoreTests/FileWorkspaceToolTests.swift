@@ -81,6 +81,175 @@ func fileWorkspaceToolsManageFiles() async throws {
     !FileManager.default.fileExists(atPath: root.appendingPathComponent("notes/done.md").path))
 }
 
+@Test("Files search defaults to source paths and supports bounded exhaustive search")
+func fileWorkspaceSearchUsesCodingFriendlyDefaults() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-files-search-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(
+    at: root.appendingPathComponent("Sources/Nested"), withIntermediateDirectories: true)
+  try FileManager.default.createDirectory(
+    at: root.appendingPathComponent("node_modules/package"), withIntermediateDirectories: true)
+  try FileManager.default.createDirectory(
+    at: root.appendingPathComponent("build"), withIntermediateDirectories: true)
+  try FileManager.default.createDirectory(
+    at: root.appendingPathComponent(".cache"), withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  for path in [
+    "Sources/Needle.swift", "Sources/Nested/Needle.swift",
+    "node_modules/package/Needle.swift", "build/Needle.swift", ".cache/Needle.swift",
+  ] {
+    try Data("needle\n".utf8).write(to: root.appendingPathComponent(path))
+  }
+
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+  let find = tool(tools, .find)
+  let grep = tool(tools, .grep)
+  #expect(find.definition.parameters.contains { $0.name == "depth" })
+  #expect(find.definition.parameters.contains { $0.name == "include_ignored" })
+  #expect(grep.definition.parameters.contains { $0.name == "depth" })
+  #expect(grep.definition.parameters.contains { $0.name == "include_ignored" })
+
+  let normal = try await call(find, ["query": .string("Needle.swift")])
+  let normalPaths = Set(
+    normal.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+      $0.objectValue?["path"]?.stringValue
+    } ?? [])
+  #expect(normalPaths.contains("Sources/Needle.swift"))
+  #expect(normalPaths.contains("Sources/Nested/Needle.swift"))
+  #expect(!normalPaths.contains("node_modules/package/Needle.swift"))
+  #expect(!normalPaths.contains("build/Needle.swift"))
+  #expect(!normalPaths.contains(".cache/Needle.swift"))
+  #expect(
+    normal.structuredContent?.objectValue?["searchMethod"] == .string("filtered-filesystem"))
+
+  let shallow = try await call(
+    find, ["query": .string("Needle.swift"), "depth": .integer(2)])
+  let shallowPaths = Set(
+    shallow.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+      $0.objectValue?["path"]?.stringValue
+    } ?? [])
+  #expect(shallowPaths.contains("Sources/Needle.swift"))
+  #expect(!shallowPaths.contains("Sources/Nested/Needle.swift"))
+
+  let exhaustive = try await call(
+    find, ["query": .string("Needle.swift"), "include_ignored": .bool(true)])
+  let exhaustivePaths = Set(
+    exhaustive.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+      $0.objectValue?["path"]?.stringValue
+    } ?? [])
+  #expect(exhaustivePaths.contains("node_modules/package/Needle.swift"))
+  #expect(exhaustivePaths.contains("build/Needle.swift"))
+  #expect(exhaustivePaths.contains(".cache/Needle.swift"))
+
+  let normalGrep = try await call(grep, ["query": .string("needle")])
+  #expect(normalGrep.structuredContent?.objectValue?["scannedFiles"] == .integer(2))
+  let exhaustiveGrep = try await call(
+    grep, ["query": .string("needle"), "include_ignored": .bool(true)])
+  #expect(exhaustiveGrep.structuredContent?.objectValue?["scannedFiles"] == .integer(5))
+
+  let invalidDepth = try await call(
+    find, ["query": .string("Needle.swift"), "depth": .integer(0)])
+  #expect(invalidDepth.isError)
+  #expect(invalidDepth.text.contains("depth must be between 1 and 100"))
+}
+
+#if os(macOS) || os(Linux)
+  @Test("Files search includes tracked and new non-ignored Git files")
+  func fileWorkspaceSearchUsesGitIgnoreRules() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let git = try? MaiHostProcess.resolve("git", environment: environment) else { return }
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("mai-files-git-\(UUID().uuidString)", isDirectory: true)
+    for directory in ["Sources", "Drafts", "scratch"] {
+      try FileManager.default.createDirectory(
+        at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+    }
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data("scratch/\n".utf8).write(to: root.appendingPathComponent(".gitignore"))
+    try Data("tracked\n".utf8).write(
+      to: root.appendingPathComponent("Sources/TrackedNeedle.swift"))
+    try Data("new\n".utf8).write(
+      to: root.appendingPathComponent("Drafts/UntrackedNeedle.swift"))
+    try Data("ignored\n".utf8).write(
+      to: root.appendingPathComponent("scratch/IgnoredNeedle.swift"))
+    try runProcess(git, arguments: ["init", "-q"], at: root, environment: environment)
+    try runProcess(
+      git, arguments: ["add", ".gitignore", "Sources/TrackedNeedle.swift"], at: root,
+      environment: environment)
+
+    let find = MaiFileWorkspaceTool(
+      operation: .find, configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+    let result = try await call(find, ["query": .string("Needle.swift")])
+    let paths = Set(
+      result.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+        $0.objectValue?["path"]?.stringValue
+      } ?? [])
+    #expect(paths.contains("Sources/TrackedNeedle.swift"))
+    #expect(paths.contains("Drafts/UntrackedNeedle.swift"))
+    #expect(!paths.contains("scratch/IgnoredNeedle.swift"))
+    #expect(result.structuredContent?.objectValue?["searchMethod"] == .string("git"))
+  }
+
+  @Test("Files search includes tracked and new non-ignored Mercurial files")
+  func fileWorkspaceSearchUsesMercurialIgnoreRules() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let hg = try? MaiHostProcess.resolve("hg", environment: environment) else { return }
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("mai-files-hg-\(UUID().uuidString)", isDirectory: true)
+    for directory in ["Sources", "Drafts", "scratch"] {
+      try FileManager.default.createDirectory(
+        at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+    }
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data("syntax: glob\nscratch/**\n".utf8).write(to: root.appendingPathComponent(".hgignore"))
+    try Data("tracked\n".utf8).write(
+      to: root.appendingPathComponent("Sources/TrackedNeedle.swift"))
+    try Data("new\n".utf8).write(
+      to: root.appendingPathComponent("Drafts/UntrackedNeedle.swift"))
+    try Data("ignored\n".utf8).write(
+      to: root.appendingPathComponent("scratch/IgnoredNeedle.swift"))
+    try runProcess(hg, arguments: ["init"], at: root, environment: environment)
+    try runProcess(
+      hg, arguments: ["add", ".hgignore", "Sources/TrackedNeedle.swift"], at: root,
+      environment: environment)
+
+    let find = MaiFileWorkspaceTool(
+      operation: .find, configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+    let result = try await call(find, ["query": .string("Needle.swift")])
+    let paths = Set(
+      result.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+        $0.objectValue?["path"]?.stringValue
+      } ?? [])
+    #expect(paths.contains("Sources/TrackedNeedle.swift"))
+    #expect(paths.contains("Drafts/UntrackedNeedle.swift"))
+    #expect(!paths.contains("scratch/IgnoredNeedle.swift"))
+    #expect(result.structuredContent?.objectValue?["searchMethod"] == .string("mercurial"))
+  }
+
+  private func runProcess(
+    _ executable: (executable: URL, arguments: [String]),
+    arguments: [String],
+    at directory: URL,
+    environment: [String: String]
+  ) throws {
+    let process = Process()
+    process.executableURL = executable.executable
+    process.arguments = executable.arguments + arguments
+    process.currentDirectoryURL = directory
+    process.environment = environment
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+      throw NSError(
+        domain: "FileWorkspaceToolTests", code: Int(process.terminationStatus))
+    }
+  }
+#endif
+
 @Test("Shared Files tools index, read, and replace source line ranges")
 func fileWorkspaceToolsSupportAdvancedSourceNavigation() async throws {
   let root = FileManager.default.temporaryDirectory
