@@ -148,7 +148,9 @@ public final class VisualConversation: Identifiable {
       limits: profile.limits,
       stream: profile.stream,
       toolCallingStrategy: profile.toolCallingStrategy,
-      useToolProxy: profile.useToolProxy)
+      useToolProxy: profile.useToolProxy,
+      retry: profile.retry,
+      autocompact: profile.autocompact)
   }
 
   func appendUserMessage(_ text: String) {
@@ -202,6 +204,12 @@ public final class VisualConversation: Identifiable {
     activity = []
     isRunning = false
     runTask = nil
+    // A paused run kept everything it did; saying so is what lets the person
+    // send "continue" instead of starting over.
+    if let interruption = result.interruption {
+      errorMessage =
+        "Paused: \(interruption.summary). Send \"continue\" to go on, or raise \(interruption.settingKey)."
+    }
     revision &+= 1
   }
 

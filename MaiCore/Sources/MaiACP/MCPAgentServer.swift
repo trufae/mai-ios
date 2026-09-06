@@ -100,9 +100,13 @@ public actor MCPAgentServer {
       toolDelegation: agent.toolDelegation)
     do {
       let result = try await runtime.run(request)
+      var text = result.response.text
+      if let interruption = result.interruption {
+        text += (text.isEmpty ? "" : "\n\n") + "[stopped: \(interruption.summary)]"
+      }
       return .object([
         "content": .array([
-          .object(["type": .string("text"), "text": .string(result.response.text)])
+          .object(["type": .string("text"), "text": .string(text)])
         ])
       ])
     } catch {

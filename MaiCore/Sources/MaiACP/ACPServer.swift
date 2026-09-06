@@ -137,6 +137,20 @@ public actor ACPServer {
       let result = try await task.value
       sessions[id]?.transcript = result.transcript
       sessions[id]?.task = nil
+      // A limit pauses the run with its transcript kept, so the next prompt
+      // carries on; the editor is told which limit it was.
+      if let interruption = result.interruption {
+        await update(
+          session: id, kind: .agentMessageChunk,
+          text: "Stopped: \(interruption.summary). Send another prompt to continue.")
+        let stopReason: ACP.StopReason =
+          switch interruption {
+          case .modelTurns: .maxTurnRequests
+          case .totalTokens: .maxTokens
+          case .time: .endTurn
+          }
+        return .object(["stopReason": .string(stopReason.rawValue)])
+      }
       return .object(["stopReason": .string(ACP.StopReason(result.stopReason).rawValue)])
     } catch is CancellationError {
       sessions[id]?.task = nil
