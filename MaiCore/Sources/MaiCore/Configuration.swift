@@ -718,6 +718,81 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     return originalPrompts != prompts || previousAgents != agents
   }
 
+  // MARK: - Catalog edits
+
+  /// The ids of the agents whose instructions come from the named prompt.
+  public func agentsUsingSystemPrompt(_ name: String) -> [String] {
+    agents.filter { $0.systemPrompt == name }.map(\.id).sorted()
+  }
+
+  /// Creates or replaces a named system prompt and refreshes every agent
+  /// that uses it, so the catalog and the agents never disagree. Returns the
+  /// ids of the agents refreshed.
+  @discardableResult
+  public mutating func setSystemPrompt(_ name: String, text: String) -> [String] {
+    var configured = prompts ?? ConfiguredPrompts()
+    configured.system[name] = text
+    prompts = configured
+    for index in agents.indices where agents[index].systemPrompt == name {
+      agents[index].instructions = text
+    }
+    return agentsUsingSystemPrompt(name)
+  }
+
+  /// Drops a named system prompt nobody uses. Answers false when it is
+  /// unknown or still referenced, so the caller can say which agents to move.
+  @discardableResult
+  public mutating func removeSystemPrompt(_ name: String) -> Bool {
+    guard prompts?.system[name] != nil, agentsUsingSystemPrompt(name).isEmpty else {
+      return false
+    }
+    prompts?.system[name] = nil
+    return true
+  }
+
+  /// Points an agent at a named prompt and copies its text into the agent's
+  /// instructions. Answers false when either is unknown.
+  @discardableResult
+  public mutating func assignSystemPrompt(_ name: String, to agentID: String) -> Bool {
+    guard let text = prompts?.system[name],
+      let index = agents.firstIndex(where: { $0.id == agentID })
+    else { return false }
+    agents[index].systemPrompt = name
+    agents[index].instructions = text
+    return true
+  }
+
+  /// Inserts or replaces an agent. Its instructions become the text of its
+  /// named prompt, and every other agent sharing that prompt is refreshed.
+  /// The first agent saved becomes the default. Returns the ids of every
+  /// agent whose definition changed, the saved one included.
+  @discardableResult
+  public mutating func upsertAgent(_ definition: AgentDefinition) -> [String] {
+    var changed = Set([definition.id])
+    if let name = definition.systemPrompt {
+      changed.formUnion(setSystemPrompt(name, text: definition.instructions))
+    }
+    if let index = agents.firstIndex(where: { $0.id == definition.id }) {
+      agents[index] = definition
+    } else {
+      agents.append(definition)
+    }
+    if defaultAgent == nil { defaultAgent = definition.id }
+    return changed.sorted()
+  }
+
+  /// Removes an agent and every reference to it, so the file still validates:
+  /// other agents stop offering it as a subagent, and the default moves on
+  /// when it was the default. Answers false when the id is unknown.
+  @discardableResult
+  public mutating func removeAgent(_ id: String) -> Bool {
+    guard let index = agents.firstIndex(where: { $0.id == id }) else { return false }
+    agents.remove(at: index)
+    for other in agents.indices { agents[other].subagentNames.remove(id) }
+    if defaultAgent == id { defaultAgent = agents.first?.id }
+    return true
+  }
+
   private static func requireUnique(_ values: [String], kind: String) throws {
     var seen = Set<String>()
     for rawValue in values {

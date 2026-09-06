@@ -53,13 +53,15 @@ describing the information the summary should prioritize. Trimming keeps
 messages through the selected index and removes newer ones; linked tool-call
 transactions are kept structurally valid when removing or trimming messages.
 
-`/prompts` lists the reusable system prompts and their agent associations, plus
-the compact prompt. `/prompt` shows the active agent's system prompt and
-`/prompt NAME` associates another named system prompt with that agent. `/edit
-prompt [NAME]` edits or creates a named system prompt; with no name it edits the
-active agent's prompt. `/edit NAME` is a shortcut for an existing named prompt.
-Agents store the association in `systemPrompt`, while older inline
-`instructions` are migrated to a same-named prompt automatically.
+`/prompts` lists the named system prompts and which agents use them, plus the
+compact, delegation, worker, and memory templates. `/prompt` shows the active
+agent's system prompt and `/prompt NAME` points that agent at another one.
+`/prompt add NAME TEXT` creates a prompt from one line, `/prompt edit [NAME]`
+edits or creates one in `$EDITOR`, `/prompt show NAME` prints one, and
+`/prompt rm NAME` drops an unused one. Agents store the association in
+`systemPrompt`; several agents may share a prompt, and editing it updates all of
+them. Older inline `instructions` are migrated to a same-named prompt
+automatically. `doc/prompts.md` walks through registering prompts and agents.
 
 `/edit compact` opens the chat-compaction template. Prompts are saved under
 `prompts` in the active configuration (normally `~/.config/pmai/config.json`).
@@ -211,9 +213,12 @@ moves a chat out of the active list (archiving the current chat starts a new
 one), `/chat unarchive` brings it back, and `new`, `rename`, and `close` manage
 chats, while `messages`, `log`, `edit`, `remove`, `undo`, `trim`, and `clear`
 operate on the active transcript. Tab completes commands, chat selectors,
-agents, and providers. `/agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT` creates or
-updates a reusable agent, and `/provider`, `/model`, and `/proxy` save changes
-back to that agent in the shared configuration.
+agents, and providers. `/agent add NAME MODEL GROUPS PROMPT [PROVIDER [BASE_URL]]`
+saves a reusable agent in one line from a model, comma-separated tool groups,
+and a named system prompt; `/agent tools|model|prompt|provider ID VALUE` change
+one saved agent, `/agent remove ID` drops one, and `/edit agent [ID]` opens one
+as JSON. `/provider`, `/model`, and `/proxy` save changes back to the current
+chat's agent in the shared configuration.
 
 Use `/baseurl URL` to change the current provider endpoint. To edit another
 provider, select it first with `/provider ID`. The provider is replaced in the

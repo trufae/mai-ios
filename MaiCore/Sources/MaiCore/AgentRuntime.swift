@@ -169,6 +169,12 @@ public actor AgentRuntime {
   /// Registers an idle top-level process for a conversation before any turn
   /// runs, so a host can queue messages for it and list it, then pass the pid
   /// to `run(_:process:emit:)` when the first turn starts.
+  /// Forgets a definition, so it is no longer offered or startable. A run
+  /// already using it carries on with the copy it was given.
+  public func unregister(agentID: String) {
+    agents[agentID] = nil
+  }
+
   public func allocateProcess(agentID: String, task: String = "") async -> AgentPID {
     await supervisor.register(
       runID: UUID(),

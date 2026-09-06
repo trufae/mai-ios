@@ -88,3 +88,64 @@ func inlineInstructionsBecomeSystemPrompts() {
   #expect(didRefresh)
   #expect(configuration.agents[0].instructions == "Be extremely concise.")
 }
+
+@Test("Prompt and agent catalog edits keep the file consistent")
+func catalogEditsStayConsistent() throws {
+  var configuration = MaiConfiguration(
+    providers: [ConfiguredProvider(id: "hello", kind: .hello)],
+    agents: [
+      AgentDefinition(id: "main", instructions: "Be concise.", provider: "hello", model: "")
+    ])
+  configuration.associateSystemPrompts()
+
+  // A new prompt is unused until an agent points at it.
+  let unused = configuration.setSystemPrompt("reviewer", text: "Review diffs.")
+  #expect(unused == [])
+  #expect(configuration.agentsUsingSystemPrompt("reviewer") == [])
+  let assigned = configuration.assignSystemPrompt("reviewer", to: "main")
+  #expect(assigned)
+  #expect(configuration.agents[0].systemPrompt == "reviewer")
+  #expect(configuration.agents[0].instructions == "Review diffs.")
+  let missingPrompt = configuration.assignSystemPrompt("missing", to: "main")
+  let missingAgent = configuration.assignSystemPrompt("reviewer", to: "nobody")
+  #expect(!missingPrompt)
+  #expect(!missingAgent)
+
+  // Rewriting a prompt reaches every agent using it.
+  let refreshed = configuration.setSystemPrompt("reviewer", text: "Review diffs carefully.")
+  #expect(refreshed == ["main"])
+  #expect(configuration.agents[0].instructions == "Review diffs carefully.")
+
+  // A prompt in use cannot be dropped; an unused one can.
+  let keptInUse = configuration.removeSystemPrompt("reviewer")
+  let droppedUnused = configuration.removeSystemPrompt("main")
+  #expect(!keptInUse)
+  #expect(droppedUnused)
+  #expect(configuration.prompts?.system["main"] == nil)
+  let droppedTwice = configuration.removeSystemPrompt("main")
+  #expect(!droppedTwice)
+
+  // Saving an agent writes its instructions to its prompt and refreshes the
+  // others sharing it; the first agent saved becomes the default.
+  configuration.defaultAgent = nil
+  let helper = AgentDefinition(
+    id: "helper", instructions: "Review diffs briefly.", systemPrompt: "reviewer",
+    provider: "hello", model: "", toolGroupNames: ["files"])
+  let changed = configuration.upsertAgent(helper)
+  #expect(changed == ["helper", "main"])
+  #expect(configuration.prompts?.system["reviewer"] == "Review diffs briefly.")
+  #expect(configuration.agents.map(\.instructions) == ["Review diffs briefly.", "Review diffs briefly."])
+  #expect(configuration.defaultAgent == "helper")
+  try configuration.validate()
+
+  // Removing an agent clears every reference to it.
+  configuration.agents[0].subagentNames = ["helper"]
+  let removed = configuration.removeAgent("helper")
+  #expect(removed)
+  #expect(configuration.agents.map(\.id) == ["main"])
+  #expect(configuration.agents[0].subagentNames.isEmpty)
+  #expect(configuration.defaultAgent == "main")
+  let removedTwice = configuration.removeAgent("helper")
+  #expect(!removedTwice)
+  try configuration.validate()
+}

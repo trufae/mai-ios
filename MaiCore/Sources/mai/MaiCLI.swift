@@ -2124,6 +2124,8 @@ struct MaiCLI {
         await terminal.line(memoryHelp)
       case "todo", "/todo":
         await terminal.line(todoHelp)
+      case "prompt", "prompts", "/prompt", "/prompts":
+        await terminal.line(promptHelp)
       case "agents", "agent", "/agents", "/agent":
         await terminal.line(agentsHelp)
       case "chat", "/chat":
@@ -2138,7 +2140,7 @@ struct MaiCLI {
         await terminal.line(exportHelp)
       default:
         await terminal.line(
-          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, agents, chat, edit, tools, or queue."
+          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, todo, prompts, agents, chat, edit, tools, or queue."
         )
       }
     case "/cwd", "/pwd":
@@ -3006,6 +3008,9 @@ struct MaiCLI {
     await terminal.line(lines.joined(separator: "\n"))
   }
 
+  /// `/prompt` in full: named system prompts are created, edited, dropped,
+  /// and pointed at from one line each; the bare name still selects one for
+  /// the current agent.
   private static func handlePromptCommand(
     _ argument: String,
     session: inout REPLSession,
@@ -3014,19 +3019,132 @@ struct MaiCLI {
     configurationPath: String?,
     terminal: TerminalWriter
   ) async {
-    let requested = argument.trimmingCharacters(in: .whitespacesAndNewlines)
-    if requested.isEmpty {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+    let rest = fields.count > 1 ? fields[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+
+    switch action {
+    case "":
       let name = session.profile.systemPrompt ?? "inline"
       await terminal.line("System prompt for agent '\(session.profile.agentID)': \(name)")
       await terminal.line(
         session.profile.instructions.isEmpty ? "(empty)" : session.profile.instructions)
-      return
+
+    case "list", "ls":
+      await showPrompts(session: session, configuration: configuration, terminal: terminal)
+
+    case "show", "cat":
+      let requested = rest.isEmpty ? session.profile.systemPrompt ?? "" : rest
+      guard let name = resolvedSystemPromptName(requested, configuration: configuration),
+        let text = configuration?.prompts?.system[name]
+      else {
+        await terminal.line("Unknown system prompt '\(requested)'. /prompts lists them.")
+        return
+      }
+      let users = configuration?.agentsUsingSystemPrompt(name) ?? []
+      await terminal.line(
+        "System prompt '\(name)' — \(users.isEmpty ? "unused" : "agents: \(users.joined(separator: ", "))")"
+      )
+      await terminal.line(text.isEmpty ? "(empty)" : text)
+
+    case "add", "set", "new", "create":
+      let parts = rest.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(String.init)
+      guard parts.count == 2 else {
+        await terminal.line("Usage: /prompt \(action) NAME TEXT")
+        return
+      }
+      await storeSystemPrompt(
+        named: parts[0],
+        text: parts[1].trimmingCharacters(in: .whitespacesAndNewlines),
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "edit":
+      await editSystemPrompt(
+        named: rest.isEmpty ? session.profile.systemPrompt ?? session.profile.agentID : rest,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "remove", "rm", "delete", "del":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /prompt rm NAME")
+        return
+      }
+      guard var draft = configuration, let configurationPath else {
+        await terminal.line("error: No writable configuration is active.", to: .standardError)
+        return
+      }
+      guard let name = resolvedSystemPromptName(rest, configuration: draft) else {
+        await terminal.line("Unknown system prompt '\(rest)'. /prompts lists them.")
+        return
+      }
+      let users = draft.agentsUsingSystemPrompt(name)
+      guard users.isEmpty else {
+        await terminal.line(
+          "System prompt '\(name)' is used by \(users.joined(separator: ", ")). Point them elsewhere first: /agent prompt ID OTHER."
+        )
+        return
+      }
+      draft.removeSystemPrompt(name)
+      do {
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        configuration = draft
+        await terminal.line("Removed system prompt '\(name)'.")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
+    case "use", "select":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /prompt use NAME")
+        return
+      }
+      await selectSystemPrompt(
+        rest,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "help":
+      await terminal.line(promptHelp)
+
+    default:
+      // `/prompt NAME` keeps selecting a prompt for the current agent.
+      await selectSystemPrompt(
+        argument.trimmingCharacters(in: .whitespacesAndNewlines),
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
     }
+  }
+
+  /// Points the current agent at a named prompt and saves the association.
+  private static func selectSystemPrompt(
+    _ requested: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
     guard
       let name = resolvedSystemPromptName(requested, configuration: configuration),
       let instructions = configuration?.prompts?.system[name]
     else {
-      await terminal.line("Unknown system prompt '\(requested)'. Use /prompts.")
+      await terminal.line(
+        "Unknown system prompt '\(requested)'. /prompts lists them; /prompt add NAME TEXT creates one."
+      )
       return
     }
     let previous = session.profile.instructions
@@ -3046,6 +3164,51 @@ struct MaiCLI {
     {
       await terminal.line(
         "Agent '\(session.profile.agentID)' now uses system prompt '\(name)'.")
+    }
+  }
+
+  /// Writes one named system prompt and refreshes every agent that uses it,
+  /// in the file, in the live runtime, and in this chat when it is one of
+  /// them. Answers false, having said why, when nothing was saved.
+  @discardableResult
+  private static func storeSystemPrompt(
+    named name: String,
+    text: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async -> Bool {
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return false
+    }
+    guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      await terminal.line("A system prompt needs a name.")
+      return false
+    }
+    let created = draft.prompts?.system[name] == nil
+    let refreshed = draft.setSystemPrompt(name, text: text)
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      for agent in draft.agents where refreshed.contains(agent.id) {
+        try await runtime.register(agent: agent, replacingExisting: true)
+      }
+      if session.profile.systemPrompt == name {
+        try applySystemInstructions(
+          text, replacing: session.profile.instructions, session: &session)
+      }
+      let usage =
+        refreshed.isEmpty
+        ? "no agent uses it yet; /agent prompt ID \(name) or /agent add picks it"
+        : "used by \(refreshed.joined(separator: ", "))"
+      await terminal.line("\(created ? "Created" : "Saved") system prompt '\(name)' (\(usage)).")
+      return true
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return false
     }
   }
 
@@ -3077,42 +3240,29 @@ struct MaiCLI {
     configurationPath: String?,
     terminal: TerminalWriter
   ) async {
-    guard var draft = configuration, let configurationPath else {
+    guard configuration != nil, configurationPath != nil else {
       await terminal.line("error: No writable configuration is active.", to: .standardError)
       return
     }
     let trimmed = requested.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
-      await terminal.line("Usage: /edit prompt [NAME]")
+      await terminal.line("Usage: /prompt edit [NAME]")
       return
     }
-    let name = resolvedSystemPromptName(trimmed, configuration: draft) ?? trimmed
-    var prompts = draft.prompts ?? ConfiguredPrompts()
-    let previous = prompts.system[name] ?? ""
+    let name = resolvedSystemPromptName(trimmed, configuration: configuration) ?? trimmed
+    let previous = configuration?.prompts?.system[name] ?? ""
     guard
       let edited = await editTemporaryText(
         previous, suffix: "system-prompt.md", terminal: terminal)
     else { return }
-    let instructions = edited.trimmingCharacters(in: .whitespacesAndNewlines)
-    prompts.system[name] = instructions
-    draft.prompts = prompts
-    for index in draft.agents.indices where draft.agents[index].systemPrompt == name {
-      draft.agents[index].instructions = instructions
-    }
-    do {
-      try draft.save(to: URL(fileURLWithPath: configurationPath))
-      configuration = draft
-      for agent in draft.agents where agent.systemPrompt == name {
-        try await runtime.register(agent: agent, replacingExisting: true)
-      }
-      if session.profile.systemPrompt == name {
-        try applySystemInstructions(
-          instructions, replacing: session.profile.instructions, session: &session)
-      }
-      await terminal.line("System prompt '\(name)' saved to \(configurationPath).")
-    } catch {
-      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
-    }
+    await storeSystemPrompt(
+      named: name,
+      text: edited.trimmingCharacters(in: .whitespacesAndNewlines),
+      session: &session,
+      runtime: runtime,
+      configuration: &configuration,
+      configurationPath: configurationPath,
+      terminal: terminal)
   }
 
   private static func shellWords(_ input: String) throws -> [String] {
@@ -3188,6 +3338,15 @@ struct MaiCLI {
       await editSystemPrompt(
         named: actionArgument.isEmpty
           ? session.profile.systemPrompt ?? session.profile.agentID : actionArgument,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "agent":
+      await editAgentDefinition(
+        named: actionArgument.isEmpty ? session.profile.agentID : actionArgument,
         session: &session,
         runtime: runtime,
         configuration: &configuration,
@@ -3636,7 +3795,8 @@ struct MaiCLI {
         configurationPath: configurationPath,
         terminal: terminal)
 
-    case "use", "show", "add", "acp":
+    case "use", "show", "add", "new", "create", "acp", "tools", "model", "prompt", "provider",
+      "remove", "rm", "delete", "del":
       await handleAgentCommand(
         argument,
         session: &session,
@@ -3995,6 +4155,8 @@ struct MaiCLI {
     }
   }
 
+  /// `/agent` in full: switch the chat's agent, or create and maintain saved
+  /// definitions with one line each. Process subcommands are accepted too.
   private static func handleAgentCommand(
     _ argument: String,
     session: inout REPLSession,
@@ -4005,9 +4167,8 @@ struct MaiCLI {
     providerBaseURLs: [String: URL],
     terminal: TerminalWriter
   ) async {
-    let fields = argument.split(maxSplits: 5, whereSeparator: \Character.isWhitespace).map(
-      String.init)
-    guard let action = fields.first?.lowercased() else {
+    let words = argument.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    guard let action = words.first?.lowercased() else {
       await showAgent(
         session.profile.agentID,
         session: session,
@@ -4015,7 +4176,7 @@ struct MaiCLI {
         providerBaseURLs: providerBaseURLs,
         terminal: terminal)
       await terminal.line(
-        "Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+        "Usage: /agent [use] ID · /agent add NAME MODEL GROUPS PROMPT · /help agents")
       return
     }
 
@@ -4024,6 +4185,8 @@ struct MaiCLI {
     }
 
     if action == "acp" {
+      let fields = argument.split(maxSplits: 5, whereSeparator: \Character.isWhitespace).map(
+        String.init)
       await handleAgentACPCommand(
         Array(fields.dropFirst()),
         session: &session,
@@ -4035,18 +4198,210 @@ struct MaiCLI {
       return
     }
 
-    if action == "add" {
-      guard fields.count == 6, let baseURL = URL(string: fields[3]),
+    switch action {
+    case "add", "new", "create":
+      await addAgent(
+        Array(words.dropFirst()),
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "show":
+      await showAgent(
+        words.count > 1 ? words[1] : session.profile.agentID,
+        session: session,
+        configuration: configuration,
+        providerBaseURLs: providerBaseURLs,
+        terminal: terminal)
+
+    case "tools":
+      guard words.count == 3 else {
+        await terminal.line("Usage: /agent tools ID GROUPS   (a,b,c replaces; +a,-b adjusts; - clears)")
+        return
+      }
+      guard
+        let selection = await resolveToolGroupSpec(
+          words[2], runtime: runtime, plugins: plugins, configuration: configuration,
+          terminal: terminal)
+      else { return }
+      let saved = await updateAgent(
+        words[1],
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal
+      ) { definition, _ in
+        selection.apply(to: &definition)
+        return nil
+      }
+      if let saved {
+        let groups = saved.toolGroupNames.sorted()
+        await terminal.line(
+          "Agent '\(saved.id)' tool groups: \(groups.isEmpty ? "none" : groups.joined(separator: ", ")) (\(saved.toolNames.count) tools)."
+        )
+      }
+
+    case "model":
+      guard words.count == 3 else {
+        await terminal.line("Usage: /agent model ID MODEL   (- keeps the provider's default)")
+        return
+      }
+      let model = words[2] == "-" ? "" : words[2]
+      let saved = await updateAgent(
+        words[1],
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal
+      ) { definition, _ in
+        definition.model = model
+        return nil
+      }
+      if let saved {
+        await terminal.line("Agent '\(saved.id)' model: \(saved.model.isEmpty ? "-" : saved.model).")
+      }
+
+    case "provider":
+      guard words.count == 3 else {
+        await terminal.line("Usage: /agent provider ID PROVIDER")
+        return
+      }
+      let providerID = ProviderID(words[2])
+      let saved = await updateAgent(
+        words[1],
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal
+      ) { definition, draft in
+        guard draft.providers.contains(where: { $0.id == providerID.rawValue }) else {
+          return
+            "Unknown provider '\(providerID)'. /providers lists them; /agent add NAME MODEL GROUPS PROMPT PROVIDER BASE_URL registers a new endpoint."
+        }
+        definition.provider = providerID
+        return nil
+      }
+      if let saved { await terminal.line("Agent '\(saved.id)' provider: \(saved.provider).") }
+
+    case "prompt":
+      guard words.count == 3 else {
+        await terminal.line("Usage: /agent prompt ID PROMPT")
+        return
+      }
+      let requested = words[2]
+      let saved = await updateAgent(
+        words[1],
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal
+      ) { definition, draft in
+        guard let name = resolvedSystemPromptName(requested, configuration: draft),
+          let text = draft.prompts?.system[name]
+        else {
+          return
+            "Unknown system prompt '\(requested)'. /prompts lists them; /prompt add NAME TEXT creates one."
+        }
+        definition.systemPrompt = name
+        definition.instructions = text
+        return nil
+      }
+      if let saved {
+        await terminal.line(
+          "Agent '\(saved.id)' uses system prompt '\(saved.systemPrompt ?? "-")'.")
+      }
+
+    case "remove", "rm", "delete", "del":
+      guard words.count == 2 else {
+        await terminal.line("Usage: /agent remove ID")
+        return
+      }
+      await removeAgent(
+        words[1],
+        session: session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "use":
+      guard words.count == 2 else {
+        await terminal.line("Usage: /agent use ID")
+        return
+      }
+      await selectAgent(words[1], session: &session, configuration: configuration, terminal: terminal)
+
+    default:
+      await selectAgent(words[0], session: &session, configuration: configuration, terminal: terminal)
+    }
+  }
+
+  /// Makes a saved definition this chat's agent, starting the conversation over.
+  private static func selectAgent(
+    _ id: String,
+    session: inout REPLSession,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async {
+    guard let definition = configuration?.agents.first(where: { $0.id == id }) else {
+      await terminal.line("Unknown agent '\(id)'. Use /agents.")
+      return
+    }
+    session.reset(profile: SessionProfile(definition: definition))
+    await terminal.line(
+      "Agent: \(id). It is now the primary agent for chat '\(session.title)'; conversation cleared."
+    )
+  }
+
+  /// `/agent add NAME MODEL GROUPS PROMPT [PROVIDER [BASE_URL]]`: one line
+  /// saves a definition out of things that already exist — a provider, a
+  /// named system prompt, tool groups — and a base URL registers a new
+  /// OpenAI-compatible provider on the way. Saving does not switch the chat.
+  private static func addAgent(
+    _ words: [String],
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let usage = """
+      Usage: /agent add NAME MODEL GROUPS PROMPT [PROVIDER [BASE_URL]]
+        MODEL     a model name, or - for the provider's default
+        GROUPS    tool groups as a,b,c (see /tools), or - for none
+        PROMPT    a named system prompt (see /prompts; /prompt add NAME TEXT creates one)
+        PROVIDER  defaults to this chat's provider; with BASE_URL a new OpenAI-compatible one
+      """
+    guard (4...6).contains(words.count) else {
+      await terminal.line(usage)
+      return
+    }
+    guard let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    var draft = configuration ?? MaiConfiguration()
+    let name = words[0]
+    let model = words[1] == "-" ? "" : words[1]
+    let providerID = words.count >= 5 ? ProviderID(words[4]) : session.profile.provider
+
+    var providerChanged = false
+    if words.count == 6 {
+      guard let baseURL = URL(string: words[5]),
         ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""),
         baseURL.host != nil
       else {
-        await terminal.line("Usage: /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+        await terminal.line("BASE_URL must be an http(s) URL.\n\(usage)")
         return
       }
-      let name = fields[1]
-      let providerID = ProviderID(fields[2])
-      var draft = configuration ?? MaiConfiguration()
-      var providerChanged = false
       if let index = draft.providers.firstIndex(where: { $0.id == providerID.rawValue }) {
         if let configuredURL = draft.providers[index].baseURL, configuredURL != baseURL {
           await terminal.line(
@@ -4067,82 +4422,281 @@ struct MaiCLI {
             apiKeyEnvironment: apiKeyEnvironmentName(for: providerID.rawValue)))
         providerChanged = true
       }
+    } else if !draft.providers.contains(where: { $0.id == providerID.rawValue }) {
+      await terminal.line(
+        "Unknown provider '\(providerID)'. /providers lists the configured ones; add BASE_URL to register a new OpenAI-compatible endpoint."
+      )
+      return
+    }
 
-      var definition = session.profile.agentDefinition
-      definition.id = name
-      definition.displayName = name
-      definition.provider = providerID
-      definition.model = fields[4] == "-" ? "" : fields[4]
-      definition.instructions = fields[5] == "-" ? "" : fields[5]
-      let promptName = draft.agents.first(where: { $0.id == name })?.systemPrompt ?? name
-      definition.systemPrompt = promptName
-      var prompts = draft.prompts ?? ConfiguredPrompts()
-      prompts.system[promptName] = definition.instructions
-      draft.prompts = prompts
-      if let index = draft.agents.firstIndex(where: { $0.id == name }) {
-        draft.agents[index] = definition
-      } else {
-        draft.agents.append(definition)
-      }
-      for index in draft.agents.indices
-      where draft.agents[index].systemPrompt == definition.systemPrompt {
-        draft.agents[index].instructions = definition.instructions
-      }
-      if draft.defaultAgent == nil { draft.defaultAgent = name }
+    guard let promptName = resolvedSystemPromptName(words[3], configuration: draft),
+      let instructions = draft.prompts?.system[promptName]
+    else {
+      let known = draft.prompts?.system.keys.sorted() ?? []
+      await terminal.line(
+        "Unknown system prompt '\(words[3])'. Create it first: /prompt add \(words[3]) TEXT, or /prompt edit \(words[3])."
+          + (known.isEmpty ? "" : " Known: \(known.joined(separator: ", ")).")
+      )
+      return
+    }
+    guard
+      let selection = await resolveToolGroupSpec(
+        words[2], runtime: runtime, plugins: plugins, configuration: draft, terminal: terminal)
+    else { return }
 
-      do {
-        guard let configurationPath else {
-          throw CLIError.configNotFound("No configuration path is available.")
-        }
-        try draft.save(to: URL(fileURLWithPath: configurationPath))
-        if providerChanged,
-          let provider = draft.providers.first(where: { $0.id == providerID.rawValue })
-        {
-          try await runtime.register(
-            plugins.makeProvider(
-              from: provider,
-              environment: ProcessInfo.processInfo.environment),
-            replacingExisting: true)
-        }
-        try await runtime.register(agent: definition, replacingExisting: true)
-        configuration = draft
-        session.reset(profile: SessionProfile(definition: definition))
+    let isNew = !draft.agents.contains { $0.id == name }
+    var definition =
+      draft.agents.first { $0.id == name }
+      ?? AgentDefinition(id: name, instructions: instructions, provider: providerID, model: model)
+    definition.provider = providerID
+    definition.model = model
+    definition.systemPrompt = promptName
+    definition.instructions = instructions
+    definition.toolGroupNames = []
+    definition.toolNames = []
+    selection.apply(to: &definition)
+    let changed = draft.upsertAgent(definition)
+
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      if providerChanged,
+        let provider = draft.providers.first(where: { $0.id == providerID.rawValue })
+      {
+        try await runtime.register(
+          plugins.makeProvider(from: provider, environment: ProcessInfo.processInfo.environment),
+          replacingExisting: true)
+      }
+      for agent in draft.agents where changed.contains(agent.id) {
+        try await runtime.register(agent: agent, replacingExisting: true)
+      }
+      configuration = draft
+      if session.profile.agentID == name {
+        try applyDefinition(definition, to: &session)
+      }
+      let groups = definition.toolGroupNames.sorted()
+      let summary =
+        "\(providerID)\(model.isEmpty ? "" : " \(model)"), "
+        + (groups.isEmpty ? "no tool groups" : "tool groups \(groups.joined(separator: ", "))")
+        + ", system prompt '\(promptName)'"
+      let hint = session.profile.agentID == name ? "" : " /agent use \(name) switches this chat to it."
+      await terminal.line("\(isNew ? "Added" : "Updated") agent '\(name)': \(summary).\(hint)")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  /// What `a,b,c`, `+a,-b`, or `-` asks for, resolved against the tool
+  /// group catalog.
+  private struct ToolGroupSelection {
+    var replaces: Bool
+    var added: [ToolGroupDefinition] = []
+    var removed: [ToolGroupDefinition] = []
+
+    func apply(to definition: inout AgentDefinition) {
+      if replaces {
+        definition.toolGroupNames = Set(added.map(\.id))
+        definition.toolNames = added.reduce(into: Set<String>()) { $0.formUnion($1.toolNames) }
+        return
+      }
+      for group in removed {
+        definition.toolGroupNames.remove(group.id)
+        definition.toolNames.subtract(group.toolNames)
+      }
+      for group in added {
+        definition.toolGroupNames.insert(group.id)
+        definition.toolNames.formUnion(group.toolNames)
+      }
+    }
+  }
+
+  /// Parses a tool group spec, saying which name was not found.
+  private static func resolveToolGroupSpec(
+    _ spec: String,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: MaiConfiguration?,
+    terminal: TerminalWriter
+  ) async -> ToolGroupSelection? {
+    let catalog: [ToolGroupDefinition]
+    do {
+      catalog = try await toolGroupCatalog(
+        runtime: runtime, plugins: plugins, configuration: configuration)
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      return nil
+    }
+    if spec == "-" || spec.lowercased() == "none" { return ToolGroupSelection(replaces: true) }
+    let entries = spec.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+    let relative = !entries.isEmpty && entries.allSatisfy { $0.hasPrefix("+") || $0.hasPrefix("-") }
+    var selection = ToolGroupSelection(replaces: !relative)
+    for entry in entries {
+      let name = relative ? String(entry.dropFirst()) : entry
+      guard let group = resolveToolGroup(name, in: catalog) else {
         await terminal.line(
-          "Agent '\(name)' saved and selected for chat '\(session.title)'. Conversation cleared.")
+          "Unknown tool group '\(name)'. Available: \(catalog.map(\.id).sorted().joined(separator: ", "))."
+        )
+        return nil
+      }
+      if relative, entry.hasPrefix("-") {
+        selection.removed.append(group)
+      } else {
+        selection.added.append(group)
+      }
+    }
+    return selection
+  }
+
+  /// Applies one change to a saved definition, writes it back, and keeps the
+  /// current chat in step when it is the agent edited — without clearing
+  /// the conversation. `change` answers a message to refuse the edit.
+  private static func updateAgent(
+    _ id: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter,
+    change: (inout AgentDefinition, MaiConfiguration) -> String?
+  ) async -> AgentDefinition? {
+    guard let draft = configuration, configurationPath != nil else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return nil
+    }
+    guard var definition = draft.agents.first(where: { $0.id == id }) else {
+      await terminal.line("Unknown agent '\(id)'. /agents lists the saved ones.")
+      return nil
+    }
+    if let refusal = change(&definition, draft) {
+      await terminal.line(refusal)
+      return nil
+    }
+    guard
+      await persistAgentDefinition(
+        definition,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        runtime: runtime,
+        terminal: terminal)
+    else { return nil }
+    if session.profile.agentID == id {
+      do {
+        try applyDefinition(definition, to: &session)
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    }
+    return definition
+  }
+
+  /// Brings the current chat in step with a definition just saved, without
+  /// clearing the conversation: the system message is rewritten in place.
+  private static func applyDefinition(
+    _ definition: AgentDefinition,
+    to session: inout REPLSession
+  ) throws {
+    let previous = session.profile.instructions
+    session.profile = SessionProfile(definition: definition)
+    try applySystemInstructions(definition.instructions, replacing: previous, session: &session)
+  }
+
+  private static func removeAgent(
+    _ id: String,
+    session: REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
       return
     }
-
-    if action == "show" {
-      await showAgent(
-        fields.count > 1 ? fields[1] : session.profile.agentID,
-        session: session,
-        configuration: configuration,
-        providerBaseURLs: providerBaseURLs,
-        terminal: terminal)
+    guard let removed = draft.agents.first(where: { $0.id == id }) else {
+      await terminal.line("Unknown agent '\(id)'. /agents lists the saved ones.")
       return
     }
+    guard id != session.profile.agentID else {
+      await terminal.line("Agent '\(id)' is this chat's agent; switch with /agent use OTHER first.")
+      return
+    }
+    let parents = draft.agents.filter { $0.subagentNames.contains(id) }.map(\.id)
+    let previousDefault = draft.defaultAgent
+    draft.removeAgent(id)
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      await runtime.unregister(agentID: id)
+      configuration = draft
+      var notes = ["Removed agent '\(id)'."]
+      if !parents.isEmpty {
+        notes.append("It is no longer a subagent of \(parents.joined(separator: ", ")).")
+      }
+      if let current = draft.defaultAgent, current != previousDefault {
+        notes.append("The default agent is now '\(current)'.")
+      }
+      if let prompt = removed.systemPrompt, draft.agentsUsingSystemPrompt(prompt).isEmpty,
+        draft.prompts?.system[prompt] != nil
+      {
+        notes.append("Its system prompt '\(prompt)' is now unused; /prompt rm \(prompt) drops it.")
+      }
+      await terminal.line(notes.joined(separator: " "))
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
 
-    let selectedID: String
-    if action == "use" {
-      guard fields.count == 2 else {
-        await terminal.line("Usage: /agent use ID")
+  /// Opens one saved definition as JSON. `instructions` is the text of the
+  /// prompt named in `systemPrompt`: changing the text changes that prompt
+  /// for every agent using it; naming another existing prompt without
+  /// touching the text switches to that prompt.
+  private static func editAgentDefinition(
+    named id: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard let draft = configuration, let configurationPath else {
+      await terminal.line("error: No writable configuration is active.", to: .standardError)
+      return
+    }
+    guard let current = draft.agents.first(where: { $0.id == id }) else {
+      await terminal.line("Unknown agent '\(id)'. /agents lists the saved ones.")
+      return
+    }
+    do {
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+      let data = try encoder.encode(current)
+      guard let edited = await editTemporaryData(data, suffix: "agent-\(id).json", terminal: terminal)
+      else { return }
+      var definition = try JSONDecoder().decode(AgentDefinition.self, from: edited)
+      guard definition.id == id else {
+        await terminal.line("Keep the id '\(id)'; /agent add creates another agent.")
         return
       }
-      selectedID = fields[1]
-    } else {
-      selectedID = fields[0]
+      if let name = definition.systemPrompt, name != current.systemPrompt,
+        definition.instructions == current.instructions,
+        let text = draft.prompts?.system[name]
+      {
+        definition.instructions = text
+      }
+      guard
+        await persistAgentDefinition(
+          definition,
+          configuration: &configuration,
+          configurationPath: configurationPath,
+          runtime: runtime,
+          terminal: terminal)
+      else { return }
+      if session.profile.agentID == id {
+        try applyDefinition(definition, to: &session)
+      }
+      await terminal.line("Agent '\(id)' saved to \(configurationPath).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
     }
-    guard let definition = configuration?.agents.first(where: { $0.id == selectedID }) else {
-      await terminal.line("Unknown agent '\(selectedID)'. Use /agents.")
-      return
-    }
-    session.reset(profile: SessionProfile(definition: definition))
-    await terminal.line(
-      "Agent: \(selectedID). It is now the primary agent for chat '\(session.title)'; conversation cleared."
-    )
   }
 
   private static func showAgent(
@@ -4162,10 +4716,23 @@ struct MaiCLI {
     let baseURL =
       providerBaseURLs[definition.provider.rawValue]
       ?? configuration?.providers.first { $0.id == definition.provider.rawValue }?.baseURL
-    await terminal.line("Agent: \(definition.id) (\(definition.displayName))")
+    let groups = definition.toolGroupNames.sorted()
+    let subagents = definition.subagentNames.sorted()
+    let parked = definition.isEnabled ? "" : " [disabled]"
+    await terminal.line("Agent: \(definition.id) (\(definition.displayName))\(parked)")
+    if !definition.description.isEmpty {
+      await terminal.line("Description: \(definition.description)")
+    }
     await terminal.line("Provider: \(definition.provider)")
     await terminal.line("Base URL: \(baseURL?.absoluteString ?? "-")")
     await terminal.line("Model: \(definition.model.isEmpty ? "-" : definition.model)")
+    await terminal.line(
+      "Tool groups: \(groups.isEmpty ? "-" : groups.joined(separator: ", ")) (\(definition.toolNames.count) tools)"
+    )
+    await terminal.line("Subagents: \(subagents.isEmpty ? "-" : subagents.joined(separator: ", "))")
+    await terminal.line(
+      "Delegation: \(definition.toolDelegation.rawValue) · limits \(definition.limits.maxModelTurns) turns, \(definition.limits.maxToolCalls) tools, \(definition.limits.maxSubagents) subagents"
+    )
     await terminal.line("Tool calling: \(definition.toolCallingStrategy.rawValue)")
     await terminal.line("System prompt: \(definition.systemPrompt ?? "inline")")
     await terminal.line(
@@ -4180,32 +4747,33 @@ struct MaiCLI {
     runtime: AgentRuntime,
     terminal: TerminalWriter
   ) async -> Bool {
+    await persistAgentDefinition(
+      session.profile.agentDefinition,
+      configuration: &configuration,
+      configurationPath: configurationPath,
+      runtime: runtime,
+      terminal: terminal)
+  }
+
+  /// Writes one definition to the configuration and the live runtime, along
+  /// with every agent sharing its named prompt. Answers false, having said
+  /// why, when nothing could be saved.
+  @discardableResult
+  private static func persistAgentDefinition(
+    _ definition: AgentDefinition,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async -> Bool {
     guard var draft = configuration, let configurationPath else {
       await terminal.line("error: No writable configuration is active.", to: .standardError)
       return false
     }
-    let definition = session.profile.agentDefinition
-    if let promptName = definition.systemPrompt {
-      var prompts = draft.prompts ?? ConfiguredPrompts()
-      prompts.system[promptName] = definition.instructions
-      draft.prompts = prompts
-      for index in draft.agents.indices where draft.agents[index].systemPrompt == promptName {
-        draft.agents[index].instructions = definition.instructions
-      }
-    }
-    if let index = draft.agents.firstIndex(where: { $0.id == definition.id }) {
-      draft.agents[index] = definition
-    } else {
-      draft.agents.append(definition)
-    }
-    if draft.defaultAgent == nil { draft.defaultAgent = definition.id }
+    let changed = draft.upsertAgent(definition)
     do {
       try draft.save(to: URL(fileURLWithPath: configurationPath))
-      let affectedAgents =
-        definition.systemPrompt.map { promptName in
-          draft.agents.filter { $0.systemPrompt == promptName }
-        } ?? [definition]
-      for agent in affectedAgents {
+      for agent in draft.agents where changed.contains(agent.id) {
         try await runtime.register(agent: agent, replacingExisting: true)
       }
       configuration = draft
@@ -6231,13 +6799,17 @@ struct MaiCLI {
       "/set ui.toolResultLines all", "/set ui.toolResultLines ",
       "/cwd", "/pwd", "/cd ", "/plugins",
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/prompts", "/prompt",
+      "/prompt list", "/prompt show ", "/prompt add ", "/prompt set ", "/prompt edit ",
+      "/prompt rm ", "/prompt use ", "/help prompts",
       "/agents", "/agents tree", "/agents log ", "/agents kill ", "/agents focus ",
       "/agents focus main", "/queue", "/queue push ", "/queue pop", "/queue flush",
       "/help queue", "/help export", "/export markdown ", "/export json ", "/export debug ",
       "/export epub ", "/export docx ", "/set ui.subagents all", "/set ui.subagents tools",
       "/set ui.subagents stats", "/set ui.subagents none",
       "/agent use ",
-      "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
+      "/agent show ", "/agent add ", "/agent tools ", "/agent model ", "/agent prompt ",
+      "/agent provider ", "/agent remove ", "/edit agent", "/tools", "/proxy on", "/proxy off",
+      "/mcp list",
       "/mcp add ", "/mcp enable ", "/mcp disable ",
       "/edit prompt", "/edit compact", "/edit config", "/edit mcps", "/chat compact ",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
@@ -6484,11 +7056,12 @@ struct MaiCLI {
     /model NAME         Select a model
     /memory             Show, edit, learn, or scope this project's durable memory
     /todo               Show, add to, tick off, or edit this project's todo list
-    /prompts            List reusable prompts and their agent associations
+    /prompts            List named system prompts and which agents use them
     /prompt [NAME]      Show or select the current agent's system prompt
+    /prompt add|edit|rm NAME   Create, edit, or drop a named system prompt (/help prompts)
     /chat               List, switch, archive, rename, or edit this project's chats
     /project            Show, list, rename, or tint the project (the start directory)
-    /edit TARGET        Edit a prompt, config, MCP list, or message in $EDITOR
+    /edit TARGET        Edit a prompt, agent, config, MCP list, or message in $EDITOR
     /agents             List agent setups and the running agent tree
     /agents tree        Show running agents as a tree of pids
     /agents kill PID    Stop a running agent and everything it started
@@ -6498,7 +7071,9 @@ struct MaiCLI {
     /agents enable|disable ID   Park an agent setup without deleting it
     /agents describe ID TEXT    Set the purpose a model reads when picking agents
     /agent [use] ID     Set the current chat's primary agent
-    /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
+    /agent add NAME MODEL GROUPS PROMPT   Save a reusable agent in one line (/help agents)
+    /agent tools|model|prompt|provider ID VALUE   Change one saved agent
+    /agent remove ID    Drop a saved agent
     /agent acp ...      Register an external ACP agent (gemini, claude, codex, ...)
     /tools              List logical tool groups for the current agent
     /proxy [on|off]     Inspect or toggle the shared tool proxy
@@ -6616,6 +7191,7 @@ struct MaiCLI {
   private static let editHelp = """
     /edit prompt [NAME]      Edit/create a named system prompt (current when omitted)
     /edit NAME               Edit an existing named system prompt
+    /edit agent [ID]         Edit a saved agent as JSON (current when omitted)
     /edit compact            Edit the global chat-compaction prompt template
     /edit memory             Edit this project's durable memory notes
     /edit memory-prompt      Edit the template /memory learn uses
@@ -6671,6 +7247,29 @@ struct MaiCLI {
     Enable the tools for an agent with /tools enable todo.
     """
 
+  private static let promptHelp = """
+    Named system prompts. Every agent takes its instructions from one prompt
+    in the catalog (prompts.system in the configuration), referenced by name
+    in its systemPrompt field; several agents may share one, and editing the
+    prompt updates all of them.
+
+      /prompts                   List prompts and which agents use them
+      /prompt                    Show the current agent's prompt
+      /prompt show NAME          Print one prompt
+      /prompt add NAME TEXT      Create a prompt from one line (set replaces it)
+      /prompt edit [NAME]        Edit or create one in $EDITOR (current when omitted)
+      /prompt rm NAME            Drop an unused prompt
+      /prompt use NAME           Point the current agent at a prompt (/prompt NAME too)
+      /agent prompt ID NAME      Point another saved agent at a prompt
+
+    Register an agent around a prompt in two lines:
+      /prompt add reviewer You review diffs and list only real defects.
+      /agent add reviewer - files,run reviewer
+
+    The other templates — compact, delegation, worker, memory — are edited
+    with /edit compact, /edit delegation, /edit worker, and /edit memory-prompt.
+    """
+
   private static let agentsHelp = """
     Agent commands. A definition is a saved setup — provider, model, system
     prompt, tools, and limits — that you switch between; a process is one run
@@ -6685,6 +7284,22 @@ struct MaiCLI {
       /agents enable|disable ID  Park a definition without deleting it
       /agents acp [list]         List external ACP agents and what is installed
       /agents acp add NAME [CMD ARG ...]  Register an ACP agent as a usable agent
+
+    Saving and changing definitions, one line each (/agent and /agents both work):
+
+      /agent add NAME MODEL GROUPS PROMPT [PROVIDER [BASE_URL]]
+                                 GROUPS is a,b,c (see /tools) or -; PROMPT names a system
+                                 prompt (see /prompts); PROVIDER defaults to this chat's, and
+                                 with BASE_URL registers a new OpenAI-compatible endpoint
+      /agent tools ID GROUPS     Replace its tool groups (a,b,c), adjust them (+a,-b), or clear (-)
+      /agent model ID MODEL      Change its model (- for the provider default)
+      /agent prompt ID PROMPT    Point it at another named system prompt
+      /agent provider ID PROVIDER  Move it to a configured provider
+      /agent remove ID           Drop it; subagent lists and the default agent are updated
+      /edit agent [ID]           Edit a definition as JSON in $EDITOR (current when omitted)
+
+    A definition's tools are its own, whatever its depth in the tree: give a
+    subagent its groups the same way. Named prompts are managed with /prompt.
       /agents log PID            Print a running or finished agent's own transcript
       /agents stop PID           Pause an agent and everything it started at their next step
       /agents continue PID       Let a paused agent go on; queued messages reach it then
