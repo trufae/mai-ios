@@ -271,8 +271,8 @@ MCP exposes all of that server's discovered tools to every agent; the server is
 the enable/disable unit. Obsolete names left in an agent after an MCP rename are
 ignored instead of preventing the REPL from starting. Agents still explicitly
 list non-MCP tools and child agents they are allowed to use.
-`MaiStandardToolsPlugin` provides `echo`, date/time, calculator, network, and
-workspace-scoped Files tools.
+`MaiStandardToolsPlugin` provides `echo`, date/time, the `calc` calculator,
+network, and workspace-scoped Files tools.
 
 ### ACP and MCP
 

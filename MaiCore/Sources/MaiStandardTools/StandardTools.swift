@@ -111,7 +111,7 @@ public struct MaiStandardToolFactory: ConfiguredToolFactory {
         description: MaiCurrentTimeTool.toolDefinition.description,
         toolNames: [MaiCurrentTimeTool.name]),
       ToolGroupDefinition(
-        id: "calculator",
+        id: "calc",
         displayName: "Calculator",
         description: MaiCalculatorTool.toolDefinition.description,
         toolNames: [MaiCalculatorTool.name]),
@@ -341,7 +341,7 @@ public struct MaiReadTextFileTool: AgentTool {
 }
 
 public struct MaiCalculatorTool: AgentTool {
-  public static let name = "calculator"
+  public static let name = "calc"
   public static let toolDefinition = ToolDefinition(
     name: name,
     description:

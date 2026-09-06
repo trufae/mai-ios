@@ -470,9 +470,10 @@ struct SessionProfile {
         MaiWebSearchTool.name,
         MaiWebFetchTool.name,
         MaiMastodonTool.name,
-      ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames)
+      ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames
+        + MaiTodoTools.toolNames)
     toolGroupNames = [
-      "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github",
+      "echo", "datetime", "calc", "files", "run", "weather", "web", "mastodon", "github", "todo",
     ]
     subagentNames = []
     self.stream = stream
@@ -1180,6 +1181,10 @@ private struct MaiCLI {
     }
   }
 
+  /// Tool and group names that changed; agent records saved under the old
+  /// name are moved to the new one the next time the configuration is read.
+  private static let renamedToolNames = ["calculator": MaiCalculatorTool.name]
+
   /// Tool names remain in the agent record for provider/runtime portability;
   /// group names let a host expand newly added plugin tools without requiring
   /// users to toggle an already enabled group off and on again.
@@ -1202,10 +1207,21 @@ private struct MaiCLI {
     var changed = false
     for index in draft.agents.indices {
       let previous = draft.agents[index].toolNames
+      let previousGroups = draft.agents[index].toolGroupNames
+      for (old, new) in renamedToolNames {
+        if draft.agents[index].toolNames.remove(old) != nil {
+          draft.agents[index].toolNames.insert(new)
+        }
+        if draft.agents[index].toolGroupNames.remove(old) != nil {
+          draft.agents[index].toolGroupNames.insert(new)
+        }
+      }
       for groupName in draft.agents[index].toolGroupNames {
         draft.agents[index].toolNames.formUnion(toolsByGroup[groupName] ?? [])
       }
-      changed = changed || previous != draft.agents[index].toolNames
+      changed =
+        changed || previous != draft.agents[index].toolNames
+        || previousGroups != draft.agents[index].toolGroupNames
     }
     guard changed else { return }
     try draft.save(to: URL(fileURLWithPath: configurationPath))
@@ -5749,7 +5765,10 @@ private struct MaiCLI {
       $0.enabled && $0.kind == MaiStandardToolsPlugin.factoryKind
     }) == true {
       groupNames.formUnion(
-        ["echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon", "github"])
+        [
+          "echo", "datetime", "calc", "files", "run", "weather", "web", "mastodon", "github",
+          "todo",
+        ])
     }
     for group in groupNames {
       values.append("/tools show \(group)")
@@ -5900,7 +5919,7 @@ private struct MaiCLI {
             ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames
               + MaiTodoTools.toolNames),
           toolGroupNames: [
-            "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon",
+            "echo", "datetime", "calc", "files", "run", "weather", "web", "mastodon",
             "github", "todo",
           ],
           subagentNames: ["researcher"],

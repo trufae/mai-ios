@@ -124,7 +124,7 @@
       "provider": "openai",
       "model": "your-model",
       "toolNames": [
-        "calculator",
+        "calc",
         "chats_list",
         "chats_read",
         "chats_read_document",
@@ -165,7 +165,7 @@
         "web_search"
       ],
       "toolGroupNames": [
-        "calculator",
+        "calc",
         "chats",
         "datetime",
         "echo",
