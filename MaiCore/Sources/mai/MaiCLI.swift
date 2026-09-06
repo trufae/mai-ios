@@ -2043,6 +2043,7 @@ struct MaiCLI {
               configuration: &configuration,
               catalogs: &catalogs,
               visual: visual,
+              chatProcess: chatProcessIDs[session.id],
               terminal: terminal)
           }
           if exits {
@@ -2488,6 +2489,7 @@ struct MaiCLI {
     configuration: inout MaiConfiguration?,
     catalogs: inout [MCPServerCatalog],
     visual: VisualBridge,
+    chatProcess: AgentPID? = nil,
     terminal: TerminalWriter
   ) async -> Bool {
     let parts = input.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(String.init)
@@ -2759,7 +2761,8 @@ struct MaiCLI {
     case "/copy":
       await copyToClipboard(argument, session: session, terminal: terminal)
     case "/export":
-      await handleExportCommand(argument, session: session, runtime: runtime, terminal: terminal)
+      await handleExportCommand(
+        argument, session: session, runtime: runtime, process: chatProcess, terminal: terminal)
     case "/stats":
       await handleStatsCommand(argument, store: visual.usageStats, terminal: terminal)
     #if PMAI_HAS_VISUAL
@@ -6053,6 +6056,7 @@ struct MaiCLI {
     _ argument: String,
     session: REPLSession,
     runtime: AgentRuntime,
+    process: AgentPID?,
     terminal: TerminalWriter
   ) async {
     let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(String.init)
@@ -6070,6 +6074,18 @@ struct MaiCLI {
       let profile = session.profile
       let tools = await runtime.availableTools().filter { profile.toolNames.contains($0.name) }
       let provider = await runtime.availableProviders().first { $0.id == profile.provider }
+      // The children of this chat's process, parents before children. Their
+      // transcripts live only in the supervisor, so the export is the one
+      // place they can be kept from.
+      var subagents: [ChatExportSubagent] = []
+      if let process {
+        let tree = await runtime.supervisor.tree()
+        for child in tree.subtree(of: process).dropFirst() {
+          subagents.append(
+            ChatExportSubagent(
+              process: child, messages: await runtime.supervisor.transcript(child.pid)))
+        }
+      }
       debug = ChatExportDebug(
         provider: profile.provider.rawValue,
         providerDisplayName: provider?.displayName,
@@ -6089,7 +6105,8 @@ struct MaiCLI {
           "retry.attempts": String(profile.retry.attempts),
           "retry.delay": durationSetting(profile.retry.delaySeconds),
           "autocompact": autocompactSetting(profile.autocompact),
-        ])
+        ],
+        subagents: subagents)
     }
     let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     var target: URL
@@ -6199,7 +6216,8 @@ struct MaiCLI {
 
       /export markdown [PATH]   A Markdown transcript (.md)
       /export json [PATH]       The chat as stored, in a JSON envelope (.json)
-      /export debug [PATH]      The JSON plus the tools and settings this chat runs with
+      /export debug [PATH]      The JSON plus the tools, settings, and every child agent's
+                                transcript from this chat's runs
       /export epub [PATH]       An EPUB book, one chapter per message
       /export docx [PATH]       A Word document
 

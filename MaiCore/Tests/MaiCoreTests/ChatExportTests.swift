@@ -112,6 +112,30 @@ func chatExportsToEveryFormat() throws {
   let debugEnvelope = try decoder.decode(ChatExportEnvelope.self, from: debugJSON)
   #expect(debugEnvelope.debug?.toolDefinitions.map(\.name) == ["echo"])
   #expect(debugEnvelope.debug?.settings["workingDirectory"] == "/tmp")
+  #expect(debugEnvelope.debug?.subagents.isEmpty == true)
+
+  // A child agent's own transcript travels with the debug export.
+  let child = AgentProcessInfo(
+    pid: 2, parent: 1, runID: UUID(), agentID: "helper", task: "add up", state: .completed,
+    depth: 1)
+  let withChildren = ChatExportDebug(
+    provider: "hello",
+    subagents: [
+      ChatExportSubagent(process: child, messages: [.user("add 2 and 2"), .assistant("4")])
+    ])
+  let childJSON = try ChatExport.data(
+    for: chat, format: .debug, generator: "pmai", debug: withChildren)
+  let childEnvelope = try decoder.decode(ChatExportEnvelope.self, from: childJSON)
+  #expect(childEnvelope.debug?.subagents.map(\.pid) == [2])
+  #expect(childEnvelope.debug?.subagents.first?.parent == 1)
+  #expect(childEnvelope.debug?.subagents.first?.state == .completed)
+  #expect(childEnvelope.debug?.subagents.first?.messages.last?.text == "4")
+
+  // Exports written before subagents were recorded still decode.
+  let older = try decoder.decode(
+    ChatExportDebug.self,
+    from: Data(#"{"provider":"hello","toolDefinitions":[],"settings":{}}"#.utf8))
+  #expect(older.subagents.isEmpty)
 }
 
 @Test("Export file names come from the title and formats accept common spellings")
