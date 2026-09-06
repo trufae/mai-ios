@@ -167,6 +167,18 @@ public actor AgentSupervisor {
     pruneFinished()
   }
 
+  /// Forgets every finished process whose whole subtree has finished and
+  /// that nothing is queued for, so a listing shows only what is running.
+  /// Returns the pids dropped, lowest first. A host that kept one of them
+  /// for a chat gets a fresh process at that chat's next turn, the way it
+  /// does for any stale pid.
+  @discardableResult
+  public func clearFinished() -> [AgentPID] {
+    let removable = removableFinished()
+    for process in removable { forget(process.pid) }
+    return removable.map(\.pid)
+  }
+
   // MARK: - Inbox
 
   /// Queues a message for a process. The run reads it at its next model turn —
@@ -517,20 +529,26 @@ public actor AgentSupervisor {
   /// Drops the oldest terminal processes past the retention limit, never one
   /// that still has a live descendant hanging off it.
   private func pruneFinished() {
-    let snapshot = tree()
-    let removable = snapshot.processes.filter { process in
-      guard process.state.isTerminal else { return false }
-      return !snapshot.subtree(of: process.pid).dropFirst().contains { !$0.state.isTerminal }
-    }
+    let removable = removableFinished()
     guard removable.count > finishedRetention else { return }
     let ordered = removable.sorted {
       ($0.finishedAt ?? $0.updatedAt) < ($1.finishedAt ?? $1.updatedAt)
     }
     for process in ordered.prefix(removable.count - finishedRetention) {
-      entries[process.pid] = nil
-      inboxes[process.pid] = nil
-      transcriptEdits[process.pid] = nil
-      paused.remove(process.pid)
+      forget(process.pid)
     }
   }
+
+  /// Finished processes that can be dropped: nothing under them still runs,
+  /// and nobody has queued a message they would read at their next turn.
+  private func removableFinished() -> [AgentProcessInfo] {
+    let snapshot = tree()
+    return snapshot.processes.filter { process in
+      guard process.state.isTerminal, inboxes[process.pid, default: []].isEmpty else {
+        return false
+      }
+      return !snapshot.subtree(of: process.pid).dropFirst().contains { !$0.state.isTerminal }
+    }
+  }
+
 }

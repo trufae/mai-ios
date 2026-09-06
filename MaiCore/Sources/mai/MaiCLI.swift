@@ -1353,12 +1353,20 @@ struct MaiCLI {
     case btw
   }
 
+  /// One run in flight. A chat turn also remembers which chat it belongs to
+  /// and what that chat held when it was sent, so its reply finds its way
+  /// back even after the person edited the chat or moved to another one.
+  private struct REPLTurn {
+    let task: Task<AgentResult, any Error>
+    let started: ContinuousClock.Instant
+    let pid: AgentPID
+    let kind: REPLTurnKind
+    let chatID: UUID?
+    let sent: [AgentMessage]
+  }
+
   private struct REPLLoop {
-    var activeTurn:
-      (
-        task: Task<AgentResult, any Error>, started: ContinuousClock.Instant, pid: AgentPID,
-        kind: REPLTurnKind
-      )?
+    var activeTurn: REPLTurn?
     var focus: REPLMessageTarget = .main
     var approvals: [(request: ApprovalRequest, reply: REPLApprovalReply)] = []
     var editingApproval: (request: ApprovalRequest, reply: REPLApprovalReply)?
@@ -1367,13 +1375,38 @@ struct MaiCLI {
     var exiting = false
   }
 
-  /// Commands that are safe while a turn runs: they read state, or change
-  /// things the running request already copied.
-  private static let commandsAllowedDuringTurn: Set<String> = [
-    "/help", "/queue", "/agents", "/set", "/cwd", "/pwd", "/exit", "/quit", "/todo",
-    "/providers", "/models", "/plugins", "/mcps", "/prompts", "/project", "/attach", "/image",
-    "/copy", "/export", "/stats",
-  ]
+  /// What a command may change under a running turn, taken before it runs
+  /// so the person can be told how the change and the run meet.
+  private struct REPLCommandSnapshot {
+    let chatID: UUID
+    let title: String
+    let messages: [AgentMessage]
+    let agent: AgentDefinition
+    let configuration: MaiConfiguration?
+    let directory: String
+
+    init(session: REPLSession, configuration: MaiConfiguration?) {
+      chatID = session.id
+      title = session.title
+      messages = session.history.messages
+      agent = session.profile.agentDefinition
+      self.configuration = configuration
+      directory = FileManager.default.currentDirectoryPath
+    }
+  }
+
+  /// What a chat holds once a run that started from `sent` comes back with
+  /// `result`. Usually nothing touched the chat meanwhile and the run's
+  /// transcript is the chat. When the person edited it during the run —
+  /// cleared it, undid a message, compacted it — their edits stay and what
+  /// the run added goes after them.
+  static func mergedTranscript(
+    current: [AgentMessage], sent: [AgentMessage], result: [AgentMessage]
+  ) -> [AgentMessage] {
+    guard current != sent else { return result }
+    let shared = zip(sent, result).prefix { $0.0 == $0.1 }.count
+    return current + result.dropFirst(shared)
+  }
 
   /// The REPL is one loop over one stream of events. Typed lines arrive from
   /// a thread of their own, so the prompt stays on screen while a turn runs;
@@ -1549,7 +1582,9 @@ struct MaiCLI {
         }
       }
       interruptHandler.activate { task.cancel() }
-      loop.activeTurn = (task, ContinuousClock.now, pid, kind)
+      loop.activeTurn = REPLTurn(
+        task: task, started: ContinuousClock.now, pid: pid, kind: kind,
+        chatID: kind == .chat ? session.id : nil, sent: request.messages)
       Task {
         let outcome: Result<AgentResult, any Error>
         do {
@@ -1630,13 +1665,88 @@ struct MaiCLI {
     /// any tool call it never answered marked as such, so the next turn — a
     /// typed one or /continue — starts from there instead of from before the
     /// run. Returns how many messages were kept.
-    func keepPartialTranscript(of pid: AgentPID, reason: String) async -> Int {
-      let partial = await runtime.supervisor.transcript(pid)
-      guard !partial.isEmpty, partial != session.history.messages else { return 0 }
-      let kept = max(0, partial.count - session.history.count)
-      session.history.replaceAll(
-        with: AgentTranscriptEditor.answeringUnansweredToolCalls(in: partial, reason: reason))
+    func keepPartialTranscript(of turn: REPLTurn, reason: String) async -> Int {
+      guard let chatID = turn.chatID, let current = currentMessages(of: chatID) else { return 0 }
+      let partial = await runtime.supervisor.transcript(turn.pid)
+      guard !partial.isEmpty, partial != current else { return 0 }
+      let kept = max(0, partial.count - turn.sent.count)
+      settle(
+        AgentTranscriptEditor.answeringUnansweredToolCalls(in: partial, reason: reason), from: turn)
       return kept
+    }
+
+    /// The messages a chat holds right now: the session's for the chat at the
+    /// prompt, the workspace copy for any other. Nil once the chat is closed.
+    func currentMessages(of chatID: UUID) -> [AgentMessage]? {
+      if chatID == session.id { return session.history.messages }
+      return workspace.chats.first { $0.id == chatID }?.messages
+    }
+
+    /// Folds a run's transcript into the chat it started from. That is
+    /// usually the chat at the prompt, but the person may have moved to
+    /// another chat or edited this one while the run was going; the reply
+    /// still lands where the run began, after any edits made there meanwhile.
+    /// Answers false when that chat was closed in the meantime.
+    @discardableResult
+    func settle(_ transcript: [AgentMessage], from turn: REPLTurn) -> Bool {
+      guard let chatID = turn.chatID, let current = currentMessages(of: chatID) else {
+        return false
+      }
+      let merged = Self.mergedTranscript(current: current, sent: turn.sent, result: transcript)
+      if chatID == session.id {
+        session.history.replaceAll(with: merged)
+      } else if var chat = workspace.chats.first(where: { $0.id == chatID }) {
+        chat.messages = merged
+        chat.touch()
+        workspace.upsert(chat)
+      }
+      return true
+    }
+
+    /// Runs a command with the running turn's Ctrl+C set aside, so a program
+    /// the command hands the tty to — an editor, a shell — keeps its own
+    /// Ctrl+C instead of ending the run.
+    func withTurnInterruptSetAside(_ body: () async -> Void) async {
+      guard let turn = loop.activeTurn else {
+        await body()
+        return
+      }
+      interruptHandler.deactivate()
+      await body()
+      interruptHandler.activate { turn.task.cancel() }
+    }
+
+    /// After a command ran under a turn: says how what it changed meets the
+    /// run. A run keeps its chat when the prompt moves to another, edits to
+    /// its chat are kept when its reply is folded in, and settings reach the
+    /// next turn because the running request copied them when it started.
+    func noteTurnEffects(since before: REPLCommandSnapshot) async {
+      guard let turn = loop.activeTurn else { return }
+      if session.id != before.chatID {
+        guard turn.chatID == before.chatID else { return }
+        if workspace.chats.contains(where: { $0.id == before.chatID }) {
+          await terminal.note(
+            "The turn running in '\(before.title)' finishes there; its reply lands in that chat.")
+        } else {
+          await terminal.note(
+            "The turn running in '\(before.title)' goes on without its chat; /agents log \(turn.pid.rawValue) will show its reply, Ctrl+C cancels it."
+          )
+        }
+        return
+      }
+      if session.history.messages != before.messages, turn.chatID == session.id {
+        await terminal.note(
+          "A turn is running; what it adds goes after this edit when it finishes.")
+      }
+      if FileManager.default.currentDirectoryPath != before.directory {
+        await terminal.note("A turn is running; its tools now work in the new directory.")
+      } else if session.profile.agentDefinition != before.agent
+        || configuration != before.configuration
+      {
+        await terminal.note(
+          "A turn is running; it keeps the settings it started with. This change reaches the next turn."
+        )
+      }
     }
 
     /// Runs a one-off prompt with the active profile and no conversation
@@ -1709,7 +1819,8 @@ struct MaiCLI {
           await terminal.note("approved \(editing.request.tool.name) with the edited arguments")
         } else {
           editing.reply.resume(with: .deny(reason: "Edited arguments were not a JSON object."))
-          await terminal.note("denied \(editing.request.tool.name): the arguments were not a JSON object")
+          await terminal.note(
+            "denied \(editing.request.tool.name): the arguments were not a JSON object")
         }
         return true
       }
@@ -1746,9 +1857,11 @@ struct MaiCLI {
       guard !trimmed.isEmpty else {
         switch loop.focus {
         case .main:
-          await terminal.line("Messages go to this chat. /agents focus PID sends them to a running agent.")
+          await terminal.line(
+            "Messages go to this chat. /agents focus PID sends them to a running agent.")
         case .agent(let pid):
-          await terminal.line("Messages go to agent#\(pid.rawValue). /agents focus main returns to the chat.")
+          await terminal.line(
+            "Messages go to agent#\(pid.rawValue). /agents focus main returns to the chat.")
         }
         return
       }
@@ -1804,9 +1917,9 @@ struct MaiCLI {
         }
         if !heredoc, text.hasPrefix("!") {
           if loop.activeTurn != nil {
-            await terminal.note(
-              "Shell commands wait for the running turn; Ctrl+C cancels it.")
-          } else {
+            await terminal.note("A turn is running; what it prints waits until the command ends.")
+          }
+          await withTurnInterruptSetAside {
             await runShellCommand(String(text.dropFirst()), terminal: terminal)
           }
           await releaseIfIdle(workspace: workspace)
@@ -1830,6 +1943,20 @@ struct MaiCLI {
             argument == "focus" || argument.hasPrefix("focus ")
           {
             await handleFocus(String(argument.dropFirst("focus".count)))
+            await refreshStatus()
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/agents" || name == "/agent", argument.lowercased() == "clear" {
+            let cleared = Set(await runtime.supervisor.clearFinished())
+            // A chat whose idle process went with them gets a fresh one at
+            // its next turn; nothing it said is lost, the session has it.
+            chatProcessIDs = chatProcessIDs.filter { !cleared.contains($0.value) }
+            await terminal.line(
+              cleared.isEmpty
+                ? "No finished agents to clear."
+                : "Cleared \(cleared.count) finished agent\(cleared.count == 1 ? "" : "s"); /agents tree lists what still runs."
+            )
             await refreshStatus()
             await releaseIfIdle(workspace: workspace)
             continue
@@ -1862,15 +1989,18 @@ struct MaiCLI {
             await releaseIfIdle(workspace: workspace)
             continue
           }
-          if loop.activeTurn != nil, !commandsAllowedDuringTurn.contains(name),
-            !(name == "/agent" && Self.isProcessCommand(argument))
-          {
-            await terminal.note(
-              "\(name) waits for the running turn; Ctrl+C cancels it. Messages typed now are queued."
-            )
-            await releaseIfIdle(workspace: workspace)
-            continue
-          }
+          #if PMAI_HAS_VISUAL
+            if name == "/visual", loop.activeTurn != nil {
+              await terminal.note(
+                "Visual mode takes the whole screen, so it waits for the running turn; Ctrl+C cancels it."
+              )
+              await releaseIfIdle(workspace: workspace)
+              continue
+            }
+          #endif
+          // Every other command runs now. What it changes and the running
+          // turn meet as noteTurnEffects describes, with a note, not a wait.
+          let before = REPLCommandSnapshot(session: session, configuration: configuration)
           if name == "/project" {
             await handleProjectCommand(
               argument,
@@ -1892,6 +2022,7 @@ struct MaiCLI {
               terminal: terminal)
             workspace.upsert(session.chat, selecting: true)
             await saveWorkspace(&workspace, store: store, terminal: terminal)
+            await noteTurnEffects(since: before)
             await releaseIfIdle(workspace: workspace)
             continue
           }
@@ -1901,17 +2032,20 @@ struct MaiCLI {
               session.visualSnapshot = visualSnapshot(for: workspace)
             }
           #endif
-          if await handleCommand(
-            text,
-            session: &session,
-            runtime: runtime,
-            plugins: plugins,
-            ocrProvider: ocrProvider,
-            configuration: &configuration,
-            catalogs: &catalogs,
-            visual: visual,
-            terminal: terminal)
-          {
+          var exits = false
+          await withTurnInterruptSetAside {
+            exits = await handleCommand(
+              text,
+              session: &session,
+              runtime: runtime,
+              plugins: plugins,
+              ocrProvider: ocrProvider,
+              configuration: &configuration,
+              catalogs: &catalogs,
+              visual: visual,
+              terminal: terminal)
+          }
+          if exits {
             loop.exiting = true
             break events
           }
@@ -1928,6 +2062,7 @@ struct MaiCLI {
             workspace.upsert(session.chat, selecting: true)
           #endif
           await saveWorkspace(&workspace, store: store, terminal: terminal)
+          await noteTurnEffects(since: before)
           await releaseIfIdle(workspace: workspace)
           continue
         }
@@ -1966,10 +2101,11 @@ struct MaiCLI {
         var succeeded = false
         var paused: AgentRunInterruption?
         var kept = 0
+        var settled = true
         switch outcome {
         case .success(let result):
-          if turn?.kind == .chat {
-            session.history.replaceAll(with: result.transcript)
+          if let turn, turn.chatID != nil {
+            settled = settle(result.transcript, from: turn)
           }
           succeeded = true
           paused = result.interruption
@@ -1983,14 +2119,26 @@ struct MaiCLI {
           }
           // What the run did before it broke off is not thrown away: the
           // supervisor has its transcript, and /continue picks it up.
-          if let turn, turn.kind == .chat {
+          if let turn, turn.chatID != nil {
             kept = await keepPartialTranscript(
-              of: turn.pid, reason: cancelled ? "the run was cancelled" : "the run failed")
+              of: turn, reason: cancelled ? "the run was cancelled" : "the run failed")
           }
+        }
+        // The run's own chat is usually the one at the prompt; `elsewhere`
+        // names it when the person moved to another chat during the run.
+        let atPrompt = turn?.chatID == session.id
+        var elsewhere: String?
+        if let turn, let chatID = turn.chatID, !atPrompt {
+          elsewhere = workspace.chats.first { $0.id == chatID }?.displayTitle
         }
         if let turn {
           let prefix = turn.kind == .btw ? "btw " : ""
-          let took = "\(prefix)took \(elapsedDescription(since: turn.started))"
+          var took = "\(prefix)took \(elapsedDescription(since: turn.started))"
+          if let elsewhere {
+            took += " · saved in '\(elsewhere)'"
+          } else if !settled {
+            took += " · its chat was closed; /agents log \(turn.pid.rawValue) shows the reply"
+          }
           if let paused {
             await terminal.note("⏸ \(took) · \(paused.summary)", color: "yellow")
           } else {
@@ -1998,30 +2146,31 @@ struct MaiCLI {
               succeeded ? "✓ \(took)" : "✗ \(took)", color: succeeded ? "cyan" : "red")
           }
         }
-        if turn?.kind == .chat {
-          session.touch()
-          workspace.upsert(session.chat, selecting: true)
+        if let turn, turn.chatID != nil {
+          if atPrompt {
+            session.touch()
+            workspace.upsert(session.chat, selecting: true)
+          }
           await saveWorkspace(&workspace, store: store, terminal: terminal)
         }
         if loop.exiting { break events }
         if let turn {
-          let queuedPID =
-            turn.kind == .chat ? turn.pid : chatProcessIDs[session.id]
           let waiting: Int
-          if let queuedPID {
-            waiting = await runtime.supervisor.queuedMessages(for: queuedPID).count
+          if let pid = chatProcessIDs[session.id] {
+            waiting = await runtime.supervisor.queuedMessages(for: pid).count
           } else {
             waiting = 0
           }
-          if waiting > 0, succeeded {
-            // Typed after the run's last look at its inbox: it becomes the
-            // next turn right away, the way it would have joined this one.
+          if waiting > 0, succeeded || !atPrompt {
+            // Typed after the run's last look at its inbox — or into another
+            // chat while this run held the prompt: it becomes the next turn
+            // right away, the way it would have joined this one.
             await startTurn([])
           } else if waiting > 0 {
             await terminal.note(
               "\(waiting) queued message\(waiting == 1 ? "" : "s") still waiting: /queue shows them; they go with your next message."
             )
-          } else if let paused, turn.kind == .chat {
+          } else if let paused, atPrompt {
             // A spent turn budget is a checkpoint, and with yolo on the person
             // asked not to be consulted; time and token caps are theirs to lift.
             if paused.isCheckpoint, await visual.approvalHandler.isYOLOEnabled() {
@@ -2034,10 +2183,21 @@ struct MaiCLI {
                 "/continue picks the task up where it stopped · /set \(paused.settingKey) N goes further in one go"
               )
             }
-          } else if kept > 0, turn.kind == .chat {
+          } else if kept > 0, atPrompt {
             await terminal.note(
               "kept \(kept) message\(kept == 1 ? "" : "s") from the interrupted run · /continue resumes it"
             )
+          }
+          if let elsewhere {
+            let left = await runtime.supervisor.queuedMessages(for: turn.pid).count
+            if left > 0 {
+              await terminal.note(
+                "\(left) queued message\(left == 1 ? "" : "s") wait in '\(elsewhere)'; they go with the next message there."
+              )
+            } else if paused != nil || kept > 0 {
+              await terminal.note(
+                "/continue in '\(elsewhere)' picks that task up where it stopped.")
+            }
           }
         }
         await refreshStatus()
@@ -2054,7 +2214,8 @@ struct MaiCLI {
           await terminal.processEnded(info)
           if loop.focus == .agent(info.pid) {
             loop.focus = .main
-            await terminal.note("agent#\(info.pid.rawValue) has ended; messages go to this chat again.")
+            await terminal.note(
+              "agent#\(info.pid.rawValue) has ended; messages go to this chat again.")
           }
         case .attention where screen != nil:
           await announceAgentAttention(
@@ -4053,6 +4214,7 @@ struct MaiCLI {
   /// turn runs. `focus` is not here because it lives in the REPL loop's state.
   private static let processActions: Set<String> = [
     "tree", "ps", "log", "kill", "stop", "pause", "suspend", "continue", "cont", "resume",
+    "clear",
   ]
 
   static func isProcessCommand(_ argument: String) -> Bool {
@@ -4076,6 +4238,15 @@ struct MaiCLI {
     case "tree", "ps":
       let lines = await agentTreeLines(runtime: runtime)
       await terminal.line(lines.isEmpty ? "No agents are running." : lines.joined(separator: "\n"))
+
+    case "clear":
+      // The REPL loop handles this itself so its chat pids follow; this is
+      // the path from visual mode, which holds no pids.
+      let cleared = await runtime.supervisor.clearFinished()
+      await terminal.line(
+        cleared.isEmpty
+          ? "No finished agents to clear."
+          : "Cleared \(cleared.count) finished agent\(cleared.count == 1 ? "" : "s").")
 
     case "log":
       guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
@@ -7279,7 +7450,7 @@ struct MaiCLI {
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/prompts", "/prompt",
       "/prompt list", "/prompt show ", "/prompt add ", "/prompt set ", "/prompt edit ",
       "/prompt rm ", "/prompt use ", "/help prompts",
-      "/agents", "/agents tree", "/agents log ", "/agents kill ", "/agents focus ",
+      "/agents", "/agents tree", "/agents clear", "/agents log ", "/agents kill ", "/agents focus ",
       "/agents focus main", "/queue", "/queue push ", "/queue pop", "/queue flush",
       "/help queue", "/help export", "/export markdown ", "/export json ", "/export debug ",
       "/stats", "/stats reset", "/stats rm ", "/stats path", "/help stats",
@@ -7547,6 +7718,7 @@ struct MaiCLI {
     /agents tree        Show running agents as a tree of pids
     /agents kill PID    Stop a running agent and everything it started
     /agents log PID     Print a running or finished agent's own transcript
+    /agents clear       Forget finished agents so the tree lists only running ones
     /agents focus PID   Send what you type to a running agent (focus main returns)
     /queue              List, push, pop, or flush messages waiting for an agent
     /agents enable|disable ID   Park an agent setup without deleting it
@@ -7578,6 +7750,7 @@ struct MaiCLI {
            Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
            The prompt stays open while a turn runs: a message typed then is queued and
            joins the conversation at the next model turn. @PID TEXT reaches one agent.
+           Commands run right away too; a setting changed then reaches the next turn.
            Child agents print in blocks prefixed agent#PID; /set ui.subagents picks how much.
     """
 
@@ -7765,6 +7938,7 @@ struct MaiCLI {
       /agents                    List definitions, then the running process tree
       /agents list               Definitions only
       /agents tree               The running process tree only
+      /agents clear              Forget finished processes; only running ones stay listed
       /agents use ID             Switch this chat to a definition
       /agents show [ID]          Show one definition in full
       /agents describe ID TEXT   Set the one-line purpose a model reads to pick it

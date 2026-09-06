@@ -1329,6 +1329,33 @@ func agentSupervisorTree() async throws {
   #expect(tree.info(root)?.state == .starting)
 }
 
+@Test("Clearing forgets finished processes whose subtree is done and nothing is queued for")
+func agentSupervisorClearFinished() async throws {
+  let supervisor = AgentSupervisor()
+  let root = await supervisor.register(
+    runID: UUID(), parent: nil, agentID: "main", task: "top", depth: 0)
+  let child = await supervisor.register(
+    runID: UUID(), parent: root, agentID: "coder", task: "write it", depth: 1)
+  let sibling = await supervisor.register(
+    runID: UUID(), parent: root, agentID: "coder", task: "test it", depth: 1)
+
+  // Nothing has finished yet, so nothing goes.
+  #expect(await supervisor.clearFinished().isEmpty)
+
+  _ = await supervisor.stop(child, reason: "done")
+  _ = await supervisor.stop(sibling, reason: "done")
+  await supervisor.post(.user("one more thing"), to: sibling)
+  // A finished child goes; one somebody queued a message for stays, and so
+  // does the root, which is still running.
+  #expect(await supervisor.clearFinished() == [child])
+  #expect(await supervisor.tree().processes.map(\.pid) == [root, sibling])
+
+  _ = await supervisor.clearQueuedMessages(for: sibling)
+  _ = await supervisor.stop(root, reason: "done")
+  #expect(await supervisor.clearFinished() == [root, sibling])
+  #expect(await supervisor.tree().isEmpty)
+}
+
 @Test("Pausing holds a subtree, keeps a waiting process visible, and ends with the process")
 func agentSupervisorPauseAndResume() async throws {
   let supervisor = AgentSupervisor()

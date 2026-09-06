@@ -279,6 +279,7 @@ forwards only depth-0 events to the editor.
 /agents stop PID              pause a process and everything under it at their next step
 /agents continue PID          let a paused process go on; queued messages reach it then
 /agents kill PID [REASON]     end a process and everything under it
+/agents clear                 forget finished processes; the tree keeps only running ones
 /agents focus PID|main        send what you type to one process, or back to the chat
 @PID TEXT                     one message to one process, focus unchanged
 /queue                        what is waiting for each process's next turn
