@@ -44,6 +44,66 @@ jobs:
           path: MaiCore/.build/release/pmai
           if-no-files-found: error
 
+  static-cli:
+    name: CLI (Linux static ${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            triple: x86_64-swift-linux-musl
+            artifact: pmai-linux-x64-static
+          - name: arm64
+            triple: aarch64-swift-linux-musl
+            artifact: pmai-linux-arm64-static
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The Static Linux SDK must exactly match the host Swift toolchain.
+      - name: Set up Swift 6.3.3
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.3.3"
+
+      - name: Install Swift Static Linux SDK
+        run: |
+          swift sdk install \
+            https://download.swift.org/swift-6.3.3-release/static-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz \
+            --checksum 87c3eaf908e67c0e13a84367119e12273cec1d2cd3d81f7d74bb36722d6b607b
+          swift sdk list
+
+      # The static SDK links the Swift runtime, Foundation, libcurl, libxml2
+      # and musl into the executable, so the result runs on any Linux distro
+      # without a Swift toolchain installed. Both architectures are
+      # cross-compiled from the x64 runner; the linker strips the output.
+      - name: Build static release CLI
+        run: |
+          swift build --package-path MaiCore -c release --product pmai \
+            --swift-sdk ${{ matrix.triple }} -Xswiftc -Osize -Xlinker -s
+
+      - name: Verify the binary is static
+        run: |
+          set -eu
+          bin="MaiCore/.build/${{ matrix.triple }}/release/pmai"
+          file "$bin"
+          if ldd "$bin" 2>&1 | grep -q "=>"; then
+            echo "::error::pmai still depends on shared libraries"
+            ldd "$bin"
+            exit 1
+          fi
+          if [ "${{ matrix.name }}" = "x64" ]; then
+            "$bin" --help
+          fi
+
+      - name: Upload static CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: MaiCore/.build/${{ matrix.triple }}/release/pmai
+          if-no-files-found: error
+
   android-cli:
     name: CLI (Android arm64)
     runs-on: ubuntu-24.04
