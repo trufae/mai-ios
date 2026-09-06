@@ -258,6 +258,105 @@ private struct VisualBridge {
   var configurationPath: String?
   var implicitProviders: [ConfiguredProvider]
   var providerBaseURLs: ProviderBaseURLStore
+  var memory: MemoryState
+}
+
+/// Everything the memory feature needs that outlives one command: where the
+/// notes are stored, which chats the `chats_*` tools may reach, and how far.
+/// The REPL keeps it current; commands and tools read it.
+///
+/// The project arrives after the runtime is built, so the tools are registered
+/// against this box rather than against a project they cannot see yet.
+private final class MemoryState: @unchecked Sendable {
+  private let lock = NSLock()
+  private let home: AgentHome
+  private var project: AgentProject?
+  private var currentChatID: UUID?
+  private var memory = AgentMemory()
+  private var settings = ConfiguredMemory()
+
+  init(home: AgentHome) {
+    self.home = home
+  }
+
+  /// Adopts the project whose memory this is, loading its notes from disk.
+  func adopt(project: AgentProject, settings: ConfiguredMemory) {
+    lock.withLock {
+      self.project = project
+      self.settings = settings
+      memory = (try? AgentMemory.load(from: home.memoryURL(for: project))) ?? AgentMemory()
+    }
+  }
+
+  func focus(project: AgentProject, chatID: UUID?) {
+    lock.withLock {
+      self.project = project
+      currentChatID = chatID
+    }
+  }
+
+  func apply(_ settings: ConfiguredMemory) {
+    lock.withLock { self.settings = settings }
+  }
+
+  var current: AgentMemory { lock.withLock { memory } }
+  var configuration: ConfiguredMemory { lock.withLock { settings } }
+  var readsOtherChats: Bool { lock.withLock { settings.scope != .none } }
+
+  var url: URL? {
+    lock.withLock { project.map { home.memoryURL(for: $0) } }
+  }
+
+  /// What the runtime should inject, or nil when memory is off or empty.
+  var promptSection: String? {
+    lock.withLock { settings.enabled ? memory.promptSection : nil }
+  }
+
+  func save(_ updated: AgentMemory) throws {
+    let url = lock.withLock { () -> URL? in
+      memory = updated
+      return project.map { home.memoryURL(for: $0) }
+    }
+    guard let url else { throw CLIError.noProvider }
+    try updated.save(to: url)
+  }
+
+  func reload() {
+    lock.withLock {
+      guard let project else { return }
+      memory = (try? AgentMemory.load(from: home.memoryURL(for: project))) ?? AgentMemory()
+    }
+  }
+
+  /// Every chat in the current project, newest first, for `/memory learn --all`.
+  func projectChats() -> [MemoryChat] {
+    guard let project = lock.withLock({ project }) else { return [] }
+    return chats(of: project)
+  }
+
+  /// The chats the tools may read: never the one asking, and only this
+  /// project unless the scope opens every working directory.
+  func reachableChats() -> [MemoryChat] {
+    let (project, currentChatID, scope) = lock.withLock {
+      (self.project, self.currentChatID, settings.scope)
+    }
+    guard scope != .none, let project else { return [] }
+    var reachable = chats(of: project)
+    if scope == .all, let index = try? home.loadProjectIndex() {
+      for other in index.orderedProjects where other.id != project.id {
+        reachable += chats(of: other)
+      }
+    }
+    return reachable.filter { $0.id != currentChatID }
+      .sorted { $0.updatedAt > $1.updatedAt }
+  }
+
+  private func chats(of project: AgentProject) -> [MemoryChat] {
+    let chats = (try? home.chatStore(for: project).loadChats()) ?? []
+    return chats.filter(\.hasConversation)
+      .map { MemoryChat($0, scope: project.displayName) }
+      .sorted { $0.updatedAt > $1.updatedAt }
+  }
 }
 
 struct SessionProfile {
@@ -822,11 +921,14 @@ private struct MaiCLI {
         configuration: configuration,
         host: nativePluginHost,
         registry: plugins)
+      let memoryState = MemoryState(
+        home: resolvedHome(options: options, environment: environment))
       try await registerTools(
         in: runtime,
         plugins: plugins,
         configuration: configuration,
         environment: environment)
+      try await registerMemoryTools(in: runtime, state: memoryState)
       try await synchronizeToolGroupSelections(
         configuration: &configuration,
         configurationPath: configurationPath,
@@ -868,6 +970,8 @@ private struct MaiCLI {
       let project = try home.openProject(
         atWorkingDirectory: URL(
           fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+      memoryState.adopt(project: project, settings: configuration?.memory ?? .init())
+      await runtime.configureMemory(memoryState.promptSection)
       let store = resolvedChatStore(options: options, home: home, project: project)
       importLegacyChats(into: store, project: project, options: options, environment: environment)
       let providerOverride =
@@ -933,7 +1037,8 @@ private struct MaiCLI {
           approvalHandler: approvalHandler,
           configurationPath: configurationPath,
           implicitProviders: setup.implicitProviders,
-          providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs)),
+          providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs),
+          memory: memoryState),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -1079,6 +1184,32 @@ private struct MaiCLI {
       reason: failures.isEmpty
         ? "no OCR provider is registered on this platform."
         : failures.joined(separator: " "))
+  }
+
+  /// Exposes the shared `chats_*` tools over this session's reachable chats.
+  /// They are registered before configured agents are filtered against the
+  /// known tool names, so an agent may list them like any other tool.
+  private static func registerMemoryTools(
+    in runtime: AgentRuntime,
+    state: MemoryState
+  ) async throws {
+    for definition in MaiMemoryTools.definitions {
+      let name = definition.name
+      try await runtime.register(
+        tool: ClosureTool(definition: definition) { arguments, _ in
+          guard state.readsOtherChats else {
+            return ToolOutput(
+              text:
+                "Error: reading other chats is disabled. Enable it with /memory scope project or /memory scope all.",
+              isError: true)
+          }
+          return ToolOutput(
+            text: MaiMemoryTools.execute(
+              name: name,
+              arguments: arguments.objectValue ?? [:],
+              chats: state.reachableChats()))
+        })
+    }
   }
 
   private static func configureRuntime(
@@ -1303,6 +1434,8 @@ private struct MaiCLI {
       editor.configure(ui: ui)
       await terminal.configureToolResultLines(ui.toolResultLines)
       await terminal.configureToolResultColor(ui.toolResultForeground)
+      visual.memory.focus(project: project, chatID: session.id)
+      await runtime.configureMemory(visual.memory.promptSection)
       await announceAgentAttention(
         runtime: runtime, announced: &announcedAttention, terminal: terminal)
       let liveAgents = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
@@ -1553,7 +1686,26 @@ private struct MaiCLI {
     case "/exit", "/quit":
       return true
     case "/help":
-      await terminal.line(replHelp)
+      switch argument.lowercased() {
+      case "":
+        await terminal.line(replHelp)
+      case "set", "/set":
+        await terminal.line(setHelp)
+      case "memory", "/memory":
+        await terminal.line(memoryHelp)
+      case "agents", "agent", "/agents", "/agent":
+        await terminal.line(agentsHelp)
+      case "chat", "/chat":
+        await terminal.line(chatHelp)
+      case "edit", "/edit":
+        await terminal.line(editHelp)
+      case "tools", "/tools":
+        await terminal.line(toolHelp)
+      default:
+        await terminal.line(
+          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, agents, chat, edit, or tools."
+        )
+      }
     case "/cwd", "/pwd":
       await terminal.line(FileManager.default.currentDirectoryPath)
     case "/cd":
@@ -1603,6 +1755,15 @@ private struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/memory":
+      await handleMemoryCommand(
+        argument,
+        session: session,
+        runtime: runtime,
+        memory: visual.memory,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/prompts":
       await showPrompts(session: session, configuration: configuration, terminal: terminal)
     case "/prompt":
@@ -1625,6 +1786,7 @@ private struct MaiCLI {
         argument,
         session: &session,
         runtime: runtime,
+        memory: visual.memory,
         configuration: &configuration,
         configurationPath: visual.configurationPath,
         terminal: terminal)
@@ -2073,6 +2235,219 @@ private struct MaiCLI {
     return matches.count == 1 ? matches[0] : nil
   }
 
+  /// `/memory` in full: read it, edit it, extend it from what was said, and
+  /// decide how far the chat tools may look.
+  private static func handleMemoryCommand(
+    _ argument: String,
+    session: REPLSession,
+    runtime: AgentRuntime,
+    memory: MemoryState,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+    let rest = fields.count > 1 ? fields[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    let settings = memory.configuration
+
+    switch action {
+    case "", "show":
+      let current = memory.current
+      let state = settings.enabled ? "on" : "off"
+      await terminal.line(
+        "Memory: \(state) · scope \(settings.scope.rawValue) · \(current.lineCount) line\(current.lineCount == 1 ? "" : "s")"
+      )
+      await terminal.line(current.isEmpty ? "(empty)" : current.text)
+
+    case "edit":
+      guard
+        let edited = await editTemporaryText(
+          memory.current.text, suffix: "memory.md", terminal: terminal)
+      else { return }
+      await store(
+        AgentMemory(text: edited), in: memory, runtime: runtime, terminal: terminal)
+
+    case "set", "replace":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /memory set TEXT")
+        return
+      }
+      await store(AgentMemory(text: rest), in: memory, runtime: runtime, terminal: terminal)
+
+    case "add", "append":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /memory add TEXT")
+        return
+      }
+      var updated = memory.current
+      updated.append(rest)
+      await store(updated, in: memory, runtime: runtime, terminal: terminal)
+
+    case "clear", "forget":
+      await store(AgentMemory(), in: memory, runtime: runtime, terminal: terminal)
+
+    case "reload":
+      memory.reload()
+      await runtime.configureMemory(memory.promptSection)
+      await terminal.line("Reloaded \(memory.url?.path ?? AgentMemory.filename).")
+
+    case "learn":
+      await learnMemory(
+        rest,
+        session: session,
+        runtime: runtime,
+        memory: memory,
+        promptTemplate: configuration?.prompts?.memory,
+        terminal: terminal)
+
+    case "scope":
+      guard !rest.isEmpty else {
+        await terminal.line("Memory scope: \(settings.scope.rawValue)")
+        return
+      }
+      guard let scope = MemoryScope(rawValue: rest.lowercased()) else {
+        await terminal.line("Usage: /memory scope <none|project|all>")
+        return
+      }
+      await persistMemorySettings(
+        ConfiguredMemory(enabled: settings.enabled, scope: scope),
+        memory: memory,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        note:
+          "The chat tools now read \(scope == .none ? "nothing" : scope.displayName.lowercased()).",
+        terminal: terminal)
+
+    case "on", "off":
+      await persistMemorySettings(
+        ConfiguredMemory(enabled: action == "on", scope: settings.scope),
+        memory: memory,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        note:
+          action == "on"
+          ? "Memory is added to the system prompt again."
+          : "Memory is kept but no longer sent to the model.",
+        terminal: terminal)
+      await runtime.configureMemory(memory.promptSection)
+
+    default:
+      await terminal.line(memoryHelp)
+    }
+  }
+
+  private static func store(
+    _ updated: AgentMemory,
+    in memory: MemoryState,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async {
+    do {
+      try memory.save(updated)
+      await runtime.configureMemory(memory.promptSection)
+      await terminal.line(
+        updated.isEmpty
+          ? "Memory cleared."
+          : "Memory saved to \(memory.url?.path ?? AgentMemory.filename) (\(updated.lineCount) line\(updated.lineCount == 1 ? "" : "s"))."
+      )
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  private static func persistMemorySettings(
+    _ settings: ConfiguredMemory,
+    memory: MemoryState,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    note: String,
+    terminal: TerminalWriter
+  ) async {
+    memory.apply(settings)
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("\(note) (not saved: no writable configuration is active.)")
+      return
+    }
+    draft.memory = settings
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      await terminal.line(note)
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  /// Folds conversations into the notes. The model is given what is already
+  /// known and returns the merged set, so learning never silently forgets.
+  private static func learnMemory(
+    _ argument: String,
+    session: REPLSession,
+    runtime: AgentRuntime,
+    memory: MemoryState,
+    promptTemplate: String?,
+    terminal: TerminalWriter
+  ) async {
+    var focus = argument
+    var everyChat = false
+    for flag in ["--all", "-a"] where focus == flag || focus.hasPrefix(flag + " ") {
+      everyChat = true
+      focus = String(focus.dropFirst(flag.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let chats =
+      everyChat ? memory.projectChats() : [MemoryChat(session.chat, scope: session.title)]
+    let transcript = AgentMemoryPrompt.transcript(of: chats)
+    guard !transcript.isEmpty else {
+      await terminal.line(
+        everyChat ? "No conversations in this project yet." : "Nothing said in this chat yet.")
+      return
+    }
+    if let template = promptTemplate,
+      let missing = AgentMemoryPrompt.missingPlaceholder(in: template)
+    {
+      await terminal.line(
+        "error: The memory prompt must contain \(missing). Edit it with /edit memory-prompt.",
+        to: .standardError)
+      return
+    }
+
+    let existing = memory.current
+    let profile = session.profile
+    let request = AgentRequest(
+      agentID: profile.agentID,
+      provider: profile.provider,
+      model: profile.model,
+      messages: [
+        .user(
+          AgentMemoryPrompt.render(
+            existing: existing,
+            transcript: transcript,
+            focus: focus,
+            template: promptTemplate))
+      ],
+      toolChoice: .none,
+      options: profile.options,
+      limits: profile.limits,
+      stream: false)
+    await terminal.line(
+      "Learning from \(everyChat ? "\(chats.count) chat\(chats.count == 1 ? "" : "s")" : "this chat")…"
+    )
+    do {
+      let result = try await runtime.run(request) { _ in }
+      let learned = MessageContentFilter.promptSafeText(from: result.response.text)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !learned.isEmpty else {
+        await terminal.line("Nothing durable to remember; memory is unchanged.")
+        return
+      }
+      await store(AgentMemory(text: learned), in: memory, runtime: runtime, terminal: terminal)
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
   private static func showPrompts(
     session: REPLSession,
     configuration: MaiConfiguration?,
@@ -2083,11 +2458,14 @@ private struct MaiCLI {
     let delegation = configuration?.prompts?.delegation?.trimmingCharacters(
       in: .whitespacesAndNewlines)
     let worker = configuration?.prompts?.worker?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let memoryPrompt = configuration?.prompts?.memory?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
     var lines = [
       "Prompts:",
       "  compact     compact     \(compact?.isEmpty == false ? "custom" : "built-in")",
       "  delegation  delegation  \(delegation?.isEmpty == false ? "custom" : "built-in")",
       "  worker      delegation  \(worker?.isEmpty == false ? "custom" : "built-in")",
+      "  memory      memory      \(memoryPrompt?.isEmpty == false ? "custom" : "built-in")",
     ]
     let prompts = configuration?.prompts?.system ?? [:]
     for name in prompts.keys.sorted() {
@@ -2262,6 +2640,7 @@ private struct MaiCLI {
     _ argument: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
+    memory: MemoryState,
     configuration: inout MaiConfiguration?,
     configurationPath: String?,
     terminal: TerminalWriter
@@ -2316,6 +2695,46 @@ private struct MaiCLI {
           customPrompt == nil
             ? "Compact prompt restored to the built-in default."
             : "Compact prompt saved to \(configurationPath).")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
+    case "memory":
+      guard
+        let edited = await editTemporaryText(
+          memory.current.text, suffix: "memory.md", terminal: terminal)
+      else { return }
+      await store(AgentMemory(text: edited), in: memory, runtime: runtime, terminal: terminal)
+
+    case "memory-prompt", "learn":
+      guard var draft = configuration, let configurationPath else {
+        await terminal.line("error: No writable configuration is active.", to: .standardError)
+        return
+      }
+      var prompts = draft.prompts ?? ConfiguredPrompts()
+      guard
+        let edited = await editTemporaryText(
+          prompts.memory ?? AgentMemoryPrompt.template,
+          suffix: "memory-prompt.md",
+          terminal: terminal)
+      else { return }
+      let candidate = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let missing = AgentMemoryPrompt.missingPlaceholder(in: candidate) {
+        await terminal.line(
+          "error: The memory prompt must contain \(missing); no changes were saved.",
+          to: .standardError)
+        return
+      }
+      prompts.memory =
+        candidate.isEmpty || candidate == AgentMemoryPrompt.template ? nil : candidate
+      draft.prompts = prompts
+      do {
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        configuration = draft
+        await terminal.line(
+          prompts.memory == nil
+            ? "The memory prompt was restored to the built-in default."
+            : "The memory prompt was saved to \(configurationPath).")
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
@@ -3875,7 +4294,7 @@ private struct MaiCLI {
         visual: visual,
         terminal: terminal)
       var output = await terminal.drainCaptured()
-      if command == "/help" {
+      if request.input.trimmingCharacters(in: .whitespacesAndNewlines) == "/help" {
         output +=
           "\nIn visual mode, /exit returns to the REPL and the output above closes with Esc."
       }
@@ -4938,7 +5357,11 @@ private struct MaiCLI {
     configuration: MaiConfiguration?
   ) -> [String] {
     var values = [
-      "/help", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
+      "/help", "/help set", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
+      "/help memory", "/help agents", "/help chat", "/help edit", "/help tools",
+      "/memory", "/memory edit", "/memory learn", "/memory learn --all", "/memory add ",
+      "/memory clear", "/memory on", "/memory off", "/memory scope none",
+      "/memory scope project", "/memory scope all", "/edit memory", "/edit memory-prompt",
       "/set limits.", "/set limits.maxToolCalls ", "/set limits.maxModelTurns ",
       "/set limits.maxSubagents ",
       "/set toolCallingStrategy automatic", "/set toolCallingStrategy native",
@@ -5166,11 +5589,13 @@ private struct MaiCLI {
       prompts: ConfiguredPrompts(
         delegation: AgentDelegationPrompt.template,
         worker: AgentDelegationPrompt.workerInstructions,
+        memory: AgentMemoryPrompt.template,
         system: [
           "hello": "Exercise the offline MaiCore provider.",
           "main": "You are a helpful assistant. Use tools when needed.",
           "researcher": "Investigate the delegated task and return a concise result.",
         ]),
+      memory: ConfiguredMemory(),
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
 
@@ -5183,28 +5608,16 @@ private struct MaiCLI {
   }()
 
   private static let replHelp = """
-    /set                   List mutable session and terminal UI settings
-    /set yolo BOOL         Permit all tool calls for this session (on/off)
-    /set toolCallingStrategy MODE  Use automatic/native tools, or text/XML/JSON emulation
-    /set limits.           Show the tool call and model turn limits per run
-    /set limits.maxToolCalls N   Tool calls allowed per run (persisted for the agent)
-    /set limits.maxModelTurns N  Model turns allowed per run (persisted for the agent)
-    /set limits.maxSubagents N   Child agents allowed at once (0 disables delegation)
-    /set limits.maxSubagentDepth N  How deep the agent tree may go
-    /set delegation MODE   Run this agent's tools inline, or in a subagent
-    /set ui.markdown BOOL  Render replies as styled markdown (on/off)
-    /set ui.fgtoolresult COLOR  Set successful tool-result output color
-    /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
+    /set [SETTING VALUE]   Show or change settings; /help set lists them
     /cwd                  Print the current working directory
     /cd PATH              Change the current working directory
-    /set ui.               List terminal UI settings
-    /set ui.SETTING VALUE  Set colors or bold input and persist the change
     /plugins            List statically and dynamically loaded plugins
     /providers          List registered providers
     /models [PROVIDER]  List models from the current or named provider
     /provider ID       Select a provider
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
+    /memory             Show, edit, learn, or scope this project's durable memory
     /prompts            List reusable prompts and their agent associations
     /prompt [NAME]      Show or select the current agent's system prompt
     /chat               List, switch, archive, rename, or edit this project's chats
@@ -5233,6 +5646,32 @@ private struct MaiCLI {
 
     Input: <<WORD starts a multiline message ending at WORD alone
            Ctrl+A/E beginning/end · Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
+    """
+
+  private static let setHelp = """
+    Settings commands:
+      /set                         List current settings and their values
+      /set yolo BOOL               Permit all tool calls for this session (on/off)
+      /set toolCallingStrategy MODE  Use automatic/native tools, or text/XML/JSON emulation
+      /set delegation MODE         Run this agent's tools inline, or in a subagent
+      /set limits.                 List the tool, turn, and subagent limits
+      /set limits.maxToolCalls N   Tool calls allowed per run
+      /set limits.maxModelTurns N  Model turns allowed per run
+      /set limits.maxSubagents N   Child agents allowed at once (0 disables delegation)
+      /set limits.maxSubagentDepth N  Maximum depth of the agent tree
+      /set ui.                     List terminal UI settings
+      /set ui.bgline COLOR         Set the input-line background
+      /set ui.fgcolor COLOR        Set the input foreground
+      /set ui.bgcolor COLOR        Set the input background
+      /set ui.fgprompt COLOR       Set the prompt foreground
+      /set ui.bgprompt COLOR       Set the prompt background
+      /set ui.fgtoolresult COLOR   Set successful tool-result output color
+      /set ui.bold BOOL            Render input in bold (on/off)
+      /set ui.markdown BOOL        Render replies as styled markdown (on/off)
+      /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
+
+    YOLO mode lasts for this session. Agent and UI settings are persisted in the
+    active configuration. COLOR accepts a named ANSI color, rgb:RGB, or none.
     """
 
   private static let chatHelp = """
@@ -5301,18 +5740,41 @@ private struct MaiCLI {
     /edit prompt [NAME]      Edit/create a named system prompt (current when omitted)
     /edit NAME               Edit an existing named system prompt
     /edit compact            Edit the global chat-compaction prompt template
+    /edit memory             Edit this project's durable memory notes
+    /edit memory-prompt      Edit the template /memory learn uses
     /edit delegation         Edit the brief template child agents receive
     /edit worker             Edit the instructions of the derived worker agent
     /edit config             Edit the active configuration file
     /edit mcps               Edit the configured MCP server list as JSON
     /edit N|MESSAGE_ID       Edit conversation message N or its full message ID
 
-    The compact template must contain {{transcript}}; {{focus}} is optional. The
-    delegation template must contain {{task}}; {{context}}, {{output}}, {{agent}},
-    and {{cwd}} are optional.
+    The compact and memory templates must contain {{transcript}}; {{focus}} and
+    {{memory}} are optional. The delegation template must contain {{task}};
+    {{context}}, {{output}}, {{agent}}, and {{cwd}} are optional.
     Clearing it restores the built-in default. Uses $EDITOR, then $VISUAL, then
     vim. Agent limits and tool-calling strategy apply immediately; provider,
     plugin, tool, and MCP changes require a restart.
+    """
+
+  private static let memoryHelp = """
+    Durable notes about you, kept per project in .pmai/memory.md and added to
+    the system prompt of this chat — never of the subagents it starts.
+
+      /memory                    Show the notes and how they are configured
+      /memory edit               Edit them in $EDITOR (same as /edit memory)
+      /memory learn [FOCUS]      Fold this chat into the notes, keeping what is known
+      /memory learn --all [FOCUS]  Fold every chat in this project into them
+      /memory add TEXT           Append one note
+      /memory set TEXT           Replace every note
+      /memory clear              Forget everything
+      /memory reload             Re-read the file after editing it elsewhere
+      /memory on|off             Whether the notes reach the model
+      /memory scope MODE         Chats the chats_* tools may read
+
+    MODE is none, project, or all; all crosses working directories. The tools
+    are chats_list, chats_search, chats_read, and chats_read_document; enable
+    them for an agent with /tools enable chats. Edit the learning prompt with
+    /edit memory-prompt.
     """
 
   private static let agentsHelp = """

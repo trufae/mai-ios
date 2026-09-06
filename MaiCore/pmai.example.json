@@ -9,7 +9,8 @@
       "researcher": "Investigate the delegated task and return a concise result."
     },
     "delegation": "## Context\n\n{{context}}\n\n## Task\n\n{{task}}\n\n## Expected output\n\n{{output}}\n\nYou are running as agent '{{agent}}' in {{cwd}}. Everything you need is above.",
-    "worker": "You are a focused worker agent. Use your tools to complete the task, then reply with exactly the expected output and nothing else."
+    "worker": "You are a focused worker agent. Use your tools to complete the task, then reply with exactly the expected output and nothing else.",
+    "memory": "Extract durable user memory from these conversations and merge it with what is already known.\n\nFocus: {{focus}}\n\n## Existing memory\n\n{{memory}}\n\n## Conversations\n\n{{transcript}}"
   },
   "plugins": [
     {
@@ -112,6 +113,10 @@
       "model": "your-model",
       "toolNames": [
         "calculator",
+        "chats_list",
+        "chats_read",
+        "chats_read_document",
+        "chats_search",
         "current_time",
         "echo",
         "files_delete",
@@ -146,6 +151,7 @@
       ],
       "toolGroupNames": [
         "calculator",
+        "chats",
         "datetime",
         "echo",
         "files",
@@ -201,5 +207,9 @@
   "approvals": {
     "confirm": "ask",
     "dangerous": "ask"
+  },
+  "memory": {
+    "enabled": true,
+    "scope": "project"
   }
 }

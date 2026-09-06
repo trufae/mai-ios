@@ -28,6 +28,10 @@ public actor AgentRuntime {
   /// Nil keeps the built-in text, so MaiCore works without configuration.
   private var delegationTemplate: String?
   private var workerInstructions: String?
+  /// Durable notes added to the system prompt of top-level runs. A child agent
+  /// grepping a file does not need the user's standing preferences, so this
+  /// never reaches one.
+  private var memorySection: String?
 
   /// The process table every run reports into. Hosts read it for `/agents`,
   /// follow its events for notifications, and stop subtrees through it.
@@ -80,6 +84,12 @@ public actor AgentRuntime {
       throw AgentRuntimeError.agentAlreadyRegistered(id)
     }
     agents[id] = agent
+  }
+
+  /// Installs the durable memory every top-level run should see, already
+  /// wrapped in its envelope by `AgentMemory.promptSection`. Nil removes it.
+  public func configureMemory(_ section: String?) {
+    memorySection = section?.trimmingCharacters(in: .whitespacesAndNewlines).nilWhenEmpty
   }
 
   /// Installs host-configured delegation text. Empty or nil values restore the
@@ -271,16 +281,15 @@ public actor AgentRuntime {
       let toolBudgetExhausted =
         !definitions.isEmpty && localToolCalls >= request.limits.maxToolCalls
       var providerMessages = transcript
+      if let memorySection, depth == 0 {
+        insertSystem(memorySection, into: &providerMessages)
+      }
       if textToolMode != nil || toolBudgetExhausted {
-        let insertionIndex =
-          providerMessages.firstIndex {
-            $0.role != .system && $0.role != .developer
-          } ?? providerMessages.endIndex
         let prompt =
           toolBudgetExhausted
           ? Self.toolBudgetExhaustedPrompt
           : textToolPrompt(definitions, mode: textToolMode ?? .text)
-        providerMessages.insert(.system(prompt), at: insertionIndex)
+        insertSystem(prompt, into: &providerMessages)
       }
       let offersTools = !usesTextToolProtocol && !toolBudgetExhausted
       var providerResponse = try await provider.complete(
@@ -1163,6 +1172,15 @@ public actor AgentRuntime {
 
   static let toolBudgetExhaustedPrompt =
     "The tool call budget for this run is exhausted and no tools are available anymore. Do not call tools; give the final answer using the information already gathered."
+
+  /// Adds a system message after the configured instructions and before the
+  /// conversation, so run-scoped context never enters the stored transcript.
+  private func insertSystem(_ prompt: String, into messages: inout [AgentMessage]) {
+    let index =
+      messages.firstIndex { $0.role != .system && $0.role != .developer }
+      ?? messages.endIndex
+    messages.insert(.system(prompt), at: index)
+  }
 
   private func textToolPrompt(
     _ definitions: [ToolDefinition],

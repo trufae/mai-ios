@@ -471,6 +471,10 @@ public struct ConfiguredPrompts: Codable, Equatable, Sendable {
   /// Instructions for the worker MaiCore derives when a delegating agent starts
   /// a child without naming one.
   public var worker: String?
+  /// Template `/memory learn` uses to fold conversations into durable notes.
+  /// `{{transcript}}` is required; `{{memory}}` and `{{focus}}` are replaced
+  /// when present. Nil keeps MaiCore's built-in text.
+  public var memory: String?
   /// Reusable system prompts referenced by `AgentDefinition.systemPrompt`.
   public var system: [String: String]
 
@@ -478,15 +482,19 @@ public struct ConfiguredPrompts: Codable, Equatable, Sendable {
     compact: String? = nil,
     delegation: String? = nil,
     worker: String? = nil,
+    memory: String? = nil,
     system: [String: String] = [:]
   ) {
     self.compact = compact
     self.delegation = delegation
     self.worker = worker
+    self.memory = memory
     self.system = system
   }
 
-  private enum CodingKeys: String, CodingKey { case compact, delegation, worker, system }
+  private enum CodingKeys: String, CodingKey {
+    case compact, delegation, worker, memory, system
+  }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -494,7 +502,32 @@ public struct ConfiguredPrompts: Codable, Equatable, Sendable {
       compact: try container.decodeIfPresent(String.self, forKey: .compact),
       delegation: try container.decodeIfPresent(String.self, forKey: .delegation),
       worker: try container.decodeIfPresent(String.self, forKey: .worker),
+      memory: try container.decodeIfPresent(String.self, forKey: .memory),
       system: try container.decodeIfPresent([String: String].self, forKey: .system) ?? [:])
+  }
+}
+
+/// How durable memory is used: whether it reaches the model at all, and which
+/// other chats the memory tools may read.
+public struct ConfiguredMemory: Codable, Equatable, Sendable {
+  /// Adds the memory notes to the system prompt of top-level runs.
+  public var enabled: Bool
+  /// Chats the `chats_*` tools may reach. `all` crosses working directories,
+  /// so it stays opt-in.
+  public var scope: MemoryScope
+
+  public init(enabled: Bool = true, scope: MemoryScope = .project) {
+    self.enabled = enabled
+    self.scope = scope
+  }
+
+  private enum CodingKeys: String, CodingKey { case enabled, scope }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+      scope: try container.decodeIfPresent(MemoryScope.self, forKey: .scope) ?? .project)
   }
 }
 
@@ -508,6 +541,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
   public var mcpServers: [ConfiguredMCPServer]
   public var agents: [AgentDefinition]
   public var prompts: ConfiguredPrompts?
+  public var memory: ConfiguredMemory
   public var ui: ConfiguredTerminalUI
   public var approvals: ConfiguredApprovals
 
@@ -521,6 +555,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     mcpServers: [ConfiguredMCPServer] = [],
     agents: [AgentDefinition] = [],
     prompts: ConfiguredPrompts? = nil,
+    memory: ConfiguredMemory = .init(),
     ui: ConfiguredTerminalUI = .init(),
     approvals: ConfiguredApprovals = .init()
   ) {
@@ -533,13 +568,14 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     self.mcpServers = mcpServers
     self.agents = agents
     self.prompts = prompts
+    self.memory = memory
     self.ui = ui
     self.approvals = approvals
   }
 
   private enum CodingKeys: String, CodingKey {
     case version, defaultAgent, plugins, providers, toolSources, ocrProviders, mcpServers, agents,
-      prompts, ui,
+      prompts, memory, ui,
       approvals
   }
 
@@ -559,6 +595,7 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
         ?? [],
       agents: try container.decodeIfPresent([AgentDefinition].self, forKey: .agents) ?? [],
       prompts: try container.decodeIfPresent(ConfiguredPrompts.self, forKey: .prompts),
+      memory: try container.decodeIfPresent(ConfiguredMemory.self, forKey: .memory) ?? .init(),
       ui: try container.decodeIfPresent(ConfiguredTerminalUI.self, forKey: .ui) ?? .init(),
       approvals: try container.decodeIfPresent(ConfiguredApprovals.self, forKey: .approvals)
         ?? .init())
@@ -604,6 +641,11 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     {
       throw MaiConfigurationError.missingPromptPlaceholder(
         prompt: "delegation", placeholder: missing)
+    }
+    if let memory = prompts?.memory,
+      let missing = AgentMemoryPrompt.missingPlaceholder(in: memory)
+    {
+      throw MaiConfigurationError.missingPromptPlaceholder(prompt: "memory", placeholder: missing)
     }
     for name in prompts?.system.keys ?? [String: String]().keys {
       guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 
 enum OneShotPromptResponseFormat: Sendable {
   case text
@@ -84,7 +85,8 @@ enum ConversationPromptBuilder {
     guard transcriptEntries.count >= 2 else { return nil }
 
     let transcript = transcriptEntries.joined(separator: "\n\n---\n\n")
-    let promptTemplate = template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let promptTemplate =
+      template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       ? AppSettings.defaultCompactPrompt
       : template
     if promptTemplate.contains(transcriptPlaceholder) {
@@ -98,30 +100,16 @@ enum ConversationPromptBuilder {
     settings: AppSettings
   ) async -> OneShotPromptRequest? {
     await Task.detached(priority: .userInitiated) {
-      let transcript =
-        conversations
-        .flatMap { conversation in
-          conversation.messages.compactMap { message -> String? in
-            guard message.role != .error else { return nil }
-            let text = MessageContentFilter.promptSafeText(from: message.text)
-            guard !text.isEmpty else { return nil }
-            return "\(message.role.displayName):\n\(text)"
-          }
-        }
-        .joined(separator: "\n\n")
+      let transcript = AgentMemoryPrompt.transcript(of: conversations.map { MemoryChat($0) })
       guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return nil
       }
 
-      let prompt = """
-        Extract durable user memory from these conversations.
-
-        Output only concise memory notes. Do not include hidden reasoning, XML tags, prompt scaffolding, or commentary about this task.
-
-        Keep stable facts and recurring preferences: names, locations, projects, technical preferences, workflow habits, and standing instructions. Ignore one-off tasks, transient chat state, assistant behavior, tool outputs unless they reveal a durable user preference, and sensitive secrets such as credentials or tokens.
-
-        \(transcript)
-        """
+      // The notes already recorded travel with the request, so an update
+      // merges rather than starting over.
+      let prompt = AgentMemoryPrompt.render(
+        existing: AgentMemory(text: settings.memory),
+        transcript: transcript)
       let defaultProvider = settings.defaultProviderConfiguration
       return OneShotPromptRequest(
         title: "Memory update",

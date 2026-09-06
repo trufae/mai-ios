@@ -271,6 +271,43 @@ list non-MCP tools and child agents they are allowed to use.
 `MaiStandardToolsPlugin` provides `echo`, date/time, calculator, network, and
 workspace-scoped Files tools.
 
+### Memory
+
+Durable notes about the person an agent works with — stable facts, standing
+preferences, habits worth carrying between chats. pmai keeps one per project in
+`.pmai/memory.md`; PocketMai keeps one in its settings. The text, the envelope
+it is injected in, the prompt that extends it, and the tools that read other
+chats all live in `AgentMemory.swift`, so both hosts behave the same.
+
+The notes are added to the system prompt of top-level runs only, wrapped in an
+envelope that says they are inferred, may be stale, and always lose to what the
+person is saying now. A subagent grepping a file never sees them, and nothing is
+written into the stored transcript: memory is run-scoped context.
+
+```
+/memory                      show the notes and how they are configured
+/memory edit                 edit them in $EDITOR (same as /edit memory)
+/memory learn [FOCUS]        fold this chat into the notes
+/memory learn --all [FOCUS]  fold every chat in this project into them
+/memory add|set TEXT         append one note, or replace them all
+/memory clear                forget everything
+/memory reload               re-read the file after editing it elsewhere
+/memory on|off               whether the notes reach the model
+/memory scope none|project|all   chats the chats_* tools may read
+/edit memory-prompt          edit the template /memory learn uses
+```
+
+Learning is a merge, not a rewrite: the existing notes travel with the request
+and the model returns the complete set, so `/memory learn` never silently
+forgets. `prompts.memory` overrides the template (`{{transcript}}` is required;
+`{{memory}}` and `{{focus}}` are optional).
+
+`chats_list`, `chats_search`, `chats_read`, and `chats_read_document` let an
+agent use other chats as a source of information. `memory.scope` bounds them:
+`none` keeps other chats private, `project` allows this project's, and `all`
+crosses working directories. Enable them for an agent with `/tools enable
+chats`; each call asks for approval.
+
 ### Agents and subagents
 
 An agent definition is a saved setup — provider, model, system prompt, tool set,
