@@ -267,7 +267,9 @@ forwards only depth-0 events to the editor.
 ```
 /agents                       definitions, and the live process tree
 /agents list                  definitions only
-/agents tree                  just the tree
+/agents tree                  just the tree; `tok` adds up every model call's input and output,
+                              as a provider bills them, and `~` marks counts estimated from text
+                              length because the provider reported none
 /agents use ID                switch this chat to a setup
 /agents describe ID TEXT      set the purpose a model reads when picking
 /agents enable|disable ID      park a setup without deleting it

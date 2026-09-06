@@ -45,6 +45,10 @@ actor TerminalWriter {
   private var childAgents: [AgentPID: String] = [:]
   private var childToolCalls: [AgentPID: Int] = [:]
   private var childTokens: [AgentPID: Int] = [:]
+  /// The usage of each child's call in progress; it joins `childTokens` when
+  /// the next call starts, so a provider announcing usage more than once per
+  /// call cannot inflate the count.
+  private var childCallTokens: [AgentPID: Int] = [:]
   /// Children whose end has been printed, so a supervisor notice does not
   /// repeat what the run's own event already said.
   private var childrenEnded: Set<AgentPID> = []
@@ -149,7 +153,9 @@ actor TerminalWriter {
     case .compactionStarted(let context, let estimated) where context.depth == 0:
       finishReply()
       closeRootLine()
-      status("✂ context: ~\(compactCount(estimated)) tokens, compacting…", color: "magenta")
+      status(
+        "✂ context: \(ModelUsageFormat.tokens(estimated, estimated: true)), compacting…",
+        color: "magenta")
     case .compactionFailed(let context, let message) where context.depth == 0:
       status("✂ context: compaction failed: \(message)", color: "red")
     case .retrying(let context, let attempt, let limit, let delay, let error)
@@ -171,6 +177,7 @@ actor TerminalWriter {
       childAgents[pid] = child.agentID
       childToolCalls[pid] = 0
       childTokens[pid] = 0
+      childCallTokens[pid] = 0
       childText[pid] = nil
       childrenEnded.remove(pid)
       guard subagentOutput != .none else { return }
@@ -181,6 +188,7 @@ actor TerminalWriter {
       childAgents[pid] = child.agentID
       childToolCalls[pid] = 0
       childTokens[pid] = 0
+      childCallTokens[pid] = 0
       childText[pid] = nil
       childrenEnded.remove(pid)
       guard subagentOutput != .none else { return }
@@ -192,18 +200,20 @@ actor TerminalWriter {
     case .modelStarted(let context, let turn):
       guard let pid = context.pid else { return }
       flushChildText(pid)
+      childTokens[pid, default: 0] += childCallTokens[pid] ?? 0
+      childCallTokens[pid] = 0
       guard subagentOutput == .stats else { return }
       var facts = ["turn \(turn)"]
       let tools = childToolCalls[pid] ?? 0
       if tools > 0 { facts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
-      if let tokens = childTokens[pid], tokens > 0 { facts.append("\(compactCount(tokens)) tok") }
+      if let tokens = childTokens[pid], tokens > 0 { facts.append(ModelUsageFormat.tokens(tokens)) }
       childBlock(pid, "· " + facts.joined(separator: " · "))
     case .provider(let context, .textDelta(let text)):
       guard let pid = context.pid, subagentOutput == .all else { return }
       childText[pid, default: ""] += text
     case .provider(let context, .usage(let usage)):
       guard let pid = context.pid else { return }
-      childTokens[pid, default: 0] += usage.totalTokens
+      childCallTokens[pid] = usage.totalTokens
     case .toolStarted(let context, let call):
       guard let pid = context.pid else { return }
       flushChildText(pid)
@@ -232,7 +242,9 @@ actor TerminalWriter {
       guard let pid = context.pid else { return }
       flushChildText(pid)
       guard subagentOutput != .none else { return }
-      childBlock(pid, "✂ context: ~\(compactCount(estimated)) tokens, compacting…", color: "magenta")
+      childBlock(
+        pid, "✂ context: \(ModelUsageFormat.tokens(estimated, estimated: true)), compacting…",
+        color: "magenta")
     case .compactionFailed(let context, let message):
       guard let pid = context.pid, subagentOutput != .none else { return }
       childBlock(pid, "✂ context: compaction failed: \(message)", color: "red")
@@ -259,8 +271,8 @@ actor TerminalWriter {
       if result.toolCalls > 0 {
         facts.append("\(result.toolCalls) tool\(result.toolCalls == 1 ? "" : "s")")
       }
-      if let tokens = result.usage?.totalTokens, tokens > 0 {
-        facts.append("\(compactCount(tokens)) tok")
+      if let usage = result.usage, usage.totalTokens > 0 {
+        facts.append(ModelUsageFormat.tokens(usage.totalTokens, estimated: usage.isEstimated))
       }
       let summary = facts.isEmpty ? "" : " · " + facts.joined(separator: " · ")
       let answer = AgentProcessInfo.oneLine(result.response.text, limit: 120)
@@ -360,10 +372,6 @@ actor TerminalWriter {
 
   private static func childColor(_ pid: AgentPID) -> String {
     childColors[abs(pid.rawValue) % childColors.count]
-  }
-
-  private func compactCount(_ count: Int) -> String {
-    AgentProcessInfo.compactCount(count)
   }
 
   // MARK: - Writing

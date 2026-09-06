@@ -861,6 +861,76 @@ func textToolRepairAndRespond() async throws {
   #expect(await provider.requests.first?.messages.contains { $0.text.contains("respond") } == true)
 }
 
+@Test("A call without reported usage is estimated, marked as such, and still counts against the budget")
+func estimatedUsage() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("twelve characters"), usage: nil, stopReason: .stop),
+    ProviderResponse(message: .assistant("never asked"), usage: nil, stopReason: .stop),
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("say something twelve characters long please")],
+      limits: AgentRunLimits(maxTotalTokens: 5)))
+  let usage = try #require(result.usage)
+  #expect(usage.isEstimated)
+  #expect(usage.inputTokens > 0)
+  #expect(usage.outputTokens > 0)
+  #expect(usage.totalTokens == usage.inputTokens + usage.outputTokens)
+  // The estimate spent the budget, so no second call was made.
+  #expect(await provider.requests.count == 1)
+  #expect(result.response.text == "twelve characters")
+
+  let info = AgentProcessInfo(pid: 1, runID: UUID(), agentID: "main", usage: usage)
+  #expect(info.summaryLine.contains("~\(ModelUsageFormat.count(usage.totalTokens)) tok"))
+  let reported = AgentProcessInfo(
+    pid: 2, runID: UUID(), agentID: "main", usage: TokenUsage(inputTokens: 1_000, outputTokens: 240))
+  #expect(reported.summaryLine.contains(" 1.2k tok"))
+  #expect(!reported.summaryLine.contains("~"))
+}
+
+@Test("Streamed usage is announced once, with the final figures, however often the server repeats it")
+func openAIStreamingUsageOnce() async throws {
+  StubURLProtocol.install(forHost: "usage.example.test") { request in
+    try httpResponse(
+      request,
+      contentType: "text/event-stream",
+      body: """
+        data: {"choices":[{"delta":{"content":"a"}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+
+        data: {"choices":[{"delta":{"content":"b"}}],"usage":{"prompt_tokens":7,"completion_tokens":1,"total_tokens":8}}
+
+        data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}
+
+        data: [DONE]
+
+        """)
+  }
+  defer { StubURLProtocol.reset(host: "usage.example.test") }
+
+  let provider = OpenAICompatibleProvider(
+    configuration: .init(
+      baseURL: try #require(URL(string: "https://usage.example.test/v1"))),
+    session: stubSession())
+  let seen = UsageEvents()
+  let response = try await provider.complete(
+    ProviderRequest(model: "test-model", messages: [.user("ab")], stream: true)
+  ) { event in
+    if case .usage(let usage) = event { await seen.append(usage) }
+  }
+  #expect(response.message.text == "ab")
+  #expect(response.usage == TokenUsage(inputTokens: 7, outputTokens: 2, totalTokens: 9))
+  #expect(await seen.all == [TokenUsage(inputTokens: 7, outputTokens: 2, totalTokens: 9)])
+}
+
+private actor UsageEvents {
+  private(set) var all: [TokenUsage] = []
+  func append(_ usage: TokenUsage) { all.append(usage) }
+}
+
 @Test("A token budget spent by the final answer still delivers that answer")
 func tokenBudget() async throws {
   let provider = ScriptedProvider(responses: [

@@ -780,12 +780,21 @@ public enum ModelUsageFormat {
     return "\(remainder)s"
   }
 
-  /// `950`, `1.2k`, `12.0k`, `3.4M`: a count short enough for a status line.
+  /// `950`, `1.2k`, `12.0k`, `552.2k`, `3.4M`: a count short enough for a
+  /// status line. Every token count a host prints goes through here, so the
+  /// same number reads the same everywhere.
   public static func count(_ count: Int) -> String {
     guard count >= 1_000 else { return String(count) }
-    guard count >= 1_000_000 else { return AgentProcessInfo.compactCount(count) }
-    let tenths = (count + 50_000) / 100_000
-    return "\(tenths / 10).\(tenths % 10)M"
+    let thousandths = (count + 50) / 100
+    guard thousandths >= 10_000 else { return "\(thousandths / 10).\(thousandths % 10)k" }
+    let millionths = (count + 50_000) / 100_000
+    return "\(millionths / 10).\(millionths % 10)M"
+  }
+
+  /// A token count with its unit, `~` first when the number was estimated
+  /// rather than reported by the provider: `12.0k tok`, `~552.2k tok`.
+  public static func tokens(_ count: Int, estimated: Bool = false) -> String {
+    "\(estimated ? "~" : "")\(Self.count(count)) tok"
   }
 
   /// A horizontal bar of `width` cells filled to `fraction`, using eighth

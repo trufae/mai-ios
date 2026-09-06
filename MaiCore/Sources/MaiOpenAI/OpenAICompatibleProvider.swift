@@ -373,10 +373,9 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
       if let message = providerError(in: root) {
         throw OpenAICompatibleProviderError.providerFailure(message)
       }
-      if let value = tokenUsage(root["usage"]) {
-        usage = value
-        await emit(.usage(value))
-      }
+      // Some servers attach usage to every chunk, zero or cumulative until
+      // the last one. Only the final figures count, announced once below.
+      if let value = tokenUsage(root["usage"]) { usage = value }
       guard let choice = root["choices"]?.arrayValue?.first?.objectValue else { continue }
       let delta = choice["delta"]?.objectValue ?? choice["message"]?.objectValue ?? [:]
       let textDelta = decodedText(delta["content"])
@@ -436,6 +435,7 @@ public final class OpenAICompatibleProvider: ChatProvider, @unchecked Sendable {
     if !reasoning.isEmpty { parts.append(.reasoning(reasoning)) }
     if !text.isEmpty { parts.append(.text(text)) }
     parts.append(contentsOf: completedCalls.map(ContentPart.toolCall))
+    if let usage { await emit(.usage(usage)) }
     return ProviderResponse(
       message: AgentMessage(role: .assistant, content: parts),
       usage: usage,

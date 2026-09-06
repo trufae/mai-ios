@@ -404,9 +404,16 @@ public actor AgentRuntime {
             let summary = try await summarize(
               selection, of: transcript, provider: provider, request: request, budget: budget,
               context: context, pid: pid, emit: emit)
-            totalUsage = totalUsage.merging(summary.response.usage)
+            let usage =
+              summary.response.usage
+              ?? .estimated(
+                inputTokens: ModelCallStats.estimatedTokenCount(
+                  of: transcript.filter { selection.contains($0.id) }),
+                outputTokens: ModelCallStats.estimatedTokenCount(
+                  forCharacterCount: summary.response.message.text.count))
+            totalUsage = totalUsage.merging(usage)
             await supervisor.note(pid, usage: totalUsage)
-            if let usage = summary.response.usage { await budget.record(tokens: usage.totalTokens) }
+            await budget.record(tokens: usage.totalTokens)
             let text = summary.response.message.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw CompactionError.emptySummary }
             let applied = AgentTranscriptEditor.apply(
@@ -499,10 +506,18 @@ public actor AgentRuntime {
             userInputTokens: userInputTokens),
           at: call.ended)
       }
-      totalUsage = totalUsage.merging(providerResponse.usage)
+      // A provider that reports no usage still spent tokens: they are
+      // estimated from text length, and the total says so with a `~`.
+      let usage =
+        providerResponse.usage
+        ?? .estimated(
+          inputTokens: ModelCallStats.estimatedTokenCount(of: providerMessages),
+          outputTokens: ModelCallStats.estimatedTokenCount(
+            forCharacterCount: providerResponse.message.text.count))
+      totalUsage = totalUsage.merging(usage)
       lastUsage = providerResponse.usage
       await supervisor.note(pid, usage: totalUsage)
-      if let usage = providerResponse.usage { await budget.record(tokens: usage.totalTokens) }
+      await budget.record(tokens: usage.totalTokens)
 
       if let textToolMode, !toolBudgetExhausted {
         let decision = AgentToolLoopPolicy.evaluate(
@@ -1746,7 +1761,8 @@ extension Optional where Wrapped == TokenUsage {
       outputTokens: current.outputTokens + other.outputTokens,
       totalTokens: current.totalTokens + other.totalTokens,
       cachedTokens: merge(current.cachedTokens, other.cachedTokens),
-      reasoningTokens: merge(current.reasoningTokens, other.reasoningTokens))
+      reasoningTokens: merge(current.reasoningTokens, other.reasoningTokens),
+      isEstimated: current.isEstimated || other.isEstimated)
   }
 
   private func merge(_ first: Int?, _ second: Int?) -> Int? {

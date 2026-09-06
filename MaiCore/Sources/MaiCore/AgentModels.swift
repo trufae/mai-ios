@@ -478,19 +478,44 @@ public struct TokenUsage: Codable, Equatable, Sendable {
   public var totalTokens: Int
   public var cachedTokens: Int?
   public var reasoningTokens: Int?
+  /// True when the numbers were estimated from text length because the
+  /// provider reported no usage. Hosts show such counts with a `~`.
+  public var isEstimated: Bool
 
   public init(
     inputTokens: Int,
     outputTokens: Int,
     totalTokens: Int? = nil,
     cachedTokens: Int? = nil,
-    reasoningTokens: Int? = nil
+    reasoningTokens: Int? = nil,
+    isEstimated: Bool = false
   ) {
     self.inputTokens = inputTokens
     self.outputTokens = outputTokens
     self.totalTokens = totalTokens ?? inputTokens + outputTokens
     self.cachedTokens = cachedTokens
     self.reasoningTokens = reasoningTokens
+    self.isEstimated = isEstimated
+  }
+
+  /// Usage guessed from text length, for a call whose provider reported none.
+  public static func estimated(inputTokens: Int, outputTokens: Int) -> TokenUsage {
+    TokenUsage(inputTokens: inputTokens, outputTokens: outputTokens, isEstimated: true)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens, isEstimated
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      inputTokens: try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0,
+      outputTokens: try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0,
+      totalTokens: try container.decodeIfPresent(Int.self, forKey: .totalTokens),
+      cachedTokens: try container.decodeIfPresent(Int.self, forKey: .cachedTokens),
+      reasoningTokens: try container.decodeIfPresent(Int.self, forKey: .reasoningTokens),
+      isEstimated: try container.decodeIfPresent(Bool.self, forKey: .isEstimated) ?? false)
   }
 }
 
@@ -512,6 +537,8 @@ public enum ProviderEvent: Codable, Equatable, Sendable {
   case textDelta(String)
   case reasoningDelta(String)
   case toolCallDelta(ToolCallDelta)
+  /// The call's token usage, sent once per call when the provider reports
+  /// it — after the last delta of a stream — so a host may add these up.
   case usage(TokenUsage)
 }
 

@@ -221,8 +221,8 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     var facts: [String] = []
     if modelTurns > 0 { facts.append("\(modelTurns) turn\(modelTurns == 1 ? "" : "s")") }
     if toolCalls > 0 { facts.append("\(toolCalls) tool\(toolCalls == 1 ? "" : "s")") }
-    if let tokens = usage?.totalTokens, tokens > 0 {
-      facts.append("\(Self.compactCount(tokens)) tok")
+    if let usage, usage.totalTokens > 0 {
+      facts.append(ModelUsageFormat.tokens(usage.totalTokens, estimated: usage.isEstimated))
     }
     if state != .starting || finishedAt != nil {
       facts.append(ModelUsageFormat.duration(elapsedSeconds(at: now)))
@@ -242,11 +242,10 @@ public struct AgentProcessInfo: Equatable, Sendable, Identifiable {
     return String(compact.prefix(max(1, limit - 1))) + "…"
   }
 
-  /// `950`, `1.2k`, `12.0k`: a count short enough for a status line.
+  /// `950`, `1.2k`, `12.0k`, `3.4M`: `ModelUsageFormat.count`, kept here
+  /// for callers that reached it through the process info.
   public static func compactCount(_ count: Int) -> String {
-    guard count >= 1_000 else { return String(count) }
-    let tenths = (count + 50) / 100
-    return "\(tenths / 10).\(tenths % 10)k"
+    ModelUsageFormat.count(count)
   }
 }
 

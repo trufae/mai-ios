@@ -2450,13 +2450,7 @@ struct MaiCLI {
     }
     let estimatedTokens = (characters + 2) / 3
     let messageLabel = "\(session.history.count) msg"
-    return "\(messageLabel) ~\(compactTokenCount(estimatedTokens)) tok"
-  }
-
-  private static func compactTokenCount(_ count: Int) -> String {
-    guard count >= 1_000 else { return String(count) }
-    let tenths = (count + 50) / 100
-    return "\(tenths / 10).\(tenths % 10)k"
+    return "\(messageLabel) \(ModelUsageFormat.tokens(estimatedTokens, estimated: true))"
   }
 
   private static func changeWorkingDirectory(_ argument: String, terminal: TerminalWriter) async {
@@ -4391,13 +4385,16 @@ struct MaiCLI {
     return ["Running agents:"] + tree.lines() + [agentTreeTotal(tree)]
   }
 
-  /// One row summing what the whole tree has spent so far.
+  /// One row summing what the whole tree has spent so far. Tokens are every
+  /// model call's input and output added up, the way a provider bills them,
+  /// formatted like the rows above it.
   static func agentTreeTotal(_ tree: AgentProcessTree) -> String {
     let turns = tree.processes.reduce(0) { $0 + $1.modelTurns }
     let tools = tree.processes.reduce(0) { $0 + $1.toolCalls }
     let tokens = tree.processes.reduce(0) { $0 + ($1.usage?.totalTokens ?? 0) }
+    let estimated = tree.processes.contains { $0.usage?.isEstimated == true }
     return
-      "Total: \(turns) turn\(turns == 1 ? "" : "s"), \(tools) tool\(tools == 1 ? "" : "s"), \(tokens) token\(tokens == 1 ? "" : "s")"
+      "Total: \(turns) turn\(turns == 1 ? "" : "s"), \(tools) tool\(tools == 1 ? "" : "s"), \(ModelUsageFormat.tokens(tokens, estimated: estimated))"
   }
 
   private static func setAgentEnabled(
