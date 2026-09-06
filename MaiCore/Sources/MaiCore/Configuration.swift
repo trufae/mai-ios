@@ -464,20 +464,36 @@ public struct ConfiguredPrompts: Codable, Equatable, Sendable {
   /// Template used by chat compaction. `{{transcript}}` is required and
   /// `{{focus}}` is replaced when `/chat compact` receives optional guidance.
   public var compact: String?
+  /// Template that turns an `agent_start` brief into the prompt a child agent
+  /// receives. `{{task}}` is required; `{{context}}`, `{{output}}`, `{{agent}}`,
+  /// and `{{cwd}}` are replaced when present. Nil keeps MaiCore's built-in text.
+  public var delegation: String?
+  /// Instructions for the worker MaiCore derives when a delegating agent starts
+  /// a child without naming one.
+  public var worker: String?
   /// Reusable system prompts referenced by `AgentDefinition.systemPrompt`.
   public var system: [String: String]
 
-  public init(compact: String? = nil, system: [String: String] = [:]) {
+  public init(
+    compact: String? = nil,
+    delegation: String? = nil,
+    worker: String? = nil,
+    system: [String: String] = [:]
+  ) {
     self.compact = compact
+    self.delegation = delegation
+    self.worker = worker
     self.system = system
   }
 
-  private enum CodingKeys: String, CodingKey { case compact, system }
+  private enum CodingKeys: String, CodingKey { case compact, delegation, worker, system }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
       compact: try container.decodeIfPresent(String.self, forKey: .compact),
+      delegation: try container.decodeIfPresent(String.self, forKey: .delegation),
+      worker: try container.decodeIfPresent(String.self, forKey: .worker),
       system: try container.decodeIfPresent([String: String].self, forKey: .system) ?? [:])
   }
 }
@@ -582,6 +598,12 @@ public struct MaiConfiguration: Codable, Equatable, Sendable {
     {
       throw MaiConfigurationError.missingPromptPlaceholder(
         prompt: "compact", placeholder: "{{transcript}}")
+    }
+    if let delegation = prompts?.delegation,
+      let missing = AgentDelegationPrompt.missingPlaceholder(in: delegation)
+    {
+      throw MaiConfigurationError.missingPromptPlaceholder(
+        prompt: "delegation", placeholder: missing)
     }
     for name in prompts?.system.keys ?? [String: String]().keys {
       guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

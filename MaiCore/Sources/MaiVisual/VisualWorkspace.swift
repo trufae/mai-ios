@@ -55,6 +55,9 @@ public struct ToolSourceForm: Equatable, Sendable {
 public struct AgentForm: Equatable, Sendable {
   public var id = ""
   public var displayName = ""
+  /// What the setup is for. People read it when picking; a delegating model
+  /// reads it to choose an agent for a task.
+  public var description = ""
 
   public init() {}
 }
@@ -115,6 +118,8 @@ public final class VisualWorkspace {
   public private(set) var providers: [ProviderDescriptor] = []
   public private(set) var tools: [ToolDefinition] = []
   public private(set) var toolGroups: [ToolGroupDefinition] = []
+  /// The live agent process tree, refreshed when runs start and finish.
+  public private(set) var agentTree = AgentProcessTree()
   public private(set) var agents: [AgentDefinition] = []
   public var pendingApproval: VisualApprovalHandler.Pending?
   public var pendingConversationDeletion: ConversationActionRequest?
@@ -189,6 +194,7 @@ public final class VisualWorkspace {
     providers = await runtime.availableProviders()
     tools = await runtime.availableTools()
     agents = await runtime.availableAgents()
+    await refreshAgentTree()
     var groups: [ToolGroupDefinition] = []
     for source in configuration.toolSources where source.enabled {
       do {
@@ -342,18 +348,23 @@ public final class VisualWorkspace {
     conversation.beginRun()
     let request = conversation.request()
     let runtime = runtime
-    conversation.runTask = Task {
+    let process = conversation.processID
+    conversation.runTask = Task { [weak self] in
       do {
-        let result = try await runtime.run(request) { event in
+        let result = try await runtime.run(request, process: process) { event in
           await conversation.consume(event)
         }
+        conversation.processID =
+          await runtime.supervisor.tree().processes.first { $0.runID == result.runID }?.pid
         conversation.finishRun(with: result)
       } catch is CancellationError {
         conversation.failRun("Cancelled.")
       } catch {
         conversation.failRun(error.localizedDescription)
       }
+      await self?.refreshAgentTree()
     }
+    Task { await refreshAgentTree() }
   }
 
   /// Runs a slash command through the host's REPL handler and shows what it
@@ -521,10 +532,78 @@ public final class VisualWorkspace {
   }
 
   public func useAgent(_ definition: AgentDefinition) {
+    guard definition.isEnabled else {
+      status = "Agent '\(definition.id)' is disabled. Enable it before using it."
+      return
+    }
     guard let focused = focusedConversation else { return }
     focused.adopt(profile: definition, title: definition.displayName)
     status = "'\(focused.title)' restarted with agent '\(definition.id)'."
     selectedTab = .chats
+  }
+
+  /// Parks or restores a setup. A disabled agent stays in the file, stays
+  /// listed, and is never offered to a model choosing a subagent.
+  public func setAgentEnabled(_ enabled: Bool, for definition: AgentDefinition) {
+    guard let index = configuration.agents.firstIndex(where: { $0.id == definition.id }) else {
+      return
+    }
+    if !enabled, focusedConversation?.profile.id == definition.id {
+      status = "Agent '\(definition.id)' is in use by the focused chat."
+      return
+    }
+    configuration.agents[index].isEnabled = enabled
+    agents = configuration.agents
+    markConfigurationChanged()
+    registerAgent(configuration.agents[index])
+    status = "Agent '\(definition.id)' \(enabled ? "enabled" : "disabled")."
+  }
+
+  public func setAgentDescription(_ text: String, for definition: AgentDefinition) {
+    guard let index = configuration.agents.firstIndex(where: { $0.id == definition.id }) else {
+      return
+    }
+    configuration.agents[index].description = text.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    agents = configuration.agents
+    markConfigurationChanged()
+    registerAgent(configuration.agents[index])
+    status = "Described agent '\(definition.id)'."
+  }
+
+  /// Moves where a chat's tools run. Turning delegation on with no subagent
+  /// budget would silently do nothing, so it raises the budget too.
+  public func setToolDelegation(
+    _ mode: AgentToolDelegation,
+    for conversation: VisualConversation
+  ) {
+    conversation.profile.toolDelegation = mode
+    if mode == .subagent, conversation.profile.limits.maxSubagents < 1 {
+      conversation.profile.limits.maxSubagents = 1
+    }
+    persistAgentProfile(for: conversation)
+    status =
+      mode == .subagent
+      ? "Tool calls for '\(conversation.title)' now run in a child agent."
+      : "Tool calls for '\(conversation.title)' now run in the chat."
+  }
+
+  public func refreshAgentTree() async {
+    agentTree = await runtime.supervisor.tree()
+  }
+
+  public func stopAgentProcess(_ pid: AgentPID) {
+    let runtime = runtime
+    Task { [weak self] in
+      let stopped = await runtime.supervisor.stop(pid, reason: "Stopped from visual mode")
+      self?.status = "Stopped \(stopped.map(\.description).joined(separator: ", "))."
+      await self?.refreshAgentTree()
+    }
+  }
+
+  private func registerAgent(_ definition: AgentDefinition) {
+    let runtime = runtime
+    Task { try? await runtime.register(agent: definition, replacingExisting: true) }
   }
 
   public func setTool(_ name: String, allowed: Bool, for conversation: VisualConversation) {
@@ -744,6 +823,7 @@ public final class VisualWorkspace {
     var definition = focused.profile
     definition.id = id
     definition.displayName = optional(form.displayName) ?? id
+    definition.description = optional(form.description) ?? definition.description
     try await runtime.register(agent: definition, replacingExisting: true)
     upsert(definition, into: &configuration.agents)
     if configuration.defaultAgent == nil {

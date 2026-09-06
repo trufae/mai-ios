@@ -505,23 +505,19 @@ struct AgentsScreen: View {
         } else {
           Text("No conversation is focused.").foregroundStyle(.muted)
         }
+        RunningAgentsView(workspace: workspace)
       }
     } form: {
       VStack(alignment: .leading, spacing: 1) {
-        Text("Configured agents").bold()
+        Text("Agent setups").bold()
+        Text("Each one is a saved provider, model, prompt, tool set, and limits.")
+          .foregroundStyle(.muted)
+          .lineLimit(2)
         if workspace.agents.isEmpty {
           Text("No agents are registered.").foregroundStyle(.muted)
         }
         ForEach(workspace.agents, id: \.id) { agent in
-          HStack(spacing: 1) {
-            Text(agent.id).bold()
-            Text(agent.displayName == agent.id ? agent.subtitle : agent.displayName)
-              .foregroundStyle(.muted)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer(minLength: 1)
-            Button("Use") { workspace.useAgent(agent) }
-          }
+          AgentRow(agent: agent, workspace: workspace)
         }
         Divider()
         AgentFormView(workspace: workspace)
@@ -534,6 +530,12 @@ struct AgentsScreen: View {
 private struct FocusedChatSettings: View {
   @Bindable var conversation: VisualConversation
   let workspace: VisualWorkspace
+
+  private var delegationBinding: Binding<Bool> {
+    Binding(
+      get: { conversation.profile.toolDelegation.delegatesTools },
+      set: { workspace.setToolDelegation($0 ? .subagent : .inline, for: conversation) })
+  }
 
   private var providerBinding: Binding<String> {
     Binding(
@@ -616,12 +618,71 @@ private struct FocusedChatSettings: View {
       .border(.separator, placement: .outset)
     Toggle("Stream replies", isOn: streamingBinding)
     Toggle("Tool proxy", isOn: toolProxyBinding)
+    Toggle("Run tools in a subagent", isOn: delegationBinding)
+    Text(
+      conversation.profile.toolDelegation.delegatesTools
+        ? "Tool calls run in a child agent; this chat keeps only their answers."
+        : "Tool calls and their results stay in this chat."
+    )
+    .foregroundStyle(.muted)
+    .lineLimit(2)
     HStack(spacing: 1) {
       Text("Tools: \(conversation.profile.toolNames.sorted().joined(separator: ", "))")
         .foregroundStyle(.muted)
         .lineLimit(2)
     }
     Button("Reset conversation with these settings") { conversation.resetTranscript() }
+  }
+}
+
+/// What is running right now, as the tree it is: one row per process, the
+/// deeper ones indented under whatever started them.
+private struct RunningAgentsView: View {
+  let workspace: VisualWorkspace
+
+  var body: some View {
+    if !workspace.agentTree.isEmpty {
+      Divider()
+      Text("Running agents").bold()
+      ForEach(workspace.agentTree.processes, id: \.pid) { process in
+        HStack(spacing: 1) {
+          Text(String(repeating: " ", count: min(process.depth, 6) * 2) + process.summaryLine)
+            .foregroundStyle(process.needsAttention ? .danger : .muted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 1)
+          if !process.state.isTerminal {
+            Button("Stop") { workspace.stopAgentProcess(process.pid) }
+          }
+        }
+      }
+    }
+  }
+}
+
+private struct AgentRow: View {
+  let agent: AgentDefinition
+  let workspace: VisualWorkspace
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 1) {
+        Text(agent.id).bold()
+        Text(agent.subtitle)
+          .foregroundStyle(.muted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 1)
+        Button(agent.isEnabled ? "Disable" : "Enable") {
+          workspace.setAgentEnabled(!agent.isEnabled, for: agent)
+        }
+        Button("Use") { workspace.useAgent(agent) }
+          .disabled(!agent.isEnabled)
+      }
+      Text(agent.description.isEmpty ? "No description." : agent.description)
+        .foregroundStyle(.muted)
+        .lineLimit(2)
+    }
   }
 }
 
@@ -638,6 +699,7 @@ private struct AgentFormView: View {
         .lineLimit(2)
       TextField("Agent identifier", text: $form.id)
       TextField("Display name", text: $form.displayName)
+      TextField("What it is for", text: $form.description)
       Button("Save agent") { submit() }
         .disabled(form.id.isEmpty)
       if let message {
@@ -662,6 +724,9 @@ private struct AgentFormView: View {
 
 extension AgentDefinition {
   fileprivate var subtitle: String {
-    model.isEmpty ? provider.rawValue : "\(provider.rawValue)/\(model)"
+    var value = model.isEmpty ? provider.rawValue : "\(provider.rawValue)/\(model)"
+    if toolDelegation.delegatesTools { value += " · delegating" }
+    if !isEnabled { value += " · disabled" }
+    return value
   }
 }

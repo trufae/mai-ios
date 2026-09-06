@@ -31,6 +31,9 @@ public final class VisualConversation: Identifiable {
   /// Increments whenever the visible transcript changes so views can follow it.
   public private(set) var revision = 0
   @ObservationIgnored var runTask: Task<Void, Never>?
+  /// The supervisor process this conversation is, reused across turns so the
+  /// background agents it started stay addressable.
+  @ObservationIgnored var processID: AgentPID?
   @ObservationIgnored var commandTask: Task<Void, Never>?
   @ObservationIgnored private(set) var hasCustomTitle: Bool
 

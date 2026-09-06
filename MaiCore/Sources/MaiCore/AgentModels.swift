@@ -739,6 +739,13 @@ public struct AgentRunLimits: Codable, Equatable, Sendable {
 public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var id: String
   public var displayName: String
+  /// What this agent is for, in one line. People read it when picking a setup;
+  /// a delegating model reads it to choose an agent for a task, so write it as
+  /// a capability ("reads code and finds definitions"), not as a label.
+  public var description: String
+  /// Disabled agents stay in the file but are hidden from pickers and are never
+  /// offered as subagents, so a setup can be parked without deleting it.
+  public var isEnabled: Bool
   public var instructions: String
   /// Name of the reusable system prompt that supplies `instructions`.
   public var systemPrompt: String?
@@ -754,10 +761,14 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
   public var options: GenerationOptions
   public var toolCallingStrategy: ToolCallingStrategy
   public var useToolProxy: Bool
+  /// Whether this agent runs its tools itself or delegates them to a child.
+  public var toolDelegation: AgentToolDelegation
 
   public init(
     id: String,
     displayName: String? = nil,
+    description: String = "",
+    isEnabled: Bool = true,
     instructions: String,
     systemPrompt: String? = nil,
     provider: ProviderID,
@@ -771,10 +782,13 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     responseFormat: ResponseFormat = .text,
     options: GenerationOptions = .init(),
     toolCallingStrategy: ToolCallingStrategy = .automatic,
-    useToolProxy: Bool = false
+    useToolProxy: Bool = false,
+    toolDelegation: AgentToolDelegation = .inline
   ) {
     self.id = id
     self.displayName = displayName ?? id
+    self.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.isEnabled = isEnabled
     self.instructions = instructions
     self.systemPrompt = systemPrompt
     self.provider = provider
@@ -789,12 +803,15 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.options = options
     self.toolCallingStrategy = toolCallingStrategy
     self.useToolProxy = useToolProxy
+    self.toolDelegation = toolDelegation
   }
 
   private enum CodingKeys: String, CodingKey {
     case id, displayName, instructions, systemPrompt, provider, model, toolNames, toolGroupNames,
       subagentNames, stream, limits
-    case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy
+    case toolChoice, responseFormat, options, toolCallingStrategy, useToolProxy, toolDelegation
+    case description
+    case isEnabled = "enabled"
   }
 
   public init(from decoder: Decoder) throws {
@@ -803,6 +820,8 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
     self.init(
       id: id,
       displayName: try container.decodeIfPresent(String.self, forKey: .displayName),
+      description: try container.decodeIfPresent(String.self, forKey: .description) ?? "",
+      isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true,
       instructions: try container.decodeIfPresent(String.self, forKey: .instructions) ?? "",
       systemPrompt: try container.decodeIfPresent(String.self, forKey: .systemPrompt),
       provider: try container.decode(ProviderID.self, forKey: .provider),
@@ -820,7 +839,10 @@ public struct AgentDefinition: Codable, Equatable, Identifiable, Sendable {
       toolCallingStrategy: try container.decodeIfPresent(
         ToolCallingStrategy.self,
         forKey: .toolCallingStrategy) ?? .automatic,
-      useToolProxy: try container.decodeIfPresent(Bool.self, forKey: .useToolProxy) ?? false)
+      useToolProxy: try container.decodeIfPresent(Bool.self, forKey: .useToolProxy) ?? false,
+      toolDelegation: try container.decodeIfPresent(
+        AgentToolDelegation.self,
+        forKey: .toolDelegation) ?? .inline)
   }
 }
 
@@ -838,6 +860,7 @@ public struct AgentRequest: Sendable {
   public var stream: Bool
   public var toolCallingStrategy: ToolCallingStrategy
   public var useToolProxy: Bool
+  public var toolDelegation: AgentToolDelegation
 
   public init(
     agentID: String = "main",
@@ -852,7 +875,8 @@ public struct AgentRequest: Sendable {
     limits: AgentRunLimits = .init(),
     stream: Bool = true,
     toolCallingStrategy: ToolCallingStrategy = .automatic,
-    useToolProxy: Bool = false
+    useToolProxy: Bool = false,
+    toolDelegation: AgentToolDelegation = .inline
   ) {
     self.agentID = agentID
     self.provider = provider
@@ -867,6 +891,7 @@ public struct AgentRequest: Sendable {
     self.stream = stream
     self.toolCallingStrategy = toolCallingStrategy
     self.useToolProxy = useToolProxy
+    self.toolDelegation = toolDelegation
   }
 }
 
@@ -911,12 +936,22 @@ public struct AgentEventContext: Codable, Equatable, Sendable {
   public var parentRunID: UUID?
   public var agentID: String
   public var depth: Int
+  /// The supervisor's short identifier for this run, so hosts can tie an event
+  /// to the row `/agents` shows. Nil for runs started outside a supervisor.
+  public var pid: AgentPID?
 
-  public init(runID: UUID, parentRunID: UUID?, agentID: String, depth: Int) {
+  public init(
+    runID: UUID,
+    parentRunID: UUID?,
+    agentID: String,
+    depth: Int,
+    pid: AgentPID? = nil
+  ) {
     self.runID = runID
     self.parentRunID = parentRunID
     self.agentID = agentID
     self.depth = depth
+    self.pid = pid
   }
 }
 

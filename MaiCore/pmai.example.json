@@ -7,7 +7,9 @@
       "hello": "Exercise the offline MaiCore provider.",
       "main": "You are a helpful assistant. Use tools when needed.",
       "researcher": "Investigate the delegated task and return a concise result."
-    }
+    },
+    "delegation": "## Context\n\n{{context}}\n\n## Task\n\n{{task}}\n\n## Expected output\n\n{{output}}\n\nYou are running as agent '{{agent}}' in {{cwd}}. Everything you need is above.",
+    "worker": "You are a focused worker agent. Use your tools to complete the task, then reply with exactly the expected output and nothing else."
   },
   "plugins": [
     {
@@ -81,7 +83,9 @@
       "enabled": false,
       "displayName": "Example local MCP",
       "command": "your-mcp-server",
-      "args": ["--stdio"],
+      "args": [
+        "--stdio"
+      ],
       "env": {},
       "cwd": ".",
       "toolNamePrefix": "local",
@@ -95,7 +99,9 @@
       "instructions": "Exercise the offline MaiCore provider.",
       "systemPrompt": "hello",
       "provider": "hello",
-      "model": ""
+      "model": "",
+      "description": "Offline smoke test; no tools, no network.",
+      "enabled": true
     },
     {
       "id": "main",
@@ -159,7 +165,10 @@
         "maxToolCalls": 50,
         "maxSubagents": 4,
         "maxSubagentDepth": 2
-      }
+      },
+      "description": "General assistant with the full tool set.",
+      "toolDelegation": "subagent",
+      "enabled": true
     },
     {
       "id": "researcher",
@@ -173,7 +182,9 @@
       ],
       "toolGroupNames": [
         "datetime"
-      ]
+      ],
+      "description": "Investigates one question and answers in a few lines.",
+      "enabled": true
     }
   ],
   "ui": {

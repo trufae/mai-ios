@@ -1,0 +1,297 @@
+import Foundation
+
+/// What a host learns about the process table without polling it.
+public enum AgentSupervisorEvent: Equatable, Sendable {
+  case started(AgentProcessInfo)
+  case changed(AgentProcessInfo)
+  /// Raised when a process needs a human, and again with a nil attention when
+  /// it stops needing one.
+  case attention(AgentProcessInfo)
+  case finished(AgentProcessInfo)
+}
+
+/// The process table for one session: which agents are running, how they are
+/// related, what they are waiting for, and how to stop them.
+///
+/// `AgentRuntime` writes to it as runs progress; hosts read it for `/agents`,
+/// follow `events` for notifications, and call `stop` to kill a subtree.
+/// Nothing here is persisted — pids are session-scoped by design.
+public actor AgentSupervisor {
+  private struct Entry {
+    var info: AgentProcessInfo
+    var handle: Task<AgentResult, Error>?
+    var transcript: [AgentMessage] = []
+    var result: AgentResult?
+  }
+
+  /// How many finished processes to keep for inspection before the oldest are
+  /// dropped. A finished process with live descendants is always kept.
+  private let finishedRetention: Int
+  private var entries: [AgentPID: Entry] = [:]
+  private var nextPID = 1
+  private var subscribers: [UUID: AsyncStream<AgentSupervisorEvent>.Continuation] = [:]
+
+  public init(finishedRetention: Int = 32) {
+    self.finishedRetention = max(1, finishedRetention)
+  }
+
+  // MARK: - Host API
+
+  public func tree() -> AgentProcessTree {
+    AgentProcessTree(entries.values.map(\.info))
+  }
+
+  public func processes() -> [AgentProcessInfo] {
+    entries.values.map(\.info).sorted { $0.pid < $1.pid }
+  }
+
+  public func info(_ pid: AgentPID) -> AgentProcessInfo? {
+    entries[pid]?.info
+  }
+
+  /// Processes still running or waiting, newest first.
+  public func liveProcesses() -> [AgentProcessInfo] {
+    processes().filter { !$0.state.isTerminal }.reversed()
+  }
+
+  /// Processes waiting on somebody, so a host can badge or announce them.
+  public func processesNeedingAttention() -> [AgentProcessInfo] {
+    processes().filter(\.needsAttention)
+  }
+
+  /// The child's own conversation, for `/agents log`. Empty until it produces
+  /// one; a finished process keeps the transcript it ended with.
+  public func transcript(_ pid: AgentPID) -> [AgentMessage] {
+    entries[pid]?.transcript ?? []
+  }
+
+  public func result(_ pid: AgentPID) -> AgentResult? {
+    entries[pid]?.result
+  }
+
+  /// A stream of table changes. Each subscriber gets its own buffered stream;
+  /// dropping it unsubscribes.
+  public func events() -> AsyncStream<AgentSupervisorEvent> {
+    let id = UUID()
+    return AsyncStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
+      subscribers[id] = continuation
+      continuation.onTermination = { [weak self] _ in
+        Task { await self?.unsubscribe(id) }
+      }
+    }
+  }
+
+  /// Cancels a process and everything under it, so no orphan keeps running
+  /// with nobody waiting for its answer. Returns what was stopped.
+  @discardableResult
+  public func stop(_ pid: AgentPID, reason: String = "Stopped") -> [AgentPID] {
+    let doomed = tree().subtree(of: pid).map(\.pid)
+    for victim in doomed.reversed() {
+      guard var entry = entries[victim] else { continue }
+      entry.handle?.cancel()
+      entry.handle = nil
+      entries[victim] = entry
+      guard !entry.info.state.isTerminal else { continue }
+      transition(victim, to: .cancelled, failure: reason, attention: nil, finished: true)
+    }
+    return doomed
+  }
+
+  /// Forgets terminal processes that nothing depends on any more.
+  public func prune() {
+    pruneFinished()
+  }
+
+  // MARK: - Runtime API
+
+  func register(
+    runID: UUID,
+    parent: AgentPID?,
+    agentID: String,
+    displayName: String? = nil,
+    task: String = "",
+    depth: Int
+  ) -> AgentPID {
+    let pid = AgentPID(nextPID)
+    nextPID += 1
+    let info = AgentProcessInfo(
+      pid: pid,
+      parent: parent,
+      runID: runID,
+      agentID: agentID,
+      displayName: displayName,
+      task: task,
+      state: .starting,
+      depth: depth)
+    entries[pid] = Entry(info: info)
+    publish(.started(info))
+    pruneFinished()
+    return pid
+  }
+
+  /// Puts an existing process back to work for another turn, keeping its pid
+  /// and its children. A chat is one process across its whole life, so a
+  /// background child started three turns ago is still addressable by the run
+  /// that started it. Answers false when the pid is gone.
+  func reopen(_ pid: AgentPID, runID: UUID, task: String) -> Bool {
+    guard var entry = entries[pid] else { return false }
+    entry.info.runID = runID
+    entry.info.task = task
+    entry.info.state = .running
+    entry.info.attention = nil
+    entry.info.failure = nil
+    entry.info.finishedAt = nil
+    entry.info.isCollected = false
+    entry.info.modelTurns = 0
+    entry.info.toolCalls = 0
+    entry.info.activity = ""
+    entry.info.updatedAt = Date()
+    entry.result = nil
+    entries[pid] = entry
+    publish(.changed(entry.info))
+    return true
+  }
+
+  func attach(_ handle: Task<AgentResult, Error>, to pid: AgentPID) {
+    entries[pid]?.handle = handle
+  }
+
+  /// The task running one process, so a caller can await it without holding
+  /// the supervisor for the whole run.
+  func handle(_ pid: AgentPID) -> Task<AgentResult, Error>? {
+    entries[pid]?.handle
+  }
+
+  /// Records progress. Every argument is optional so callers update only what
+  /// they know, and an unchanged table publishes nothing.
+  func note(
+    _ pid: AgentPID,
+    state: AgentProcessState? = nil,
+    modelTurns: Int? = nil,
+    toolCalls: Int? = nil,
+    usage: TokenUsage? = nil,
+    activity: String? = nil,
+    transcript: [AgentMessage]? = nil
+  ) {
+    guard var entry = entries[pid] else { return }
+    let previous = entry.info
+    if let state, !entry.info.state.isTerminal { entry.info.state = state }
+    if let modelTurns { entry.info.modelTurns = modelTurns }
+    if let toolCalls { entry.info.toolCalls = toolCalls }
+    if let usage { entry.info.usage = usage }
+    if let activity { entry.info.activity = activity }
+    if let transcript { entry.transcript = transcript }
+    entry.info.updatedAt = Date()
+    entries[pid] = entry
+    if previous != entry.info { publish(.changed(entry.info)) }
+  }
+
+  /// Marks a process as needing a human. The matching state follows from the
+  /// kind of attention, so a run blocked on a synchronous approval prompt still
+  /// shows as `approve?` in a listing.
+  func raise(_ attention: AgentAttention, for pid: AgentPID) {
+    guard var entry = entries[pid] else { return }
+    entry.info.attention = attention
+    if let state = attention.implicitState, !entry.info.state.isTerminal {
+      entry.info.state = state
+    }
+    entry.info.updatedAt = Date()
+    entries[pid] = entry
+    publish(.attention(entry.info))
+  }
+
+  func clearAttention(for pid: AgentPID, resuming state: AgentProcessState? = .running) {
+    guard var entry = entries[pid], entry.info.attention != nil else { return }
+    entry.info.attention = nil
+    if let state, !entry.info.state.isTerminal { entry.info.state = state }
+    entry.info.updatedAt = Date()
+    entries[pid] = entry
+    publish(.attention(entry.info))
+  }
+
+  func finish(_ pid: AgentPID, result: AgentResult, announce: Bool) {
+    guard var entry = entries[pid] else { return }
+    entry.transcript = result.transcript
+    entry.result = result
+    entry.info.modelTurns = result.modelTurns
+    entry.info.toolCalls = result.toolCalls
+    entry.info.usage = result.usage ?? entry.info.usage
+    entry.handle = nil
+    entries[pid] = entry
+    // A background answer nobody asked for yet is exactly the case a host
+    // should surface; a blocking child's answer goes straight to its parent.
+    let attention: AgentAttention? =
+      announce ? .finished(AgentProcessInfo.oneLine(result.response.text, limit: 80)) : nil
+    transition(pid, to: .completed, failure: nil, attention: attention, finished: true)
+  }
+
+  func fail(_ pid: AgentPID, state: AgentProcessState, message: String, announce: Bool) {
+    entries[pid]?.handle = nil
+    transition(
+      pid,
+      to: state,
+      failure: message,
+      attention: announce ? .error(message) : nil,
+      finished: true)
+  }
+
+  /// Marks the answer as taken, so it stops asking for attention.
+  func collect(_ pid: AgentPID) {
+    guard var entry = entries[pid] else { return }
+    entry.info.isCollected = true
+    entry.info.attention = nil
+    entries[pid] = entry
+    publish(.changed(entry.info))
+    pruneFinished()
+  }
+
+  func forget(_ pid: AgentPID) {
+    entries[pid] = nil
+  }
+
+  // MARK: - Internals
+
+  private func transition(
+    _ pid: AgentPID,
+    to state: AgentProcessState,
+    failure: String?,
+    attention: AgentAttention?,
+    finished: Bool
+  ) {
+    guard var entry = entries[pid] else { return }
+    entry.info.state = state
+    entry.info.failure = failure ?? entry.info.failure
+    entry.info.attention = attention
+    entry.info.updatedAt = Date()
+    if finished { entry.info.finishedAt = Date() }
+    entries[pid] = entry
+    publish(finished ? .finished(entry.info) : .changed(entry.info))
+    if attention != nil { publish(.attention(entry.info)) }
+    pruneFinished()
+  }
+
+  private func publish(_ event: AgentSupervisorEvent) {
+    for continuation in subscribers.values { continuation.yield(event) }
+  }
+
+  private func unsubscribe(_ id: UUID) {
+    subscribers[id] = nil
+  }
+
+  /// Drops the oldest terminal processes past the retention limit, never one
+  /// that still has a live descendant hanging off it.
+  private func pruneFinished() {
+    let snapshot = tree()
+    let removable = snapshot.processes.filter { process in
+      guard process.state.isTerminal else { return false }
+      return !snapshot.subtree(of: process.pid).dropFirst().contains { !$0.state.isTerminal }
+    }
+    guard removable.count > finishedRetention else { return }
+    let ordered = removable.sorted {
+      ($0.finishedAt ?? $0.updatedAt) < ($1.finishedAt ?? $1.updatedAt)
+    }
+    for process in ordered.prefix(removable.count - finishedRetention) {
+      entries[process.pid] = nil
+    }
+  }
+}

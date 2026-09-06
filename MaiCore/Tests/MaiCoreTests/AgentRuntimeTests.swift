@@ -934,7 +934,10 @@ func subagentRun() async throws {
   let requests = await provider.requests
   #expect(requests.count == 3)
   #expect(requests[1].messages.first?.text == "Research carefully.")
-  #expect(requests[1].messages.last?.text == "Find the answer")
+  let brief = try #require(requests[1].messages.last?.text)
+  #expect(brief.contains("Find the answer"))
+  #expect(brief.contains("## Task"))
+  #expect(!brief.contains("{{task}}"))
 }
 
 @Test("Agent tools keep a child running across orchestrator turns")
@@ -966,7 +969,11 @@ func launchedSubagentRun() async throws {
   }
 
   let launchResult = try #require(launch.transcript.flatMap(\.toolResults).first)
-  let id = try #require(launchResult.structuredContent?.objectValue?["id"]?.stringValue)
+  let id = try #require(launchResult.structuredContent?.objectValue?["pid"]?.stringValue)
+  // The host keeps one process per conversation, so later turns still own the
+  // child this turn started in the background.
+  let orchestrator = try #require(
+    await runtime.supervisor.tree().processes.first { $0.runID == launch.runID }?.pid)
   #expect(launch.response.text == "Launched \(id)")
   #expect(launchResult.structuredContent?.objectValue?["status"] == .string("running"))
 
@@ -980,10 +987,11 @@ func launchedSubagentRun() async throws {
         maxModelTurns: 4,
         maxToolCalls: 2,
         maxSubagents: 1,
-        maxSubagentDepth: 1)))
+        maxSubagentDepth: 1)),
+    process: orchestrator)
   let rejectedResult = try #require(rejected.transcript.flatMap(\.toolResults).first)
   #expect(rejectedResult.isError)
-  #expect(rejectedResult.text.contains("already has 1 background subagents"))
+  #expect(rejectedResult.text.contains("already has 1 background agent"))
 
   try await Task.sleep(for: .milliseconds(120))
   let collected = try await runtime.run(
@@ -996,7 +1004,8 @@ func launchedSubagentRun() async throws {
         maxModelTurns: 5,
         maxToolCalls: 3,
         maxSubagents: 1,
-        maxSubagentDepth: 1))
+        maxSubagentDepth: 1)),
+    process: orchestrator
   ) { event in
     await recorder.append(event)
   }
@@ -1004,20 +1013,27 @@ func launchedSubagentRun() async throws {
   #expect(collected.response.text == "Parent received: Background result")
   let toolResults = collected.transcript.flatMap(\.toolResults)
   #expect(toolResults.count == 2)
-  #expect(toolResults[0].structuredContent?.objectValue?["status"] == .string("completed"))
+  let status = try #require(
+    toolResults[0].structuredContent?.objectValue?["agents"]?.arrayValue?.first?.objectValue)
+  #expect(status["pid"] == .string(id))
+  #expect(status["status"] == .string("completed"))
   #expect(toolResults[1].text == "Background result")
   #expect(toolResults[1].structuredContent?.objectValue?["status"] == .string("completed"))
   let events = await recorder.events
   #expect(events.contains { if case .childStarted = $0 { true } else { false } })
   let requests = await provider.requests
   let offeredNames = Set(requests.first?.tools.map(\.name) ?? [])
-  #expect(offeredNames.contains(AgentRuntime.subagentToolName))
-  #expect(offeredNames.contains(AgentRuntime.agentLaunchToolName))
+  #expect(offeredNames.contains(AgentRuntime.agentStartToolName))
   #expect(offeredNames.contains(AgentRuntime.agentStatusToolName))
   #expect(offeredNames.contains(AgentRuntime.agentResultToolName))
+  #expect(offeredNames.contains(AgentRuntime.agentStopToolName))
+  // The retired names still run, but spending prompt on six near-identical
+  // tools only confuses a model, so they are not offered.
+  #expect(!offeredNames.contains(AgentRuntime.subagentToolName))
+  #expect(!offeredNames.contains(AgentRuntime.agentLaunchToolName))
   #expect(
     requests.first { $0.messages.first?.text == "Research carefully." }?.messages.last?.text
-      == "Find this in the background")
+      .contains("Find this in the background") == true)
 }
 
 @Test("Subagents are disabled by default")
@@ -1043,10 +1059,222 @@ func subagentsDisabledByDefault() async throws {
       subagentNames: ["researcher"]))
 
   let names = Set(try #require(await provider.requests.first).tools.map(\.name))
-  #expect(!names.contains(AgentRuntime.subagentToolName))
-  #expect(!names.contains(AgentRuntime.agentLaunchToolName))
+  #expect(!names.contains(AgentRuntime.agentStartToolName))
   #expect(!names.contains(AgentRuntime.agentStatusToolName))
   #expect(!names.contains(AgentRuntime.agentResultToolName))
+  #expect(!names.contains(AgentRuntime.agentStopToolName))
+}
+
+@Test("Delegation moves an agent's tools into a child and keeps only the answer")
+func toolDelegationRunsToolsInAChild() async throws {
+  let provider = DelegatingProvider()
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "read_file",
+        description: "Read a file",
+        inputSchema: objectSchema(required: ["path"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      ToolOutput(text: "contents of \(arguments.objectValue?["path"]?.stringValue ?? "-")")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      agentID: "main",
+      provider: "delegating",
+      model: "fixture",
+      messages: [.user("what is in Parser.swift?")],
+      toolNames: ["read_file"],
+      limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4, maxSubagents: 2),
+      toolDelegation: .subagent))
+
+  #expect(result.response.text == "Parser.swift holds the parser.")
+  let requests = await provider.requests
+  // The orchestrator is offered the agent family and none of its own tools.
+  let parentTools = Set(requests[0].tools.map(\.name))
+  #expect(
+    parentTools == [
+      AgentRuntime.agentStartToolName, AgentRuntime.agentStatusToolName,
+      AgentRuntime.agentResultToolName, AgentRuntime.agentStopToolName,
+    ])
+  // The derived worker is offered the real tool instead.
+  let workerRequest = try #require(requests.first { $0.tools.contains { $0.name == "read_file" } })
+  #expect(workerRequest.messages.first?.text.contains("focused worker agent") == true)
+  #expect(workerRequest.messages.last?.text.contains("Read Parser.swift") == true)
+  // Only one call and one answer reach the orchestrator: no file contents.
+  let parentResults = result.transcript.flatMap(\.toolResults)
+  #expect(parentResults.count == 1)
+  #expect(parentResults[0].text == "Parser.swift holds the parser.")
+  #expect(!result.transcript.contains { $0.text.contains("contents of Parser.swift") })
+}
+
+@Test("Delegation without a subagent budget leaves the agent's own tools in place")
+func toolDelegationNeedsASubagentBudget() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("No tools needed"), stopReason: .stop)
+  ])
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(name: "read_file", description: "Read a file")
+    ) { _, _ in ToolOutput(text: "-") })
+
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("hello")],
+      toolNames: ["read_file"],
+      limits: AgentRunLimits(maxSubagents: 0),
+      toolDelegation: .subagent))
+
+  let names = Set(try #require(await provider.requests.first).tools.map(\.name))
+  #expect(names == ["read_file"])
+}
+
+@Test("Disabled agents are never offered as subagents")
+func disabledAgentsAreNotOffered() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("Done"), stopReason: .stop)
+  ])
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "researcher",
+      description: "Finds things in the repository",
+      instructions: "Research.",
+      provider: "scripted",
+      model: "fixture"))
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "parked",
+      isEnabled: false,
+      instructions: "Parked.",
+      provider: "scripted",
+      model: "fixture"))
+
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("delegate")],
+      subagentNames: ["researcher", "parked"],
+      limits: AgentRunLimits(maxSubagents: 1)))
+
+  let start = try #require(
+    await provider.requests.first?.tools.first { $0.name == AgentRuntime.agentStartToolName })
+  let agentProperty = try #require(
+    start.inputSchema.objectValue?["properties"]?.objectValue?["agent"]?.objectValue)
+  #expect(agentProperty["enum"] == .array([.string("researcher")]))
+  // The description a model reads to pick an agent comes from the definition.
+  #expect(
+    agentProperty["description"]?.stringValue?.contains(
+      "researcher — Finds things in the repository") == true)
+  #expect(await runtime.availableAgents().count == 2)
+  #expect(await runtime.availableAgents(includingDisabled: false).map(\.id) == ["researcher"])
+}
+
+@Test("The supervisor tracks the tree, surfaces attention, and stops a subtree")
+func agentSupervisorTree() async throws {
+  let supervisor = AgentSupervisor()
+  let root = await supervisor.register(
+    runID: UUID(), parent: nil, agentID: "main", task: "top", depth: 0)
+  let child = await supervisor.register(
+    runID: UUID(), parent: root, agentID: "coder", task: "write it", depth: 1)
+  let grandchild = await supervisor.register(
+    runID: UUID(), parent: child, agentID: "worker", task: "grep", depth: 2)
+
+  var tree = await supervisor.tree()
+  #expect(tree.roots.map(\.pid) == [root])
+  #expect(tree.subtree(of: child).map(\.pid) == [child, grandchild])
+  #expect(tree.isDescendant(grandchild, of: root))
+  #expect(!tree.isDescendant(root, of: child))
+  #expect(tree.liveChildren(ofAgent: "main").map(\.pid) == [child])
+  #expect(tree.lines().count == 3)
+  #expect(tree.lines()[1].hasPrefix("└── #2 coder"))
+
+  let approval = ApprovalRequest(
+    run: AgentEventContext(runID: UUID(), parentRunID: nil, agentID: "worker", depth: 2),
+    tool: ToolDefinition(name: "write_file", description: "Write"),
+    call: ToolCall(id: "call-1", name: "write_file", arguments: .object([:])))
+  await supervisor.raise(.approval(approval), for: grandchild)
+  #expect(await supervisor.info(grandchild)?.state == .waitingForApproval)
+  #expect(await supervisor.processesNeedingAttention().map(\.pid) == [grandchild])
+  await supervisor.clearAttention(for: grandchild)
+  #expect(await supervisor.processesNeedingAttention().isEmpty)
+
+  // Stopping a node takes everything under it; a half-stopped tree would leak
+  // work nobody is waiting for.
+  let stopped = await supervisor.stop(child, reason: "no longer needed")
+  #expect(stopped == [child, grandchild])
+  tree = await supervisor.tree()
+  #expect(tree.info(child)?.state == .cancelled)
+  #expect(tree.info(grandchild)?.state == .cancelled)
+  #expect(tree.info(root)?.state == .starting)
+}
+
+@Test("Pids parse the way people and models write them")
+func agentPIDParsing() {
+  #expect(AgentPID(text: "4") == AgentPID(4))
+  #expect(AgentPID(text: " #4 ") == AgentPID(4))
+  #expect(AgentPID(text: "pid 4") == AgentPID(4))
+  #expect(AgentPID(4).description == "#4")
+  #expect(AgentPID(text: "0") == nil)
+  #expect(AgentPID(text: "worker") == nil)
+}
+
+@Test("A brief renders through the delegation template, custom or built-in")
+func delegationPromptRendering() throws {
+  let brief = AgentTaskBrief(
+    context: "The parser lives in Sources/Parser.",
+    task: "Find every call site of parseHeader.",
+    output: "One path:line per line, no prose.")
+  let rendered = AgentDelegationPrompt.render(
+    brief, agent: "researcher", workingDirectory: "/tmp/work")
+  #expect(rendered.contains("The parser lives in Sources/Parser."))
+  #expect(rendered.contains("Find every call site of parseHeader."))
+  #expect(rendered.contains("One path:line per line, no prose."))
+  #expect(rendered.contains("researcher"))
+  #expect(rendered.contains("/tmp/work"))
+
+  // An empty context reads as a statement, not as an oversight to ask about.
+  let bare = AgentDelegationPrompt.render(
+    AgentTaskBrief(task: "Say hi"), agent: "worker", workingDirectory: "")
+  #expect(bare.contains(AgentDelegationPrompt.emptyContext))
+  #expect(bare.contains(AgentDelegationPrompt.emptyOutput))
+
+  #expect(
+    AgentDelegationPrompt.render(
+      brief, agent: "x", workingDirectory: "/", template: "Do: {{task}}")
+      == "Do: Find every call site of parseHeader.")
+  #expect(AgentDelegationPrompt.missingPlaceholder(in: "Do: {{task}}") == nil)
+  #expect(AgentDelegationPrompt.missingPlaceholder(in: "Do something") == "{{task}}")
+  #expect(AgentDelegationPrompt.missingPlaceholder(in: "  ") == nil)
+  #expect(AgentTaskBrief(arguments: ["task": .string("  ")]) == nil)
+}
+
+@Test("A delegation template without {{task}} is refused by the configuration")
+func delegationPromptValidation() throws {
+  var configuration = MaiConfiguration(
+    providers: [ConfiguredProvider(id: "p", kind: .hello)],
+    prompts: ConfiguredPrompts(delegation: "Just do it"))
+  #expect(
+    throws: MaiConfigurationError.missingPromptPlaceholder(
+      prompt: "delegation", placeholder: "{{task}}")
+  ) {
+    try configuration.validate()
+  }
+  configuration.prompts = ConfiguredPrompts(delegation: "Do {{task}}", worker: "Be brief")
+  try configuration.validate()
+  let decoded = try JSONDecoder().decode(
+    MaiConfiguration.self, from: try configuration.encoded())
+  #expect(decoded.prompts?.delegation == "Do {{task}}")
+  #expect(decoded.prompts?.worker == "Be brief")
 }
 
 @Test("Configuration loads providers, agents, secrets, and defaults")
@@ -1393,6 +1621,60 @@ private struct FixtureMCPSource: MCPToolSource {
   func close() async {}
 }
 
+/// An orchestrator that delegates one file read, and the worker that performs
+/// it. Which side is answering is decided by the tools the request carries.
+private actor DelegatingProvider: ChatProvider {
+  nonisolated let descriptor = ProviderDescriptor(
+    id: "delegating",
+    displayName: "Delegating fixture",
+    capabilities: [.nativeToolCalling])
+  private(set) var requests: [ProviderRequest] = []
+
+  func complete(
+    _ request: ProviderRequest,
+    emit: @escaping ProviderEventHandler
+  ) async throws -> ProviderResponse {
+    requests.append(request)
+    let results = request.messages.flatMap(\.toolResults)
+    let isWorker = request.tools.contains { $0.name == "read_file" }
+    if isWorker {
+      guard results.isEmpty else {
+        return ProviderResponse(
+          message: .assistant("Parser.swift holds the parser."), stopReason: .stop)
+      }
+      return ProviderResponse(
+        message: AgentMessage(
+          role: .assistant,
+          content: [
+            .toolCall(
+              ToolCall(
+                id: "read-1",
+                name: "read_file",
+                arguments: .object(["path": .string("Parser.swift")])))
+          ]),
+        stopReason: .toolCall)
+    }
+    guard results.isEmpty else {
+      return ProviderResponse(message: .assistant(results[0].text), stopReason: .stop)
+    }
+    return ProviderResponse(
+      message: AgentMessage(
+        role: .assistant,
+        content: [
+          .toolCall(
+            ToolCall(
+              id: "start-1",
+              name: AgentRuntime.agentStartToolName,
+              arguments: .object([
+                "context": .string("The user asked about Parser.swift."),
+                "task": .string("Read Parser.swift and say what it holds."),
+                "output": .string("One sentence."),
+              ])))
+        ]),
+      stopReason: .toolCall)
+  }
+}
+
 private actor LaunchedSubagentProvider: ChatProvider {
   nonisolated let descriptor = ProviderDescriptor(
     id: "launched-subagent",
@@ -1429,7 +1711,7 @@ private actor LaunchedSubagentProvider: ChatProvider {
         stopReason: .toolCall)
     }
     if command == "delegate asynchronously" {
-      let id = try #require(results[0].structuredContent?.objectValue?["id"]?.stringValue)
+      let id = try #require(results[0].structuredContent?.objectValue?["pid"]?.stringValue)
       return ProviderResponse(message: .assistant("Launched \(id)"), stopReason: .stop)
     }
     if command == "launch again" {
@@ -1447,7 +1729,7 @@ private actor LaunchedSubagentProvider: ChatProvider {
               ToolCall(
                 id: "status-1",
                 name: AgentRuntime.agentStatusToolName,
-                arguments: .object(["id": .string(id)])))
+                arguments: .object(["pid": .string(id)])))
           ]),
         stopReason: .toolCall)
     }
@@ -1460,7 +1742,7 @@ private actor LaunchedSubagentProvider: ChatProvider {
               ToolCall(
                 id: "result-1",
                 name: AgentRuntime.agentResultToolName,
-                arguments: .object(["id": .string(id)])))
+                arguments: .object(["pid": .string(id)])))
           ]),
         stopReason: .toolCall)
     }

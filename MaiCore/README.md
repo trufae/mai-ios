@@ -271,14 +271,45 @@ list non-MCP tools and child agents they are allowed to use.
 `MaiStandardToolsPlugin` provides `echo`, date/time, calculator, network, and
 workspace-scoped Files tools.
 
-Subagents are disabled by default. Set an agent's `limits.maxSubagents` above
-zero and populate `subagentNames` to expose the runtime-managed tools.
-`spawn_agent` runs one child synchronously for compatibility. `agent_launch`
-starts a child with a specific `agent` and `prompt`, returning a structured run
-`id` immediately. `agent_status` polls one id or lists the orchestrator's jobs
-without waiting, while `agent_result` waits when necessary and returns the final
-child content. Background children survive across orchestrator turns, and
-`maxSubagents` caps concurrent work; a completed child releases its slot.
+### Agents and subagents
+
+An agent definition is a saved setup — provider, model, system prompt, tool set,
+and limits — that people switch between with `/agent use ID`. Each one carries a
+`description` saying what it is for, which a delegating model also reads when it
+picks an agent for a task, and an `enabled` flag that parks a setup without
+deleting it. `/agents` lists them; `/agents describe ID TEXT` and
+`/agents enable|disable ID` maintain them. Visual mode edits the same fields on
+its Agents tab.
+
+A running instance of a definition is a process with a **pid**. `/agents tree`
+draws them, `/agents log PID` prints one agent's own transcript, and
+`/agents kill PID` stops it and everything under it. Any agent that is allowed
+subagents can start more, so the result is a tree, bounded by
+`limits.maxSubagentDepth` and `limits.maxSubagents` across the whole tree.
+A chat is one process for its whole life, so a child started in the background
+three turns ago is still addressable by the run that started it.
+
+Subagents are disabled by default: set an agent's `limits.maxSubagents` above
+zero. `agent_start` takes a three-part brief — `context`, `task`, and `output` —
+plus an optional `agent`, and waits for the answer unless `wait` is false.
+`agent_status` lists the caller's children without waiting, `agent_result`
+collects a background answer, and `agent_stop` kills a subtree. A caller may
+only address pids inside its own subtree. The retired `spawn_agent` and
+`agent_launch` names still run but are no longer offered to models.
+
+`toolDelegation` decides where an agent's tools run. `inline` is the default and
+unchanged. `subagent` hides the concrete tools and offers only the `agent_*`
+family, so every tool call happens one level down in a child whose transcript is
+discarded — the chat grows by one answer instead of by a call and a result for
+every step. `/set delegation off|subagent` toggles it and persists it on the
+agent. With no child definition named, MaiCore derives a `<agent>.worker` that
+inherits the parent's provider, model, and tools.
+
+`prompts.delegation` is the template a brief is rendered through (`{{task}}` is
+required; `{{context}}`, `{{output}}`, `{{agent}}`, and `{{cwd}}` are optional),
+and `prompts.worker` holds the derived worker's instructions. Both fall back to
+MaiCore's built-in text and are editable with `/edit delegation` and
+`/edit worker`. See `doc/agents.md` for the design behind all of this.
 
 In the `pmai` REPL, `/mcp list` shows configured servers and their live state.
 Add and connect a stdio server without editing JSON using

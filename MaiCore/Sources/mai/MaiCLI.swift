@@ -262,6 +262,11 @@ private struct VisualBridge {
 
 struct SessionProfile {
   var agentID: String
+  var displayName: String
+  /// Carried through so writing the chat's agent back to the configuration
+  /// never erases the setup's purpose or its enabled state.
+  var description: String
+  var isEnabled: Bool
   var provider: ProviderID
   var model: String
   var instructions: String
@@ -276,9 +281,13 @@ struct SessionProfile {
   var options: GenerationOptions
   var toolCallingStrategy: ToolCallingStrategy
   var useToolProxy: Bool
+  var toolDelegation: AgentToolDelegation
 
   init(definition: AgentDefinition) {
     agentID = definition.id
+    displayName = definition.displayName
+    description = definition.description
+    isEnabled = definition.isEnabled
     provider = definition.provider
     model = definition.model
     instructions = definition.instructions
@@ -293,10 +302,14 @@ struct SessionProfile {
     options = definition.options
     toolCallingStrategy = definition.toolCallingStrategy
     useToolProxy = definition.useToolProxy
+    toolDelegation = definition.toolDelegation
   }
 
   init(provider: ProviderID, model: String, instructions: String, stream: Bool) {
     agentID = "main"
+    displayName = "main"
+    description = ""
+    isEnabled = true
     self.provider = provider
     self.model = model
     self.instructions = instructions
@@ -323,11 +336,15 @@ struct SessionProfile {
     options = .init()
     toolCallingStrategy = .automatic
     useToolProxy = false
+    toolDelegation = .inline
   }
 
   var agentDefinition: AgentDefinition {
     AgentDefinition(
       id: agentID,
+      displayName: displayName,
+      description: description,
+      isEnabled: isEnabled,
       instructions: instructions,
       systemPrompt: systemPrompt,
       provider: provider,
@@ -341,7 +358,8 @@ struct SessionProfile {
       responseFormat: responseFormat,
       options: options,
       toolCallingStrategy: toolCallingStrategy,
-      useToolProxy: useToolProxy)
+      useToolProxy: useToolProxy,
+      toolDelegation: toolDelegation)
   }
 }
 
@@ -888,10 +906,12 @@ private struct MaiCLI {
         await terminal.line("Created \(configurationPath)", to: .standardError)
       }
       if let prompt = options.initialPrompt {
+        var oneShotProcess: AgentPID?
         let succeeded = await submit(
           prompt,
           session: &session,
           runtime: runtime,
+          process: &oneShotProcess,
           terminal: terminal)
         workspace.upsert(session.chat, selecting: true)
         try store.commit(&workspace)
@@ -1120,6 +1140,9 @@ private struct MaiCLI {
           environment: environment)
         catalogs.append(try await runtime.register(mcp: source))
       }
+      await runtime.configureDelegation(
+        prompt: configuration.prompts?.delegation,
+        workerInstructions: configuration.prompts?.worker)
       let knownTools = Set(await runtime.availableTools().map(\.name))
       for var agent in configuration.agents {
         agent.toolNames.formIntersection(knownTools)
@@ -1256,6 +1279,12 @@ private struct MaiCLI {
     var session = REPLSession(chat: workspace.selectedChat!)
     let editor = TerminalLineEditor(historyURL: historyURL)
     let interruptHandler = TerminalInterruptHandler()
+    // Announcing an agent's request for attention while the line editor owns
+    // the screen would corrupt it, so the check happens between prompts.
+    var announcedAttention: Set<AgentPID> = []
+    // One process per chat, not per turn: a background agent started three
+    // turns ago is still the current run's child, so it stays collectable.
+    var chatProcessIDs: [UUID: AgentPID] = [:]
     await terminal.line("pmai — MaiCore agent REPL")
     await terminal.line(
       "Project: \(project.displayName) · \(abbreviatedPath(project.workingDirectory)) · /project shows more"
@@ -1274,8 +1303,12 @@ private struct MaiCLI {
       editor.configure(ui: ui)
       await terminal.configureToolResultLines(ui.toolResultLines)
       await terminal.configureToolResultColor(ui.toolResultForeground)
+      await announceAgentAttention(
+        runtime: runtime, announced: &announcedAttention, terminal: terminal)
+      let liveAgents = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
+      let agentStatus = liveAgents.isEmpty ? "" : " · \(liveAgents.count) running"
       let promptStatus =
-        "\(project.displayName) · \(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
+        "\(project.displayName) · \(session.title) · agent: \(session.profile.agentID)\(agentStatus) · \(promptContextStatus(session))"
       guard
         let firstLine = editor.readLine(
           prompt: "pmai> ",
@@ -1373,6 +1406,7 @@ private struct MaiCLI {
         text,
         session: &session,
         runtime: runtime,
+        process: &chatProcessIDs[session.id],
         terminal: terminal,
         interruptHandler: interruptHandler)
       session.touch()
@@ -1381,10 +1415,37 @@ private struct MaiCLI {
     }
   }
 
+  /// Reports background agents that are waiting on somebody, once each. A
+  /// process that stops asking and asks again is announced again.
+  private static func announceAgentAttention(
+    runtime: AgentRuntime,
+    announced: inout Set<AgentPID>,
+    terminal: TerminalWriter
+  ) async {
+    let waiting = await runtime.supervisor.processesNeedingAttention()
+    let pids = Set(waiting.map(\.pid))
+    announced.formIntersection(pids)
+    for process in waiting where !announced.contains(process.pid) {
+      announced.insert(process.pid)
+      let verb =
+        switch process.attention {
+        case .approval: "needs approval"
+        case .input: "is waiting for you"
+        case .error: "stopped"
+        case .finished: "finished"
+        case nil: "changed"
+        }
+      await terminal.line(
+        "agent \(process.pid) (\(process.agentID)) \(verb): "
+          + "\(process.attention?.summary ?? "")  ·  /agents log \(process.pid.rawValue)")
+    }
+  }
+
   private static func submit(
     _ text: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
+    process: inout AgentPID?,
     terminal: TerminalWriter,
     interruptHandler: TerminalInterruptHandler? = nil
   ) async -> Bool {
@@ -1409,15 +1470,18 @@ private struct MaiCLI {
         limits: profile.limits,
         stream: profile.stream,
         toolCallingStrategy: profile.toolCallingStrategy,
-        useToolProxy: profile.useToolProxy)
+        useToolProxy: profile.useToolProxy,
+        toolDelegation: profile.toolDelegation)
+      let existingProcess = process
       let task = Task {
-        try await runtime.run(request) { event in
+        try await runtime.run(request, process: existingProcess) { event in
           await terminal.consume(event)
         }
       }
       interruptHandler?.activate { task.cancel() }
       defer { interruptHandler?.deactivate() }
       let result = try await task.value
+      process = await runtime.supervisor.tree().processes.first { $0.runID == result.runID }?.pid
       session.history.replaceAll(with: result.transcript)
       return true
     } catch {
@@ -1601,24 +1665,15 @@ private struct MaiCLI {
         }
       }
     case "/agents":
-      let agents: [AgentDefinition]
-      if let configured = configuration?.agents {
-        agents = configured
-      } else {
-        agents = await runtime.availableAgents()
-      }
-      if agents.isEmpty { await terminal.line("No configured agents.") }
-      for agent in agents {
-        let selected = agent.id == session.profile.agentID ? "*" : " "
-        let displayedAgent = selected == "*" ? session.profile.agentDefinition : agent
-        let baseURL =
-          visual.providerBaseURLs.url(for: displayedAgent.provider.rawValue)?.absoluteString
-          ?? configuration?.providers.first { $0.id == displayedAgent.provider.rawValue }?.baseURL?
-          .absoluteString ?? "-"
-        await terminal.line(
-          "\(selected) \(displayedAgent.id) — \(displayedAgent.displayName) [\(displayedAgent.provider) \(baseURL) \(displayedAgent.model)]"
-        )
-      }
+      await handleAgentsCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        providerBaseURLs: visual.providerBaseURLs,
+        terminal: terminal)
     case "/agent":
       await handleAgentCommand(
         argument,
@@ -2025,8 +2080,14 @@ private struct MaiCLI {
   ) async {
     let compact = configuration?.prompts?.compact?.trimmingCharacters(
       in: .whitespacesAndNewlines)
+    let delegation = configuration?.prompts?.delegation?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    let worker = configuration?.prompts?.worker?.trimmingCharacters(in: .whitespacesAndNewlines)
     var lines = [
-      "Prompts:", "  compact  compact  \(compact?.isEmpty == false ? "custom" : "built-in")",
+      "Prompts:",
+      "  compact     compact     \(compact?.isEmpty == false ? "custom" : "built-in")",
+      "  delegation  delegation  \(delegation?.isEmpty == false ? "custom" : "built-in")",
+      "  worker      delegation  \(worker?.isEmpty == false ? "custom" : "built-in")",
     ]
     let prompts = configuration?.prompts?.system ?? [:]
     for name in prompts.keys.sorted() {
@@ -2259,6 +2320,43 @@ private struct MaiCLI {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
 
+    case "delegation", "worker":
+      guard var draft = configuration, let configurationPath else {
+        await terminal.line("error: No writable configuration is active.", to: .standardError)
+        return
+      }
+      var prompts = draft.prompts ?? ConfiguredPrompts()
+      let isBrief = action == "delegation"
+      let builtIn =
+        isBrief ? AgentDelegationPrompt.template : AgentDelegationPrompt.workerInstructions
+      let previous = (isBrief ? prompts.delegation : prompts.worker) ?? builtIn
+      guard
+        let edited = await editTemporaryText(
+          previous, suffix: "\(action)-prompt.md", terminal: terminal)
+      else { return }
+      let candidate = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+      if isBrief, let missing = AgentDelegationPrompt.missingPlaceholder(in: candidate) {
+        await terminal.line(
+          "error: The delegation prompt must contain \(missing); no changes were saved.",
+          to: .standardError)
+        return
+      }
+      let custom = candidate.isEmpty || candidate == builtIn ? nil : candidate
+      if isBrief { prompts.delegation = custom } else { prompts.worker = custom }
+      draft.prompts = prompts
+      do {
+        try draft.save(to: URL(fileURLWithPath: configurationPath))
+        await runtime.configureDelegation(
+          prompt: prompts.delegation, workerInstructions: prompts.worker)
+        configuration = draft
+        await terminal.line(
+          custom == nil
+            ? "The \(action) prompt was restored to the built-in default."
+            : "The \(action) prompt was saved to \(configurationPath).")
+      } catch {
+        await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+      }
+
     case "config":
       guard let configurationPath else {
         await terminal.line("error: No writable configuration is active.", to: .standardError)
@@ -2274,11 +2372,15 @@ private struct MaiCLI {
         for agent in editedConfiguration.agents {
           try await runtime.register(agent: agent, replacingExisting: true)
         }
+        await runtime.configureDelegation(
+          prompt: editedConfiguration.prompts?.delegation,
+          workerInstructions: editedConfiguration.prompts?.worker)
         if let agent = editedConfiguration.agents.first(where: {
           $0.id == session.profile.agentID
         }) {
           session.profile.limits = agent.limits
           session.profile.toolCallingStrategy = agent.toolCallingStrategy
+          session.profile.toolDelegation = agent.toolDelegation
           session.profile.systemPrompt = agent.systemPrompt
           try applySystemInstructions(
             agent.instructions,
@@ -2518,6 +2620,224 @@ private struct MaiCLI {
       configuration = draft
       providerBaseURLs.set(baseURL, for: providerID.rawValue)
       await terminal.line("Provider '\(providerID)' base URL set to \(baseURL.absoluteString).")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  /// `/agents` covers both halves of the model: the definitions people switch
+  /// between, and the processes started from them.
+  private static func handleAgentsCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    plugins: PluginRegistry,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    providerBaseURLs: ProviderBaseURLStore,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+
+    switch action {
+    case "", "list":
+      await listAgentDefinitions(
+        session: session,
+        runtime: runtime,
+        configuration: configuration,
+        providerBaseURLs: providerBaseURLs,
+        terminal: terminal)
+      if action.isEmpty {
+        let lines = await agentTreeLines(runtime: runtime)
+        if !lines.isEmpty {
+          await terminal.line("")
+          await terminal.line(lines.joined(separator: "\n"))
+        }
+      }
+
+    case "tree", "ps":
+      let lines = await agentTreeLines(runtime: runtime)
+      await terminal.line(lines.isEmpty ? "No agents are running." : lines.joined(separator: "\n"))
+
+    case "log":
+      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents log PID")
+        return
+      }
+      let messages = await runtime.supervisor.transcript(pid)
+      guard !messages.isEmpty else {
+        let known = await runtime.supervisor.info(pid) != nil
+        await terminal.line(
+          known ? "\(pid) has not produced a transcript yet." : "No agent \(pid).")
+        return
+      }
+      var lines: [String] = []
+      for (index, message) in messages.enumerated() {
+        lines.append("## [\(index + 1)] \(message.role.rawValue.capitalized)")
+        lines.append(message.content.map { renderFullContent($0) }.joined(separator: "\n"))
+      }
+      await terminal.line(lines.joined(separator: "\n"))
+
+    case "kill", "stop":
+      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents kill PID [REASON]")
+        return
+      }
+      guard await runtime.supervisor.info(pid) != nil else {
+        await terminal.line("No agent \(pid).")
+        return
+      }
+      let reason = fields.count > 2 ? fields[2] : "Stopped from the REPL"
+      let stopped = await runtime.supervisor.stop(pid, reason: reason)
+      await terminal.line(
+        "Stopped \(stopped.map(\.description).joined(separator: ", ")).")
+
+    case "enable", "disable":
+      guard fields.count >= 2 else {
+        await terminal.line("Usage: /agents \(action) ID")
+        return
+      }
+      await setAgentEnabled(
+        fields[1],
+        enabled: action == "enable",
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "describe":
+      guard fields.count >= 2 else {
+        await terminal.line("Usage: /agents describe ID [TEXT]")
+        return
+      }
+      await describeAgent(
+        fields[1],
+        text: fields.count > 2 ? fields[2] : nil,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+
+    case "use", "show", "add":
+      await handleAgentCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        plugins: plugins,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        providerBaseURLs: providerBaseURLs.snapshot(),
+        terminal: terminal)
+
+    default:
+      await terminal.line(agentsHelp)
+    }
+  }
+
+  private static func listAgentDefinitions(
+    session: REPLSession,
+    runtime: AgentRuntime,
+    configuration: MaiConfiguration?,
+    providerBaseURLs: ProviderBaseURLStore,
+    terminal: TerminalWriter
+  ) async {
+    let agents: [AgentDefinition]
+    if let configured = configuration?.agents {
+      agents = configured
+    } else {
+      agents = await runtime.availableAgents()
+    }
+    guard !agents.isEmpty else {
+      await terminal.line("No configured agents.")
+      return
+    }
+    for agent in agents {
+      let isCurrent = agent.id == session.profile.agentID
+      let displayed = isCurrent ? session.profile.agentDefinition : agent
+      let baseURL =
+        providerBaseURLs.url(for: displayed.provider.rawValue)?.absoluteString
+        ?? configuration?.providers.first { $0.id == displayed.provider.rawValue }?.baseURL?
+        .absoluteString ?? "-"
+      let marker = isCurrent ? "*" : (displayed.isEnabled ? " " : "-")
+      var line =
+        "\(marker) \(displayed.id) — \(displayed.displayName) [\(displayed.provider) \(baseURL) \(displayed.model)]"
+      if displayed.toolDelegation.delegatesTools { line += " delegating" }
+      if !displayed.isEnabled { line += " (disabled)" }
+      await terminal.line(line)
+      if !displayed.description.isEmpty {
+        await terminal.line("    \(displayed.description)")
+      }
+    }
+  }
+
+  private static func agentTreeLines(runtime: AgentRuntime) async -> [String] {
+    let tree = await runtime.supervisor.tree()
+    guard !tree.isEmpty else { return [] }
+    return ["Running agents:"] + tree.lines()
+  }
+
+  private static func setAgentEnabled(
+    _ id: String,
+    enabled: Bool,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath,
+      let index = draft.agents.firstIndex(where: { $0.id == id })
+    else {
+      await terminal.line("Unknown agent '\(id)', or no writable configuration is active.")
+      return
+    }
+    guard enabled || draft.agents[index].id != session.profile.agentID else {
+      await terminal.line(
+        "Agent '\(id)' is the one this chat uses. Switch with /agent use ID before disabling it.")
+      return
+    }
+    draft.agents[index].isEnabled = enabled
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      try await runtime.register(agent: draft.agents[index], replacingExisting: true)
+      configuration = draft
+      await terminal.line("Agent '\(id)' \(enabled ? "enabled" : "disabled").")
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  private static func describeAgent(
+    _ id: String,
+    text: String?,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard var draft = configuration, let configurationPath,
+      let index = draft.agents.firstIndex(where: { $0.id == id })
+    else {
+      await terminal.line("Unknown agent '\(id)', or no writable configuration is active.")
+      return
+    }
+    guard let text else {
+      let existing = draft.agents[index].description
+      await terminal.line(existing.isEmpty ? "Agent '\(id)' has no description." : existing)
+      return
+    }
+    draft.agents[index].description = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      try await runtime.register(agent: draft.agents[index], replacingExisting: true)
+      if session.profile.agentID == id { session.touch() }
+      configuration = draft
+      await terminal.line("Described agent '\(id)'.")
     } catch {
       await terminal.line("error: \(error.localizedDescription)", to: .standardError)
     }
@@ -3020,6 +3340,7 @@ private struct MaiCLI {
       await terminal.line("yolo = \(enabled ? "on" : "off")")
       await listLimitSettings(session.profile.limits, terminal: terminal)
       await terminal.line("toolCallingStrategy = \(session.profile.toolCallingStrategy.rawValue)")
+      await terminal.line("delegation = \(session.profile.toolDelegation.rawValue)")
       await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
       return
     }
@@ -3038,6 +3359,16 @@ private struct MaiCLI {
         limitKey,
         parts: parts,
         session: &session,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+      return
+    }
+    if delegationSettingKeys.contains(key) {
+      await setToolDelegation(
+        parts: parts,
+        session: &session,
+        runtime: runtime,
         configuration: &configuration,
         configurationPath: configurationPath,
         terminal: terminal)
@@ -3080,7 +3411,7 @@ private struct MaiCLI {
     let countKeys = ["ui.toolresultlines"]
     guard colorKeys.contains(key) || booleanKeys.contains(key) || countKeys.contains(key) else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines"
       )
       return
     }
@@ -3155,6 +3486,11 @@ private struct MaiCLI {
     "limits.maxtoolcalls": "limits.maxToolCalls",
     "limits.maxmodelturns": "limits.maxModelTurns",
     "limits.maxsubagents": "limits.maxSubagents",
+    "limits.maxsubagentdepth": "limits.maxSubagentDepth",
+  ]
+
+  private static let delegationSettingKeys: Set<String> = [
+    "delegation", "tools.delegation", "tooldelegation", "subagents",
   ]
 
   private static let toolCallingStrategyKeys: Set<String> = [
@@ -3204,9 +3540,82 @@ private struct MaiCLI {
   }
 
   private static func listLimitSettings(_ limits: AgentRunLimits, terminal: TerminalWriter) async {
-    await terminal.line("limits.maxToolCalls = \(limits.maxToolCalls)")
-    await terminal.line("limits.maxModelTurns = \(limits.maxModelTurns)")
-    await terminal.line("limits.maxSubagents = \(limits.maxSubagents)")
+    for key in [
+      "limits.maxToolCalls", "limits.maxModelTurns", "limits.maxSubagents",
+      "limits.maxSubagentDepth",
+    ] {
+      await terminal.line("\(key) = \(limitValue(key, in: limits))")
+    }
+  }
+
+  private static func limitValue(_ key: String, in limits: AgentRunLimits) -> Int {
+    switch key {
+    case "limits.maxToolCalls": limits.maxToolCalls
+    case "limits.maxSubagents": limits.maxSubagents
+    case "limits.maxSubagentDepth": limits.maxSubagentDepth
+    default: limits.maxModelTurns
+    }
+  }
+
+  /// Moves where the current agent's tools run. Turning delegation on with no
+  /// subagent budget would silently do nothing, so it raises the budget too.
+  private static func setToolDelegation(
+    parts: [String],
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard parts.count > 1 else {
+      await terminal.line("delegation = \(session.profile.toolDelegation.rawValue)")
+      return
+    }
+    let raw = parts[1].lowercased()
+    let mode: AgentToolDelegation? =
+      switch raw {
+      case "off", "none", "self", "inline": .inline
+      case "on", "child", "subagent", "subagents": .subagent
+      default: nil
+      }
+    guard parts.count == 2, let mode else {
+      await terminal.line("Usage: /set delegation <off|subagent>")
+      return
+    }
+    session.profile.toolDelegation = mode
+    var raised = false
+    if mode == .subagent, session.profile.limits.maxSubagents < 1 {
+      session.profile.limits.maxSubagents = 1
+      raised = true
+    }
+    session.touch()
+    var notes = [
+      mode == .subagent
+        ? "Tool calls now run in a child agent; this chat keeps only their answers."
+        : "Tool calls now run in this chat."
+    ]
+    if raised { notes.append("Raised limits.maxSubagents to 1.") }
+    guard var draft = configuration, let configurationPath,
+      let index = draft.agents.firstIndex(where: { $0.id == session.profile.agentID })
+    else {
+      await terminal.line(
+        (["Set delegation = \(mode.rawValue) for this chat."] + notes).joined(separator: " "))
+      return
+    }
+    draft.agents[index].toolDelegation = mode
+    draft.agents[index].limits = session.profile.limits
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      try await runtime.register(agent: session.profile.agentDefinition, replacingExisting: true)
+      configuration = draft
+      await terminal.line(
+        (["Set delegation = \(mode.rawValue) for agent '\(session.profile.agentID)'."] + notes)
+          .joined(separator: " "))
+    } catch {
+      await terminal.line(
+        "Set delegation = \(mode.rawValue) for this chat; could not save the configuration: \(error.localizedDescription)",
+        to: .standardError)
+    }
   }
 
   /// Changes one run limit for the current chat and, when the chat uses a
@@ -3220,12 +3629,7 @@ private struct MaiCLI {
     terminal: TerminalWriter
   ) async {
     var limits = session.profile.limits
-    let current: Int
-    switch key {
-    case "limits.maxToolCalls": current = limits.maxToolCalls
-    case "limits.maxSubagents": current = limits.maxSubagents
-    default: current = limits.maxModelTurns
-    }
+    let current = limitValue(key, in: limits)
     guard parts.count > 1 else {
       await terminal.line("\(key) = \(current)")
       return
@@ -3234,21 +3638,15 @@ private struct MaiCLI {
       await terminal.line("Usage: /set \(key) N  (a non-negative integer)")
       return
     }
-    if key == "limits.maxToolCalls" {
-      limits.maxToolCalls = value
-    } else if key == "limits.maxSubagents" {
-      limits.maxSubagents = value
-    } else {
-      limits.maxModelTurns = max(1, value)
+    switch key {
+    case "limits.maxToolCalls": limits.maxToolCalls = value
+    case "limits.maxSubagents": limits.maxSubagents = value
+    case "limits.maxSubagentDepth": limits.maxSubagentDepth = value
+    default: limits.maxModelTurns = max(1, value)
     }
     session.profile.limits = limits
     session.touch()
-    let applied: Int
-    switch key {
-    case "limits.maxToolCalls": applied = limits.maxToolCalls
-    case "limits.maxSubagents": applied = limits.maxSubagents
-    default: applied = limits.maxModelTurns
-    }
+    let applied = limitValue(key, in: limits)
     guard var draft = configuration, let configurationPath,
       let index = draft.agents.firstIndex(where: { $0.id == session.profile.agentID })
     else {
@@ -3806,7 +4204,8 @@ private struct MaiCLI {
   ) -> String {
     let summaries = (try? store.loadSummaries()) ?? []
     let archived = summaries.filter(\.isArchived).count
-    let nameNote = project.hasCustomName ? "" : " (from the directory; /project name NAME renames it)"
+    let nameNote =
+      project.hasCustomName ? "" : " (from the directory; /project name NAME renames it)"
     return [
       "Name:      \(project.displayName)\(nameNote)",
       "Directory: \(project.workingDirectory)",
@@ -4724,12 +5123,14 @@ private struct MaiCLI {
       agents: [
         AgentDefinition(
           id: "hello",
+          description: "Offline smoke test; no tools and no network.",
           instructions: "Exercise the offline MaiCore provider.",
           systemPrompt: "hello",
           provider: "hello",
           model: ""),
         AgentDefinition(
           id: "main",
+          description: "General assistant with the full tool set.",
           instructions: "You are a helpful assistant. Use tools when needed.",
           systemPrompt: "main",
           provider: "openai",
@@ -4750,9 +5151,11 @@ private struct MaiCLI {
             "github",
           ],
           subagentNames: ["researcher"],
+          limits: AgentRunLimits(maxSubagents: 4),
           useToolProxy: true),
         AgentDefinition(
           id: "researcher",
+          description: "Investigates one question and answers in a few lines.",
           instructions: "Investigate the delegated task and return a concise result.",
           systemPrompt: "researcher",
           provider: "openai",
@@ -4760,11 +5163,14 @@ private struct MaiCLI {
           toolNames: [MaiCurrentTimeTool.name],
           toolGroupNames: ["datetime"]),
       ],
-      prompts: ConfiguredPrompts(system: [
-        "hello": "Exercise the offline MaiCore provider.",
-        "main": "You are a helpful assistant. Use tools when needed.",
-        "researcher": "Investigate the delegated task and return a concise result.",
-      ]),
+      prompts: ConfiguredPrompts(
+        delegation: AgentDelegationPrompt.template,
+        worker: AgentDelegationPrompt.workerInstructions,
+        system: [
+          "hello": "Exercise the offline MaiCore provider.",
+          "main": "You are a helpful assistant. Use tools when needed.",
+          "researcher": "Investigate the delegated task and return a concise result.",
+        ]),
       approvals: ConfiguredApprovals(confirm: .ask, dangerous: .ask))
   }
 
@@ -4783,6 +5189,9 @@ private struct MaiCLI {
     /set limits.           Show the tool call and model turn limits per run
     /set limits.maxToolCalls N   Tool calls allowed per run (persisted for the agent)
     /set limits.maxModelTurns N  Model turns allowed per run (persisted for the agent)
+    /set limits.maxSubagents N   Child agents allowed at once (0 disables delegation)
+    /set limits.maxSubagentDepth N  How deep the agent tree may go
+    /set delegation MODE   Run this agent's tools inline, or in a subagent
     /set ui.markdown BOOL  Render replies as styled markdown (on/off)
     /set ui.fgtoolresult COLOR  Set successful tool-result output color
     /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
@@ -4801,7 +5210,12 @@ private struct MaiCLI {
     /chat               List, switch, archive, rename, or edit this project's chats
     /project            Show, list, rename, or tint the project (the start directory)
     /edit TARGET        Edit a prompt, config, MCP list, or message in $EDITOR
-    /agents             List configured agents
+    /agents             List agent setups and the running agent tree
+    /agents tree        Show running agents as a tree of pids
+    /agents kill PID    Stop a running agent and everything it started
+    /agents log PID     Print a running or finished agent's own transcript
+    /agents enable|disable ID   Park an agent setup without deleting it
+    /agents describe ID TEXT    Set the purpose a model reads when picking agents
     /agent [use] ID     Set the current chat's primary agent
     /agent add ...      Persist a reusable agent and OpenAI-compatible endpoint
     /tools              List logical tool groups for the current agent
@@ -4887,14 +5301,38 @@ private struct MaiCLI {
     /edit prompt [NAME]      Edit/create a named system prompt (current when omitted)
     /edit NAME               Edit an existing named system prompt
     /edit compact            Edit the global chat-compaction prompt template
+    /edit delegation         Edit the brief template child agents receive
+    /edit worker             Edit the instructions of the derived worker agent
     /edit config             Edit the active configuration file
     /edit mcps               Edit the configured MCP server list as JSON
     /edit N|MESSAGE_ID       Edit conversation message N or its full message ID
 
-    The compact template must contain {{transcript}}; {{focus}} is optional.
+    The compact template must contain {{transcript}}; {{focus}} is optional. The
+    delegation template must contain {{task}}; {{context}}, {{output}}, {{agent}},
+    and {{cwd}} are optional.
     Clearing it restores the built-in default. Uses $EDITOR, then $VISUAL, then
     vim. Agent limits and tool-calling strategy apply immediately; provider,
     plugin, tool, and MCP changes require a restart.
+    """
+
+  private static let agentsHelp = """
+    Agent commands. A definition is a saved setup — provider, model, system
+    prompt, tools, and limits — that you switch between; a process is one run
+    started from a definition, addressed by its pid.
+
+      /agents                    List definitions, then the running process tree
+      /agents list               Definitions only
+      /agents tree               The running process tree only
+      /agents use ID             Switch this chat to a definition
+      /agents show [ID]          Show one definition in full
+      /agents describe ID TEXT   Set the one-line purpose a model reads to pick it
+      /agents enable|disable ID  Park a definition without deleting it
+      /agents log PID            Print a running or finished agent's own transcript
+      /agents kill PID [REASON]  Stop an agent and everything it started
+
+    Where tools run is per definition: /set delegation subagent moves them into
+    a child so this chat keeps only the answers. /set limits.maxSubagents and
+    /set limits.maxSubagentDepth bound the tree.
     """
 
   private static let toolHelp = """
