@@ -399,10 +399,12 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public var background: String
   public var promptForeground: String
   public var promptBackground: String
+  /// Foreground color used for successful tool-result previews in the text REPL.
+  public var toolResultForeground: String
   public var bold: Bool
   /// Render assistant replies as styled markdown in the REPL and visual mode.
   public var markdown: Bool
-  /// Number of leading tool-result lines printed by the text REPL. Zero hides the preview.
+  /// Number of leading tool-result lines printed by the text REPL. Negative shows all.
   public var toolResultLines: Int
 
   public init(
@@ -411,18 +413,20 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     background: String = "",
     promptForeground: String = "yellow",
     promptBackground: String = "",
+    toolResultForeground: String = "yellow",
     bold: Bool = false,
     markdown: Bool = true,
-    toolResultLines: Int = 3
+    toolResultLines: Int = -1
   ) {
     self.backgroundLine = backgroundLine
     self.foreground = foreground
     self.background = background
     self.promptForeground = promptForeground
     self.promptBackground = promptBackground
+    self.toolResultForeground = toolResultForeground
     self.bold = bold
     self.markdown = markdown
-    self.toolResultLines = max(0, toolResultLines)
+    self.toolResultLines = max(-1, toolResultLines)
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -431,6 +435,7 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
     case background = "bgcolor"
     case promptForeground = "fgprompt"
     case promptBackground = "bgprompt"
+    case toolResultForeground = "fgtoolresult"
     case bold
     case markdown
     case toolResultLines
@@ -439,15 +444,18 @@ public struct ConfiguredTerminalUI: Codable, Equatable, Sendable {
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
-      backgroundLine: try container.decodeIfPresent(String.self, forKey: .backgroundLine) ?? "rgb:024",
+      backgroundLine: try container.decodeIfPresent(String.self, forKey: .backgroundLine)
+        ?? "rgb:024",
       foreground: try container.decodeIfPresent(String.self, forKey: .foreground) ?? "",
       background: try container.decodeIfPresent(String.self, forKey: .background) ?? "",
       promptForeground: try container.decodeIfPresent(String.self, forKey: .promptForeground)
         ?? "yellow",
       promptBackground: try container.decodeIfPresent(String.self, forKey: .promptBackground) ?? "",
+      toolResultForeground: try container.decodeIfPresent(
+        String.self, forKey: .toolResultForeground) ?? "yellow",
       bold: try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false,
       markdown: try container.decodeIfPresent(Bool.self, forKey: .markdown) ?? true,
-      toolResultLines: try container.decodeIfPresent(Int.self, forKey: .toolResultLines) ?? 3)
+      toolResultLines: try container.decodeIfPresent(Int.self, forKey: .toolResultLines) ?? -1)
   }
 }
 

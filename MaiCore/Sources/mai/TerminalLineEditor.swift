@@ -206,7 +206,7 @@ final class TerminalLineEditor {
     let visibleInput = String(decoding: bytes[visibleRange], as: UTF8.self)
     let promptStyle = style(foreground: ui.promptForeground, background: ui.promptBackground)
     let inputStyle = style(foreground: ui.foreground, background: ui.background, bold: ui.bold)
-    let hasInputBackground = colorCode(ui.background, background: true) != nil
+    let hasInputBackground = Self.colorCode(ui.background, background: true) != nil
     let paddingWidth = hasInputBackground ? max(0, inputWidth - displayWidth(visibleInput)) : 0
     let padding = String(repeating: " ", count: paddingWidth)
     write(
@@ -226,7 +226,7 @@ final class TerminalLineEditor {
   }
 
   private func drawSeparator(_ text: String?) {
-    guard let background = colorCode(ui.backgroundLine, background: true) else { return }
+    guard let background = Self.colorCode(ui.backgroundLine, background: true) else { return }
     let width = max(1, Self.terminalColumns() - 1)
     let content = truncatedPrompt(text.map { " \($0) " } ?? "", maximumWidth: width)
     let padding = String(repeating: " ", count: max(0, width - displayWidth(content)))
@@ -239,12 +239,12 @@ final class TerminalLineEditor {
   private func style(foreground: String, background: String, bold: Bool = false) -> String {
     var codes: [String] = []
     if bold { codes.append("1") }
-    if let foreground = colorCode(foreground, background: false) { codes.append(foreground) }
-    if let background = colorCode(background, background: true) { codes.append(background) }
+    if let foreground = Self.colorCode(foreground, background: false) { codes.append(foreground) }
+    if let background = Self.colorCode(background, background: true) { codes.append(background) }
     return codes.isEmpty ? "" : "\u{1B}[" + codes.joined(separator: ";") + "m"
   }
 
-  private func colorCode(_ rawValue: String, background: Bool) -> String? {
+  private static func colorCode(_ rawValue: String, background: Bool) -> String? {
     let value = rawValue.lowercased()
     if value.hasPrefix("rgb:"), value.count == 7 {
       let hex = String(value.dropFirst(4))
@@ -279,8 +279,11 @@ final class TerminalLineEditor {
   static func normalizedColor(_ rawValue: String) -> String? {
     let value = rawValue.lowercased()
     if ["none", "default", "off", "-"].contains(value) { return "" }
-    let editor = TerminalLineEditor()
-    return editor.colorCode(value, background: false) == nil ? nil : value
+    return colorCode(value, background: false) == nil ? nil : value
+  }
+
+  static func foregroundColorCode(_ value: String) -> String? {
+    colorCode(value, background: false)
   }
 
   static func terminalColumns() -> Int {

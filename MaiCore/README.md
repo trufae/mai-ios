@@ -46,7 +46,9 @@ Use `/chat list` for a compact indexed history or `/chat log` for the complete
 structured transcript, including attachments, reasoning, tool calls, tool
 results, and structured MCP output. The current in-memory conversation can be
 changed at any point with `/chat edit N TEXT`, `/chat remove N`, `/chat undo
-[N]`, `/chat trim N`, and `/chat clear`. Trimming keeps messages through `N`;
+[N]`, `/chat trim N`, `/chat compact [FOCUS]`, and `/chat clear`. Compaction
+accepts optional guidance describing the information the summary should
+prioritize. Trimming keeps messages through `N`;
 linked tool-call transactions are kept structurally valid when removing or
 trimming messages.
 
@@ -157,12 +159,14 @@ configured provider, change **Base URL**, and choose **Update**.
 Each prompt is preceded by a colored separator so prompts remain easy to find
 in terminal scrollback. Long input scrolls horizontally and is printed in full
 when submitted. `/set ui.` lists the persisted terminal styling options;
-`ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, and `ui.bgcolor` accept
-named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold` and `ui.markdown`
-accept `on` or `off`. `ui.toolResultLines` controls how many leading lines of
-each tool result are shown in the terminal (default `3`; `0` restores the
-compact status-only display). Tool lifecycle messages are green, with failed
-results shown in red. `/set limits.` shows the per-run limits of the current
+`ui.bgline`, `ui.fgprompt`, `ui.bgprompt`, `ui.fgcolor`, `ui.bgcolor`, and
+`ui.fgtoolresult` accept named ANSI colors, `rgb:RGB`, or `none`, while `ui.bold`
+and `ui.markdown` accept `on` or `off`. `ui.toolResultLines` accepts `all` or a
+line count (the default is `all`; `0` restores the compact status-only display).
+Successful tool results are yellow by default, tool starts remain green, and
+failed results are red. Unified diff removals and additions, including output
+from `files_patch`, use dark red and dark green backgrounds. `/set limits.`
+shows the per-run limits of the current
 chat's agent; `/set limits.maxToolCalls N` and `/set limits.maxModelTurns N`
 change them and persist the change into that agent's configuration. The
 `--max-tool-calls N` and `--max-turns N` flags override both for one launch.

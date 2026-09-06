@@ -178,11 +178,10 @@ package enum ToolResultPreview {
   package static func render(
     _ result: ToolResult,
     maxLines: Int,
-    maxLineLength: Int = 240
+    maxLineLength: Int = .max
   ) -> String {
     let compactHeading = "← tool \(result.isError ? "error" : "done")"
-    let maximumLines = max(0, maxLines)
-    guard maximumLines > 0 else { return compactHeading }
+    guard maxLines != 0 else { return compactHeading }
     var text = result.text
     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       let structured = result.structuredContent
@@ -192,13 +191,14 @@ package enum ToolResultPreview {
     text = text.trimmingCharacters(in: .newlines)
     guard !text.isEmpty else { return compactHeading }
     let lines = text.components(separatedBy: .newlines)
+    let shownCount = maxLines < 0 ? lines.count : min(lines.count, maxLines)
     var output = ["← tool \(result.isError ? "error" : "result")"]
     output.append(
-      contentsOf: lines.prefix(maximumLines).map {
+      contentsOf: lines.prefix(shownCount).map {
         "  \(safeLine($0, maximumLength: max(1, maxLineLength)))"
       })
-    if lines.count > maximumLines {
-      let remaining = lines.count - maximumLines
+    if lines.count > shownCount {
+      let remaining = lines.count - shownCount
       output.append("  … \(remaining) more line\(remaining == 1 ? "" : "s")")
     }
     return output.joined(separator: "\n")

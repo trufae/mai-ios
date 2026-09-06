@@ -30,6 +30,7 @@ func configurationSaveRoundTrip() throws {
       backgroundLine: "magenta",
       foreground: "bright-white",
       promptForeground: "cyan",
+      toolResultForeground: "bright-yellow",
       bold: true,
       toolResultLines: 7))
 

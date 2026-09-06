@@ -437,6 +437,7 @@ private actor TerminalWriter {
   private var markdown: MarkdownTerminalRenderer?
   private var outputEndedLine = true
   private var toolResultLines = ConfiguredTerminalUI().toolResultLines
+  private var toolResultColor = ConfiguredTerminalUI().toolResultForeground
   private let colorsStatus: Bool
 
   init(capturesOutput: Bool = false) {
@@ -459,7 +460,11 @@ private actor TerminalWriter {
   }
 
   func configureToolResultLines(_ count: Int) {
-    toolResultLines = max(0, count)
+    toolResultLines = max(-1, count)
+  }
+
+  func configureToolResultColor(_ color: String) {
+    toolResultColor = color
   }
 
   var markdownRenderer: MarkdownTerminalRenderer? { markdown }
@@ -493,11 +498,11 @@ private actor TerminalWriter {
     case .toolStarted(let context, let call) where context.depth == 0:
       finishReply()
       closeRootLine()
-      status("→ tool \(call.name) \(call.arguments.compactJSONString)", color: 32)
+      status("→ tool \(call.name) \(call.arguments.compactJSONString)", color: "green")
     case .toolFinished(let context, let result) where context.depth == 0:
       status(
         ToolResultPreview.render(result, maxLines: toolResultLines),
-        color: result.isError ? 31 : 32)
+        color: result.isError ? "red" : toolResultColor)
     case .childStarted(_, let child):
       finishReply()
       closeRootLine()
@@ -557,7 +562,7 @@ private actor TerminalWriter {
     FileHandle.standardOutput.write(Data(value.utf8))
   }
 
-  private func status(_ value: String, color: Int? = nil) {
+  private func status(_ value: String, color: String? = nil) {
     if capturesOutput {
       captured.append(value + "\n")
       return
@@ -578,8 +583,10 @@ private actor TerminalWriter {
         if hasUnifiedDiff, marker.hasPrefix("+") && !marker.hasPrefix("+++ ") {
           return "\u{1B}[38;2;217;247;227;48;2;22;58;36m\(line)\u{1B}[0m"
         }
-        guard let color else { return line }
-        return "\u{1B}[\(color)m\(line)\u{1B}[0m"
+        guard let color, let code = TerminalLineEditor.foregroundColorCode(color) else {
+          return line
+        }
+        return "\u{1B}[\(code)m\(line)\u{1B}[0m"
       }.joined(separator: "\n")
     } else {
       output = value
@@ -826,6 +833,8 @@ private struct MaiCLI {
           environment: environment))
       await terminal.configureToolResultLines(
         configuration?.ui.toolResultLines ?? ConfiguredTerminalUI().toolResultLines)
+      await terminal.configureToolResultColor(
+        configuration?.ui.toolResultForeground ?? ConfiguredTerminalUI().toolResultForeground)
 
       if let path = loaded?.path {
         await terminal.line("Loaded \(path)", to: .standardError)
@@ -1154,6 +1163,7 @@ private struct MaiCLI {
       let ui = configuration?.ui ?? .init()
       editor.configure(ui: ui)
       await terminal.configureToolResultLines(ui.toolResultLines)
+      await terminal.configureToolResultColor(ui.toolResultForeground)
       let promptStatus =
         "\(session.title) · agent: \(session.profile.agentID) · \(promptContextStatus(session))"
       guard
@@ -2715,12 +2725,15 @@ private struct MaiCLI {
       return
     }
 
-    let colorKeys = ["ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt"]
+    let colorKeys = [
+      "ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt",
+      "ui.fgtoolresult",
+    ]
     let booleanKeys = ["ui.bold", "ui.markdown"]
     let countKeys = ["ui.toolresultlines"]
     guard colorKeys.contains(key) || booleanKeys.contains(key) || countKeys.contains(key) else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.bold, ui.markdown, ui.toolResultLines"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines"
       )
       return
     }
@@ -2734,8 +2747,13 @@ private struct MaiCLI {
       return
     }
     if countKeys.contains(key) {
-      guard let value = Int(parts[1]), value >= 0 else {
-        await terminal.line("Usage: /set ui.toolResultLines N  (a non-negative integer)")
+      let value: Int
+      if parts[1].lowercased() == "all" {
+        value = -1
+      } else if let count = Int(parts[1]), count >= 0 {
+        value = count
+      } else {
+        await terminal.line("Usage: /set ui.toolResultLines <all|N>")
         return
       }
       ui.toolResultLines = value
@@ -2765,6 +2783,9 @@ private struct MaiCLI {
       case "ui.bgcolor": ui.background = color
       case "ui.fgprompt": ui.promptForeground = color
       case "ui.bgprompt": ui.promptBackground = color
+      case "ui.fgtoolresult":
+        ui.toolResultForeground = color
+        await terminal.configureToolResultColor(color)
       default: break
       }
     }
@@ -2902,7 +2923,7 @@ private struct MaiCLI {
   private static func listUISettings(_ ui: ConfiguredTerminalUI, terminal: TerminalWriter) async {
     for key in [
       "ui.bgline", "ui.fgcolor", "ui.bgcolor", "ui.fgprompt", "ui.bgprompt", "ui.bold",
-      "ui.markdown", "ui.toolResultLines",
+      "ui.fgtoolresult", "ui.markdown", "ui.toolResultLines",
     ] {
       await terminal.line("\(key) = \(uiSetting(key, in: ui))")
     }
@@ -2916,9 +2937,10 @@ private struct MaiCLI {
     case "ui.bgcolor": value = ui.background
     case "ui.fgprompt": value = ui.promptForeground
     case "ui.bgprompt": value = ui.promptBackground
+    case "ui.fgtoolresult": value = ui.toolResultForeground
     case "ui.bold": return ui.bold ? "on" : "off"
     case "ui.markdown": return ui.markdown ? "on" : "off"
-    case "ui.toolresultlines": return String(ui.toolResultLines)
+    case "ui.toolresultlines": return ui.toolResultLines < 0 ? "all" : String(ui.toolResultLines)
     default: return "-"
     }
     return value.isEmpty ? "none" : value
@@ -3419,6 +3441,8 @@ private struct MaiCLI {
       await terminal.line(chatHelp)
       return
     }
+    let actionArgument = String(argument.dropFirst(parts[0].count))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
 
     switch action {
     case "list":
@@ -3480,7 +3504,8 @@ private struct MaiCLI {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
     case "compact":
-      await compactChat(session: &session, runtime: runtime, terminal: terminal)
+      await compactChat(
+        focus: actionArgument, session: &session, runtime: runtime, terminal: terminal)
     case "clear":
       session.reset()
       await terminal.line("Conversation cleared.")
@@ -3510,6 +3535,7 @@ private struct MaiCLI {
   /// durable summary, then replace the transcript while retaining the active
   /// agent's system instructions.
   private static func compactChat(
+    focus: String,
     session: inout REPLSession,
     runtime: AgentRuntime,
     terminal: TerminalWriter
@@ -3525,6 +3551,19 @@ private struct MaiCLI {
       return
     }
 
+    let focusInstructions =
+      focus.isEmpty
+      ? ""
+      : """
+
+      The user supplied this focus for compaction:
+
+      <compaction-focus>
+      \(focus)
+      </compaction-focus>
+
+      Prioritize context relevant to that focus while retaining essential state needed to continue the work.
+      """
     let prompt = """
       Compact the transcript below into durable context for continuing the same chat.
 
@@ -3536,6 +3575,7 @@ private struct MaiCLI {
       - Current state, unresolved questions, and next steps
 
       Drop greetings, filler, repeated text, tool protocol blocks, and implementation details that no longer matter. Write concise bullets grouped by topic when useful.
+      \(focusInstructions)
 
       Transcript:
 
@@ -3835,14 +3875,15 @@ private struct MaiCLI {
       "/set toolCallingStrategy json",
       "/set ui.bgline rgb:024", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
+      "/set ui.fgtoolresult yellow",
       "/set ui.bold on", "/set ui.bold off", "/set ui.markdown on", "/set ui.markdown off",
-      "/set ui.toolResultLines ",
+      "/set ui.toolResultLines all", "/set ui.toolResultLines ",
       "/cwd", "/pwd", "/cd ", "/plugins",
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/agents",
       "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
       "/mcp add ", "/mcp enable ", "/mcp disable ",
-      "/edit prompt", "/edit config", "/edit mcps", "/chat compact",
+      "/edit prompt", "/edit config", "/edit mcps", "/chat compact ",
       "/image tiny ", "/image small ", "/image medium ", "/image big ", "/image full ",
       "/image ocr ", "/attach ", "/attach clear", "/copy", "/clear", "/chat list",
       "/chat list active", "/chat list archived", "/chat list all", "/chat new ",
@@ -4051,7 +4092,8 @@ private struct MaiCLI {
     /set limits.maxToolCalls N   Tool calls allowed per run (persisted for the agent)
     /set limits.maxModelTurns N  Model turns allowed per run (persisted for the agent)
     /set ui.markdown BOOL  Render replies as styled markdown (on/off)
-    /set ui.toolResultLines N  Show the first N lines of each tool result (0 hides them)
+    /set ui.fgtoolresult COLOR  Set successful tool-result output color
+    /set ui.toolResultLines <all|N>  Show all or the first N result lines (0 hides them)
     /cwd                  Print the current working directory
     /cd PATH              Change the current working directory
     /set ui.               List terminal UI settings
@@ -4101,7 +4143,7 @@ private struct MaiCLI {
       /chat remove N      Remove message N
       /chat undo [N]      Remove the last conversation message or message N
       /chat trim N        Keep through message N and remove everything after it
-      /chat compact        Replace the chat with a model-generated context summary
+      /chat compact [FOCUS]  Summarize the chat, prioritizing what FOCUS says to preserve
       /chat clear         Clear the conversation and restore configured instructions
 
     Removing a tool call or result also removes its linked tool transaction.

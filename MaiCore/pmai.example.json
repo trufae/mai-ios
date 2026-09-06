@@ -171,9 +171,10 @@
     "fgcolor": "",
     "bgcolor": "",
     "bgprompt": "",
+    "fgtoolresult": "yellow",
     "bold": false,
     "markdown": true,
-    "toolResultLines": 3
+    "toolResultLines": -1
   },
   "approvals": {
     "confirm": "ask",

@@ -113,6 +113,11 @@ func toolResultPreview() {
     ToolResultPreview.render(result, maxLines: 2, maxLineLength: 12)
       == "← tool result\n  first line\n  second [31m …\n  … 2 more lines")
   #expect(ToolResultPreview.render(result, maxLines: 0) == "← tool done")
+  let longLine = String(repeating: "x", count: 300)
+  #expect(
+    ToolResultPreview.render(
+      ToolResult(callID: "complete", text: "one\ntwo\n\(longLine)"), maxLines: -1)
+      == "← tool result\n  one\n  two\n  \(longLine)")
   #expect(
     ToolResultPreview.render(
       ToolResult(
@@ -1083,7 +1088,8 @@ func configurationLoading() async throws {
   #expect(configuration.agents[0].toolCallingStrategy == .json)
   #expect(configuration.agents[0].useToolProxy)
   #expect(configuration.agents[0].options.maxOutputTokens == 100)
-  #expect(configuration.ui.toolResultLines == 3)
+  #expect(configuration.ui.toolResultForeground == "yellow")
+  #expect(configuration.ui.toolResultLines == -1)
   let plugins = PluginRegistry()
   try await plugins.install(MaiOpenAIPlugin())
   let provider = try await plugins.makeProvider(
