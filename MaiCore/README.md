@@ -273,7 +273,8 @@ same markdown inside its panes.
 Up/Down or `Ctrl+P`/`Ctrl+N` move through input history. `Ctrl+R` starts an
 incremental reverse search; type to narrow it, press `Ctrl+R` again for an older
 match, Return to submit it, or `Ctrl+G` to restore the original input. `Ctrl+A`
-and `Ctrl+E` move to the beginning and end, `Ctrl+W` deletes the previous word,
+and `Ctrl+E` move to the beginning and end, `Ctrl+B` and `Ctrl+F` move one
+character left and right like the arrow keys, `Ctrl+W` deletes the previous word,
 and `Ctrl+C` cancels the active model or tool run without leaving the REPL.
 `Ctrl+Z` suspends pmai with the terminal restored; run `fg` in the shell to
 resume the same input or active run.

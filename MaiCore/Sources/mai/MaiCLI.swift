@@ -6301,6 +6301,7 @@ struct MaiCLI {
     Input: <<WORD starts a multiline message ending at WORD alone
            !COMMAND runs a line in the system shell (interactive programs work)
            Up/Down or Ctrl+P/N history · Ctrl+R reverse search · Ctrl+A/E beginning/end
+           Ctrl+B/F move left/right like the arrow keys
            Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
            The prompt stays open while a turn runs: a message typed then is queued and
            joins the conversation at the next model turn. @PID TEXT reaches one agent.

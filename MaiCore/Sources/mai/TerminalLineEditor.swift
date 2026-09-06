@@ -180,6 +180,9 @@ final class TerminalLineEditor {
       case 1:  // Ctrl+A
         cursor = 0
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+      case 2:  // Ctrl+B, like Left
+        cursor = previousCharacterStart(in: bytes, before: cursor)
+        redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 3:  // Ctrl+C
         wasInterrupted = true
         surface?.cancelInput()
@@ -191,6 +194,9 @@ final class TerminalLineEditor {
         }
       case 5:  // Ctrl+E
         cursor = bytes.count
+        redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+      case 6:  // Ctrl+F, like Right
+        cursor = nextCharacterEnd(in: bytes, after: cursor)
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
       case 9:  // Tab
         complete(
@@ -375,9 +381,15 @@ final class TerminalLineEditor {
       case 1:  // Ctrl+A accepts the match and moves to its beginning.
         let selection = reverseSearchSelection(state, original: original)
         return .accepted(line: selection, historyIndex: state.matchIndex, cursor: 0)
+      case 2:  // Ctrl+B accepts the match one character from its end, like Left.
+        let selection = reverseSearchSelection(state, original: original)
+        return .accepted(
+          line: selection,
+          historyIndex: state.matchIndex,
+          cursor: previousCharacterStart(in: selection, before: selection.count))
       case 3:  // Ctrl+C cancels the whole input.
         return .interrupted
-      case 5:  // Ctrl+E accepts the match and moves to its end.
+      case 5, 6:  // Ctrl+E and Ctrl+F accept the match and move to its end.
         let selection = reverseSearchSelection(state, original: original)
         return .accepted(
           line: selection,
