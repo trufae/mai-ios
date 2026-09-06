@@ -3,7 +3,7 @@ import Foundation
 /// A durable chat transcript associated with one primary agent definition.
 /// Providers remain normalized in `MaiConfiguration`; the agent's provider ID
 /// resolves the endpoint, credentials, and provider-specific options.
-public struct AgentChat: Codable, Equatable, Identifiable, Sendable {
+public struct AgentChat: StoredChat, Equatable {
   /// Title given to a chat that has not received its first message yet. A chat
   /// keeping this title with no conversation is disposable, like the placeholder
   /// PocketMai creates on launch.
@@ -310,22 +310,20 @@ public struct AgentChatWorkspace: Codable, Equatable, Sendable {
   }
 
   public static func precedes(_ lhs: AgentChat, _ rhs: AgentChat) -> Bool {
-    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-    return lhs.createdAt > rhs.createdAt
+    AgentChat.precedes(lhs, rhs)
   }
 
   /// Reads a single-file workspace, the layout pmai used before per-project
   /// chat directories. Every chat counts as modified so a store can adopt it.
   public static func load(from url: URL) throws -> AgentChatWorkspace {
-    try JSONDecoder().decode(AgentChatWorkspace.self, from: Data(contentsOf: url))
+    try MaiJSONCoding.default.makeDecoder().decode(
+      AgentChatWorkspace.self, from: Data(contentsOf: url))
   }
 
   public func save(to url: URL) throws {
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(),
       withIntermediateDirectories: true)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(self).write(to: url, options: .atomic)
+    try MaiJSONCoding.default.makeEncoder().encode(self).write(to: url, options: .atomic)
   }
 }

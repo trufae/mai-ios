@@ -1,7 +1,7 @@
 import Foundation
 
 /// A listing entry read from a chat file without materializing its transcript.
-public struct AgentChatSummary: Decodable, Equatable, Identifiable, Sendable {
+public struct AgentChatSummary: ChatRecord, Decodable, Equatable, Sendable {
   public var id: UUID
   public var title: String
   public var agentID: String
@@ -76,62 +76,27 @@ public struct AgentChatSummary: Decodable, Equatable, Identifiable, Sendable {
       isKept: isArchived)
   }
 
-  /// The sidebar order: active chats newest first, then archived ones.
-  public static func precedes(_ lhs: AgentChatSummary, _ rhs: AgentChatSummary) -> Bool {
-    if lhs.isArchived != rhs.isArchived { return !lhs.isArchived }
+  private static func newestFirst(_ lhs: AgentChatSummary, _ rhs: AgentChatSummary) -> Bool {
     if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
     return lhs.createdAt > rhs.createdAt
   }
+
+  /// The sidebar order: active chats newest first, then archived ones.
+  public static func precedes(_ lhs: AgentChatSummary, _ rhs: AgentChatSummary) -> Bool {
+    if lhs.isArchived != rhs.isArchived { return !lhs.isArchived }
+    return newestFirst(lhs, rhs)
+  }
 }
 
-/// Persists one project's chats as one JSON file per chat inside a directory,
-/// so hosts can list them cheaply and load a transcript only when it is opened.
-///
-/// Disposable chats never reach disk: a placeholder nobody used has no file,
-/// and a chat that becomes disposable again loses its file on the next commit.
-/// Whatever way a host exits, an empty chat is therefore neither saved nor
-/// listed. Files that fail to decode are skipped, not deleted.
-public struct AgentChatStore: Sendable {
-  public static let fileExtension = "json"
+/// The file store for MaiCore's own chat shape: one `AgentChat` per file.
+public typealias AgentChatStore = ChatFileStore<AgentChat>
 
-  public let directoryURL: URL
-
-  public init(directoryURL: URL) {
-    self.directoryURL = directoryURL
-  }
-
-  public func fileURL(for id: UUID) -> URL {
-    directoryURL.appendingPathComponent("\(id.uuidString).\(Self.fileExtension)")
-  }
-
-  /// IDs of every chat file present, whatever their contents.
-  public func chatIDs() throws -> [UUID] {
-    guard FileManager.default.fileExists(atPath: directoryURL.path) else { return [] }
-    return try FileManager.default.contentsOfDirectory(
-      at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-    )
-    .filter { $0.pathExtension == Self.fileExtension }
-    .compactMap { UUID(uuidString: $0.deletingPathExtension().lastPathComponent) }
-    .sorted { $0.uuidString < $1.uuidString }
-  }
-
-  public func loadChat(id: UUID) throws -> AgentChat? {
-    let url = fileURL(for: id)
-    guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-    return try Self.decoder.decode(AgentChat.self, from: Data(contentsOf: url))
-  }
-
-  /// Every readable, non-disposable chat. Unreadable files are reported to
-  /// `onFailure` and left in place.
-  public func loadChats(onFailure: ((URL, any Error) -> Void)? = nil) throws -> [AgentChat] {
-    try load(AgentChat.self, onFailure: onFailure).filter { !$0.isDisposable }
-  }
-
+extension ChatFileStore where Chat == AgentChat {
   /// Listing entries for every readable, non-disposable chat in sidebar order.
   public func loadSummaries(
-    onFailure: ((URL, any Error) -> Void)? = nil
+    onFailure: ((ChatFileStoreError) -> Void)? = nil
   ) throws -> [AgentChatSummary] {
-    try load(AgentChatSummary.self, onFailure: onFailure)
+    try loadRecords(AgentChatSummary.self, onFailure: onFailure)
       .filter { !$0.isDisposable }
       .sorted(by: AgentChatSummary.precedes)
   }
@@ -140,7 +105,7 @@ public struct AgentChatStore: Sendable {
   /// `commit` writes only what the host changes.
   public func loadWorkspace(
     selecting selectedChatID: UUID? = nil,
-    onFailure: ((URL, any Error) -> Void)? = nil
+    onFailure: ((ChatFileStoreError) -> Void)? = nil
   ) throws -> AgentChatWorkspace {
     var workspace = AgentChatWorkspace(
       chats: try loadChats(onFailure: onFailure), selectedChatID: selectedChatID)
@@ -148,62 +113,22 @@ public struct AgentChatStore: Sendable {
     return workspace
   }
 
-  /// Writes the chat, or removes its file when it is disposable. Answers
-  /// whether a file now exists for it.
-  @discardableResult
-  public func save(_ chat: AgentChat) throws -> Bool {
-    guard !chat.isDisposable else {
-      try delete(id: chat.id)
-      return false
-    }
-    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-    try Self.encoder.encode(chat).write(to: fileURL(for: chat.id), options: .atomic)
-    return true
-  }
-
-  @discardableResult
-  public func delete(id: UUID) throws -> Bool {
-    let url = fileURL(for: id)
-    guard FileManager.default.fileExists(atPath: url.path) else { return false }
-    try FileManager.default.removeItem(at: url)
-    return true
-  }
-
-  /// Writes the chats the workspace changed, deletes the ones it removed, and
-  /// clears its change tracking.
+  /// Writes the chats the workspace changed, deletes the ones it removed or
+  /// that became disposable while in it, and clears its change tracking. The
+  /// workspace is the source of truth here, unlike a plain `save`.
   public func commit(_ workspace: inout AgentChatWorkspace) throws {
     for id in workspace.removedChatIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
       try delete(id: id)
     }
     for chat in workspace.chats where workspace.modifiedChatIDs.contains(chat.id) {
-      try save(chat)
+      if chat.isDisposable {
+        try delete(id: chat.id)
+      } else {
+        try save(chat)
+      }
     }
     workspace.markCommitted()
   }
-
-  private func load<Value: Decodable>(
-    _ type: Value.Type,
-    onFailure: ((URL, any Error) -> Void)?
-  ) throws -> [Value] {
-    var values: [Value] = []
-    for id in try chatIDs() {
-      let url = fileURL(for: id)
-      do {
-        values.append(try Self.decoder.decode(Value.self, from: Data(contentsOf: url)))
-      } catch {
-        onFailure?(url, error)
-      }
-    }
-    return values
-  }
-
-  private static var encoder: JSONEncoder {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    return encoder
-  }
-
-  private static var decoder: JSONDecoder { JSONDecoder() }
 }
 
 /// The per-user root that outlives any one project: the index of every project
@@ -335,9 +260,7 @@ public struct AgentHome: Sendable {
     let url = projectFileURL(for: project)
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(project).write(to: url, options: .atomic)
+    try MaiJSONCoding.default.makeEncoder().encode(project).write(to: url, options: .atomic)
     var index = try loadProjectIndex()
     index.upsert(project)
     try saveProjectIndex(index)
@@ -353,6 +276,6 @@ public struct AgentHome: Sendable {
   }
 
   private static func decodeProject(at url: URL) throws -> AgentProject {
-    try JSONDecoder().decode(AgentProject.self, from: Data(contentsOf: url))
+    try MaiJSONCoding.default.makeDecoder().decode(AgentProject.self, from: Data(contentsOf: url))
   }
 }

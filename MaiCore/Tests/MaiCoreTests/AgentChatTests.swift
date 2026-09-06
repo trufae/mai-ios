@@ -30,8 +30,11 @@ func agentChatPrimaryAgent() {
 
 @Test("Chat workspaces switch, update, remove, and persist chats")
 func agentChatWorkspaceRoundTrip() throws {
-  let first = AgentChat(title: "First", primaryAgent: chatAgent)
-  let second = AgentChat(title: "Second", primaryAgent: chatAgent)
+  // Files keep millisecond precision, so round-trip checks use aligned dates.
+  let base = Date(timeIntervalSince1970: 1_700_000_000.25)
+  let first = AgentChat(title: "First", primaryAgent: chatAgent, createdAt: base, updatedAt: base)
+  let second = AgentChat(
+    title: "Second", primaryAgent: chatAgent, createdAt: base + 1, updatedAt: base + 1)
   var workspace = AgentChatWorkspace(chats: [first, second], selectedChatID: first.id)
 
   let selected = workspace.selectChat(id: second.id)

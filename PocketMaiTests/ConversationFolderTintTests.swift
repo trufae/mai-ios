@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 import XCTest
 
 @testable import PocketMai
@@ -47,6 +48,22 @@ final class ConversationFolderTintTests: XCTestCase {
       decoded.map(\.name),
       ["Legacy folder", "Unknown tint", "System is not an override"])
     XCTAssertTrue(decoded.allSatisfy { $0.tint == nil })
+  }
+
+  func testFolderTintsRoundTripThroughTheSharedProjectTint() throws {
+    XCTAssertEqual(
+      Set(AgentProjectTint.presetNames),
+      Set(ConversationFolderTint.presetOptions.map(\.rawIdentifier)),
+      "PocketMai and pmai must offer the same preset colors")
+    for tint in ConversationFolderTint.presetOptions + [.custom("#1A2B3C")] {
+      let shared = try XCTUnwrap(tint.projectTint)
+      XCTAssertEqual(ConversationFolderTint(projectTint: shared), tint)
+      XCTAssertEqual(ConversationFolderTint(rawIdentifier: shared.storageIdentifier), tint)
+    }
+    XCTAssertEqual(ConversationFolderTint(rawIdentifier: "custom:#1A2B3C"), .custom("#1A2B3C"))
+    XCTAssertEqual(ConversationFolderTint(rawIdentifier: "#1a2b3c"), .custom("#1A2B3C"))
+    XCTAssertEqual(ConversationFolderTint.custom("#1A2B3C").rawIdentifier, "custom:#1A2B3C")
+    XCTAssertNil(ConversationFolderTint(rawIdentifier: "system"))
   }
 
   func testSettingsNormalizationKeepsFolderTint() {

@@ -9,6 +9,9 @@ private let storeAgent = AgentDefinition(
   provider: "endpoint",
   model: "model-a")
 
+/// Chat files keep millisecond precision, so round-trip checks use aligned dates.
+private let storeEpoch = Date(timeIntervalSince1970: 1_700_000_000.5)
+
 private func scratchDirectory(_ name: String) -> URL {
   FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
     .appendingPathComponent("maicore-\(name)-\(UUID().uuidString)", isDirectory: true)
@@ -35,7 +38,7 @@ func sharedDisposableRule() {
 @Test("Chat stores never write disposable chats and drop their stale files")
 func chatStoreSkipsDisposableChats() throws {
   let store = AgentChatStore(directoryURL: scratchDirectory("store"))
-  let placeholder = AgentChat(primaryAgent: storeAgent)
+  let placeholder = AgentChat(primaryAgent: storeAgent, createdAt: storeEpoch, updatedAt: storeEpoch)
   #expect(try store.save(placeholder) == false)
   #expect(!FileManager.default.fileExists(atPath: store.fileURL(for: placeholder.id).path))
   #expect(try store.chatIDs().isEmpty)
@@ -47,19 +50,47 @@ func chatStoreSkipsDisposableChats() throws {
   #expect(try store.chatIDs() == [used.id])
   #expect(try store.loadChat(id: used.id) == used)
 
-  // Clearing the transcript makes it disposable again, so the file goes away.
-  used.resetTranscript()
-  used.title = AgentChat.placeholderTitle
-  #expect(try store.save(used) == false)
+  // Clearing the transcript makes it disposable again: saving refuses, but the
+  // existing file is left alone until a host deletes it on purpose.
+  var cleared = used
+  cleared.resetTranscript()
+  cleared.touch(at: storeEpoch + 2)
+  cleared.title = AgentChat.placeholderTitle
+  #expect(try store.save(cleared) == false)
+  #expect(try store.chatIDs() == [used.id])
+  #expect(try store.loadChat(id: used.id) == used)
+  #expect(try store.save(cleared, evenIfDisposable: true))
+  #expect(try store.loadChat(id: used.id) == cleared)
+  #expect(try store.delete(id: used.id))
   #expect(try store.chatIDs().isEmpty)
   #expect(try store.loadChat(id: used.id) == nil)
+  #expect(try store.delete(id: used.id) == false)
+}
+
+@Test("Committing a workspace deletes the file of a chat that became disposable")
+func chatStoreCommitDropsDisposable() throws {
+  let store = AgentChatStore(directoryURL: scratchDirectory("commit-disposable"))
+  var workspace = AgentChatWorkspace()
+  var chat = workspace.startNewChat(primaryAgent: storeAgent)
+  chat.messages.append(.user("kept for a while"))
+  chat.refreshTitle(from: "kept for a while")
+  workspace.upsert(chat)
+  try store.commit(&workspace)
+  #expect(try store.chatIDs() == [chat.id])
+
+  chat.resetTranscript()
+  chat.title = AgentChat.placeholderTitle
+  workspace.upsert(chat)
+  try store.commit(&workspace)
+  #expect(try store.chatIDs().isEmpty)
+  #expect(workspace.chats.count == 1, "the placeholder stays in memory")
 }
 
 @Test("Committing a workspace writes changed chats and deletes removed ones")
 func chatStoreCommitTracksChanges() throws {
   let store = AgentChatStore(directoryURL: scratchDirectory("commit"))
   var workspace = AgentChatWorkspace()
-  let first = workspace.startNewChat(primaryAgent: storeAgent)
+  let first = workspace.startNewChat(primaryAgent: storeAgent, at: storeEpoch)
   try store.commit(&workspace)
   #expect(try store.chatIDs().isEmpty, "a fresh placeholder has no file")
   #expect(!workspace.hasUncommittedChanges)
@@ -72,7 +103,7 @@ func chatStoreCommitTracksChanges() throws {
   try store.commit(&workspace)
   #expect(try store.chatIDs() == [chat.id])
 
-  let second = workspace.startNewChat(primaryAgent: storeAgent)
+  let second = workspace.startNewChat(primaryAgent: storeAgent, at: storeEpoch + 1)
   var named = second
   named.title = "Kept"
   workspace.upsert(named)
@@ -113,7 +144,7 @@ func chatStoreSummaries() throws {
   try Data("not json".utf8).write(to: store.fileURL(for: UUID()))
 
   var failures: [URL] = []
-  let summaries = try store.loadSummaries { url, _ in failures.append(url) }
+  let summaries = try store.loadSummaries { failures.append($0.url) }
   #expect(failures.count == 1)
   #expect(try store.chatIDs().count == 4, "the two placeholders were never written")
   #expect(summaries.map(\.title) == ["Newer", "Older", "Archived"])
@@ -125,6 +156,73 @@ func chatStoreSummaries() throws {
   #expect(summaries.allSatisfy { !$0.isDisposable && !$0.hasPendingContent })
   #expect(try store.loadChats().count == 3)
   #expect(try store.loadChat(id: queued.id) == nil)
+}
+
+@Test("Stores follow PocketMai's file conventions: ISO dates, quarantine, restore")
+func chatStoreConventions() throws {
+  let store = AgentChatStore(directoryURL: scratchDirectory("conventions"))
+  let chat = AgentChat(
+    title: "Dated", primaryAgent: storeAgent, messages: [.user("hi")],
+    createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+    updatedAt: Date(timeIntervalSince1970: 1_700_000_100))
+  try store.save(chat)
+  let text = String(decoding: try Data(contentsOf: store.fileURL(for: chat.id)), as: UTF8.self)
+  #expect(text.contains("\"createdAt\" : \"2023-11-14T22:13:20.000Z\""))
+  #expect(try store.loadChat(id: chat.id) == chat)
+
+  // Numeric dates written by earlier MaiCore builds, and plain ISO dates as
+  // PocketMai writes them, still decode.
+  let numeric = text.replacingOccurrences(
+    of: "\"2023-11-14T22:13:20.000Z\"", with: "\(chat.createdAt.timeIntervalSinceReferenceDate)")
+  try Data(numeric.utf8).write(to: store.fileURL(for: chat.id))
+  #expect(try store.loadChat(id: chat.id)?.createdAt == chat.createdAt)
+  let plain = text.replacingOccurrences(of: "\"2023-11-14T22:13:20.000Z\"", with: "\"2023-11-14T22:13:20Z\"")
+  try Data(plain.utf8).write(to: store.fileURL(for: chat.id))
+  #expect(try store.loadChat(id: chat.id)?.createdAt == chat.createdAt)
+  try Data(text.utf8).write(to: store.fileURL(for: chat.id))
+
+  // A file that is not a chat is quarantined beside the live ones, bytes intact.
+  let badID = UUID()
+  let bad = Data("{\"validJSON\":true}".utf8)
+  try bad.write(to: store.fileURL(for: badID))
+  var reported: [ChatFileStoreError] = []
+  #expect(try store.loadChats { reported.append($0) }.count == 1)
+  guard case .undecodable(let badURL, _)? = reported.first else {
+    Issue.record("expected an undecodable report")
+    return
+  }
+  let quarantined = try #require(store.quarantine(fileAt: badURL))
+  #expect(quarantined.lastPathComponent == "\(badID.uuidString).json.corrupt")
+  #expect(try Data(contentsOf: quarantined) == bad)
+  #expect(store.quarantinedFileURLs().map(\.lastPathComponent) == [quarantined.lastPathComponent])
+  #expect(try store.chatIDs() == [chat.id])
+  #expect(store.quarantine(fileAt: badURL) == nil, "nothing left to move")
+  try bad.write(to: store.fileURL(for: badID))
+  #expect(
+    store.quarantine(fileAt: badURL)?.lastPathComponent == "\(badID.uuidString)-2.json.corrupt")
+
+  // A quarantined file that decodes again goes back among the live chats.
+  let recoverable = store.fileURL(for: chat.id).appendingPathExtension("corrupt")
+  try store.delete(id: chat.id)
+  try Data(text.utf8).write(to: recoverable)
+  #expect(try store.restoreQuarantinedFile(at: recoverable) == chat)
+  #expect(try store.chatIDs() == [chat.id])
+  try Data(text.utf8).write(to: recoverable)
+  #expect(throws: ChatFileStoreError.self) { try store.restoreQuarantinedFile(at: recoverable) }
+}
+
+@Test("Newest-wins merging keeps one record per id in first-seen order")
+func newestRecordWins() {
+  let base = Date(timeIntervalSince1970: 3_000_000)
+  let id = UUID()
+  let stale = AgentChat(
+    id: id, title: "Stale", primaryAgent: storeAgent, createdAt: base, updatedAt: base)
+  let fresh = AgentChat(
+    id: id, title: "Fresh", primaryAgent: storeAgent, createdAt: base, updatedAt: base + 5)
+  let other = AgentChat(title: "Other", primaryAgent: storeAgent, createdAt: base, updatedAt: base)
+  let merged = AgentChat.newest(of: [stale, other, fresh])
+  #expect(merged.map(\.title) == ["Fresh", "Other"])
+  #expect(AgentChat.precedes(fresh, other))
 }
 
 @Test("Legacy single-file workspaces import into a store")
@@ -153,8 +251,13 @@ func projectTints() throws {
   #expect(AgentProjectTint(rawValue: "#12345") == nil)
   #expect(AgentProjectTint(rawValue: "mint")?.displayName == "Mint")
 
-  let encoded = try JSONEncoder().encode([AgentProjectTint(rawValue: "teal")!])
-  #expect(String(decoding: encoded, as: UTF8.self) == "[\"teal\"]")
+  let encoded = try JSONEncoder().encode([
+    AgentProjectTint(rawValue: "teal")!, AgentProjectTint(rawValue: "#ff8800")!,
+  ])
+  #expect(String(decoding: encoded, as: UTF8.self) == "[\"teal\",\"custom:#FF8800\"]")
+  #expect(
+    try JSONDecoder().decode([AgentProjectTint].self, from: encoded).map(\.rawValue)
+      == ["teal", "#FF8800"])
   #expect(throws: DecodingError.self) {
     try JSONDecoder().decode(AgentProjectTint.self, from: Data("\"nope\"".utf8))
   }

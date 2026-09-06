@@ -4392,11 +4392,9 @@ private struct MaiCLI {
     modelOverride: String?,
     options: CLIOptions
   ) throws -> AgentChatWorkspace {
-    var workspace = try store.loadWorkspace { url, error in
+    var workspace = try store.loadWorkspace { error in
       FileHandle.standardError.write(
-        Data(
-          "warning: skipped unreadable chat \(url.lastPathComponent): \(error.localizedDescription)\n"
-            .utf8))
+        Data("warning: skipped a chat file. \(error.localizedDescription)\n".utf8))
     }
     synchronizeConfiguredAgentSettings(in: &workspace, agents: configuredAgents)
     let overridesLimits =

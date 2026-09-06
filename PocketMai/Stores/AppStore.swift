@@ -1532,7 +1532,7 @@ final class AppStore: ObservableObject {
 
   private func savedConversationTitle(_ rawTitle: String) -> String {
     let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "New chat" : trimmed
+    return trimmed.isEmpty ? AgentChat.placeholderTitle : trimmed
   }
 
   func setCurrentConversationLanguageOverride(_ identifier: String?) {
@@ -1702,7 +1702,7 @@ final class AppStore: ObservableObject {
     clearStreamingText(for: removedMessages)
     conversations[currentIndex].messages.removeAll()
     removeBookmarks(for: removedMessages, in: conversationID)
-    conversations[currentIndex].title = "New chat"
+    conversations[currentIndex].title = AgentChat.placeholderTitle
     conversations[currentIndex].updatedAt = Date()
     upsertSummary(for: conversations[currentIndex])
     saveConversations()
@@ -1866,8 +1866,8 @@ final class AppStore: ObservableObject {
     let now = Date()
     let copyTitle: String = {
       let trimmed = conversation.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-      if trimmed.isEmpty || trimmed == "New chat" {
-        return "New chat (Copy)"
+      if AgentChat.isPlaceholderTitle(trimmed) {
+        return "\(AgentChat.placeholderTitle) (Copy)"
       }
       return "\(trimmed) (Copy)"
     }()
@@ -4059,13 +4059,27 @@ final class AppStore: ObservableObject {
   }
 
   func saveConversations() {
+    let retained = retainedPlaceholderConversationIDs()
     guard hasLoadedPersistedConversations else {
       pendingConversationSave = true
       dirtyConversationIDsBeforeLoad.formUnion(conversations.map(\.id))
-      persistence.saveLoadedConversations(conversations, summaries: conversationSummaries)
+      persistence.saveLoadedConversations(
+        conversations, summaries: conversationSummaries, retaining: retained)
       return
     }
-    persistence.saveConversations(conversations)
+    persistence.saveConversations(conversations, retaining: retained)
+  }
+
+  /// Placeholders worth a file even though nothing was said yet: a draft is
+  /// waiting in them, or a reply is on its way. The store drops every other
+  /// untouched placeholder, as pmai does.
+  private func retainedPlaceholderConversationIDs() -> Set<UUID> {
+    var ids = respondingConversationIDs
+    for (id, draft) in conversationDrafts
+    where !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      ids.insert(id)
+    }
+    return ids
   }
 
   private func saveBookmarks() {
@@ -4347,16 +4361,13 @@ final class AppStore: ObservableObject {
 
   /// Applies the rule shared with pmai through MaiCore: an untouched
   /// placeholder is dropped instead of being saved or listed. An unsent draft
-  /// is the app's own reason to hold on to one.
+  /// or a reply in flight is the app's own reason to hold on to one.
   private func isDisposableNewConversation(_ conversation: Conversation) -> Bool {
     let hasDraft = !conversationDrafts[conversation.id, default: ""]
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     return !hasDraft
-      && AgentChat.isDisposable(
-        title: conversation.title,
-        hasConversation: !conversation.messages.isEmpty,
-        isBusy: respondingConversationIDs.contains(conversation.id),
-        isKept: conversation.isPinned)
+      && !respondingConversationIDs.contains(conversation.id)
+      && conversation.isDisposable
   }
 
   private func createInitialConversationIfNeeded() {

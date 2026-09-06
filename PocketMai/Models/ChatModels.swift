@@ -196,21 +196,45 @@ enum AppearanceTint: String, Codable, CaseIterable, Identifiable, Sendable {
 
 /// Accent color a conversation folder can use instead of the app tint.
 /// A folder without a tint keeps whatever accent the app is configured with.
+///
+/// The stored form, parsing, and hex normalization are MaiCore's
+/// `AgentProjectTint`, which pmai projects use too, so a folder color reads
+/// the same everywhere and files written by any earlier app version decode.
 enum ConversationFolderTint: Codable, Equatable, Hashable, Identifiable, Sendable {
   case preset(AppearanceTint)
   case custom(String)
 
-  static let customPrefix = "custom:"
+  static let customPrefix = AgentProjectTint.customPrefix
 
   static let presetOptions: [ConversationFolderTint] =
     AppearanceTint.allCases.filter { $0 != .system }.map { ConversationFolderTint.preset($0) }
 
   var id: String { rawIdentifier }
 
-  var rawIdentifier: String {
+  /// The shared MaiCore tint this folder color corresponds to.
+  var projectTint: AgentProjectTint? {
     switch self {
-    case .preset(let tint): tint.rawValue
-    case .custom(let hex): "\(Self.customPrefix)\(hex)"
+    case .preset(let tint): AgentProjectTint(rawValue: tint.rawValue)
+    case .custom(let hex): AgentProjectTint(rawValue: hex)
+    }
+  }
+
+  init?(projectTint: AgentProjectTint) {
+    if projectTint.isPreset {
+      guard let preset = AppearanceTint(rawValue: projectTint.rawValue), preset != .system else {
+        return nil
+      }
+      self = .preset(preset)
+    } else {
+      self = .custom(projectTint.rawValue)
+    }
+  }
+
+  var rawIdentifier: String {
+    if let projectTint { return projectTint.storageIdentifier }
+    switch self {
+    case .preset(let tint): return tint.rawValue
+    case .custom(let hex): return "\(Self.customPrefix)\(hex)"
     }
   }
 
@@ -229,33 +253,13 @@ enum ConversationFolderTint: Codable, Equatable, Hashable, Identifiable, Sendabl
   }
 
   init?(rawIdentifier: String) {
-    let trimmed = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    if trimmed.hasPrefix(Self.customPrefix) {
-      guard let hex = Self.normalizedHex(String(trimmed.dropFirst(Self.customPrefix.count)))
-      else {
-        return nil
-      }
-      self = .custom(hex)
-      return
-    }
-    guard let tint = AppearanceTint(rawValue: trimmed.lowercased()), tint != .system else {
-      return nil
-    }
-    self = .preset(tint)
+    guard let projectTint = AgentProjectTint(rawValue: rawIdentifier) else { return nil }
+    self.init(projectTint: projectTint)
   }
 
   /// Accepts `#RGB`, `RGB`, `#RRGGBB` and `RRGGBB`, always answering `#RRGGBB`.
   static func normalizedHex(_ raw: String) -> String? {
-    var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    if value.hasPrefix("#") {
-      value.removeFirst()
-    }
-    if value.count == 3 {
-      value = value.map { "\($0)\($0)" }.joined()
-    }
-    guard value.count == 6, value.allSatisfy({ $0.isHexDigit }) else { return nil }
-    return "#\(value)"
+    AgentProjectTint.normalizedHex(raw)
   }
 
   init(from decoder: Decoder) throws {
@@ -1469,7 +1473,8 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
   }
 
   var displayTitle: String {
-    title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New chat" : title
+    title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? AgentChat.placeholderTitle : title
   }
 
   var displayPreview: String {
@@ -1565,7 +1570,7 @@ struct ConversationSummary: Identifiable, Codable, Equatable, Sendable {
 
 struct Conversation: Identifiable, Codable, Equatable, Sendable {
   var id: UUID = UUID()
-  var title: String = "New chat"
+  var title: String = AgentChat.placeholderTitle
   var messages: [ChatMessage] = []
   var createdAt: Date = Date()
   var updatedAt: Date = Date()
@@ -1705,7 +1710,8 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
   }
 
   var displayTitle: String {
-    title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New chat" : title
+    title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? AgentChat.placeholderTitle : title
   }
 
   static func normalizedFolderID(_ id: String?, legacyIsArchived: Bool = false) -> String {
@@ -1716,14 +1722,10 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     return legacyIsArchived ? ConversationFolder.archivedID : ConversationFolder.defaultID
   }
 
+  /// Names a placeholder after its first message, the way pmai does.
   mutating func refreshTitle(from message: String) {
-    guard title == "New chat" || title.isEmpty else { return }
-    let compact = message.replacingOccurrences(of: "\n", with: " ")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    title = String(compact.prefix(48))
-    if title.isEmpty {
-      title = "New chat"
-    }
+    guard AgentChat.isPlaceholderTitle(title) else { return }
+    title = AgentChat.derivedTitle(from: message) ?? AgentChat.placeholderTitle
   }
 
   var effectiveLanguageOverrideIdentifier: String? {
@@ -1734,6 +1736,22 @@ struct Conversation: Identifiable, Codable, Equatable, Sendable {
     SystemLanguageSupport.normalizedLanguageIdentifier(identifier)
   }
 }
+
+/// Conversations are stored through MaiCore's `ChatFileStore`, sharing the
+/// file layout and the placeholder rule with pmai.
+extension Conversation: StoredChat {
+  /// An untouched placeholder nobody pinned earns no file. The app keeps a
+  /// placeholder alive on its own when a draft or a reply is pending.
+  var isDisposable: Bool {
+    AgentChat.isDisposable(
+      title: title,
+      hasConversation: !messages.isEmpty,
+      isBusy: false,
+      isKept: isPinned)
+  }
+}
+
+extension ConversationSummary: ChatRecord {}
 
 extension ConversationSettings {
   func applyingLanguageOverride(from conversation: Conversation?) -> ConversationSettings {

@@ -1,4 +1,5 @@
 import Foundation
+import MaiCore
 import MaiDocuments
 
 struct PersistedConversations: Codable {
@@ -36,6 +37,10 @@ private struct PersistedBookmarks: Codable {
   var bookmarks: [MessageBookmark]
 }
 
+/// One place conversations live: the device or iCloud. The conversation files
+/// themselves are managed by MaiCore's `ChatFileStore`, which follows the
+/// layout PocketMai has always used, one `<id>.json` per conversation inside
+/// `conversations/`. The index and recent caches beside them are the app's own.
 private struct ConversationStorageURLs {
   var baseURL: URL
 
@@ -53,6 +58,15 @@ private struct ConversationStorageURLs {
 
   var recentConversationsCacheURL: URL {
     conversationsDirectoryURL.appendingPathComponent("recent.json")
+  }
+
+  var store: ChatFileStore<Conversation> {
+    ChatFileStore(
+      directoryURL: conversationsDirectoryURL, coding: PersistenceStore.conversationCoding)
+  }
+
+  func conversationFilename(for id: UUID) -> String {
+    store.fileURL(for: id).lastPathComponent
   }
 }
 
@@ -81,6 +95,16 @@ struct CorruptedConversationDeletionResult: Sendable {
 }
 
 final class PersistenceStore: @unchecked Sendable {
+  /// Exactly what the app has always written: compact JSON with ISO 8601
+  /// dates. Reading is shared with MaiCore and also accepts numeric dates.
+  static let conversationCoding = MaiJSONCoding(
+    makeEncoder: { PersistenceStore.makeEncoder() },
+    makeDecoder: {
+      let decoder = JSONDecoder()
+      decoder.dateDecodingStrategy = .custom(MaiJSONCoding.decodeFlexibleDate)
+      return decoder
+    })
+
   private let fileManager: FileManager
   private let localBaseURL: URL
   private let iCloudFallbackBaseURL: URL
@@ -162,15 +186,15 @@ final class PersistenceStore: @unchecked Sendable {
     prepareForAccess()
     var conversations = loadConversations(from: localStorageURLs)
     conversations.append(contentsOf: loadConversations(from: iCloudStorageURLs()))
-    conversations = Self.mergedConversations(conversations)
+    conversations = Conversation.newest(of: conversations)
     seedPersistedSnapshot(conversations)
     return conversations
   }
 
   func loadConversationSummaries() -> [ConversationSummary] {
     prepareForAccess()
-    let summaries = Self.mergedSummaries(
-      loadConversationSummaries(from: localStorageURLs)
+    let summaries = ConversationSummary.newest(
+      of: loadConversationSummaries(from: localStorageURLs)
         + loadConversationSummaries(from: iCloudStorageURLs()))
     Self.persistLaunchConversationCache(summaries, to: launchConversationCacheURL)
     return summaries
@@ -181,8 +205,8 @@ final class PersistenceStore: @unchecked Sendable {
   ) -> [ConversationSummary] {
     prepareForAccess()
     return ConversationSummary.mostRecent(
-      Self.mergedSummaries(
-        loadRecentConversationSummaries(from: localStorageURLs, limit: limit)
+      ConversationSummary.newest(
+        of: loadRecentConversationSummaries(from: localStorageURLs, limit: limit)
           + loadRecentConversationSummaries(
             from: iCloudStorageURLs(migrateFallback: false),
             limit: limit)),
@@ -209,12 +233,7 @@ final class PersistenceStore: @unchecked Sendable {
       loadConversation(id: id, from: localStorageURLs),
       loadConversation(id: id, from: iCloudStorageURLs()),
     ].compactMap { $0 }
-    return candidates.max { lhs, rhs in
-      if lhs.updatedAt != rhs.updatedAt {
-        return lhs.updatedAt < rhs.updatedAt
-      }
-      return lhs.createdAt < rhs.createdAt
-    }
+    return Conversation.newest(of: candidates).first
   }
 
   func loadBookmarks() -> [MessageBookmark] {
@@ -293,9 +312,7 @@ final class PersistenceStore: @unchecked Sendable {
       for storage in candidates
       where seen.insert(storage.baseURL.standardizedFileURL).inserted {
         for id in ids {
-          let url = Self.conversationFileURL(
-            for: id, in: storage.conversationsDirectoryURL)
-          try? self.fileManager.removeItem(at: url)
+          _ = try? storage.store.delete(id: id)
         }
       }
       self.persistedConversationsByID = self.persistedConversationsByID.filter {
@@ -357,12 +374,11 @@ final class PersistenceStore: @unchecked Sendable {
     }
 
     let legacyConversations = loadLegacyConversations(from: storage)
-    let conversations = Self.mergedConversations(
-      legacyConversations + loadUnindexedConversations(from: storage))
+    let conversations = Conversation.newest(
+      of: legacyConversations + loadUnindexedConversations(from: storage))
     if !conversations.isEmpty {
-      let persisted = Self.persistConversations(
+      let persisted = persistConversations(
         conversations,
-        ids: conversations.map(\.id),
         summaries: conversations.map(ConversationSummary.init),
         storage: storage,
         writeIndex: true)
@@ -380,16 +396,15 @@ final class PersistenceStore: @unchecked Sendable {
       let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
     else {
       if fileManager.fileExists(atPath: storage.conversationsIndexURL.path) {
-        _ = quarantineConversationFile(at: storage.conversationsIndexURL)
+        _ = quarantineConversationFile(at: storage.conversationsIndexURL, in: storage)
       }
       let legacyConversations = loadLegacyConversations(from: storage)
-      let conversations = Self.mergedConversations(
-        legacyConversations + loadUnindexedConversations(from: storage))
+      let conversations = Conversation.newest(
+        of: legacyConversations + loadUnindexedConversations(from: storage))
       guard !conversations.isEmpty else { return [] }
       let summaries = conversations.map(ConversationSummary.init)
-      let persisted = Self.persistConversations(
+      let persisted = persistConversations(
         conversations,
-        ids: conversations.map(\.id),
         summaries: summaries,
         storage: storage,
         writeIndex: true)
@@ -402,13 +417,12 @@ final class PersistenceStore: @unchecked Sendable {
       let byID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
       let ordered = index.ids.compactMap { byID[$0] }
       let unindexed = loadUnindexedConversations(from: storage, excluding: Set(index.ids))
-      let validated = Self.mergedSummaries(
-        validatedConversationSummaries(ordered, in: storage)
+      let validated = ConversationSummary.newest(
+        of: validatedConversationSummaries(ordered, in: storage)
           + unindexed.map(ConversationSummary.init))
       if validated.count != ordered.count || !unindexed.isEmpty {
-        _ = Self.persistConversations(
+        _ = persistConversations(
           unindexed,
-          ids: validated.map(\.id),
           summaries: validated,
           storage: storage,
           writeIndex: true)
@@ -430,23 +444,25 @@ final class PersistenceStore: @unchecked Sendable {
       return []
     }
     let summaries = cache.entries.compactMap { entry -> ConversationSummary? in
-      let expectedFilename = Self.conversationFilename(for: entry.summary.id)
-      guard entry.filename == expectedFilename else { return nil }
-      let url = storage.conversationsDirectoryURL.appendingPathComponent(entry.filename)
-      guard fileManager.fileExists(atPath: url.path) else { return nil }
+      guard entry.filename == storage.conversationFilename(for: entry.summary.id),
+        storage.store.fileExists(for: entry.summary.id)
+      else { return nil }
       return entry.summary
     }
     return ConversationSummary.mostRecent(summaries, limit: limit)
   }
 
+  /// Reads one conversation file. A file that no longer decodes is quarantined
+  /// with its bytes intact; a missing or unreadable file answers nil.
   private func loadConversation(id: UUID, from storage: ConversationStorageURLs) -> Conversation? {
-    let url = Self.conversationFileURL(for: id, in: storage.conversationsDirectoryURL)
-    guard let data = try? Data(contentsOf: url) else { return nil }
-    guard let conversation = try? makeDecoder().decode(Conversation.self, from: data) else {
-      _ = quarantineConversationFile(at: url)
+    do {
+      return try storage.store.loadChat(id: id)
+    } catch ChatFileStoreError.undecodable(let url, _) {
+      _ = quarantineConversationFile(at: url, in: storage)
+      return nil
+    } catch {
       return nil
     }
-    return conversation
   }
 
   private struct CorruptedConversationStorage {
@@ -490,25 +506,12 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  /// Quarantined files beside the conversations, plus quarantined legacy
+  /// documents at the store root such as `conversations.json.corrupt`.
   private func corruptedConversationFileURLs(in storage: ConversationStorageURLs) -> [URL] {
-    var files =
-      ((try? fileManager.contentsOfDirectory(
-        at: storage.conversationsDirectoryURL,
-        includingPropertiesForKeys: nil,
-        options: [.skipsHiddenFiles])) ?? [])
-      .filter {
-        $0.pathExtension == "corrupt" && $0.deletingPathExtension().pathExtension == "json"
-      }
-    let legacyFiles =
-      ((try? fileManager.contentsOfDirectory(
-        at: storage.baseURL,
-        includingPropertiesForKeys: nil,
-        options: [.skipsHiddenFiles])) ?? [])
-      .filter {
-        $0.pathExtension == "corrupt" && $0.deletingPathExtension().pathExtension == "json"
-      }
-    files.append(contentsOf: legacyFiles)
-    return files.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    (storage.store.quarantinedFileURLs()
+      + ChatFileStore<Conversation>.quarantinedFileURLs(in: storage.baseURL))
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
   }
 
   private static func renderCorruptedConversationData(_ data: Data) -> (
@@ -527,47 +530,23 @@ final class PersistenceStore: @unchecked Sendable {
     return (data.base64EncodedString(options: [.lineLength76Characters]), false)
   }
 
-  private func quarantineConversationFile(at source: URL) -> URL? {
+  private func quarantineConversationFile(
+    at source: URL,
+    in storage: ConversationStorageURLs
+  ) -> URL? {
     quarantineLock.lock()
     defer { quarantineLock.unlock() }
-    guard fileManager.fileExists(atPath: source.path) else { return nil }
-
-    let directory = source.deletingLastPathComponent()
-    let stem = source.deletingPathExtension().lastPathComponent
-    var destination = source.appendingPathExtension("corrupt")
-    var suffix = 2
-    while fileManager.fileExists(atPath: destination.path) {
-      destination = directory.appendingPathComponent("\(stem)-\(suffix).json.corrupt")
-      suffix += 1
-    }
-    do {
-      try fileManager.moveItem(at: source, to: destination)
-      return destination
-    } catch {
-      return nil
-    }
+    return storage.store.quarantine(fileAt: source)
   }
 
   private func recoverCorruptedConversations(in storage: ConversationStorageURLs) -> [Conversation]
   {
-    let decoder = makeDecoder()
     var moved: [(source: URL, destination: URL, conversation: Conversation)] = []
-
     for source in corruptedConversationFileURLs(in: storage) {
-      guard let data = try? Data(contentsOf: source),
-        let conversation = try? decoder.decode(Conversation.self, from: data)
-      else {
+      guard let conversation = try? storage.store.restoreQuarantinedFile(at: source) else {
         continue
       }
-      let destination = Self.conversationFileURL(
-        for: conversation.id, in: storage.conversationsDirectoryURL)
-      guard !fileManager.fileExists(atPath: destination.path) else { continue }
-      do {
-        try fileManager.moveItem(at: source, to: destination)
-        moved.append((source, destination, conversation))
-      } catch {
-        continue
-      }
+      moved.append((source, storage.store.fileURL(for: conversation.id), conversation))
     }
 
     guard !moved.isEmpty else { return [] }
@@ -587,13 +566,12 @@ final class PersistenceStore: @unchecked Sendable {
     guard let data = try? Data(contentsOf: storage.conversationsIndexURL),
       let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
     else {
-      let conversations = Self.mergedConversations(
-        loadLegacyConversations(from: storage)
+      let conversations = Conversation.newest(
+        of: loadLegacyConversations(from: storage)
           + loadUnindexedConversations(from: storage)
           + recovered)
-      return Self.persistConversations(
+      return persistConversations(
         conversations,
-        ids: conversations.map(\.id),
         summaries: conversations.map(ConversationSummary.init),
         storage: storage,
         writeIndex: true)
@@ -623,30 +601,15 @@ final class PersistenceStore: @unchecked Sendable {
       storage: storage)
   }
 
+  /// Conversation files the index does not know about, such as files another
+  /// device synced in or a previous build wrote without indexing.
   private func loadUnindexedConversations(
     from storage: ConversationStorageURLs,
     excluding indexedIDs: Set<UUID> = []
   ) -> [Conversation] {
-    let indexedFilenames = Set(indexedIDs.map(Self.conversationFilename(for:)))
-    return
-      ((try? fileManager.contentsOfDirectory(
-        at: storage.conversationsDirectoryURL,
-        includingPropertiesForKeys: nil,
-        options: [.skipsHiddenFiles])) ?? [])
-      .filter {
-        $0.pathExtension == "json"
-          && $0.lastPathComponent != storage.conversationsIndexURL.lastPathComponent
-          && $0.lastPathComponent != storage.recentConversationsCacheURL.lastPathComponent
-          && !indexedFilenames.contains($0.lastPathComponent)
-      }
-      .compactMap { url in
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let conversation = try? makeDecoder().decode(Conversation.self, from: data) else {
-          _ = quarantineConversationFile(at: url)
-          return nil
-        }
-        return conversation
-      }
+    ((try? storage.store.chatIDs()) ?? [])
+      .filter { !indexedIDs.contains($0) }
+      .compactMap { loadConversation(id: $0, from: storage) }
   }
 
   private func loadIndexedConversations(from storage: ConversationStorageURLs) -> [Conversation]? {
@@ -654,36 +617,34 @@ final class PersistenceStore: @unchecked Sendable {
       let index = try? makeDecoder().decode(PersistedConversationIndex.self, from: data)
     else {
       if fileManager.fileExists(atPath: storage.conversationsIndexURL.path) {
-        _ = quarantineConversationFile(at: storage.conversationsIndexURL)
+        _ = quarantineConversationFile(at: storage.conversationsIndexURL, in: storage)
       }
       return nil
     }
 
-    let decoder = makeDecoder()
     var needsRepair = false
     var canRepairIndex = true
     var conversations = index.ids.compactMap { id -> Conversation? in
-      let url = Self.conversationFileURL(for: id, in: storage.conversationsDirectoryURL)
-      guard let data = try? Data(contentsOf: url) else {
-        if fileManager.fileExists(atPath: url.path) {
-          canRepairIndex = false
-        } else {
+      do {
+        guard let conversation = try storage.store.loadChat(id: id) else {
           needsRepair = true
+          return nil
         }
-        return nil
-      }
-      guard let conversation = try? decoder.decode(Conversation.self, from: data) else {
-        if quarantineConversationFile(at: url) != nil {
+        return conversation
+      } catch ChatFileStoreError.undecodable(let url, _) {
+        if quarantineConversationFile(at: url, in: storage) != nil {
           needsRepair = true
         } else {
           canRepairIndex = false
         }
         return nil
+      } catch {
+        canRepairIndex = false
+        return nil
       }
-      return conversation
     }
     let unindexed = loadUnindexedConversations(from: storage, excluding: Set(index.ids))
-    conversations = Self.mergedConversations(conversations + unindexed)
+    conversations = Conversation.newest(of: conversations + unindexed)
     if canRepairIndex && (needsRepair || !unindexed.isEmpty) {
       _ = Self.persistConversationIndex(
         ids: conversations.map(\.id),
@@ -702,11 +663,15 @@ final class PersistenceStore: @unchecked Sendable {
     if let conversations = try? decoder.decode([Conversation].self, from: data) {
       return conversations
     }
-    _ = quarantineConversationFile(at: storage.conversationsURL)
+    _ = quarantineConversationFile(at: storage.conversationsURL, in: storage)
     return []
   }
 
-  func saveConversations(_ conversations: [Conversation]) {
+  /// Writes the conversations that changed since the last save. Placeholder
+  /// conversations that never received a message earn no file, unless they
+  /// are named in `retaining`, which the app uses for chats holding an unsent
+  /// draft or a reply in progress.
+  func saveConversations(_ conversations: [Conversation], retaining retained: Set<UUID> = []) {
     let snapshot = conversations
     let delay = debounce
     writeQueue.async { [weak self] in
@@ -726,19 +691,19 @@ final class PersistenceStore: @unchecked Sendable {
         let iCloudChanged = iCloudConversations.filter {
           self.persistedConversationsByID[$0.id] != $0
         }
-        let persistedLocal = Self.persistConversations(
+        let persistedLocal = self.persistConversations(
           localChanged,
-          ids: localConversations.map(\.id),
           summaries: localConversations.map(ConversationSummary.init),
           storage: localStorage,
-          writeIndex: true
+          writeIndex: true,
+          retaining: retained
         )
-        let persistedICloud = Self.persistConversations(
+        let persistedICloud = self.persistConversations(
           iCloudChanged,
-          ids: iCloudConversations.map(\.id),
           summaries: iCloudConversations.map(ConversationSummary.init),
           storage: iCloudStorage,
-          writeIndex: true
+          writeIndex: true,
+          retaining: retained
         )
         if persistedLocal && persistedICloud {
           self.persistedConversationsByID = byID
@@ -754,7 +719,8 @@ final class PersistenceStore: @unchecked Sendable {
 
   func saveLoadedConversations(
     _ conversations: [Conversation],
-    summaries: [ConversationSummary]
+    summaries: [ConversationSummary],
+    retaining retained: Set<UUID> = []
   ) {
     let conversationSnapshot = conversations
     let summarySnapshot = summaries
@@ -764,15 +730,6 @@ final class PersistenceStore: @unchecked Sendable {
       self.prepareForAccess()
       let localStorage = self.localStorageURLs
       let iCloudStorage = self.iCloudStorageURLs()
-      let loadedByID = Dictionary(uniqueKeysWithValues: conversationSnapshot.map { ($0.id, $0) })
-      let localSummaries = self.persistableSummaries(
-        summarySnapshot.filter { $0.folderID != ConversationFolder.iCloudID },
-        loadedIDs: Set(loadedByID.keys),
-        storage: localStorage)
-      let iCloudSummaries = self.persistableSummaries(
-        summarySnapshot.filter { $0.folderID == ConversationFolder.iCloudID },
-        loadedIDs: Set(loadedByID.keys),
-        storage: iCloudStorage)
       let localConversations = conversationSnapshot.filter {
         $0.folderID != ConversationFolder.iCloudID
       }
@@ -783,22 +740,22 @@ final class PersistenceStore: @unchecked Sendable {
       self.pendingConversations?.cancel()
       let item = DispatchWorkItem { [weak self] in
         guard let self else { return }
-        let persistedLocal = Self.persistConversations(
+        let persistedLocal = self.persistConversations(
           localConversations,
-          ids: localSummaries.map(\.id),
-          summaries: localSummaries,
+          summaries: summarySnapshot.filter { $0.folderID != ConversationFolder.iCloudID },
           storage: localStorage,
-          writeIndex: true
+          writeIndex: true,
+          retaining: retained
         )
-        let persistedICloud = Self.persistConversations(
+        let persistedICloud = self.persistConversations(
           iCloudConversations,
-          ids: iCloudSummaries.map(\.id),
-          summaries: iCloudSummaries,
+          summaries: summarySnapshot.filter { $0.folderID == ConversationFolder.iCloudID },
           storage: iCloudStorage,
-          writeIndex: true
+          writeIndex: true,
+          retaining: retained
         )
         if persistedLocal && persistedICloud {
-          let liveIDs = Set(localSummaries.map(\.id) + iCloudSummaries.map(\.id))
+          let liveIDs = Set(summarySnapshot.map(\.id))
           self.persistedConversationsByID = self.persistedConversationsByID.filter {
             liveIDs.contains($0.key)
           }
@@ -822,14 +779,12 @@ final class PersistenceStore: @unchecked Sendable {
       self.prepareForAccess()
       let localStorage = self.localStorageURLs
       let iCloudStorage = self.iCloudStorageURLs()
-      let localSummaries = self.persistableSummaries(
+      let localSummaries = self.validatedConversationSummaries(
         summarySnapshot.filter { $0.folderID != ConversationFolder.iCloudID },
-        loadedIDs: [],
-        storage: localStorage)
-      let iCloudSummaries = self.persistableSummaries(
+        in: localStorage)
+      let iCloudSummaries = self.validatedConversationSummaries(
         summarySnapshot.filter { $0.folderID == ConversationFolder.iCloudID },
-        loadedIDs: [],
-        storage: iCloudStorage)
+        in: iCloudStorage)
       let persistedLocal = Self.persistConversationIndex(
         ids: localSummaries.map(\.id),
         summaries: localSummaries,
@@ -979,28 +934,13 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
+  /// Summaries whose conversation file is actually present, so the index
+  /// never points at a file that does not exist.
   private func validatedConversationSummaries(
     _ summaries: [ConversationSummary],
     in storage: ConversationStorageURLs
   ) -> [ConversationSummary] {
-    summaries.filter { summary in
-      let url = Self.conversationFileURL(for: summary.id, in: storage.conversationsDirectoryURL)
-      return fileManager.fileExists(atPath: url.path)
-    }
-  }
-
-  private func persistableSummaries(
-    _ summaries: [ConversationSummary],
-    loadedIDs: Set<UUID>,
-    storage: ConversationStorageURLs
-  ) -> [ConversationSummary] {
-    summaries.filter { summary in
-      if loadedIDs.contains(summary.id) {
-        return true
-      }
-      let url = Self.conversationFileURL(for: summary.id, in: storage.conversationsDirectoryURL)
-      return fileManager.fileExists(atPath: url.path)
-    }
+    summaries.filter { storage.store.fileExists(for: $0.id) }
   }
 
   private static func persistConversationIndex(
@@ -1044,7 +984,7 @@ final class PersistenceStore: @unchecked Sendable {
   ) throws {
     let entries = ConversationSummary.mostRecent(summaries).map {
       PersistedRecentConversationEntry(
-        filename: conversationFilename(for: $0.id),
+        filename: storage.conversationFilename(for: $0.id),
         summary: $0)
     }
     let cache = PersistedRecentConversationCache(entries: entries)
@@ -1055,30 +995,31 @@ final class PersistenceStore: @unchecked Sendable {
     try data.write(to: storage.recentConversationsCacheURL, options: [.atomic])
   }
 
-  private static func persistConversations(
+  /// Writes conversation files through the shared store, then the index. The
+  /// index lists only summaries whose file exists afterwards: a placeholder
+  /// the store declined to write, unless retained, is not indexed either.
+  private func persistConversations(
     _ conversations: [Conversation],
-    ids: [UUID],
     summaries: [ConversationSummary],
     storage: ConversationStorageURLs,
-    writeIndex: Bool
+    writeIndex: Bool,
+    retaining retained: Set<UUID> = []
   ) -> Bool {
     do {
-      let fileManager = FileManager.default
-      let conversationsDir = storage.conversationsDirectoryURL
-      let indexURL = storage.conversationsIndexURL
-      try fileManager.createDirectory(at: conversationsDir, withIntermediateDirectories: true)
-      let encoder = makeEncoder()
+      let store = storage.store
+      try fileManager.createDirectory(
+        at: storage.conversationsDirectoryURL, withIntermediateDirectories: true)
       for conversation in conversations {
-        let url = conversationFileURL(for: conversation.id, in: conversationsDir)
-        let data = try encoder.encode(conversation)
-        try data.write(to: url, options: [.atomic])
+        try store.save(conversation, evenIfDisposable: retained.contains(conversation.id))
       }
-
       if writeIndex {
-        let index = PersistedConversationIndex(ids: ids, summaries: summaries)
+        let indexed = validatedConversationSummaries(summaries, in: storage)
+        let encoder = Self.makeEncoder()
+        let index = PersistedConversationIndex(ids: indexed.map(\.id), summaries: indexed)
         let data = try encoder.encode(index)
-        try data.write(to: indexURL, options: [.atomic])
-        try writeRecentConversationCache(summaries: summaries, storage: storage, encoder: encoder)
+        try data.write(to: storage.conversationsIndexURL, options: [.atomic])
+        try Self.writeRecentConversationCache(
+          summaries: indexed, storage: storage, encoder: encoder)
       }
       return true
     } catch {
@@ -1093,14 +1034,15 @@ final class PersistenceStore: @unchecked Sendable {
     guard !fallbackConversations.isEmpty else { return }
 
     let cloudStorage = ConversationStorageURLs(baseURL: cloudBaseURL)
-    let merged = Self.mergedConversations(
-      loadConversations(from: cloudStorage) + fallbackConversations)
-    let persisted = Self.persistConversations(
+    let merged = Conversation.newest(
+      of: loadConversations(from: cloudStorage) + fallbackConversations)
+    // Copies keep every conversation, placeholders included, exactly as they were.
+    let persisted = persistConversations(
       merged,
-      ids: merged.map(\.id),
       summaries: merged.map(ConversationSummary.init),
       storage: cloudStorage,
-      writeIndex: true)
+      writeIndex: true,
+      retaining: Set(merged.map(\.id)))
     // Keep the fallback store after copying. It may contain quarantined or temporarily unreadable
     // files that were intentionally excluded from the decoded migration set.
     _ = persisted
@@ -1113,14 +1055,6 @@ final class PersistenceStore: @unchecked Sendable {
     }
   }
 
-  private static func conversationFileURL(for id: UUID, in directory: URL) -> URL {
-    directory.appendingPathComponent(conversationFilename(for: id))
-  }
-
-  private static func conversationFilename(for id: UUID) -> String {
-    "\(id.uuidString).json"
-  }
-
   private static func makeEncoder() -> JSONEncoder {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
@@ -1131,37 +1065,5 @@ final class PersistenceStore: @unchecked Sendable {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     return decoder
-  }
-
-  private static func mergedConversations(_ conversations: [Conversation]) -> [Conversation] {
-    var byID: [UUID: Conversation] = [:]
-    for conversation in conversations {
-      guard let existing = byID[conversation.id] else {
-        byID[conversation.id] = conversation
-        continue
-      }
-      if existing.updatedAt < conversation.updatedAt
-        || (existing.updatedAt == conversation.updatedAt && existing.createdAt < conversation.createdAt)
-      {
-        byID[conversation.id] = conversation
-      }
-    }
-    return Array(byID.values)
-  }
-
-  private static func mergedSummaries(_ summaries: [ConversationSummary]) -> [ConversationSummary] {
-    var byID: [UUID: ConversationSummary] = [:]
-    for summary in summaries {
-      guard let existing = byID[summary.id] else {
-        byID[summary.id] = summary
-        continue
-      }
-      if existing.updatedAt < summary.updatedAt
-        || (existing.updatedAt == summary.updatedAt && existing.createdAt < summary.createdAt)
-      {
-        byID[summary.id] = summary
-      }
-    }
-    return Array(byID.values)
   }
 }

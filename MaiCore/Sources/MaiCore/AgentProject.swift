@@ -45,10 +45,17 @@ public struct AgentProjectTint: RawRepresentable, Codable, Hashable, Sendable,
 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.singleValueContainer()
-    try container.encode(rawValue)
+    try container.encode(storageIdentifier)
   }
 
   public var isPreset: Bool { Self.presetNames.contains(rawValue) }
+
+  /// The form written to disk: the preset name, or `custom:#RRGGBB`, which is
+  /// what PocketMai folders have always stored, so files stay readable by
+  /// earlier app versions.
+  public var storageIdentifier: String {
+    isPreset ? rawValue : Self.customPrefix + rawValue
+  }
 
   /// The color as `#RRGGBB`, resolving presets to their reference values.
   public var hex: String { Self.presetHex[rawValue] ?? rawValue }
@@ -240,15 +247,14 @@ public struct AgentProjectIndex: Codable, Equatable, Sendable {
   }
 
   public static func load(from url: URL) throws -> AgentProjectIndex {
-    try JSONDecoder().decode(AgentProjectIndex.self, from: Data(contentsOf: url))
+    try MaiJSONCoding.default.makeDecoder().decode(
+      AgentProjectIndex.self, from: Data(contentsOf: url))
   }
 
   public func save(to url: URL) throws {
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(self).write(to: url, options: .atomic)
+    try MaiJSONCoding.default.makeEncoder().encode(self).write(to: url, options: .atomic)
   }
 }
 

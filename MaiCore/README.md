@@ -186,11 +186,18 @@ list. When the default home is in use, chats found in the pre-project
 `~/.config/pmai/chats.json` are imported into the first project opened
 afterwards and the file is renamed `chats.json.imported`.
 
-The persistence rules are shared with the PocketMai app through MaiCore's
-`AgentChat`, `AgentChatStore`, `AgentProject`, and `AgentHome`: every launch
-opens a fresh chat that is named after its first message, a chat that never
-receives a message, attachment, name, or archive flag is disposable, and a
-disposable chat is never written or listed, whichever way the process ends.
+The persistence rules are shared with the PocketMai app through MaiCore.
+`ChatFileStore` keeps one JSON file per chat in a directory, the layout
+PocketMai has used since its first release, with ISO 8601 dates, `.json.corrupt`
+quarantine names, and newest-wins merging; PocketMai stores its own
+`Conversation` documents through it unchanged, and `AgentChatStore` is the
+same store for MaiCore's `AgentChat`. Every launch opens a fresh chat that is
+named after its first message, a chat that never receives a message, name, or
+archive flag is disposable, and a disposable chat is never written or listed,
+whichever way the process ends. Saving never deletes an existing file, so
+upgrading a store cannot lose a chat. `AgentProject`, `AgentProjectIndex`, and
+`AgentHome` carry the project side, with `AgentProjectTint` stored the way
+PocketMai folder colors always were.
 `--resume` reopens the most recently updated chat instead. `/chat list`
 shows the earlier chats grouped by day (Today, Yesterday, This week, Last week,
 then dates), newest first, with their agent, size, and last-update time, and
