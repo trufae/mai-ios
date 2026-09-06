@@ -50,6 +50,9 @@ private struct CLIOptions {
   /// Render replies as markdown; nil follows the configuration and the tty.
   var markdown: Bool?
   var imagePaths: [String] = []
+  /// Attach what arrives on standard input as a text file, for one-liners
+  /// such as `git diff | pmai --stdin "review this"`.
+  var readStdin = false
   var pluginPaths: [String] = []
   var initialPrompt: String?
   var printConfig = false
@@ -99,6 +102,8 @@ private struct CLIOptions {
         maxSubagents = try Self.count(after: argument, in: arguments, index: &index)
       case "--image":
         imagePaths.append(try Self.value(after: argument, in: arguments, index: &index))
+      case "--stdin":
+        readStdin = true
       case "--plugin":
         pluginPaths.append(try Self.value(after: argument, in: arguments, index: &index))
       case "--no-stream":
@@ -124,6 +129,7 @@ private struct CLIOptions {
       index += 1
     }
     if !positional.isEmpty { initialPrompt = positional.joined(separator: " ") }
+    if readStdin, serve != nil { throw CLIError.stdinServesProtocol }
   }
 
   private static func value(
@@ -169,10 +175,16 @@ private enum CLIError: LocalizedError {
   case noProvider
   case noProject
   case invalidImage(String)
+  case stdinServesProtocol
+  case stdinWithoutTerminal
 
   var errorDescription: String? {
     switch self {
     case .noProject: "No project is open."
+    case .stdinServesProtocol:
+      "--stdin cannot be combined with --acp or --mcp: they own standard input."
+    case .stdinWithoutTerminal:
+      "--stdin was read, but there is no terminal for the REPL; give the message on the command line."
     case .invalidURL(let value): "Invalid URL: \(value)"
     case .missingValue(let option): "Missing value after \(option)."
     case .unknownOption(let option): "Unknown option: \(option)"
@@ -935,6 +947,10 @@ struct MaiCLI {
         options: options)
       var session = REPLSession(chat: workspace.selectedChat!)
       session.pendingContent.append(contentsOf: try options.imagePaths.map(imageContent))
+      if options.readStdin {
+        session.pendingContent.append(
+          try stdinAttachment(reopeningTerminal: options.initialPrompt == nil))
+      }
       session.touch()
       workspace.upsert(session.chat, selecting: true)
       let terminal = TerminalWriter()
@@ -7989,6 +8005,22 @@ struct MaiCLI {
     return nil
   }
 
+  /// Reads standard input to its end and attaches it as a text file, the way
+  /// `/attach` does with a file on disk. With a message on the command line
+  /// the run is one-shot; without one the REPL follows, so the terminal takes
+  /// over as standard input, which needs one to exist.
+  private static func stdinAttachment(reopeningTerminal: Bool) throws -> ContentPart {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    let attachment = try DocumentAttachmentImporter.attachment(data: data, filename: "stdin.txt")
+    if reopeningTerminal {
+      let tty = open("/dev/tty", O_RDONLY)
+      guard tty >= 0 else { throw CLIError.stdinWithoutTerminal }
+      defer { close(tty) }
+      guard dup2(tty, STDIN_FILENO) >= 0 else { throw CLIError.stdinWithoutTerminal }
+    }
+    return attachment.content
+  }
+
   private static func imageContent(path: String) throws -> ContentPart {
     let loaded = try loadImage(path: path)
     return .image(
@@ -8501,6 +8533,7 @@ struct MaiCLI {
         --max-turns N       model turns allowed per run (default 50)
         --max-subagents N   concurrent background agents (default 0/off)
         --image PATH        attach an image (repeatable)
+        --stdin             attach standard input as a text file (git diff | pmai --stdin "review it")
         --no-stream         disable response streaming
         -y, --yolo          permit all tool calls without prompting for this run
                             (/set yolo on saves the choice for every run)
