@@ -44,6 +44,63 @@ jobs:
           path: MaiCore/.build/release/pmai
           if-no-files-found: error
 
+  static-cli:
+    name: CLI (Linux static ${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: x64
+            artifact: pmai-linux-x64-static
+          - os: ubuntu-24.04-arm
+            name: arm64
+            artifact: pmai-linux-arm64-static
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show Swift version
+        run: swift --version
+
+      # Static Foundation links against the system libcurl and libxml2, whose
+      # development symlinks are missing on the arm64 runner image.
+      - name: Install static link dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev libxml2-dev
+
+      # Links the Swift runtime, Foundation and libdispatch into the
+      # executable so it runs on machines without a Swift toolchain. The
+      # result still depends on glibc, libstdc++, libcurl and libxml2, which
+      # every mainstream distro ships. A fully static musl build is blocked
+      # on swift-tui, which imports Glibc without a Musl fallback.
+      - name: Build static release CLI
+        run: |
+          swift build --package-path MaiCore -c release --product pmai \
+            --static-swift-stdlib -Xswiftc -Osize
+          strip -s MaiCore/.build/release/pmai
+
+      - name: Verify no Swift runtime dependencies
+        run: |
+          set -eu
+          bin=MaiCore/.build/release/pmai
+          file "$bin"
+          ldd "$bin"
+          if ldd "$bin" | grep -Ei 'libswift|libFoundation|libdispatch|libBlocksRuntime|not found'; then
+            echo "::error::pmai still depends on Swift runtime shared libraries"
+            exit 1
+          fi
+          "$bin" --help
+
+      - name: Upload static CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: MaiCore/.build/release/pmai
+          if-no-files-found: error
+
   android-cli:
     name: CLI (Android arm64)
     runs-on: ubuntu-24.04

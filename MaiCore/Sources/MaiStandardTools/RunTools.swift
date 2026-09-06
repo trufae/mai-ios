@@ -1,7 +1,9 @@
 import Foundation
 import MaiCore
 
-#if canImport(Glibc)
+#if canImport(Musl)
+  import Musl
+#elseif canImport(Glibc)
   import Glibc
 #endif
 

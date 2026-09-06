@@ -14,6 +14,8 @@ import MaiVisionOCR
 
 #if canImport(Android)
   import Android
+#elseif canImport(Musl)
+  import Musl
 #elseif canImport(Glibc)
   import Glibc
 #elseif canImport(Darwin)
