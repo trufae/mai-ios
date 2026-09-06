@@ -70,7 +70,9 @@ guidance passed to `/chat compact FOCUS`; if omitted, the focus is appended.
 Clearing the compact template restores its built-in default.
 
 Start `pmai` with `-y` (or `--yolo`) to permit all tool calls without approval
-prompts for that process. This is the startup equivalent of `/set yolo on`.
+prompts for that process. `/set yolo on` does the same and saves the choice as
+`approvals.yolo` in the configuration, so later runs start in YOLO mode until
+`/set yolo off`.
 
 The REPL accepts heredoc-style multiline messages. Enter `<<WORD`, type the
 message verbatim, then put `WORD` alone on its own line. The delimiter can be
@@ -225,8 +227,8 @@ agents, and providers. `/agent add NAME MODEL GROUPS PROMPT [PROVIDER [BASE_URL]
 saves a reusable agent in one line from a model, comma-separated tool groups,
 and a named system prompt; `/agent tools|model|prompt|provider ID VALUE` change
 one saved agent, `/agent remove ID` drops one, and `/edit agent [ID]` opens one
-as JSON. `/provider`, `/model`, and `/proxy` save changes back to the current
-chat's agent in the shared configuration.
+as JSON. `/provider`, `/model`, and `/set tool.proxy` save changes back to the
+current chat's agent in the shared configuration.
 
 Use `/baseurl URL` to change the current provider endpoint. To edit another
 provider, select it first with `/provider ID`. The provider is replaced in the
@@ -313,7 +315,7 @@ newest exchange stays verbatim, the compact prompt gets a focus on finishing
 the task at hand, and `✂ context: compacted 14 messages into a summary` says
 what happened. Context windows differ per model and few providers state
 theirs, so the threshold is an absolute count rather than a percentage.
-`/set toolCallingStrategy text|xml|json` forces message-based tool calling for
+`/set tool.calling text|xml|json` forces message-based tool calling for
 models without native tools; `automatic` prefers native calls and otherwise
 uses JSON, while `native` requires native support. The selected mode is saved
 on the agent.
@@ -455,6 +457,45 @@ tools too.
 /todo edit                 edit the list in $EDITOR
 /todo clear                remove every item
 /todo path                 print where the file lives
+```
+
+### Skills
+
+A skill is a folder holding a `SKILL.md`: front matter giving a `name` and a
+`description`, then the instructions to follow as the body, with any scripts
+or reference files beside it. It is the layout other coding agents use
+(`<skills dir>/<name>/SKILL.md`), so a skill written for one of them works
+here unchanged. pmai reads the project's `.pmai/skills` and `~/.pmai/skills`
+(`$PMAI_HOME/skills` when the home is relocated); a project skill shadows a
+home one of the same name. The catalog, the front-matter reader, and the
+tools live in `AgentSkills.swift`.
+
+Each skill is also a `skills_<name>` tool, described by the skill's own
+description, that answers with the instructions when the model calls it, so a
+model that sees `skills_aicommit` can pick it up the way it picks up any
+tool. The `skills` group holds them all: `/tools enable skills` (or naming
+`skills` in an agent's `toolGroupNames`) offers every skill, present and
+future, while `/skills enable NAME` and `/skills disable NAME` change one
+skill at a time and persist in the agent's allow-list like any tool. The
+tools run without approval, and every call reads the file afresh, so editing
+a skill takes effect at once. A skill whose front matter says
+`disable-model-invocation: true` is never offered as a tool.
+
+`/skills prompt NAME [TEXT]` sends the skill's instructions, then `TEXT`, as
+the next message, whether or not the skill is enabled: a way to use one by
+hand without letting the model decide. Where the body says `$ARGUMENTS` the
+text goes there instead. The message carries the instructions inside a
+`<skill name="…" directory="…">` envelope naming the folder, so paths in
+them can be resolved.
+
+```
+/skills                    list skills; * marks the ones the agent may call
+/skills show NAME          print a skill's file, tool state, and instructions
+/skills enable NAME|all    offer a skill, or every skill, to the current agent
+/skills disable NAME|all   stop offering it; /skills prompt still works
+/skills prompt NAME [TEXT] send the instructions, then TEXT, as the next message
+/skills path               print the directories scanned
+/skills reload             rescan the directories (every /skills command does)
 ```
 
 ### Agents and subagents

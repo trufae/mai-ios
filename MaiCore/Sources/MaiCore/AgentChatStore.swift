@@ -143,6 +143,8 @@ extension ChatFileStore where Chat == AgentChat {
 ///     <workdir>/.pmai/chats/<id>.json    one file per chat
 ///     <workdir>/.pmai/memory.md          the project's durable memory
 ///     <workdir>/.pmai/todo.md            the project's todo list
+///     <workdir>/.pmai/skills/<name>/SKILL.md  the project's own skills
+///     ~/.pmai/skills/<name>/SKILL.md     skills every project may use
 ///     ~/.pmai/projects/<id>/             the same files, for read-only directories
 ///
 /// The root is `$PMAI_HOME` when set, else `~/.pmai`.
@@ -154,6 +156,7 @@ public struct AgentHome: Sendable {
   public static let chatsDirectoryName = "chats"
   public static let historyFilename = "history.json"
   public static let usageStatsFilename = "stats.json"
+  public static let skillsDirectoryName = "skills"
 
   public let rootURL: URL
 
@@ -187,6 +190,11 @@ public struct AgentHome: Sendable {
   /// on which directory it was asked from.
   public var usageStatsURL: URL {
     rootURL.appendingPathComponent(Self.usageStatsFilename)
+  }
+
+  /// Skills every project may use, one folder with a SKILL.md per skill.
+  public var skillsDirectoryURL: URL {
+    rootURL.appendingPathComponent(Self.skillsDirectoryName, isDirectory: true)
   }
 
   /// Storage for projects whose working directory cannot hold a `.pmai` folder.
@@ -232,6 +240,12 @@ public struct AgentHome: Sendable {
   /// The project's todo list, beside its chats.
   public func todoURL(for project: AgentProject) -> URL {
     storageDirectory(for: project).appendingPathComponent(AgentTodoList.filename)
+  }
+
+  /// The project's own skills, beside its chats; they shadow the home's.
+  public func skillsURL(for project: AgentProject) -> URL {
+    storageDirectory(for: project).appendingPathComponent(
+      Self.skillsDirectoryName, isDirectory: true)
   }
 
   public func chatStore(for project: AgentProject) -> AgentChatStore {

@@ -373,23 +373,29 @@ public enum ConfiguredApprovalMode: String, Codable, Sendable {
 public struct ConfiguredApprovals: Codable, Equatable, Sendable {
   public var confirm: ConfiguredApprovalMode
   public var dangerous: ConfiguredApprovalMode
+  /// Permits every tool call without asking, as `/set yolo on` does. Kept
+  /// here so the choice survives a restart.
+  public var yolo: Bool
 
   public init(
     confirm: ConfiguredApprovalMode = .ask,
-    dangerous: ConfiguredApprovalMode = .ask
+    dangerous: ConfiguredApprovalMode = .ask,
+    yolo: Bool = false
   ) {
     self.confirm = confirm
     self.dangerous = dangerous
+    self.yolo = yolo
   }
 
-  private enum CodingKeys: String, CodingKey { case confirm, dangerous }
+  private enum CodingKeys: String, CodingKey { case confirm, dangerous, yolo }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.init(
       confirm: try container.decodeIfPresent(ConfiguredApprovalMode.self, forKey: .confirm) ?? .ask,
       dangerous: try container.decodeIfPresent(ConfiguredApprovalMode.self, forKey: .dangerous)
-        ?? .ask)
+        ?? .ask,
+      yolo: try container.decodeIfPresent(Bool.self, forKey: .yolo) ?? false)
   }
 }
 

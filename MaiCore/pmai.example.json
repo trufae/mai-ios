@@ -230,7 +230,8 @@
   },
   "approvals": {
     "confirm": "ask",
-    "dangerous": "ask"
+    "dangerous": "ask",
+    "yolo": false
   },
   "memory": {
     "enabled": true,

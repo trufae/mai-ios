@@ -149,3 +149,19 @@ func catalogEditsStayConsistent() throws {
   #expect(!removedTwice)
   try configuration.validate()
 }
+
+@Test("The YOLO approval choice is saved and defaults to off")
+func yoloApprovalPersists() throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("maicore-config-\(UUID().uuidString)", isDirectory: true)
+  let url = root.appendingPathComponent("pmai.json")
+  let configuration = MaiConfiguration(approvals: ConfiguredApprovals(yolo: true))
+
+  try configuration.save(to: url)
+
+  #expect(try MaiConfiguration.load(from: url).approvals.yolo)
+  let legacy = try JSONDecoder().decode(
+    MaiConfiguration.self, from: Data(#"{"approvals":{"confirm":"allow"}}"#.utf8))
+  #expect(legacy.approvals.confirm == .allow)
+  #expect(!legacy.approvals.yolo)
+}

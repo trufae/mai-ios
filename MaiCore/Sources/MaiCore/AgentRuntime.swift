@@ -157,6 +157,13 @@ public actor AgentRuntime {
     return catalog
   }
 
+  /// Forgets a tool registered directly, so it is no longer offered or run.
+  /// Tools that came with an MCP server leave with `unregisterMCP` instead.
+  @discardableResult
+  public func unregister(toolNamed name: String) -> Bool {
+    tools.removeValue(forKey: name) != nil
+  }
+
   /// Disconnects an MCP source and removes the tools discovered from it.
   @discardableResult
   public func unregisterMCP(serverID: String) async -> Set<String> {

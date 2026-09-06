@@ -275,6 +275,7 @@ private struct VisualBridge {
   var providerBaseURLs: ProviderBaseURLStore
   var memory: MemoryState
   var todo: TodoState
+  var skills: SkillState
   /// Tokens/s and time in use per provider:model, shared with the runtime.
   var usageStats: ModelUsageStore
 }
@@ -308,6 +309,38 @@ private final class TodoState: @unchecked Sendable {
     guard let url else { throw CLIError.noProject }
     try list.save(to: url)
   }
+}
+
+/// Where skills are read from: the project's `.pmai/skills`, then the
+/// `skills` folder under the home. The `skills_*` tools are registered before
+/// the project is opened, so until then the start directory stands in for
+/// it; every listing and call reads the SKILL.md files afresh.
+private final class SkillState: @unchecked Sendable {
+  private let lock = NSLock()
+  private let home: AgentHome
+  private var project: AgentProject?
+
+  init(home: AgentHome) {
+    self.home = home
+  }
+
+  func focus(project: AgentProject) {
+    lock.withLock { self.project = project }
+  }
+
+  /// The project's directory first, so its skills shadow the home's.
+  var directories: [URL] {
+    let local =
+      lock.withLock { project.map { home.skillsURL(for: $0) } }
+      ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+      .appendingPathComponent(AgentHome.directoryName, isDirectory: true)
+      .appendingPathComponent(AgentHome.skillsDirectoryName, isDirectory: true)
+    return [local, userDirectory]
+  }
+
+  var userDirectory: URL { home.skillsDirectoryURL }
+
+  var catalog: AgentSkillCatalog { AgentSkillCatalog.load(directories: directories) }
 }
 
 /// Everything the memory feature needs that outlives one command: where the
@@ -480,7 +513,7 @@ struct SessionProfile {
         + MaiTodoTools.toolNames + MaiContextTools.toolNames)
     toolGroupNames = [
       "echo", "datetime", "calc", "files", "run", "weather", "web", "mastodon", "github", "todo",
-      "context",
+      "context", MaiSkillTools.groupID,
     ]
     subagentNames = []
     self.stream = stream
@@ -794,7 +827,7 @@ struct MaiCLI {
       }
       let approvalHandler = TerminalApprovalHandler(
         configuration: configuration?.approvals ?? .init(),
-        yoloEnabled: options.yolo)
+        yoloEnabled: options.yolo || (configuration?.approvals.yolo ?? false))
       let runtime = AgentRuntime(approvalHandler: approvalHandler)
       let plugins = PluginRegistry()
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
@@ -821,6 +854,8 @@ struct MaiCLI {
         home: resolvedHome(options: options, environment: environment))
       let todoState = TodoState(
         home: resolvedHome(options: options, environment: environment))
+      let skillState = SkillState(
+        home: resolvedHome(options: options, environment: environment))
       try await registerTools(
         in: runtime,
         plugins: plugins,
@@ -831,6 +866,7 @@ struct MaiCLI {
       for tool in MaiContextTools.makeTools(supervisor: runtime.supervisor) {
         try await runtime.register(tool: tool)
       }
+      try await registerSkillTools(in: runtime, state: skillState)
       try await synchronizeToolGroupSelections(
         configuration: &configuration,
         configurationPath: configurationPath,
@@ -877,6 +913,7 @@ struct MaiCLI {
           fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
       memoryState.adopt(project: project, settings: configuration?.memory ?? .init())
       todoState.focus(project: project)
+      skillState.focus(project: project)
       await runtime.configureMemory(memoryState.promptSection)
       await runtime.configureProjectInstructions(projectInstructionsSection(configuration))
       let store = resolvedChatStore(options: options, home: home, project: project)
@@ -923,9 +960,7 @@ struct MaiCLI {
           agent: profile.agentDefinition)
         return
       }
-      if let path = loaded?.path {
-        await terminal.line("Loaded \(path)", to: .standardError)
-      } else {
+      if loaded == nil {
         await terminal.line("Created \(configurationPath)", to: .standardError)
       }
       if let prompt = options.initialPrompt {
@@ -959,6 +994,7 @@ struct MaiCLI {
           providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs),
           memory: memoryState,
           todo: todoState,
+          skills: skillState,
           usageStats: usageStats),
         terminal: terminal)
     } catch {
@@ -1557,7 +1593,9 @@ struct MaiCLI {
       reader.resume(
         with: REPLInputReader.Prompt(
           text: promptText(),
-          completions: completionCandidates(workspace: workspace, configuration: configuration),
+          completions: completionCandidates(
+            workspace: workspace, configuration: configuration,
+            skills: visual.skills.catalog.skills),
           separator: screen == nil ? status : nil))
     }
 
@@ -1976,6 +2014,18 @@ struct MaiCLI {
               await terminal.note("A turn is already running; Ctrl+C cancels it.")
             } else {
               await continueTurn()
+            }
+            await releaseIfIdle(workspace: workspace)
+            continue
+          }
+          if name == "/skills" || name == "/skill", let request = skillPromptRequest(argument) {
+            if request.name.isEmpty {
+              await terminal.line("Usage: /skills prompt NAME [TEXT]   (/skills lists the names)")
+            } else if let skill = visual.skills.catalog.skill(named: request.name) {
+              session.refreshTitle(from: "\(skill.name) \(request.arguments)")
+              await deliver(skill.prompt(arguments: request.arguments), to: loop.focus)
+            } else {
+              await terminal.line("Unknown skill '\(request.name)'. /skills lists them.")
             }
             await releaseIfIdle(workspace: workspace)
             continue
@@ -2520,9 +2570,11 @@ struct MaiCLI {
         await terminal.line(exportHelp)
       case "stats", "/stats":
         await terminal.line(statsHelp)
+      case "skills", "skill", "/skills", "/skill":
+        await terminal.line(skillsHelp)
       default:
         await terminal.line(
-          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, todo, prompts, agents, chat, edit, tools, queue, export, or stats."
+          "Unknown help topic '\(argument)'. Try /help, or /help set, memory, todo, prompts, agents, chat, edit, tools, skills, queue, export, or stats."
         )
       }
     case "/cwd", "/pwd":
@@ -2578,6 +2630,15 @@ struct MaiCLI {
       await handleBTWCommand(argument, session: session, runtime: runtime, terminal: terminal)
     case "/todo":
       await handleTodoCommand(argument, todo: visual.todo, terminal: terminal)
+    case "/skills", "/skill":
+      await handleSkillsCommand(
+        argument,
+        session: &session,
+        runtime: runtime,
+        skills: visual.skills,
+        configuration: &configuration,
+        configurationPath: visual.configurationPath,
+        terminal: terminal)
     case "/memory":
       await handleMemoryCommand(
         argument,
@@ -2678,35 +2739,6 @@ struct MaiCLI {
         configuration: &configuration,
         configurationPath: visual.configurationPath,
         terminal: terminal)
-    case "/proxy":
-      switch argument.lowercased() {
-      case "":
-        await terminal.line("Tool proxy: \(session.profile.useToolProxy ? "on" : "off")")
-      case "on":
-        session.profile.useToolProxy = true
-        if await persistAgentProfile(
-          session: session,
-          configuration: &configuration,
-          configurationPath: visual.configurationPath,
-          runtime: runtime,
-          terminal: terminal)
-        {
-          await terminal.line("Tool proxy enabled.")
-        }
-      case "off":
-        session.profile.useToolProxy = false
-        if await persistAgentProfile(
-          session: session,
-          configuration: &configuration,
-          configurationPath: visual.configurationPath,
-          runtime: runtime,
-          terminal: terminal)
-        {
-          await terminal.line("Tool proxy disabled.")
-        }
-      default:
-        await terminal.line("Usage: /proxy [on|off]")
-      }
     case "/mcp":
       await handleMCPCommand(
         argument,
@@ -5324,6 +5356,214 @@ struct MaiCLI {
     }
   }
 
+  // MARK: Skills
+
+  /// Registers a `skills_*` tool for every skill the state can see. Called
+  /// at startup, before agents are filtered against the known tool names.
+  private static func registerSkillTools(
+    in runtime: AgentRuntime,
+    state: SkillState
+  ) async throws {
+    for tool in MaiSkillTools.makeTools(catalog: { state.catalog }) {
+      try await runtime.register(tool: tool, replacingExisting: true)
+    }
+  }
+
+  /// Brings the runtime's skill tools in line with the folders on disk: new
+  /// skills are registered, edited ones re-described, removed ones dropped.
+  @discardableResult
+  private static func synchronizeSkillTools(
+    runtime: AgentRuntime,
+    state: SkillState
+  ) async -> (catalog: AgentSkillCatalog, added: [String], removed: [String]) {
+    let catalog = state.catalog
+    let wanted = catalog.modelInvocable
+    let wantedNames = Set(wanted.map(\.toolName))
+    let registered = Set(
+      await runtime.availableTools().map(\.name).filter(MaiSkillTools.isSkillTool))
+    var removed: [String] = []
+    for name in registered.subtracting(wantedNames).sorted() {
+      await runtime.unregister(toolNamed: name)
+      removed.append(name)
+    }
+    var added: [String] = []
+    for skill in wanted {
+      let tool = MaiSkillTools.makeTool(for: skill) { state.catalog }
+      guard (try? await runtime.register(tool: tool, replacingExisting: true)) != nil else {
+        continue
+      }
+      if !registered.contains(skill.toolName) { added.append(skill.name) }
+    }
+    return (catalog, added, removed)
+  }
+
+  private static func isSkillEnabled(_ skill: AgentSkill, profile: SessionProfile) -> Bool {
+    profile.toolNames.contains(skill.toolName)
+      || profile.toolGroupNames.contains(MaiSkillTools.groupID)
+  }
+
+  /// The name and extra text of a `/skills prompt NAME [TEXT]` line; nil for
+  /// any other /skills action.
+  private static func skillPromptRequest(_ argument: String)
+    -> (name: String, arguments: String)?
+  {
+    let pieces = argument.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    guard let action = pieces.first?.lowercased(), ["prompt", "send", "use"].contains(action)
+    else { return nil }
+    let name = pieces.count > 1 ? pieces[1] : ""
+    let arguments =
+      pieces.count > 2 ? pieces[2].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    return (name, arguments)
+  }
+
+  private static func resolveSkill(
+    _ selector: String,
+    in catalog: AgentSkillCatalog,
+    terminal: TerminalWriter
+  ) async -> AgentSkill? {
+    guard !selector.isEmpty else {
+      await terminal.line("Usage: /skills show|enable|disable|prompt NAME   (/skills lists them)")
+      return nil
+    }
+    guard let skill = catalog.skill(named: selector) else {
+      await terminal.line("Unknown skill '\(selector)'. /skills lists them.")
+      return nil
+    }
+    return skill
+  }
+
+  private static func handleSkillsCommand(
+    _ argument: String,
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    skills: SkillState,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? "list"
+    let rest = fields.count > 1 ? fields[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    let synced = await synchronizeSkillTools(runtime: runtime, state: skills)
+    let catalog = synced.catalog
+    let agentID = session.profile.agentID
+
+    switch action {
+    case "", "list", "ls":
+      guard !catalog.isEmpty else {
+        let places = skills.directories.map { abbreviatedPath($0.path, width: 60) }
+        await terminal.line(
+          "No skills. A skill is a folder with a SKILL.md under \(places.joined(separator: " or ")); /help skills explains."
+        )
+        return
+      }
+      for skill in catalog.skills {
+        let mark =
+          skill.isModelInvocable && isSkillEnabled(skill, profile: session.profile) ? "*" : " "
+        var note = skill.rootURL.path == skills.userDirectory.path ? "user" : "project"
+        if !skill.isModelInvocable { note += ", prompt only" }
+        await terminal.line("\(mark) \(skill.name) — \(skill.description) [\(note)]")
+      }
+      await terminal.line(
+        "* marks the skills agent \(agentID) may call. /skills enable NAME offers one; /skills prompt NAME [TEXT] sends one now."
+      )
+
+    case "show", "cat":
+      guard let skill = await resolveSkill(rest, in: catalog, terminal: terminal) else { return }
+      let state =
+        !skill.isModelInvocable
+        ? "not offered to the model"
+        : isSkillEnabled(skill, profile: session.profile)
+          ? "enabled for \(agentID)" : "disabled for \(agentID)"
+      await terminal.line("\(skill.name): \(skill.description)")
+      await terminal.line("File: \(skill.fileURL.path)")
+      await terminal.line("Tool: \(skill.toolName) (\(state))")
+      await terminal.line("")
+      await terminal.line(skill.body)
+
+    case "enable", "on", "disable", "off":
+      let enabling = action == "enable" || action == "on"
+      if rest.lowercased() == "all" {
+        let names = catalog.modelInvocable.map(\.toolName)
+        if enabling {
+          session.profile.toolGroupNames.insert(MaiSkillTools.groupID)
+          session.profile.toolNames.formUnion(names)
+        } else {
+          session.profile.toolGroupNames.remove(MaiSkillTools.groupID)
+          session.profile.toolNames = session.profile.toolNames.filter {
+            !MaiSkillTools.isSkillTool($0)
+          }
+        }
+        guard
+          await persistAgentProfile(
+            session: session, configuration: &configuration,
+            configurationPath: configurationPath, runtime: runtime, terminal: terminal)
+        else { return }
+        await terminal.line(
+          enabling
+            ? "Enabled all \(names.count) skill\(names.count == 1 ? "" : "s") for agent \(agentID); skills added later are offered too."
+            : "Disabled every skill for agent \(agentID); /skills prompt NAME still sends one.")
+        return
+      }
+      guard let skill = await resolveSkill(rest, in: catalog, terminal: terminal) else { return }
+      guard skill.isModelInvocable else {
+        await terminal.line(
+          "Skill '\(skill.name)' says disable-model-invocation, so the model never calls it; /skills prompt \(skill.name) sends it."
+        )
+        return
+      }
+      if enabling {
+        session.profile.toolNames.insert(skill.toolName)
+      } else {
+        session.profile.toolNames.remove(skill.toolName)
+        // The group means "every skill, present and future"; one dropped
+        // out of it has to be listed by name from now on.
+        session.profile.toolGroupNames.remove(MaiSkillTools.groupID)
+      }
+      guard
+        await persistAgentProfile(
+          session: session, configuration: &configuration,
+          configurationPath: configurationPath, runtime: runtime, terminal: terminal)
+      else { return }
+      await terminal.line(
+        enabling
+          ? "Enabled skill '\(skill.name)' for agent \(agentID): the model may call \(skill.toolName)."
+          : "Disabled skill '\(skill.name)' for agent \(agentID); /skills prompt \(skill.name) still sends it."
+      )
+
+    case "prompt", "send", "use":
+      await terminal.line(
+        "Use /skills prompt NAME [TEXT] at the chat prompt; /skills show NAME prints what it sends."
+      )
+
+    case "path", "paths", "dirs", "dir":
+      for directory in skills.directories {
+        var isDirectory: ObjCBool = false
+        let exists =
+          FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory)
+          && isDirectory.boolValue
+        let count = AgentSkillCatalog.load(directory: directory).count
+        await terminal.line(
+          "\(directory.path)  \(exists ? "\(count) skill\(count == 1 ? "" : "s")" : "(missing)")")
+      }
+
+    case "reload", "sync", "rescan":
+      var parts: [String] = []
+      if !synced.added.isEmpty { parts.append("added \(synced.added.joined(separator: ", "))") }
+      if !synced.removed.isEmpty {
+        parts.append("removed \(synced.removed.joined(separator: ", "))")
+      }
+      await terminal.line(
+        "\(catalog.skills.count) skill\(catalog.skills.count == 1 ? "" : "s")"
+          + (parts.isEmpty ? ", unchanged." : ": " + parts.joined(separator: "; ") + "."))
+
+    default:
+      await terminal.line(skillsHelp)
+    }
+  }
+
   private static func toolGroupCatalog(
     runtime: AgentRuntime,
     plugins: PluginRegistry,
@@ -5488,7 +5728,7 @@ struct MaiCLI {
       await terminal.line("yolo = \(enabled ? "on" : "off")")
       await listLimitSettings(session.profile.limits, terminal: terminal)
       await listRecoverySettings(session.profile, terminal: terminal)
-      await terminal.line("toolCallingStrategy = \(session.profile.toolCallingStrategy.rawValue)")
+      await listToolSettings(session.profile, terminal: terminal)
       await terminal.line("delegation = \(session.profile.toolDelegation.rawValue)")
       await listUISettings(configuration?.ui ?? .init(), terminal: terminal)
       await listUseSettings(configuration?.use ?? .init(), terminal: terminal)
@@ -5547,6 +5787,10 @@ struct MaiCLI {
         terminal: terminal)
       return
     }
+    if key == "tool" || key == "tool." || key == "tools" || key == "tools." {
+      await listToolSettings(session.profile, terminal: terminal)
+      return
+    }
     if toolCallingStrategyKeys.contains(key) {
       await setToolCallingStrategy(
         parts: parts,
@@ -5557,22 +5801,23 @@ struct MaiCLI {
         terminal: terminal)
       return
     }
+    if toolProxyKeys.contains(key) {
+      await setToolProxy(
+        parts: parts,
+        session: &session,
+        runtime: runtime,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
+      return
+    }
     if key == "yolo" {
-      guard parts.count > 1 else {
-        let enabled = await approvalHandler.isYOLOEnabled()
-        await terminal.line("yolo = \(enabled ? "on" : "off")")
-        return
-      }
-      guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
-        await terminal.line("Usage: /set yolo <on|off>")
-        return
-      }
-      await approvalHandler.setYOLOEnabled(enabled)
-      if enabled {
-        await terminal.line("YOLO mode enabled for this session; all tool calls are permitted.")
-      } else {
-        await terminal.line("YOLO mode disabled; configured approval rules restored.")
-      }
+      await setYOLO(
+        parts: parts,
+        approvalHandler: approvalHandler,
+        configuration: &configuration,
+        configurationPath: configurationPath,
+        terminal: terminal)
       return
     }
 
@@ -5588,7 +5833,7 @@ struct MaiCLI {
         || levelKeys.contains(key)
     else {
       await terminal.line(
-        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, toolCallingStrategy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, limits.maxTotalTokens, limits.maxSeconds, retry.attempts, retry.delay, autocompact, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents, use.agentsmd"
+        "Unknown setting '\(parts[0])'. Available settings: yolo, delegation, tool.calling, tool.proxy, limits.maxToolCalls, limits.maxModelTurns, limits.maxSubagents, limits.maxSubagentDepth, limits.maxTotalTokens, limits.maxSeconds, retry.attempts, retry.delay, autocompact, ui.bgline, ui.fgcolor, ui.bgcolor, ui.fgprompt, ui.bgprompt, ui.fgtoolresult, ui.bold, ui.markdown, ui.toolResultLines, ui.subagents, use.agentsmd"
       )
       return
     }
@@ -5695,8 +5940,92 @@ struct MaiCLI {
   ]
 
   private static let toolCallingStrategyKeys: Set<String> = [
-    "toolcallingstrategy", "toolcallingmode", "toolcalling", "tools.mode",
+    "tool.calling", "tools.calling", "toolcalling", "toolcallingstrategy",
   ]
+
+  private static let toolProxyKeys: Set<String> = [
+    "tool.proxy", "tools.proxy", "toolproxy", "usetoolproxy",
+  ]
+
+  private static func listToolSettings(_ profile: SessionProfile, terminal: TerminalWriter) async {
+    await terminal.line("tool.calling = \(profile.toolCallingStrategy.rawValue)")
+    await terminal.line("tool.proxy = \(profile.useToolProxy ? "on" : "off")")
+  }
+
+  /// `/set yolo [on|off]`: permits every tool call without asking. The choice
+  /// is saved with the approval rules, so it applies to later runs too.
+  private static func setYOLO(
+    parts: [String],
+    approvalHandler: TerminalApprovalHandler,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard parts.count > 1 else {
+      let enabled = await approvalHandler.isYOLOEnabled()
+      await terminal.line("yolo = \(enabled ? "on" : "off")")
+      return
+    }
+    guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
+      await terminal.line("Usage: /set yolo <on|off>")
+      return
+    }
+    await approvalHandler.setYOLOEnabled(enabled)
+    let effect =
+      enabled
+      ? "YOLO mode enabled; all tool calls are permitted"
+      : "YOLO mode disabled; configured approval rules restored"
+    guard var draft = configuration, let configurationPath else {
+      await terminal.line("\(effect) for this session; no writable configuration is active.")
+      return
+    }
+    draft.approvals.yolo = enabled
+    do {
+      try draft.save(to: URL(fileURLWithPath: configurationPath))
+      configuration = draft
+      await terminal.line("\(effect), and saved for later runs.")
+    } catch {
+      await terminal.line(
+        "\(effect) for this session; could not save the configuration: \(error.localizedDescription)",
+        to: .standardError)
+    }
+  }
+
+  /// `/set tool.proxy [on|off]`: shows or changes whether models see only the
+  /// shared list-tools and call-tool pair instead of the agent's tools.
+  private static func setToolProxy(
+    parts: [String],
+    session: inout REPLSession,
+    runtime: AgentRuntime,
+    configuration: inout MaiConfiguration?,
+    configurationPath: String?,
+    terminal: TerminalWriter
+  ) async {
+    guard parts.count > 1 else {
+      await terminal.line("tool.proxy = \(session.profile.useToolProxy ? "on" : "off")")
+      return
+    }
+    guard parts.count == 2, let enabled = booleanSetting(parts[1]) else {
+      await terminal.line("Usage: /set tool.proxy <on|off>")
+      return
+    }
+    session.profile.useToolProxy = enabled
+    session.touch()
+    let value = enabled ? "on" : "off"
+    guard configuration != nil, configurationPath != nil else {
+      await terminal.line("Set tool.proxy = \(value) for this chat.")
+      return
+    }
+    if await persistAgentProfile(
+      session: session,
+      configuration: &configuration,
+      configurationPath: configurationPath,
+      runtime: runtime,
+      terminal: terminal)
+    {
+      await terminal.line("Set tool.proxy = \(value) for agent '\(session.profile.agentID)'.")
+    }
+  }
 
   private static func setToolCallingStrategy(
     parts: [String],
@@ -5707,7 +6036,7 @@ struct MaiCLI {
     terminal: TerminalWriter
   ) async {
     guard parts.count > 1 else {
-      await terminal.line("toolCallingStrategy = \(session.profile.toolCallingStrategy.rawValue)")
+      await terminal.line("tool.calling = \(session.profile.toolCallingStrategy.rawValue)")
       return
     }
     let rawValue = parts[1].lowercased()
@@ -5715,7 +6044,7 @@ struct MaiCLI {
       rawValue == "auto" ? ToolCallingStrategy.automatic : ToolCallingStrategy(rawValue: rawValue)
     guard parts.count == 2, let strategy else {
       await terminal.line(
-        "Usage: /set toolCallingStrategy <automatic|native|text|xml|json>")
+        "Usage: /set tool.calling <automatic|native|text|xml|json>")
       return
     }
     session.profile.toolCallingStrategy = strategy
@@ -5723,7 +6052,7 @@ struct MaiCLI {
     guard var draft = configuration, let configurationPath,
       let index = draft.agents.firstIndex(where: { $0.id == session.profile.agentID })
     else {
-      await terminal.line("Set toolCallingStrategy = \(strategy.rawValue) for this chat.")
+      await terminal.line("Set tool.calling = \(strategy.rawValue) for this chat.")
       return
     }
     draft.agents[index].toolCallingStrategy = strategy
@@ -5732,10 +6061,10 @@ struct MaiCLI {
       try await runtime.register(agent: session.profile.agentDefinition, replacingExisting: true)
       configuration = draft
       await terminal.line(
-        "Set toolCallingStrategy = \(strategy.rawValue) for agent '\(session.profile.agentID)'.")
+        "Set tool.calling = \(strategy.rawValue) for agent '\(session.profile.agentID)'.")
     } catch {
       await terminal.line(
-        "Set toolCallingStrategy = \(strategy.rawValue) for this chat; could not save the configuration: \(error.localizedDescription)",
+        "Set tool.calling = \(strategy.rawValue) for this chat; could not save the configuration: \(error.localizedDescription)",
         to: .standardError)
     }
   }
@@ -7532,7 +7861,8 @@ struct MaiCLI {
 
   private static func completionCandidates(
     workspace: AgentChatWorkspace,
-    configuration: MaiConfiguration?
+    configuration: MaiConfiguration?,
+    skills: [AgentSkill] = []
   ) -> [String] {
     var values = [
       "/help", "/help set", "/exit", "/quit", "/set yolo on", "/set yolo off", "/set ui.",
@@ -7548,9 +7878,9 @@ struct MaiCLI {
       "/set limits.maxSubagents ", "/set limits.maxSeconds ", "/set limits.maxTotalTokens ",
       "/set retry.attempts ", "/set retry.delay ", "/set autocompact ", "/set autocompact off",
       "/continue", "/retry",
-      "/set toolCallingStrategy automatic", "/set toolCallingStrategy native",
-      "/set toolCallingStrategy text", "/set toolCallingStrategy xml",
-      "/set toolCallingStrategy json",
+      "/set tool.", "/set tool.calling automatic", "/set tool.calling native",
+      "/set tool.calling text", "/set tool.calling xml", "/set tool.calling json",
+      "/set tool.proxy on", "/set tool.proxy off",
       "/set ui.bgline rgb:024", "/set ui.bgline none", "/set ui.fgprompt yellow",
       "/set ui.fgcolor none", "/set ui.bgcolor none", "/set ui.bgprompt none",
       "/set ui.fgtoolresult yellow", "/set use.", "/set use.agentsmd on", "/set use.agentsmd off",
@@ -7568,7 +7898,10 @@ struct MaiCLI {
       "/set ui.subagents stats", "/set ui.subagents none",
       "/agent use ",
       "/agent show ", "/agent add ", "/agent tools ", "/agent model ", "/agent prompt ",
-      "/agent provider ", "/agent remove ", "/edit agent", "/tools", "/proxy on", "/proxy off",
+      "/agent provider ", "/agent remove ", "/edit agent", "/tools",
+      "/skills", "/skills list", "/skills show ", "/skills enable ", "/skills disable ",
+      "/skills enable all", "/skills disable all", "/skills prompt ", "/skills path",
+      "/skills reload", "/help skills",
       "/mcp list",
       "/mcp add ", "/mcp enable ", "/mcp disable ",
       "/edit prompt", "/edit compact", "/edit config", "/edit mcps", "/chat compact ",
@@ -7608,7 +7941,16 @@ struct MaiCLI {
       values.append("/provider \(provider.id)")
       values.append("/models \(provider.id)")
     }
+    for skill in skills {
+      values.append("/skills show \(skill.name)")
+      values.append("/skills prompt \(skill.name) ")
+      if skill.isModelInvocable {
+        values.append("/skills enable \(skill.name)")
+        values.append("/skills disable \(skill.name)")
+      }
+    }
     var groupNames = Set(workspace.chats.flatMap(\.primaryAgent.toolGroupNames))
+    if skills.contains(where: \.isModelInvocable) { groupNames.insert(MaiSkillTools.groupID) }
     if configuration?.toolSources.contains(where: {
       $0.enabled && $0.kind == MaiStandardToolsPlugin.factoryKind
     }) == true {
@@ -7839,7 +8181,7 @@ struct MaiCLI {
     /agent remove ID    Drop a saved agent
     /agent acp ...      Register an external ACP agent (gemini, claude, codex, ...)
     /tools              List logical tool groups for the current agent
-    /proxy [on|off]     Inspect or toggle the shared tool proxy
+    /skills             List, enable, disable, or send skills (/help skills)
     /mcp list           List configured MCP servers and connection state
     /mcp add ...        Add, connect, persist, and enable a stdio MCP server
     /mcp enable ID      Connect and enable a configured MCP server
@@ -7867,8 +8209,10 @@ struct MaiCLI {
   private static let setHelp = """
     Settings commands:
       /set                         List current settings and their values
-      /set yolo BOOL               Permit all tool calls for this session (on/off)
-      /set toolCallingStrategy MODE  Use automatic/native tools, or text/XML/JSON emulation
+      /set yolo BOOL               Permit all tool calls without asking (on/off); kept for later runs
+      /set tool.                   List the tool calling settings
+      /set tool.calling MODE       Use automatic/native tools, or text/XML/JSON emulation
+      /set tool.proxy BOOL         Show models only the shared list-tools and call-tool pair (on/off)
       /set delegation MODE         off: runs every tool itself; subagent: may also hand work to a child
       /set limits.                 List the tool, turn, and subagent limits
       /set limits.maxToolCalls N   Tool calls allowed per run
@@ -7894,8 +8238,9 @@ struct MaiCLI {
       /set use.agentsmd BOOL       Put the working tree's AGENTS.md files — this directory up to
                                    the repository root — into every run's system prompt (on/off)
 
-    YOLO mode lasts for this session. Agent and UI settings are persisted in the
-    active configuration. COLOR accepts a named ANSI color, rgb:RGB, or none.
+    YOLO, agent, and UI settings are persisted in the active configuration; the -y
+    flag turns YOLO on for one run only. COLOR accepts a named ANSI color, rgb:RGB,
+    or none.
     """
 
   private static let chatHelp = """
@@ -8020,6 +8365,29 @@ struct MaiCLI {
     Enable the tools for an agent with /tools enable todo.
     """
 
+  private static let skillsHelp = """
+    Skills are folders holding a SKILL.md whose front matter gives a name and
+    a description and whose body is the instructions to follow: the layout
+    other coding agents use, so their skills work here unchanged. pmai reads
+    the project's .pmai/skills and ~/.pmai/skills (or $PMAI_HOME/skills); a
+    project skill shadows a home one of the same name. Each skill is also a
+    skills_NAME tool the model may call to get the instructions, once it is
+    enabled for the agent.
+
+      /skills                    List skills; * marks the ones the agent may call
+      /skills show NAME          Print a skill's file, tool state, and instructions
+      /skills enable NAME|all    Offer a skill (or every skill) to the current agent
+      /skills disable NAME|all   Stop offering it; /skills prompt still works
+      /skills prompt NAME [TEXT] Send the instructions, then TEXT, as your next message
+      /skills path               Print the directories scanned
+      /skills reload             Rescan the directories (every /skills command does)
+
+    /tools enable skills is the same as /skills enable all and also picks up
+    skills added later. A skill whose front matter says
+    disable-model-invocation: true is never a tool. Where the body says
+    $ARGUMENTS the TEXT goes there; otherwise it follows the instructions.
+    """
+
   private static let promptHelp = """
     Named system prompts. Every agent takes its instructions from one prompt
     in the catalog (prompts.system in the configuration), referenced by name
@@ -8134,7 +8502,8 @@ struct MaiCLI {
         --max-subagents N   concurrent background agents (default 0/off)
         --image PATH        attach an image (repeatable)
         --no-stream         disable response streaming
-        -y, --yolo          permit all tool calls without prompting for this session
+        -y, --yolo          permit all tool calls without prompting for this run
+                            (/set yolo on saves the choice for every run)
         --resume            reopen the most recently updated chat instead of a fresh one
         --markdown          render replies as markdown even when piped
         --no-markdown       print replies verbatim
