@@ -380,6 +380,7 @@ tools too.
 /todo                      show the list, numbered
 /todo add TEXT             append one pending item
 /todo done NUMBER|TEXT     mark an item done
+/todo remove NUMBER|TEXT   drop an item; the ones after it move up
 /todo edit                 edit the list in $EDITOR
 /todo clear                remove every item
 /todo path                 print where the file lives

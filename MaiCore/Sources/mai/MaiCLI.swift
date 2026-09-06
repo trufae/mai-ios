@@ -2710,6 +2710,20 @@ struct MaiCLI {
           name: MaiTodoTools.doneName, arguments: ["task": .string(rest)], list: &list))
       await storeTodo(list, in: todo, terminal: terminal)
 
+    case "remove", "rm", "delete", "del":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /todo remove NUMBER|TEXT")
+        return
+      }
+      guard let index = list.index(matching: rest) else {
+        await terminal.line(
+          list.isEmpty ? "The todo list is empty." : "No todo matched '\(rest)'.\n\(list.listing)")
+        return
+      }
+      guard let removed = list.remove(at: index) else { return }
+      await terminal.line("Removed: \(removed.title)\n\(list.listing)")
+      await storeTodo(list, in: todo, terminal: terminal)
+
     case "edit":
       guard
         let edited = await editTemporaryText(
@@ -6644,6 +6658,7 @@ struct MaiCLI {
       /todo                      Show the list, numbered
       /todo add TEXT             Append one pending item
       /todo done NUMBER|TEXT     Mark an item done by number or title fragment
+      /todo remove NUMBER|TEXT   Drop an item by number or title fragment
       /todo edit                 Edit the list in $EDITOR
       /todo clear                Remove every item
       /todo path                 Print where the file lives

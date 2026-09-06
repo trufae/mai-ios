@@ -153,6 +153,13 @@ public struct AgentTodoList: Codable, Equatable, Sendable {
     items[index].isDone = true
   }
 
+  /// Drops one item; the ones after it move up a number.
+  @discardableResult
+  public mutating func remove(at index: Int) -> AgentTodoItem? {
+    guard items.indices.contains(index) else { return nil }
+    return items.remove(at: index)
+  }
+
   public mutating func removeAll() {
     items.removeAll()
   }

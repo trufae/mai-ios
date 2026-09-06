@@ -2,6 +2,16 @@ import Foundation
 import MaiCore
 import MaiMarkdown
 
+#if canImport(Android)
+  import Android
+#elseif canImport(Musl)
+  import Musl
+#elseif canImport(Glibc)
+  import Glibc
+#elseif canImport(Darwin)
+  import Darwin
+#endif
+
 /// Everything the REPL prints goes through here, so a streamed reply, a tool
 /// line, and a block from a child agent are written one at a time and never
 /// interleave.

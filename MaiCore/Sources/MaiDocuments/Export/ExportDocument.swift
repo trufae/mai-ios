@@ -192,7 +192,7 @@ struct ExportImageCatalog {
     let index = resources.count + 1
     let resource = ExportResource(
       id: String(format: "img%03d", index),
-      href: String(format: "images/image%03d.%@", index, Self.fileExtension(for: image.mediaType)),
+      href: String(format: "images/image%03d.", index) + Self.fileExtension(for: image.mediaType),
       mediaType: image.mediaType,
       data: image.data,
       width: image.width,

@@ -82,6 +82,24 @@ func todoMatching() {
   #expect(list.items.count == 4)
 }
 
+@Test("Removing an item drops it and renumbers the rest")
+func todoRemove() {
+  var list = AgentTodoList(items: [
+    AgentTodoItem(title: "write tests"),
+    AgentTodoItem(title: "ship", isDone: true),
+    AgentTodoItem(title: "write docs"),
+  ])
+  #expect(list.remove(at: 3) == nil)
+  #expect(list.remove(at: -1) == nil)
+  let removed = list.remove(at: 1)
+  #expect(removed?.title == "ship")
+  #expect(list.items.map(\.title) == ["write tests", "write docs"])
+  #expect(list.doneCount == 0)
+  #expect(list.index(matching: "2") == 1)
+  #expect(list.index(matching: "docs") == 1)
+  #expect(list.listing.contains("2. [ ] write docs"))
+}
+
 @Test("The todo tools add, list, and tick off items")
 func todoTools() {
   var list = AgentTodoList()
