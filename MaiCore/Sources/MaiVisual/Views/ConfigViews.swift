@@ -618,11 +618,11 @@ private struct FocusedChatSettings: View {
       .border(.separator, placement: .outset)
     Toggle("Stream replies", isOn: streamingBinding)
     Toggle("Tool proxy", isOn: toolProxyBinding)
-    Toggle("Run tools in a subagent", isOn: delegationBinding)
+    Toggle("May delegate tool work", isOn: delegationBinding)
     Text(
       conversation.profile.toolDelegation.delegatesTools
-        ? "Tool calls run in a child agent; this chat keeps only their answers."
-        : "Tool calls and their results stay in this chat."
+        ? "The agent keeps its tools and can also hand work to a child that has them; only the answer lands here."
+        : "The agent runs every tool call itself."
     )
     .foregroundStyle(.muted)
     .lineLimit(2)

@@ -571,8 +571,9 @@ public final class VisualWorkspace {
     status = "Described agent '\(definition.id)'."
   }
 
-  /// Moves where a chat's tools run. Turning delegation on with no subagent
-  /// budget would silently do nothing, so it raises the budget too.
+  /// Lets a chat's agent hand tool work to a child, or not. Turning
+  /// delegation on with no subagent budget would silently do nothing, so it
+  /// raises the budget too.
   public func setToolDelegation(
     _ mode: AgentToolDelegation,
     for conversation: VisualConversation

@@ -238,7 +238,9 @@ func memoryReachesTopLevelRunsOnly() async throws {
   #expect(parent.messages[1].text.contains("Prefers Swift."))
   // The stored transcript is untouched: memory is run-scoped context.
   #expect(parent.messages[0].text == "Be terse.")
-  let worker = try #require(requests.first { $0.tools.contains { $0.name == "read_file" } })
+  // Both sides carry the file tool now; only the parent can start agents.
+  let worker = try #require(
+    requests.first { !$0.tools.contains { $0.name == AgentRuntime.agentStartToolName } })
   #expect(!worker.messages.contains { $0.text.contains("Prefers Swift.") })
 
   // Clearing it costs the next run nothing.
@@ -265,7 +267,11 @@ private actor MemoryFixtureProvider: ChatProvider {
     requests.append(request)
     let results = request.messages.flatMap(\.toolResults)
     guard results.isEmpty else { return ProviderResponse(message: .assistant("done")) }
-    guard let tool = request.tools.first else {
+    // The parent has its own tools as well; it delegates whenever it can.
+    guard
+      let tool = request.tools.first(where: { $0.name == AgentRuntime.agentStartToolName })
+        ?? request.tools.first
+    else {
       return ProviderResponse(message: .assistant("done"))
     }
     let arguments: JSONValue =

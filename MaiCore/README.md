@@ -422,11 +422,13 @@ collects a background answer, and `agent_stop` kills a subtree. A caller may
 only address pids inside its own subtree. The retired `spawn_agent` and
 `agent_launch` names still run but are no longer offered to models.
 
-`toolDelegation` decides where an agent's tools run. `inline` is the default and
-unchanged. `subagent` hides the concrete tools and offers only the `agent_*`
-family, so every tool call happens one level down in a child whose transcript is
-discarded — the chat grows by one answer instead of by a call and a result for
-every step. `/set delegation off|subagent` toggles it and persists it on the
+What an agent may call is always its definition's tool list, wherever it sits
+in the tree. `toolDelegation` decides whether it may also hand work to a child.
+`inline` is the default: the agent runs every call itself. `subagent` keeps the
+agent's own tools and adds the `agent_*` family, so bulky work can go one level
+down to a child whose transcript is discarded — the chat grows by one answer
+instead of by a call and a result for every step, while small calls still run
+in place. `/set delegation off|subagent` toggles it and persists it on the
 agent. With no child definition named, MaiCore derives a `<agent>.worker` that
 inherits the parent's provider, model, and tools.
 

@@ -1065,7 +1065,52 @@ func subagentsDisabledByDefault() async throws {
   #expect(!names.contains(AgentRuntime.agentStopToolName))
 }
 
-@Test("Delegation moves an agent's tools into a child and keeps only the answer")
+@Test("A delegating agent still calls its own tools itself when it wants to")
+func toolDelegationKeepsTheAgentsOwnTools() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(
+      message: AgentMessage(
+        role: .assistant,
+        content: [
+          .toolCall(
+            ToolCall(
+              id: "read-1", name: "read_file",
+              arguments: .object(["path": .string("Parser.swift")])))
+        ]),
+      stopReason: .toolCall),
+    ProviderResponse(message: .assistant("Read it myself."), stopReason: .stop),
+  ])
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "read_file",
+        description: "Read a file",
+        inputSchema: objectSchema(required: ["path"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      ToolOutput(text: "contents of \(arguments.objectValue?["path"]?.stringValue ?? "-")")
+    })
+
+  let result = try await runtime.run(
+    AgentRequest(
+      agentID: "main",
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("what is in Parser.swift?")],
+      toolNames: ["read_file"],
+      limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4, maxSubagents: 2),
+      toolDelegation: .subagent))
+
+  #expect(result.response.text == "Read it myself.")
+  #expect(result.toolCalls == 1)
+  #expect(result.transcript.flatMap(\.toolResults).map(\.text) == ["contents of Parser.swift"])
+  // The call ran here: no child was started for it.
+  #expect(await runtime.supervisor.processes().count == 1)
+}
+
+@Test("Delegation lets an agent hand tool work to a child that has the same tools")
 func toolDelegationRunsToolsInAChild() async throws {
   let provider = DelegatingProvider()
   let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
@@ -1093,15 +1138,18 @@ func toolDelegationRunsToolsInAChild() async throws {
 
   #expect(result.response.text == "Parser.swift holds the parser.")
   let requests = await provider.requests
-  // The orchestrator is offered the agent family and none of its own tools.
+  // The orchestrator keeps its own tools and is offered the agent family besides.
   let parentTools = Set(requests[0].tools.map(\.name))
   #expect(
     parentTools == [
+      "read_file",
       AgentRuntime.agentStartToolName, AgentRuntime.agentStatusToolName,
       AgentRuntime.agentResultToolName, AgentRuntime.agentStopToolName,
     ])
-  // The derived worker is offered the real tool instead.
-  let workerRequest = try #require(requests.first { $0.tools.contains { $0.name == "read_file" } })
+  // The derived worker gets the same tool and no way to delegate further.
+  let workerRequest = try #require(
+    requests.first { !$0.tools.contains { $0.name == AgentRuntime.agentStartToolName } })
+  #expect(workerRequest.tools.map(\.name) == ["read_file"])
   #expect(workerRequest.messages.first?.text.contains("focused worker agent") == true)
   #expect(workerRequest.messages.last?.text.contains("Read Parser.swift") == true)
   // Only one call and one answer reach the orchestrator: no file contents.
@@ -1678,7 +1726,8 @@ private struct FixtureMCPSource: MCPToolSource {
 }
 
 /// An orchestrator that delegates one file read, and the worker that performs
-/// it. Which side is answering is decided by the tools the request carries.
+/// it. Both carry the file tool; only the orchestrator can start agents, and
+/// that is how the fixture tells which side is answering.
 private actor DelegatingProvider: ChatProvider {
   nonisolated let descriptor = ProviderDescriptor(
     id: "delegating",
@@ -1692,7 +1741,7 @@ private actor DelegatingProvider: ChatProvider {
   ) async throws -> ProviderResponse {
     requests.append(request)
     let results = request.messages.flatMap(\.toolResults)
-    let isWorker = request.tools.contains { $0.name == "read_file" }
+    let isWorker = !request.tools.contains { $0.name == AgentRuntime.agentStartToolName }
     if isWorker {
       guard results.isEmpty else {
         return ProviderResponse(

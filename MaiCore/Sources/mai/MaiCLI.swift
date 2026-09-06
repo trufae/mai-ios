@@ -4734,8 +4734,9 @@ struct MaiCLI {
     }
   }
 
-  /// Moves where the current agent's tools run. Turning delegation on with no
-  /// subagent budget would silently do nothing, so it raises the budget too.
+  /// Lets the current agent hand tool work to a child, or not. Turning
+  /// delegation on with no subagent budget would silently do nothing, so it
+  /// raises the budget too.
   private static func setToolDelegation(
     parts: [String],
     session: inout REPLSession,
@@ -4768,8 +4769,8 @@ struct MaiCLI {
     session.touch()
     var notes = [
       mode == .subagent
-        ? "Tool calls now run in a child agent; this chat keeps only their answers."
-        : "Tool calls now run in this chat."
+        ? "This agent keeps its tools and can also hand work to a child that has them; only the child's answer lands here."
+        : "This agent runs every tool call itself."
     ]
     if raised { notes.append("Raised limits.maxSubagents to 1.") }
     guard var draft = configuration, let configurationPath,
@@ -6524,7 +6525,7 @@ struct MaiCLI {
       /set                         List current settings and their values
       /set yolo BOOL               Permit all tool calls for this session (on/off)
       /set toolCallingStrategy MODE  Use automatic/native tools, or text/XML/JSON emulation
-      /set delegation MODE         Run this agent's tools inline, or in a subagent
+      /set delegation MODE         off: runs every tool itself; subagent: may also hand work to a child
       /set limits.                 List the tool, turn, and subagent limits
       /set limits.maxToolCalls N   Tool calls allowed per run
       /set limits.maxModelTurns N  Model turns allowed per run
@@ -6690,8 +6691,9 @@ struct MaiCLI {
     model turn: /queue lists it, @PID TEXT addresses one agent once. Their
     output prints in blocks prefixed agent#PID; /set ui.subagents picks how much.
 
-    Where tools run is per definition: /set delegation subagent moves them into
-    a child so this chat keeps only the answers. /set limits.maxSubagents and
+    An agent always has the tools its definition allows, at any depth of the
+    tree. /set delegation subagent also lets it hand bulky work to a child with
+    the same tools, so only the answer lands here. /set limits.maxSubagents and
     /set limits.maxSubagentDepth bound the tree.
     """
 

@@ -1039,14 +1039,14 @@ public actor AgentRuntime {
     // A disabled definition stays registered so a host can list it, but it is
     // never offered as a subagent.
     let offeredAgents = request.subagentNames.filter { agents[$0]?.isEnabled == true }
-    // Delegation only takes effect where children are actually permitted;
-    // otherwise hiding the tools would leave the agent unable to work at all.
+    // What an agent may call is its definition's allow-list, wherever it sits
+    // in the tree. Delegation adds a way to hand work to a child that has the
+    // same tools; it never takes the tools away. It only takes effect where
+    // children are actually permitted.
     let delegating = request.toolDelegation.delegatesTools && request.limits.maxSubagents > 0
     var definitions: [ToolDefinition] = []
-    if !delegating {
-      for name in concreteNames.sorted() {
-        if let tool = tools[name] { definitions.append(tool.definition) }
-      }
+    for name in concreteNames.sorted() {
+      if let tool = tools[name] { definitions.append(tool.definition) }
     }
     if request.limits.maxSubagents > 0, delegating || !offeredAgents.isEmpty {
       definitions.append(
@@ -1108,7 +1108,7 @@ public actor AgentRuntime {
 
     let startDescription =
       delegating
-      ? "Run a task in a child agent. Your tools live there, not here: describe the work and the child does it, so this conversation keeps only the answer."
+      ? "Run a task in a child agent that has your tools. Its steps and tool output stay in its own transcript and only the answer comes back, so use it for work whose output would be bulky here; small calls you can make yourself."
       : "Run one task in a child agent with a transcript of its own, so its intermediate steps never enter this conversation. Available agents: \(names.joined(separator: ", "))."
 
     return [
