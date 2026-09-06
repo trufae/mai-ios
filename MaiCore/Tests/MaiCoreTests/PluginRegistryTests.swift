@@ -28,10 +28,11 @@ func installsBundledIntegrationPlugins() async throws {
       run: AgentEventContext(runID: UUID(), parentRunID: nil, agentID: "test", depth: 0),
       modelTurn: 1))
   #expect(output.text == "20")
+  let ocrKind = MaiVisionOCRPlugin.preferredFactoryKind
   let ocr = try await registry.makeOCRProvider(
-    kind: "vision",
-    context: PluginFactoryContext(id: "vision"))
-  #expect(ocr.descriptor.id == "vision")
+    kind: ocrKind,
+    context: PluginFactoryContext(id: ocrKind))
+  #expect(ocr.descriptor.id == ocrKind)
   let mcp = try await registry.makeMCPToolSource(
     kind: "streamable-http",
     configuration: ConfiguredMCPServer(
@@ -219,3 +220,51 @@ private struct FixtureMCP: MCPToolSource {
   func agentTools() async throws -> [any AgentTool] { [] }
   func close() async {}
 }
+
+#if os(macOS) || os(Linux)
+  @Test("Tesseract OCR is registered on every desktop platform")
+  func tesseractOCRFactoryIsRegistered() async throws {
+    let registry = PluginRegistry()
+    try await registry.install(MaiVisionOCRPlugin())
+    let ocr = try await registry.makeOCRProvider(
+      kind: TesseractOCRProvider.factoryKind,
+      context: PluginFactoryContext(
+        id: "ocr",
+        options: ["command": .string("pmai-missing-tesseract")],
+        environment: ["PATH": "/nonexistent"]))
+    let tesseract = try #require(ocr as? TesseractOCRProvider)
+    #expect(tesseract.descriptor.id == "ocr")
+    #expect(tesseract.executablePath == nil)
+    await #expect(throws: OCRProviderError.self) {
+      _ = try await tesseract.recognize(
+        OCRRequest(imageData: Data([0x89, 0x50]), mimeType: "image/png", filename: "a.png"))
+    }
+  }
+
+  @Test("Tesseract OCR runs the configured command and returns its output")
+  func tesseractOCRRunsCommand() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("pmai-tesseract-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let script = directory.appendingPathComponent("tesseract")
+    try "#!/bin/sh\ntest -f \"$1\" || exit 3\necho \"  hello  \"\necho world\n"
+      .write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755], ofItemAtPath: script.path)
+    let ocr = TesseractOCRProvider(command: "tesseract", searchPath: [directory.path])
+    #expect(ocr.executablePath == script.path)
+    let result = try await ocr.recognize(
+      OCRRequest(imageData: Data([0x89, 0x50]), mimeType: "image/png", filename: "a.png"))
+    #expect(result.markdown == "hello\nworld")
+  }
+
+  @Test("An unavailable OCR provider fails only when used")
+  func unavailableOCRProviderFailsLazily() async throws {
+    let ocr = UnavailableOCRProvider(reason: "nothing here")
+    await #expect(throws: OCRProviderError.unavailable("nothing here")) {
+      _ = try await ocr.recognize(
+        OCRRequest(imageData: Data([1]), mimeType: "image/png", filename: "a.png"))
+    }
+  }
+#endif

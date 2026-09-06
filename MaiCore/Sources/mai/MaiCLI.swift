@@ -788,7 +788,14 @@ private struct MaiCLI {
       try await plugins.install(MaiCoreBuiltinsPlugin(), origin: "built-in")
       try await plugins.install(MaiMCPPlugin(), origin: "built-in")
       try await plugins.install(MaiOpenAIPlugin(), origin: "built-in")
-      try await plugins.install(MaiVisionOCRPlugin(), origin: "built-in")
+      do {
+        try await plugins.install(MaiVisionOCRPlugin(), origin: "built-in")
+      } catch {
+        // OCR is optional: a platform without a usable backend must not stop
+        // the CLI from starting.
+        FileHandle.standardError.write(
+          Data("warning: OCR plugin unavailable: \(error.localizedDescription)\n".utf8))
+      }
       try await plugins.install(MaiStandardToolsPlugin(), origin: "built-in")
       let nativePluginHost = NativePluginHost()
       try await loadNativePlugins(
@@ -807,7 +814,7 @@ private struct MaiCLI {
         configurationPath: configurationPath,
         plugins: plugins,
         environment: environment)
-      let ocrProvider = try await configuredOCRProvider(
+      let ocrProvider = await configuredOCRProvider(
         plugins: plugins,
         configuration: configuration,
         environment: environment)
@@ -1016,19 +1023,42 @@ private struct MaiCLI {
     configuration = draft
   }
 
+  /// Picks the configured OCR backend, falling back to whatever this platform
+  /// can offer (Apple Vision, then a local tesseract binary). OCR never blocks
+  /// startup: when nothing is usable the returned provider explains why the
+  /// first time OCR is requested.
   private static func configuredOCRProvider(
     plugins: PluginRegistry,
     configuration: MaiConfiguration?,
     environment: [String: String]
-  ) async throws -> any OCRProvider {
+  ) async -> any OCRProvider {
+    var failures: [String] = []
     if let configured = configuration?.ocrProviders.first(where: \.enabled) {
-      return try await plugins.makeOCRProvider(
-        kind: configured.kind,
-        context: configured.context(environment: environment))
+      do {
+        return try await plugins.makeOCRProvider(
+          kind: configured.kind,
+          context: configured.context(environment: environment))
+      } catch {
+        failures.append(error.localizedDescription)
+      }
     }
-    return try await plugins.makeOCRProvider(
-      kind: "vision",
-      context: PluginFactoryContext(id: "vision", environment: environment))
+    var fallbackKinds = [MaiVisionOCRPlugin.preferredFactoryKind]
+    for kind in ["vision", TesseractOCRProvider.factoryKind] where !fallbackKinds.contains(kind) {
+      fallbackKinds.append(kind)
+    }
+    for kind in fallbackKinds {
+      do {
+        return try await plugins.makeOCRProvider(
+          kind: kind,
+          context: PluginFactoryContext(id: kind, environment: environment))
+      } catch {
+        failures.append(error.localizedDescription)
+      }
+    }
+    return UnavailableOCRProvider(
+      reason: failures.isEmpty
+        ? "no OCR provider is registered on this platform."
+        : failures.joined(separator: " "))
   }
 
   private static func configureRuntime(
@@ -4669,7 +4699,9 @@ private struct MaiCLI {
         ConfiguredToolSource(id: "example-tools", kind: "example", enabled: false),
       ],
       ocrProviders: [
-        ConfiguredOCRProvider(id: "vision", kind: "vision")
+        ConfiguredOCRProvider(
+          id: MaiVisionOCRPlugin.preferredFactoryKind,
+          kind: MaiVisionOCRPlugin.preferredFactoryKind)
       ],
       mcpServers: [
         ConfiguredMCPServer(

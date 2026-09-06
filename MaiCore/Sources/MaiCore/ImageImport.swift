@@ -136,14 +136,31 @@ public enum ImageAttachmentImporter {
   }
 }
 
+/// A placeholder used when no OCR backend could be created. Hosts keep
+/// working and only surface the reason when OCR is actually requested.
+public struct UnavailableOCRProvider: OCRProvider {
+  public let descriptor = OCRProviderDescriptor(id: "unavailable", displayName: "No OCR")
+  public let reason: String
+
+  public init(reason: String) {
+    self.reason = reason
+  }
+
+  public func recognize(_ request: OCRRequest) async throws -> OCRResult {
+    throw OCRProviderError.unavailable(reason)
+  }
+}
+
 public enum OCRProviderError: LocalizedError, Equatable, Sendable {
   case noText
   case recognitionFailed(String)
+  case unavailable(String)
 
   public var errorDescription: String? {
     switch self {
     case .noText: "No text could be recognized in the image."
     case .recognitionFailed(let message): "OCR failed: \(message)"
+    case .unavailable(let reason): "OCR is unavailable: \(reason)"
     }
   }
 }
