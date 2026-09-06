@@ -33,7 +33,7 @@ let package = Package(
     .target(name: "MaiMCP", dependencies: ["MaiCore"]),
     .target(name: "MaiStandardTools", dependencies: ["MaiCore", "MaiDocuments"]),
     .target(name: "MaiVisionOCR", dependencies: ["MaiCore"]),
-    .target(name: "MaiDocuments", dependencies: ["MaiCore"]),
+    .target(name: "MaiDocuments", dependencies: ["MaiCore", "MaiMarkdown"]),
     .target(
       name: "CMaiPluginABI",
       publicHeadersPath: "include"),

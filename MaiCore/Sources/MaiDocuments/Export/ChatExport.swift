@@ -1,0 +1,218 @@
+import Foundation
+import MaiCore
+
+/// The files a chat can be saved as.
+public enum ChatExportFormat: String, CaseIterable, Sendable {
+  case markdown
+  case json
+  /// The JSON envelope plus what the host knows about how the chat ran.
+  case debug
+  case epub
+  case docx
+
+  public var fileExtension: String {
+    switch self {
+    case .markdown: "md"
+    case .json, .debug: "json"
+    case .epub: "epub"
+    case .docx: "docx"
+    }
+  }
+
+  public var displayName: String {
+    switch self {
+    case .markdown: "Markdown"
+    case .json: "JSON"
+    case .debug: "Debug JSON"
+    case .epub: "EPUB"
+    case .docx: "Word"
+    }
+  }
+
+  /// Accepts what people type: `md`, `word`, `doc`, `debug-json`.
+  public init?(argument: String) {
+    switch argument.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "markdown", "md": self = .markdown
+    case "json": self = .json
+    case "debug", "debug-json", "debugjson": self = .debug
+    case "epub": self = .epub
+    case "docx", "doc", "word": self = .docx
+    default: return nil
+    }
+  }
+}
+
+/// What the host knows about how the chat was run, for the debug export: the
+/// tools the model was offered and whatever else it wants to record.
+public struct ChatExportDebug: Codable, Equatable, Sendable {
+  public var provider: String
+  public var providerDisplayName: String?
+  public var toolDefinitions: [ToolDefinition]
+  /// Free-form facts such as the working directory or the tool strategy.
+  public var settings: [String: String]
+
+  public init(
+    provider: String,
+    providerDisplayName: String? = nil,
+    toolDefinitions: [ToolDefinition] = [],
+    settings: [String: String] = [:]
+  ) {
+    self.provider = provider
+    self.providerDisplayName = providerDisplayName
+    self.toolDefinitions = toolDefinitions
+    self.settings = settings
+  }
+}
+
+/// The JSON export: the chat as stored, wrapped with where it came from. It
+/// decodes back, so a chat can be moved between machines and hosts.
+public struct ChatExportEnvelope: Codable, Equatable, Sendable {
+  public static let format = "maicore.chat"
+
+  public var format: String
+  public var version: Int
+  public var title: String
+  public var agent: String
+  public var provider: String
+  public var model: String
+  public var generator: String
+  public var exportedAt: Date
+  public var chat: AgentChat
+  public var debug: ChatExportDebug?
+
+  public init(
+    chat: AgentChat,
+    generator: String,
+    exportedAt: Date = Date(),
+    debug: ChatExportDebug? = nil
+  ) {
+    format = Self.format
+    version = 1
+    title = chat.displayTitle
+    agent = chat.primaryAgent.id
+    provider = chat.primaryAgent.provider.rawValue
+    model = chat.primaryAgent.model
+    self.generator = generator
+    self.exportedAt = exportedAt
+    self.chat = chat
+    self.debug = debug
+  }
+}
+
+/// Turns a MaiCore chat into any export format.
+public enum ChatExport {
+  /// The document every format is written from. Tool calls and results are
+  /// kept as code blocks so the record shows what the agent did; reasoning
+  /// goes into the entry's hidden sections.
+  public static func document(
+    for chat: AgentChat,
+    generator: String = "MaiCore",
+    includeToolTraffic: Bool = true
+  ) -> ExportDocument {
+    var entries: [ExportEntry] = []
+    for message in chat.messages {
+      var body: [String] = []
+      var reasoning: [String] = []
+      var attachments: [ExportImage] = []
+      for part in message.content {
+        switch part {
+        case .text(let text):
+          let rendered = MessageContentFilter.render(text)
+          body.append(rendered.visibleText)
+          reasoning.append(contentsOf: rendered.hiddenSections.filter { $0.tag == "think" }.map(\.content))
+        case .reasoning(let text):
+          reasoning.append(text)
+        case .image(let image):
+          switch image.source {
+          case .data(let data):
+            attachments.append(
+              ExportImage(
+                name: image.name ?? "Image \(attachments.count + 1)",
+                mediaType: image.mimeType, data: data, width: image.width, height: image.height))
+          case .url(let url):
+            body.append("![\(image.name ?? "image")](\(url.absoluteString))")
+          }
+        case .file(let file):
+          if let text = file.text, !text.isEmpty {
+            body.append("**\(file.name)**\n\n" + fenced(text))
+          } else {
+            body.append("*Attached: \(file.name)*")
+          }
+        case .audio(let audio):
+          body.append("*Audio: \(audio.name ?? audio.mimeType)*")
+        case .resource(let resource):
+          if let text = resource.text, !text.isEmpty { body.append(text) }
+        case .toolCall(let call):
+          guard includeToolTraffic else { continue }
+          body.append(fenced("→ \(call.name) \(call.arguments.compactJSONString)"))
+        case .toolResult(let result):
+          guard includeToolTraffic else { continue }
+          body.append(fenced("← \(result.isError ? "error" : "result")\n\(result.text)"))
+        }
+      }
+      let role: ExportRole =
+        switch message.role {
+        case .user: .user
+        case .assistant: .assistant
+        case .system, .developer: .system
+        case .tool: .tool
+        }
+      entries.append(
+        ExportEntry(
+          role: role,
+          reasoning: reasoning,
+          body: body.joined(separator: "\n\n"),
+          attachments: attachments))
+    }
+    return ExportDocument(
+      identifier: chat.id,
+      title: chat.displayTitle,
+      createdAt: chat.createdAt,
+      updatedAt: chat.updatedAt,
+      generator: generator,
+      entries: entries)
+  }
+
+  public static func data(
+    for chat: AgentChat,
+    format: ChatExportFormat,
+    generator: String = "MaiCore",
+    debug: ChatExportDebug? = nil
+  ) throws -> Data {
+    switch format {
+    case .markdown:
+      return Data(MarkdownExport.text(for: document(for: chat, generator: generator)).utf8)
+    case .json, .debug:
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+      encoder.dateEncodingStrategy = .iso8601
+      let envelope = ChatExportEnvelope(
+        chat: chat, generator: generator, debug: format == .debug ? debug : nil)
+      return try encoder.encode(envelope)
+    case .epub:
+      return EPUBExport.data(for: document(for: chat, generator: generator))
+    case .docx:
+      return DOCXExport.data(for: document(for: chat, generator: generator))
+    }
+  }
+
+  /// A file name made from the title, safe on every file system.
+  public static func filename(for chat: AgentChat, format: ChatExportFormat) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>:").union(.newlines).union(.controlCharacters)
+    let words = chat.displayTitle.components(separatedBy: invalid).joined(separator: " ")
+      .split(whereSeparator: \.isWhitespace)
+    var name = words.joined(separator: " ")
+    if name.count > 80 { name = String(name.prefix(80)) }
+    // A title ending in a period would otherwise read "title..md".
+    name = name.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+    if name.isEmpty { name = "chat" }
+    return name + "." + format.fileExtension
+  }
+
+  /// A fenced block that survives backticks in the text.
+  private static func fenced(_ text: String) -> String {
+    var fence = "```"
+    while text.contains(fence) { fence += "`" }
+    return fence + "\n" + text + "\n" + fence
+  }
+}

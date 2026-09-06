@@ -1343,7 +1343,7 @@ struct MaiCLI {
   private static let commandsAllowedDuringTurn: Set<String> = [
     "/help", "/queue", "/agents", "/set", "/cwd", "/pwd", "/exit", "/quit", "/todo",
     "/providers", "/models", "/plugins", "/mcps", "/prompts", "/project", "/attach", "/image",
-    "/copy",
+    "/copy", "/export",
   ]
 
   /// The REPL is one loop over one stream of events. Typed lines arrive from
@@ -2130,6 +2130,8 @@ struct MaiCLI {
         await terminal.line(toolHelp)
       case "queue", "/queue":
         await terminal.line(queueHelp)
+      case "export", "/export":
+        await terminal.line(exportHelp)
       default:
         await terminal.line(
           "Unknown help topic '\(argument)'. Try /help, or /help set, memory, agents, chat, edit, tools, or queue."
@@ -2364,6 +2366,8 @@ struct MaiCLI {
         argument, session: &session, ocrProvider: ocrProvider, terminal: terminal)
     case "/copy":
       await copyToClipboard(argument, session: session, terminal: terminal)
+    case "/export":
+      await handleExportCommand(argument, session: session, runtime: runtime, terminal: terminal)
     #if PMAI_HAS_VISUAL
       case "/visual":
         await runVisualMode(
@@ -4859,6 +4863,85 @@ struct MaiCLI {
     }
   }
 
+  /// `/export FORMAT [PATH]` writes this chat as a file. The formats are the
+  /// ones PocketMai offers, produced by the same code: markdown, json, debug
+  /// (json plus the tools and settings the run used), epub, and docx.
+  private static func handleExportCommand(
+    _ argument: String,
+    session: REPLSession,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(String.init)
+    guard let first = fields.first, let format = ChatExportFormat(argument: first) else {
+      await terminal.line(exportHelp)
+      return
+    }
+    let chat = session.chat
+    guard chat.hasConversation else {
+      await terminal.line("Nothing to export yet: this chat has no messages.")
+      return
+    }
+    var debug: ChatExportDebug?
+    if format == .debug {
+      let profile = session.profile
+      let tools = await runtime.availableTools().filter { profile.toolNames.contains($0.name) }
+      let provider = await runtime.availableProviders().first { $0.id == profile.provider }
+      debug = ChatExportDebug(
+        provider: profile.provider.rawValue,
+        providerDisplayName: provider?.displayName,
+        toolDefinitions: tools,
+        settings: [
+          "workingDirectory": FileManager.default.currentDirectoryPath,
+          "toolCallingStrategy": profile.toolCallingStrategy.rawValue,
+          "toolDelegation": profile.toolDelegation.rawValue,
+          "useToolProxy": profile.useToolProxy ? "true" : "false",
+          "subagentNames": profile.subagentNames.sorted().joined(separator: ", "),
+          "limits.maxToolCalls": String(profile.limits.maxToolCalls),
+          "limits.maxModelTurns": String(profile.limits.maxModelTurns),
+          "limits.maxSubagents": String(profile.limits.maxSubagents),
+          "limits.maxSubagentDepth": String(profile.limits.maxSubagentDepth),
+        ])
+    }
+    let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    var target: URL
+    if fields.count > 1 {
+      let raw = fields[1].trimmingCharacters(in: .whitespacesAndNewlines)
+      let expanded = NSString(string: raw).expandingTildeInPath
+      target = URL(fileURLWithPath: expanded, relativeTo: current).standardizedFileURL
+      var isDirectory: ObjCBool = false
+      let exists = FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory)
+      if raw.hasSuffix("/") || (exists && isDirectory.boolValue) {
+        // A folder, existing or not: the file is named after the chat inside it.
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        target.appendPathComponent(ChatExport.filename(for: chat, format: format))
+      }
+    } else {
+      target = current.appendingPathComponent(ChatExport.filename(for: chat, format: format))
+    }
+    do {
+      let data = try ChatExport.data(for: chat, format: format, generator: "pmai", debug: debug)
+      try data.write(to: target, options: .atomic)
+      await terminal.line(
+        "Exported \(format.displayName) (\(AgentProcessInfo.compactCount(data.count)) bytes) to \(target.path)")
+    } catch {
+      await terminal.line("error: Could not export: \(error.localizedDescription)", to: .standardError)
+    }
+  }
+
+  private static let exportHelp = """
+    Export this chat as a file, the same formats PocketMai offers:
+
+      /export markdown [PATH]   A Markdown transcript (.md)
+      /export json [PATH]       The chat as stored, in a JSON envelope (.json)
+      /export debug [PATH]      The JSON plus the tools and settings this chat runs with
+      /export epub [PATH]       An EPUB book, one chapter per message
+      /export docx [PATH]       A Word document
+
+    PATH may be a file or a folder; without it the file is named after the
+    chat title and written to the current directory.
+    """
+
   private static func copyToClipboard(
     _ argument: String,
     session: REPLSession,
@@ -6131,7 +6214,8 @@ struct MaiCLI {
       "/providers", "/models ", "/provider ", "/baseurl ", "/model ", "/prompts", "/prompt",
       "/agents", "/agents tree", "/agents log ", "/agents kill ", "/agents focus ",
       "/agents focus main", "/queue", "/queue push ", "/queue pop", "/queue flush",
-      "/help queue", "/set ui.subagents all", "/set ui.subagents tools",
+      "/help queue", "/help export", "/export markdown ", "/export json ", "/export debug ",
+      "/export epub ", "/export docx ", "/set ui.subagents all", "/set ui.subagents tools",
       "/set ui.subagents stats", "/set ui.subagents none",
       "/agent use ",
       "/agent show ", "/agent add ", "/tools", "/proxy on", "/proxy off", "/mcp list",
@@ -6407,6 +6491,7 @@ struct MaiCLI {
     /attach PATH        Attach a Word, PDF, JSON, or text file as Markdown/plain text
     /attach clear       Drop the attachments queued for the next message
     /copy [N]           Copy the last reply, or the last N messages, to the clipboard
+    /export FORMAT [PATH]  Save this chat as markdown, json, debug, epub, or docx
     \(visualHelp)/clear              Clear conversation history
     /exit               Exit the REPL
 

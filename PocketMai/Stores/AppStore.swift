@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import MaiCore
+import MaiDocuments
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -3265,10 +3266,7 @@ final class AppStore: ObservableObject {
     imageSize: AttachmentImageSize = .full
   ) async -> URL? {
     do {
-      let data = try await EPUBExporter.makeEPUB(
-        conversation: conversation,
-        includeThinking: effectiveShowThinking(for: conversation),
-        imageSize: imageSize)
+      let data = EPUBExport.data(for: try await exportDocument(conversation, imageSize: imageSize))
       let url = try ConversationExportFiles.url(for: conversation, format: .epub)
       try data.write(to: url, options: .atomic)
       return url
@@ -3283,10 +3281,7 @@ final class AppStore: ObservableObject {
     imageSize: AttachmentImageSize = .full
   ) async -> URL? {
     do {
-      let data = try await DOCXExporter.makeDOCX(
-        conversation: conversation,
-        includeThinking: effectiveShowThinking(for: conversation),
-        imageSize: imageSize)
+      let data = DOCXExport.data(for: try await exportDocument(conversation, imageSize: imageSize))
       let url = try ConversationExportFiles.url(for: conversation, format: .docx)
       try data.write(to: url, options: .atomic)
       return url
@@ -3294,6 +3289,23 @@ final class AppStore: ObservableObject {
       errorMessage = "Could not export Word document: \(error.localizedDescription)"
       return nil
     }
+  }
+
+  /// The shared export document, with every image the conversation shows
+  /// fetched, rendered, and sized as requested.
+  private func exportDocument(
+    _ conversation: Conversation,
+    imageSize: AttachmentImageSize
+  ) async throws -> ExportDocument {
+    let includeThinking = effectiveShowThinking(for: conversation)
+    let catalog = try await ConversationExportContent.buildImageResourceCatalog(
+      conversation: conversation,
+      includeThinking: includeThinking,
+      imageSize: imageSize)
+    return ConversationExportContent.exportDocument(
+      conversation: conversation,
+      includeThinking: includeThinking,
+      imageCatalog: catalog)
   }
 
   func exportCurrentConversationFile(
@@ -4725,9 +4737,10 @@ final class AppStore: ObservableObject {
   ) -> String {
     switch format {
     case .markdown:
-      return MarkdownExporter.makeMarkdown(
-        conversation: conversation,
-        includeThinking: effectiveShowThinking(for: conversation))
+      return MarkdownExport.text(
+        for: ConversationExportContent.exportDocument(
+          conversation: conversation,
+          includeThinking: effectiveShowThinking(for: conversation)))
     case .json, .debug:
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

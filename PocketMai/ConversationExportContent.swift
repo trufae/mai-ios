@@ -1,4 +1,5 @@
 import Foundation
+import MaiDocuments
 import SwiftUI
 import UIKit
 
@@ -175,6 +176,24 @@ enum ConversationExportContent {
 
     func resource(forMermaidDiagram source: String) -> ImageResource? {
       mermaidResourcesBySource[MarkdownMermaidRenderer.normalizedSource(source)]
+    }
+
+    /// The remote images and rendered diagrams, keyed the way the shared
+    /// export document expects: by markdown source and by fence source.
+    func exportImages(diagramSources: [String]) -> (inline: [String: ExportImage], diagrams: [String: ExportImage]) {
+      func image(_ resource: ImageResource, name: String) -> ExportImage {
+        ExportImage(
+          name: name, mediaType: resource.mediaType, data: resource.data,
+          width: resource.width, height: resource.height)
+      }
+      let inline = remoteResourcesBySource.mapValues { image($0, name: "Image") }
+      var diagrams: [String: ExportImage] = [:]
+      for source in diagramSources {
+        if let resource = resource(forMermaidDiagram: source) {
+          diagrams[source] = image(resource, name: "Mermaid diagram")
+        }
+      }
+      return (inline, diagrams)
     }
 
     func firstImageAttachmentDisplayName(in message: ChatMessage) -> String? {
@@ -729,5 +748,52 @@ enum ConversationExportContent {
       .replacingOccurrences(of: ">", with: "&gt;")
       .replacingOccurrences(of: "\"", with: "&quot;")
       .replacingOccurrences(of: "'", with: "&#39;")
+  }
+}
+
+
+extension ConversationExportContent {
+  /// The document the shared writers in MaiDocuments export. With an image
+  /// catalog the attached, remote, and rendered images travel along; without
+  /// one only the text does, which is all markdown needs.
+  static func exportDocument(
+    conversation: Conversation,
+    includeThinking: Bool,
+    imageCatalog: ImageResourceCatalog? = nil
+  ) -> ExportDocument {
+    var entries: [ExportEntry] = []
+    var diagramSources: [String] = []
+    for message in conversation.messages {
+      let content = messageContent(for: message, includeThinking: includeThinking)
+      let attachments = message.attachments.compactMap { attachment -> ExportImage? in
+        guard attachment.kind == .image, let resource = imageCatalog?.resource(for: attachment)
+        else { return nil }
+        return ExportImage(
+          name: attachment.displayName, mediaType: resource.mediaType, data: resource.data,
+          width: resource.width, height: resource.height)
+      }
+      entries.append(
+        ExportEntry(
+          role: ExportRole(rawValue: message.role.rawValue) ?? .assistant,
+          reasoning: content.reasoningSections,
+          body: content.visibleText,
+          attachments: attachments))
+      for text in [content.visibleText] + content.reasoningSections {
+        diagramSources.append(contentsOf: ExportDocument.mermaidSources(in: text))
+      }
+    }
+    var document = ExportDocument(
+      identifier: conversation.id,
+      title: summary(for: conversation).title,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      generator: "PocketMai",
+      entries: entries)
+    if let imageCatalog {
+      let images = imageCatalog.exportImages(diagramSources: diagramSources)
+      document.inlineImages = images.inline
+      document.diagrams = images.diagrams
+    }
+    return document
   }
 }

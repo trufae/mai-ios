@@ -125,7 +125,10 @@ sizes or OCR. `/attach clear` drops everything queued. The converters live in
 the `MaiDocuments` module, which PocketMai links as well, so the app, the CLI,
 and its visual mode share one implementation. `MaiDocuments` needs PDFKit for
 PDFs, so PDF conversion is unavailable on Linux while Word, JSON, and text work
-everywhere.
+everywhere. The same module holds the exporters (`ChatExport`, `MarkdownExport`,
+`EPUBExport`, `DOCXExport`): they write from a small `ExportDocument` that each
+host builds from its own chat model, so `/export` here and the share sheet in
+PocketMai produce the same files.
 
 `/image` always takes a mode and a path. `tiny`, `small`, `medium`, and `big`
 cap the longest edge at 100, 320, 640, and 1024 pixels; `full` preserves the
@@ -225,6 +228,9 @@ turn runs is queued and joins the conversation at the agent's next model turn â€
 after the tool results it is about to read â€” so a running agent can be steered
 without stopping it. `/queue` lists what is waiting, `/queue push TEXT` adds
 without sending, `/queue pop` drops the newest, and `/queue flush` drops all.
+`/export markdown|json|debug|epub|docx [PATH]` saves the chat as a file, with
+the same writers PocketMai uses (`MaiDocuments`): `debug` is the JSON envelope
+plus the tools and settings the chat runs with.
 `@PID TEXT` sends one message to a running child agent, and `/agents focus PID`
 sends everything typed to it until `/agents focus main`. When a tool asks for
 approval the question is printed above the prompt and answered with `y`, `a`,
