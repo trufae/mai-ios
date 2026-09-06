@@ -5645,8 +5645,8 @@ private struct MaiCLI {
     /exit               Exit the REPL
 
     Input: <<WORD starts a multiline message ending at WORD alone
-           Up/Down or Ctrl+P/N history · Ctrl+A/E beginning/end · Ctrl+W delete word
-           Ctrl+C cancel run · Ctrl+Z suspend
+           Up/Down or Ctrl+P/N history · Ctrl+R reverse search · Ctrl+A/E beginning/end
+           Ctrl+W delete word · Ctrl+C cancel run · Ctrl+Z suspend
     """
 
   private static let setHelp = """

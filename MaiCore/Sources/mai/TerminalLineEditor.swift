@@ -14,6 +14,20 @@ import MaiCore
 /// Small dependency-free line editor for the REPL. Non-interactive input keeps
 /// normal `readLine` behaviour, while terminals gain history and completion.
 final class TerminalLineEditor {
+  private struct ReverseSearchState {
+    var query: [UInt8] = []
+    var matchIndex: Int?
+    var failed: Bool
+  }
+
+  private enum ReverseSearchResult {
+    case accepted(line: [UInt8], historyIndex: Int?, cursor: Int)
+    case cancelled
+    case interrupted
+    case submitted([UInt8])
+    case endOfFile
+  }
+
   private let historyURL: URL?
   private var history: [String]
   private let maximumHistory = 500
@@ -104,6 +118,29 @@ final class TerminalLineEditor {
             draft: &draft)
         else { continue }
         redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+      case 18:  // Ctrl+R
+        switch reverseSearch(original: bytes, startingAt: historyIndex) {
+        case .accepted(let line, let index, let acceptedCursor):
+          if historyIndex == nil, index != nil { draft = bytes }
+          bytes = line
+          cursor = acceptedCursor
+          historyIndex = index
+          redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+        case .cancelled:
+          redraw(prompt: prompt, bytes: bytes, cursor: cursor)
+        case .interrupted:
+          wasInterrupted = true
+          write("\r\u{1B}[2K^C\n")
+          return ""
+        case .submitted(let line):
+          renderSubmittedLine(prompt: prompt, bytes: line)
+          let submitted = String(decoding: line, as: UTF8.self)
+          if rememberInput { remember(submitted) }
+          return submitted
+        case .endOfFile:
+          write("\n")
+          return nil
+        }
       case 23:  // Ctrl+W
         guard cursor > 0 else { continue }
         let start = previousWordStart(in: bytes, before: cursor)
@@ -223,6 +260,121 @@ final class TerminalLineEditor {
     }
     cursor = bytes.count
     return true
+  }
+
+  private func reverseSearch(original: [UInt8], startingAt historyIndex: Int?)
+    -> ReverseSearchResult
+  {
+    let initialIndex = historyIndex ?? history.indices.last
+    var state = ReverseSearchState(
+      matchIndex: initialIndex,
+      failed: initialIndex == nil)
+    var undoStack: [ReverseSearchState] = []
+    redrawReverseSearch(state, original: original)
+
+    while let byte = readByte() {
+      switch byte {
+      case 1:  // Ctrl+A accepts the match and moves to its beginning.
+        let selection = reverseSearchSelection(state, original: original)
+        return .accepted(line: selection, historyIndex: state.matchIndex, cursor: 0)
+      case 3:  // Ctrl+C cancels the whole input.
+        return .interrupted
+      case 5:  // Ctrl+E accepts the match and moves to its end.
+        let selection = reverseSearchSelection(state, original: original)
+        return .accepted(
+          line: selection,
+          historyIndex: state.matchIndex,
+          cursor: selection.count)
+      case 7:  // Ctrl+G restores the line from before the search.
+        return .cancelled
+      case 9:  // Tab accepts the match for editing.
+        let selection = reverseSearchSelection(state, original: original)
+        return .accepted(
+          line: selection,
+          historyIndex: state.matchIndex,
+          cursor: selection.count)
+      case 10, 13:
+        return .submitted(reverseSearchSelection(state, original: original))
+      case 18:  // Ctrl+R repeats the search before the current match.
+        if let index = state.matchIndex,
+          let match = matchingHistoryIndex(for: state.query, atOrBefore: index - 1)
+        {
+          state.matchIndex = match
+          state.failed = false
+        } else {
+          state.failed = true
+          write("\u{7}")
+        }
+      case 27:  // An escape sequence accepts the match for editing.
+        let selection = reverseSearchSelection(state, original: original)
+        guard readByte() == 91, let code = readByte() else {
+          return .accepted(
+            line: selection,
+            historyIndex: state.matchIndex,
+            cursor: selection.count)
+        }
+        if code == 51 { _ = readByte() }
+        let acceptedCursor =
+          code == 68
+          ? previousCharacterStart(in: selection, before: selection.count)
+          : selection.count
+        return .accepted(
+          line: selection,
+          historyIndex: state.matchIndex,
+          cursor: acceptedCursor)
+      case 127, 8:
+        guard let previous = undoStack.popLast() else {
+          write("\u{7}")
+          continue
+        }
+        state = previous
+      default:
+        guard byte >= 32 else {
+          write("\u{7}")
+          continue
+        }
+        let character = readCharacter(startingWith: byte)
+        undoStack.append(state)
+        state.query.append(contentsOf: character)
+        if let match = matchingHistoryIndex(
+          for: state.query,
+          atOrBefore: state.matchIndex ?? history.count - 1)
+        {
+          state.matchIndex = match
+          state.failed = false
+        } else {
+          state.failed = true
+          write("\u{7}")
+        }
+      }
+      redrawReverseSearch(state, original: original)
+    }
+    return .endOfFile
+  }
+
+  private func matchingHistoryIndex(for query: [UInt8], atOrBefore upperBound: Int) -> Int? {
+    guard upperBound >= 0, !history.isEmpty else { return nil }
+    let needle = String(decoding: query, as: UTF8.self)
+    if needle.isEmpty { return min(upperBound, history.count - 1) }
+    for index in stride(from: min(upperBound, history.count - 1), through: 0, by: -1) {
+      if history[index].contains(needle) { return index }
+    }
+    return nil
+  }
+
+  private func reverseSearchSelection(_ state: ReverseSearchState, original: [UInt8]) -> [UInt8] {
+    guard let index = state.matchIndex else { return original }
+    return Array(history[index].utf8)
+  }
+
+  private func redrawReverseSearch(_ state: ReverseSearchState, original: [UInt8]) {
+    let mode = state.failed ? "failed reverse-i-search" : "reverse-i-search"
+    let query = String(decoding: state.query, as: UTF8.self)
+    let selection = reverseSearchSelection(state, original: original)
+    redraw(
+      prompt: "(\(mode))`\(query)': ",
+      bytes: selection,
+      cursor: selection.count)
   }
 
   private func complete(
