@@ -2562,19 +2562,9 @@ enum PromptSlashCommand {
   }
 }
 
-struct TodoItem: Identifiable, Codable, Equatable, Sendable {
-  var id: UUID
-  var title: String
-  var isDone: Bool
-  var createdAt: Date
-
-  init(id: UUID = UUID(), title: String, isDone: Bool = false, createdAt: Date = Date()) {
-    self.id = id
-    self.title = title
-    self.isDone = isDone
-    self.createdAt = createdAt
-  }
-}
+/// The todo list is shared with pmai: the item, the tools, and the Markdown
+/// form live in MaiCore, and the stored keys are unchanged.
+typealias TodoItem = AgentTodoItem
 
 struct ToolFile: Identifiable, Codable, Equatable, Sendable {
   var id: UUID

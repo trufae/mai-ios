@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MaiCore
 import MaiStandardTools
 import UIKit
 
@@ -27,16 +28,8 @@ enum BuiltInToolCatalog {
     store: AppStore
   ) async -> String? {
     switch call.name {
-    case TodoTool.listName:
-      return TodoTool.list(store: store)
-    case TodoTool.addName:
-      let title = call.arguments["title"] ?? ""
-      return TodoTool.add(title: title, store: store)
-    case TodoTool.doneName:
-      let query =
-        call.arguments["title_or_id"] ?? call.arguments["id"]
-        ?? call.arguments["title"] ?? ""
-      return TodoTool.markDone(query: query, store: store)
+    case let name where TodoTool.toolNames.contains(name):
+      return TodoTool.execute(name: name, arguments: call.argumentValues, store: store)
     case MaiCalculatorTool.name:
       return await PocketMaiPluginHost.shared.callStandardTool(
         name: call.name,
@@ -726,77 +719,26 @@ enum ClipboardTool {
   }
 }
 
+/// The todo tools live in MaiCore and are shared with pmai; here the list
+/// they drive is the one in tool settings, which the Todo settings screen
+/// edits as well.
 @MainActor
 enum TodoTool {
-  static let listName = "todo_list"
-  static let addName = "todo_add"
-  static let doneName = "todo_done"
+  static let toolNames = MaiTodoTools.toolNames
+  static let definitions = MaiTodoTools.definitions
 
-  static let definitions: [ToolDefinition] = [
-    ToolDefinition(
-      name: listName,
-      description: "List todos with short IDs and status.",
-      parameters: []
-    ),
-    ToolDefinition(
-      name: addName,
-      description: "Add a pending todo.",
-      parameters: [
-        ToolParameterDef(
-          name: "title", type: "string",
-          description: "Todo title.", required: true)
-      ]
-    ),
-    ToolDefinition(
-      name: doneName,
-      description: "Mark a todo done by short ID or title substring.",
-      parameters: [
-        ToolParameterDef(
-          name: "title_or_id", type: "string",
-          description: "Short ID or title substring.",
-          required: true)
-      ]
-    ),
-  ]
-
-  static func list(store: AppStore) -> String {
-    let todos = store.settings.toolSettings.todos
-    if todos.isEmpty { return "No todos." }
-    return todos.map { todo in
-      let id = String(todo.id.uuidString.prefix(8))
-      let status = todo.isDone ? "[done]" : "[pending]"
-      return "- \(id) \(status) \(todo.title)"
-    }.joined(separator: "\n")
-  }
-
-  static func add(title: String, store: AppStore) -> String {
-    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Error: title cannot be empty." }
-    let todo = TodoItem(title: trimmed)
-    store.settings.toolSettings.todos.append(todo)
-    store.saveSettings()
-    return "Added: \(trimmed) (id=\(String(todo.id.uuidString.prefix(8))))"
-  }
-
-  static func markDone(query: String, store: AppStore) -> String {
-    let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !q.isEmpty else { return "Error: title_or_id is required." }
-    let lower = q.lowercased()
-    guard
-      let index = store.settings.toolSettings.todos.firstIndex(where: { todo in
-        todo.id.uuidString.lowercased().hasPrefix(lower)
-          || todo.title.lowercased().contains(lower)
-      })
-    else {
-      return "Error: no todo matched '\(q)'."
+  static func execute(
+    name: String,
+    arguments: [String: AgentToolArgumentValue],
+    store: AppStore
+  ) -> String {
+    var list = AgentTodoList(items: store.settings.toolSettings.todos)
+    let result = MaiTodoTools.execute(name: name, arguments: arguments, list: &list)
+    if list.items != store.settings.toolSettings.todos {
+      store.settings.toolSettings.todos = list.items
+      store.saveSettings()
     }
-    if store.settings.toolSettings.todos[index].isDone {
-      return "Already done: \(store.settings.toolSettings.todos[index].title)"
-    }
-    store.settings.toolSettings.todos[index].isDone = true
-    let title = store.settings.toolSettings.todos[index].title
-    store.saveSettings()
-    return "Marked done: \(title)"
+    return result
   }
 }
 

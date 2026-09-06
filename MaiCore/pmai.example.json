@@ -157,6 +157,9 @@
         "run_python",
         "run_sh",
         "run_system",
+        "todo_add",
+        "todo_done",
+        "todo_list",
         "weather",
         "web_fetch",
         "web_search"
@@ -170,6 +173,7 @@
         "github",
         "mastodon",
         "run",
+        "todo",
         "weather",
         "web"
       ],

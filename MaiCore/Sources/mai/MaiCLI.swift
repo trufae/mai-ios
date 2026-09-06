@@ -167,10 +167,12 @@ private enum CLIError: LocalizedError {
   case invalidCount(String, String)
   case configNotFound(String)
   case noProvider
+  case noProject
   case invalidImage(String)
 
   var errorDescription: String? {
     switch self {
+    case .noProject: "No project is open."
     case .invalidURL(let value): "Invalid URL: \(value)"
     case .missingValue(let option): "Missing value after \(option)."
     case .unknownOption(let option): "Unknown option: \(option)"
@@ -272,6 +274,38 @@ private struct VisualBridge {
   var implicitProviders: [ConfiguredProvider]
   var providerBaseURLs: ProviderBaseURLStore
   var memory: MemoryState
+  var todo: TodoState
+}
+
+/// Where the current project's todo list lives. The `todo_*` tools are
+/// registered before the project is opened, so they resolve the file through
+/// this box on every call; the file itself is the only copy, read fresh each
+/// time so edits made in an editor are seen at once.
+private final class TodoState: @unchecked Sendable {
+  private let lock = NSLock()
+  private let home: AgentHome
+  private var project: AgentProject?
+
+  init(home: AgentHome) {
+    self.home = home
+  }
+
+  func focus(project: AgentProject) {
+    lock.withLock { self.project = project }
+  }
+
+  var url: URL? {
+    lock.withLock { project.map { home.todoURL(for: $0) } }
+  }
+
+  var current: AgentTodoList {
+    url.flatMap { try? AgentTodoList.load(from: $0) } ?? AgentTodoList()
+  }
+
+  func save(_ list: AgentTodoList) throws {
+    guard let url else { throw CLIError.noProject }
+    try list.save(to: url)
+  }
 }
 
 /// Everything the memory feature needs that outlives one command: where the
@@ -940,12 +974,15 @@ private struct MaiCLI {
         registry: plugins)
       let memoryState = MemoryState(
         home: resolvedHome(options: options, environment: environment))
+      let todoState = TodoState(
+        home: resolvedHome(options: options, environment: environment))
       try await registerTools(
         in: runtime,
         plugins: plugins,
         configuration: configuration,
         environment: environment)
       try await registerMemoryTools(in: runtime, state: memoryState)
+      try await registerTodoTools(in: runtime, state: todoState)
       try await synchronizeToolGroupSelections(
         configuration: &configuration,
         configurationPath: configurationPath,
@@ -988,6 +1025,7 @@ private struct MaiCLI {
         atWorkingDirectory: URL(
           fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
       memoryState.adopt(project: project, settings: configuration?.memory ?? .init())
+      todoState.focus(project: project)
       await runtime.configureMemory(memoryState.promptSection)
       let store = resolvedChatStore(options: options, home: home, project: project)
       importLegacyChats(into: store, project: project, options: options, environment: environment)
@@ -1063,7 +1101,8 @@ private struct MaiCLI {
           configurationPath: configurationPath,
           implicitProviders: setup.implicitProviders,
           providerBaseURLs: ProviderBaseURLStore(setup.providerBaseURLs),
-          memory: memoryState),
+          memory: memoryState,
+          todo: todoState),
         terminal: terminal)
     } catch {
       FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -1234,6 +1273,18 @@ private struct MaiCLI {
               arguments: arguments.objectValue ?? [:],
               chats: state.reachableChats()))
         })
+    }
+  }
+
+  /// Exposes the shared `todo_*` tools over the current project's list file.
+  /// Like the memory tools they are registered before agents are filtered
+  /// against the known tool names, so an agent may list them like any other.
+  private static func registerTodoTools(
+    in runtime: AgentRuntime,
+    state: TodoState
+  ) async throws {
+    for tool in MaiTodoTools.makeTools(url: { state.url }) {
+      try await runtime.register(tool: tool)
     }
   }
 
@@ -1487,6 +1538,7 @@ private struct MaiCLI {
       await terminal.configureToolResultLines(ui.toolResultLines)
       await terminal.configureToolResultColor(ui.toolResultForeground)
       visual.memory.focus(project: project, chatID: session.id)
+      visual.todo.focus(project: project)
       await runtime.configureMemory(visual.memory.promptSection)
       await announceAgentAttention(
         runtime: runtime, announced: &announcedAttention, terminal: terminal)
@@ -1767,6 +1819,8 @@ private struct MaiCLI {
         await terminal.line(setHelp)
       case "memory", "/memory":
         await terminal.line(memoryHelp)
+      case "todo", "/todo":
+        await terminal.line(todoHelp)
       case "agents", "agent", "/agents", "/agent":
         await terminal.line(agentsHelp)
       case "chat", "/chat":
@@ -1829,6 +1883,8 @@ private struct MaiCLI {
       } catch {
         await terminal.line("error: \(error.localizedDescription)", to: .standardError)
       }
+    case "/todo":
+      await handleTodoCommand(argument, todo: visual.todo, terminal: terminal)
     case "/memory":
       await handleMemoryCommand(
         argument,
@@ -2307,6 +2363,79 @@ private struct MaiCLI {
     if names.contains(requested) { return requested }
     let matches = names.filter { $0.caseInsensitiveCompare(requested) == .orderedSame }
     return matches.count == 1 ? matches[0] : nil
+  }
+
+  /// `/todo` in full: the same list the `todo_*` tools drive, for the person
+  /// at the keyboard. Every action reads the file afresh, so the list an
+  /// agent just changed is what gets shown or edited.
+  private static func handleTodoCommand(
+    _ argument: String,
+    todo: TodoState,
+    terminal: TerminalWriter
+  ) async {
+    let fields = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+    let rest = fields.count > 1 ? fields[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    var list = todo.current
+
+    switch action {
+    case "", "show", "list":
+      await terminal.line(list.listing)
+
+    case "add":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /todo add TEXT")
+        return
+      }
+      await terminal.line(
+        MaiTodoTools.execute(
+          name: MaiTodoTools.addName, arguments: ["title": .string(rest)], list: &list))
+      await storeTodo(list, in: todo, terminal: terminal)
+
+    case "done", "check":
+      guard !rest.isEmpty else {
+        await terminal.line("Usage: /todo done NUMBER|TEXT")
+        return
+      }
+      await terminal.line(
+        MaiTodoTools.execute(
+          name: MaiTodoTools.doneName, arguments: ["task": .string(rest)], list: &list))
+      await storeTodo(list, in: todo, terminal: terminal)
+
+    case "edit":
+      guard
+        let edited = await editTemporaryText(
+          list.markdown, suffix: AgentTodoList.filename, terminal: terminal)
+      else { return }
+      await storeTodo(AgentTodoList(markdown: edited), in: todo, terminal: terminal)
+
+    case "clear":
+      await storeTodo(AgentTodoList(), in: todo, terminal: terminal)
+
+    case "path":
+      await terminal.line(todo.url?.path ?? AgentTodoList.filename)
+
+    default:
+      await terminal.line(todoHelp)
+    }
+  }
+
+  private static func storeTodo(
+    _ list: AgentTodoList,
+    in todo: TodoState,
+    terminal: TerminalWriter
+  ) async {
+    do {
+      try todo.save(list)
+      await terminal.line(
+        list.isEmpty
+          ? "Todo list cleared."
+          : "Todo list saved to \(todo.url?.path ?? AgentTodoList.filename) (\(list.pendingCount) pending, \(list.doneCount) done)."
+      )
+    } catch {
+      await terminal.line("error: \(error.localizedDescription)", to: .standardError)
+    }
   }
 
   /// `/memory` in full: read it, edit it, extend it from what was said, and
@@ -5560,6 +5689,8 @@ private struct MaiCLI {
       "/memory", "/memory edit", "/memory learn", "/memory learn --all", "/memory add ",
       "/memory clear", "/memory on", "/memory off", "/memory scope none",
       "/memory scope project", "/memory scope all", "/edit memory", "/edit memory-prompt",
+      "/help todo", "/todo", "/todo add ", "/todo done ", "/todo edit", "/todo clear",
+      "/todo path",
       "/set limits.", "/set limits.maxToolCalls ", "/set limits.maxModelTurns ",
       "/set limits.maxSubagents ",
       "/set toolCallingStrategy automatic", "/set toolCallingStrategy native",
@@ -5766,10 +5897,11 @@ private struct MaiCLI {
               MaiWebSearchTool.name,
               MaiWebFetchTool.name,
               MaiMastodonTool.name,
-            ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames),
+            ] + MaiFileWorkspaceTool.toolNames + MaiRunTool.toolNames + MaiGitHubTool.toolNames
+              + MaiTodoTools.toolNames),
           toolGroupNames: [
             "echo", "datetime", "calculator", "files", "run", "weather", "web", "mastodon",
-            "github",
+            "github", "todo",
           ],
           subagentNames: ["researcher"],
           limits: AgentRunLimits(maxSubagents: 4),
@@ -5816,6 +5948,7 @@ private struct MaiCLI {
     /baseurl URL       Change the current provider endpoint
     /model NAME         Select a model
     /memory             Show, edit, learn, or scope this project's durable memory
+    /todo               Show, add to, tick off, or edit this project's todo list
     /prompts            List reusable prompts and their agent associations
     /prompt [NAME]      Show or select the current agent's system prompt
     /chat               List, switch, archive, rename, or edit this project's chats
@@ -5975,6 +6108,22 @@ private struct MaiCLI {
     are chats_list, chats_search, chats_read, and chats_read_document; enable
     them for an agent with /tools enable chats. Edit the learning prompt with
     /edit memory-prompt.
+    """
+
+  private static let todoHelp = """
+    The project's todo list, kept in .pmai/todo.md as a Markdown task list the
+    agent plans with and ticks off through the todo_list, todo_add, and
+    todo_done tools. It survives across chats, and editing the file by hand
+    is fine: every command and tool call reads it afresh.
+
+      /todo                      Show the list, numbered
+      /todo add TEXT             Append one pending item
+      /todo done NUMBER|TEXT     Mark an item done by number or title fragment
+      /todo edit                 Edit the list in $EDITOR
+      /todo clear                Remove every item
+      /todo path                 Print where the file lives
+
+    Enable the tools for an agent with /tools enable todo.
     """
 
   private static let agentsHelp = """

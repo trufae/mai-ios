@@ -325,6 +325,30 @@ agent use other chats as a source of information. `memory.scope` bounds them:
 crosses working directories. Enable them for an agent with `/tools enable
 chats`; each call asks for approval.
 
+### Todo list
+
+A task list the agent plans with and ticks off as it works, and that the
+person can read and edit. pmai keeps one per project in `.pmai/todo.md` as a
+Markdown task list (`- [ ] pending`, `- [x] done`); PocketMai keeps one in its
+Todo tool settings. The item, the Markdown form, and the tools live in
+`AgentTodo.swift`, so both hosts behave the same.
+
+`todo_list` shows the numbered list, `todo_add` appends pending items (one per
+line adds several at once), and `todo_done` ticks one off by its number or a
+title fragment. The list persists across chats, and every call reads the file
+afresh, so editing it by hand is fine. The tools run without asking for
+approval; they are part of the default agent's tool set, and `/tools enable
+todo` adds them to another.
+
+```
+/todo                      show the list, numbered
+/todo add TEXT             append one pending item
+/todo done NUMBER|TEXT     mark an item done
+/todo edit                 edit the list in $EDITOR
+/todo clear                remove every item
+/todo path                 print where the file lives
+```
+
 ### Agents and subagents
 
 An agent definition is a saved setup — provider, model, system prompt, tool set,

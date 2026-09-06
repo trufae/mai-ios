@@ -141,7 +141,8 @@ extension ChatFileStore where Chat == AgentChat {
 ///     <workdir>/.pmai/project.json       the project's own id, name, and tint
 ///     <workdir>/.pmai/chats/<id>.json    one file per chat
 ///     <workdir>/.pmai/memory.md          the project's durable memory
-///     ~/.pmai/projects/<id>/             the same two, for read-only directories
+///     <workdir>/.pmai/todo.md            the project's todo list
+///     ~/.pmai/projects/<id>/             the same files, for read-only directories
 ///
 /// The root is `$PMAI_HOME` when set, else `~/.pmai`.
 public struct AgentHome: Sendable {
@@ -218,6 +219,11 @@ public struct AgentHome: Sendable {
   /// The project's durable memory file, beside its chats.
   public func memoryURL(for project: AgentProject) -> URL {
     storageDirectory(for: project).appendingPathComponent(AgentMemory.filename)
+  }
+
+  /// The project's todo list, beside its chats.
+  public func todoURL(for project: AgentProject) -> URL {
+    storageDirectory(for: project).appendingPathComponent(AgentTodoList.filename)
   }
 
   public func chatStore(for project: AgentProject) -> AgentChatStore {
