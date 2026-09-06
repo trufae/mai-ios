@@ -293,6 +293,26 @@ shows the per-run limits of the current
 chat's agent; `/set limits.maxToolCalls N` and `/set limits.maxModelTurns N`
 change them and persist the change into that agent's configuration. The
 `--max-tool-calls N` and `--max-turns N` flags override both for one launch.
+Reaching a limit no longer ends a task with an error. A run that spends
+`limits.maxModelTurns`, `limits.maxTotalTokens` (`/set limits.maxTotalTokens
+120k`), or `limits.maxSeconds` (`/set limits.maxSeconds 10m`; a long model call
+is cut short at the deadline) pauses at a turn boundary: everything it did is
+kept in the chat, the REPL prints `⏸ took 4m2s · model turn limit (50) reached`,
+and `/continue` (or `/retry`) runs the conversation again with a fresh budget
+from exactly that point. A cancelled or failed turn is kept the same way, with
+any tool call it never answered marked as not executed, so Ctrl+C is no longer
+the end of the work. With `yolo` on, a spent turn budget is treated as a
+checkpoint and the task continues on its own; the token and time caps always
+stop, since they exist to bound the spend. A model call that fails — a dropped
+connection, a 5xx — is repeated after `retry.delay` seconds up to
+`retry.attempts` times (`↻ retry 1/2 in 5s: …`) before the turn fails.
+`/set autocompact 120k` makes the runtime summarize the older part of the
+conversation, in place and before a model turn, once it is estimated to hold
+that many tokens (from the provider's own count when it reports one); the
+newest exchange stays verbatim, the compact prompt gets a focus on finishing
+the task at hand, and `✂ context: compacted 14 messages into a summary` says
+what happened. Context windows differ per model and few providers state
+theirs, so the threshold is an absolute count rather than a percentage.
 `/set toolCallingStrategy text|xml|json` forces message-based tool calling for
 models without native tools; `automatic` prefers native calls and otherwise
 uses JSON, while `native` requires native support. The selected mode is saved
@@ -454,7 +474,13 @@ draws them, `/agents log PID` prints one agent's own transcript,
 read when it continues. `/agents kill PID` ends it and everything under it.
 Any agent that is allowed
 subagents can start more, so the result is a tree, bounded by
-`limits.maxSubagentDepth` and `limits.maxSubagents` across the whole tree.
+`limits.maxSubagentDepth` and `limits.maxSubagents` across the whole tree. A
+child started when every slot is busy is not refused: it is registered as
+`queued`, shows as such in `/agents tree`, and starts by itself, in order, when
+a sibling ends; `agent_start` with `wait` false says `Queued researcher as #5`,
+and a blocking start simply waits its turn. A child that hits a run limit
+comes back to its parent as an error carrying whatever it said last, and the
+whole tree shares the run's turn, token, and time budgets.
 A chat is one process for its whole life, so a child started in the background
 three turns ago is still addressable by the run that started it. Every process
 has an inbox: `AgentSupervisor.post(_:to:)` queues a user message, and the run

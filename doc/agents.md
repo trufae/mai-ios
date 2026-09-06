@@ -68,9 +68,44 @@ makes a tree, not a two-level parent/child split:
     └── #5  worker  approval?    waiting on write_file
 ```
 
-Depth is bounded by `limits.maxSubagentDepth` and total concurrency by
-`limits.maxSubagents`; both are shared across the whole tree through a single
-`RunBudget`, so a runaway grandchild cannot outspend its grandparent's budget.
+Depth is bounded by `limits.maxSubagentDepth`; the turn, token, and time
+budgets are shared across the whole tree through a single `RunBudget`, so a
+runaway grandchild cannot outspend its grandparent's budget. Concurrency is
+bounded by `limits.maxSubagents` per parent agent, and a child started past it
+is **queued** rather than refused: the supervisor registers it in the `queued`
+state and admits it, oldest first, when a sibling ends. A queued child holds no
+slot and no budget; `agent_start` with `wait` false answers `Queued … as #N`
+with status `queued`, a blocking start just waits, and `agent_stop` on a queued
+child ends the wait like any other cancellation.
+
+## Limits pause, they do not fail
+
+A run that reaches `limits.maxModelTurns`, `limits.maxTotalTokens`, or
+`limits.maxSeconds` stops at its next turn boundary — after the tool results of
+the last reply, never between a call and its answer — and returns an
+`AgentResult` whose `interruption` says which limit it was and whose transcript
+is whole. Running that transcript again, on the same pid, picks the task up with
+a fresh budget; pmai does this with `/continue`, and by itself when `yolo` is on
+and the limit was the turn budget (a checkpoint), never for the token and time
+caps a person set to bound the spend. The deadline also cuts a model call
+short, and a tool call that would start past it is answered with an error
+instead of run. A child that pauses reports to its parent as an error carrying
+its last message, and shows as `stopped` in the tree. Failed model calls are
+repeated under the agent's `retry` policy first, each announced with
+`AgentEvent.retrying`.
+
+## Autocompact
+
+An agent with `autocompact.tokens` above zero has its conversation summarized
+by the runtime, before a model turn, once it is estimated to hold that many
+tokens — the provider's own input count from the last call when it reports
+one, the character count otherwise. Everything except the system prompt and
+the newest exchange is folded into one summary message through the same
+`prompts.compact` template `/chat compact` uses, with a built-in focus on
+finishing the task in hand; the outcome arrives as `transcriptEdited`, or
+`compactionFailed` when the model produced nothing, in which case the run
+carries on unchanged. The threshold is absolute because context windows differ
+per model and few providers say how big theirs is.
 
 **Scoping rule:** a process may only address pids inside its own subtree. `#3`
 can stop `#5`; it cannot stop `#1` or inspect `#2`. This is enforced in the
@@ -178,11 +213,12 @@ background forms, so existing configurations keep working.
 
 ```
 starting → running → completed
-              │  ╲
-              │   ╲→ failed
+   ↑          │  ╲
+ queued       │   ╲→ failed
               │    ╲→ cancelled
+              │     ╲→ interrupted (a limit paused it; the transcript is whole)
               ↓
-    waitingForApproval · waitingForInput · blocked(reason)
+    waitingForApproval · waitingForInput · blocked(reason) · paused
 ```
 
 A background process that needs a human is invisible unless something says so.
@@ -252,8 +288,13 @@ forwards only depth-0 events to the editor.
 /set ui.subagents LEVEL       all | tools | stats | none
 /tools enable|disable agents  allow or deny this agent the agent_* tool family
 /set delegation off|subagent      whether this agent may hand tool work to a child
-/set limits.maxSubagents N        concurrent children (0 disables the family)
+/set limits.maxSubagents N        concurrent children (0 disables the family); more are queued
 /set limits.maxSubagentDepth N    how deep the tree may go
+/set limits.maxSeconds 10m        wall-clock cap on a run, children included (off to lift)
+/set limits.maxTotalTokens 120k   token cap on a run (off to lift)
+/set retry.attempts N             repeats of a failed model call; /set retry.delay 5
+/set autocompact 120k             summarize older exchanges once the chat holds ~N tokens
+/continue                         run a paused, failed, or cancelled task on from where it stopped
 /edit delegation                  edit the brief template
 /edit worker                      edit the derived worker's instructions
 /prompts                          lists both alongside compact and system prompts
