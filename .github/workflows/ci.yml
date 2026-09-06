@@ -50,58 +50,48 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: x64
-            triple: x86_64-swift-linux-musl
+          - os: ubuntu-24.04
+            name: x64
             artifact: pmai-linux-x64-static
-          - name: arm64
-            triple: aarch64-swift-linux-musl
+          - os: ubuntu-24.04-arm
+            name: arm64
             artifact: pmai-linux-arm64-static
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # The Static Linux SDK must exactly match the host Swift toolchain.
-      - name: Set up Swift 6.3.3
-        uses: swift-actions/setup-swift@v3
-        with:
-          swift-version: "6.3.3"
+      - name: Show Swift version
+        run: swift --version
 
-      - name: Install Swift Static Linux SDK
-        run: |
-          swift sdk install \
-            https://download.swift.org/swift-6.3.3-release/static-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz \
-            --checksum 87c3eaf908e67c0e13a84367119e12273cec1d2cd3d81f7d74bb36722d6b607b
-          swift sdk list
-
-      # The static SDK links the Swift runtime, Foundation, libcurl, libxml2
-      # and musl into the executable, so the result runs on any Linux distro
-      # without a Swift toolchain installed. Both architectures are
-      # cross-compiled from the x64 runner; the linker strips the output.
+      # Links the Swift runtime, Foundation and libdispatch into the
+      # executable so it runs on machines without a Swift toolchain. The
+      # result still depends on glibc, libstdc++, libcurl and libxml2, which
+      # every mainstream distro ships. A fully static musl build is blocked
+      # on swift-tui, which imports Glibc without a Musl fallback.
       - name: Build static release CLI
         run: |
           swift build --package-path MaiCore -c release --product pmai \
-            --swift-sdk ${{ matrix.triple }} -Xswiftc -Osize -Xlinker -s
+            --static-swift-stdlib -Xswiftc -Osize
+          strip -s MaiCore/.build/release/pmai
 
-      - name: Verify the binary is static
+      - name: Verify no Swift runtime dependencies
         run: |
           set -eu
-          bin="MaiCore/.build/${{ matrix.triple }}/release/pmai"
+          bin=MaiCore/.build/release/pmai
           file "$bin"
-          if ldd "$bin" 2>&1 | grep -q "=>"; then
-            echo "::error::pmai still depends on shared libraries"
-            ldd "$bin"
+          ldd "$bin"
+          if ldd "$bin" | grep -Ei 'libswift|libFoundation|libdispatch|libBlocksRuntime|not found'; then
+            echo "::error::pmai still depends on Swift runtime shared libraries"
             exit 1
           fi
-          if [ "${{ matrix.name }}" = "x64" ]; then
-            "$bin" --help
-          fi
+          "$bin" --help
 
       - name: Upload static CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: MaiCore/.build/${{ matrix.triple }}/release/pmai
+          path: MaiCore/.build/release/pmai
           if-no-files-found: error
 
   android-cli:
