@@ -229,6 +229,18 @@ public actor AgentRuntime {
     }
   }
 
+  /// Where a paused run waits. A person pauses through the supervisor while
+  /// the run is inside a model call or a tool; it gets here at the next
+  /// boundary and stays until it is resumed or stopped.
+  private func holdWhilePaused(_ pid: AgentPID) async throws {
+    guard await supervisor.isPaused(pid) else { return }
+    // "thinking" or a tool name would describe work that is not happening.
+    await supervisor.note(pid, activity: "")
+    while await supervisor.isPaused(pid) {
+      try await Task.sleep(for: .milliseconds(100))
+    }
+  }
+
   private func runInternal(
     _ request: AgentRequest,
     runID: UUID,
@@ -275,13 +287,14 @@ public actor AgentRuntime {
     var totalUsage: TokenUsage?
     var localModelTurns = 0
     var localToolCalls = 0
-    var fingerprints = Set<ToolCallKey>()
+    var repeatedCalls: [ToolCallKey: Int] = [:]
     var completedToolRuns: [ToolCallKey: String] = [:]
 
     await emit(.started(context, provider.descriptor))
     await supervisor.note(pid, state: .running, transcript: transcript)
     while localModelTurns < request.limits.maxModelTurns {
       try Task.checkCancellation()
+      try await holdWhilePaused(pid)
       // Anything a person queued for this process since the last turn joins
       // the conversation here, after the tool results the model is about to
       // read, so a running agent can be steered without stopping it.
@@ -410,11 +423,20 @@ public actor AgentRuntime {
 
       for call in calls {
         try Task.checkCancellation()
+        try await holdWhilePaused(pid)
         let result: ToolResult
         if localToolCalls < request.limits.maxToolCalls, await budget.claimToolCall() {
           localToolCalls += 1
           await supervisor.note(pid, toolCalls: localToolCalls, activity: call.name)
-          if fingerprints.insert(ToolCallKey(call)).inserted {
+          // Repeating a call is often right — the directory changed, a file
+          // was written, a child is being polled — so only a call that keeps
+          // coming back with the same arguments is stopped, and never one of
+          // the agent tools, which exist to be polled.
+          let key = ToolCallKey(call)
+          let repeats = repeatedCalls[key, default: 0]
+          let pollable = Self.reservedToolNames.contains(Self.canonicalToolName(call.name))
+          if pollable || repeats < Self.maximumIdenticalCalls {
+            repeatedCalls[key] = repeats + 1
             result = try await execute(
               call,
               definitions: concreteDefinitions,
@@ -425,9 +447,11 @@ public actor AgentRuntime {
               budget: budget,
               emit: emit)
           } else {
+            await emit(.toolStarted(context, call))
             result = ToolResult(
               callID: call.id,
-              text: "Error: refusing to repeat an identical tool call.",
+              text:
+                "Error: this exact call has already run \(repeats) times with the same arguments; change them, or answer with what you have.",
               isError: true)
             await emit(.toolFinished(context, result))
           }
@@ -499,6 +523,9 @@ public actor AgentRuntime {
     // Legacy names resolve to the definition of the tool that replaced them.
     let definitionName = Self.canonicalToolName(resolvedCall.name)
     guard let definition = definitions.first(where: { $0.name == definitionName }) else {
+      // A call that never runs is still shown, so the person sees what the
+      // model tried rather than an error out of nowhere.
+      await emit(.toolStarted(context, resolvedCall))
       let result = ToolResult(
         callID: resolvedCall.id,
         text: "Error: tool '\(resolvedCall.name)' is not available to this agent.",
@@ -511,6 +538,7 @@ public actor AgentRuntime {
         arguments: resolvedCall.arguments,
         definition: definition)
     {
+      await emit(.toolStarted(context, resolvedCall))
       let result = ToolResult(
         callID: resolvedCall.id,
         text: "Error: \(validationError).",
@@ -1244,6 +1272,10 @@ public actor AgentRuntime {
 }
 
 extension AgentRuntime {
+  /// How often one call may run with exactly the same arguments in one run
+  /// before it is refused as a loop.
+  static let maximumIdenticalCalls = 3
+
   fileprivate static let reservedToolNames: Set<String> = [
     agentStartToolName, agentStatusToolName, agentResultToolName, agentStopToolName,
     subagentToolName, agentLaunchToolName,

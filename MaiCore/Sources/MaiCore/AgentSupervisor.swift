@@ -45,6 +45,8 @@ public actor AgentSupervisor {
   private var entries: [AgentPID: Entry] = [:]
   /// Messages posted to a process that its run has not read yet, oldest first.
   private var inboxes: [AgentPID: [AgentQueuedMessage]] = [:]
+  /// Processes a person has held; their runs wait at the next turn boundary.
+  private var paused: Set<AgentPID> = []
   private var nextPID = 1
   private var subscribers: [UUID: AsyncStream<AgentSupervisorEvent>.Continuation] = [:]
 
@@ -108,10 +110,54 @@ public actor AgentSupervisor {
       entry.handle?.cancel()
       entry.handle = nil
       entries[victim] = entry
+      paused.remove(victim)
       guard !entry.info.state.isTerminal else { continue }
       transition(victim, to: .cancelled, failure: reason, attention: nil, finished: true)
     }
     return doomed
+  }
+
+  /// Holds a process and everything under it, the way SIGSTOP holds a Unix
+  /// process. Each run finishes the model call or tool it is in, then waits
+  /// at its next turn boundary until `resume`, keeping its transcript, its
+  /// children, and its inbox; messages posted meanwhile are read when it
+  /// continues. A process already waiting on a person keeps showing that and
+  /// pauses once they have answered. Returns what was held.
+  @discardableResult
+  public func pause(_ pid: AgentPID) -> [AgentPID] {
+    var held: [AgentPID] = []
+    for process in tree().subtree(of: pid)
+    where !process.state.isTerminal && !paused.contains(process.pid) {
+      paused.insert(process.pid)
+      held.append(process.pid)
+      guard var entry = entries[process.pid], entry.info.attention == nil else { continue }
+      entry.info.state = .paused
+      entry.info.updatedAt = Date()
+      entries[process.pid] = entry
+      publish(.changed(entry.info))
+    }
+    return held
+  }
+
+  /// Lets a paused process and everything under it carry on from where they
+  /// stopped. Returns what was released.
+  @discardableResult
+  public func resume(_ pid: AgentPID) -> [AgentPID] {
+    var released: [AgentPID] = []
+    for process in tree().subtree(of: pid) where paused.contains(process.pid) {
+      paused.remove(process.pid)
+      released.append(process.pid)
+      guard var entry = entries[process.pid], entry.info.state == .paused else { continue }
+      entry.info.state = .running
+      entry.info.updatedAt = Date()
+      entries[process.pid] = entry
+      publish(.changed(entry.info))
+    }
+    return released
+  }
+
+  public func isPaused(_ pid: AgentPID) -> Bool {
+    paused.contains(pid)
   }
 
   /// Forgets terminal processes that nothing depends on any more.
@@ -240,7 +286,7 @@ public actor AgentSupervisor {
     guard var entry = entries[pid] else { return false }
     entry.info.runID = runID
     entry.info.task = task
-    entry.info.state = .running
+    entry.info.state = effectiveState(.running, for: pid)
     entry.info.attention = nil
     entry.info.failure = nil
     entry.info.finishedAt = nil
@@ -278,7 +324,9 @@ public actor AgentSupervisor {
   ) {
     guard var entry = entries[pid] else { return }
     let previous = entry.info
-    if let state, !entry.info.state.isTerminal { entry.info.state = state }
+    if let state, !entry.info.state.isTerminal {
+      entry.info.state = effectiveState(state, for: pid)
+    }
     if let modelTurns { entry.info.modelTurns = modelTurns }
     if let toolCalls { entry.info.toolCalls = toolCalls }
     if let usage { entry.info.usage = usage }
@@ -306,7 +354,9 @@ public actor AgentSupervisor {
   func clearAttention(for pid: AgentPID, resuming state: AgentProcessState? = .running) {
     guard var entry = entries[pid], entry.info.attention != nil else { return }
     entry.info.attention = nil
-    if let state, !entry.info.state.isTerminal { entry.info.state = state }
+    if let state, !entry.info.state.isTerminal {
+      entry.info.state = effectiveState(state, for: pid)
+    }
     entry.info.updatedAt = Date()
     entries[pid] = entry
     publish(.attention(entry.info))
@@ -351,6 +401,7 @@ public actor AgentSupervisor {
   func forget(_ pid: AgentPID) {
     entries[pid] = nil
     inboxes[pid] = nil
+    paused.remove(pid)
   }
 
   // MARK: - Internals
@@ -372,10 +423,20 @@ public actor AgentSupervisor {
       // "thinking" or a tool name describes a run in progress, not one that ended.
       entry.info.activity = ""
     }
+    if state.isTerminal { paused.remove(pid) }
     entries[pid] = entry
     publish(finished ? .finished(entry.info) : .changed(entry.info))
     if attention != nil { publish(.attention(entry.info)) }
     pruneFinished()
+  }
+
+  /// A run reports itself running as it makes progress; while a person holds
+  /// it, that progress is the last step before it waits, so the process keeps
+  /// showing as paused until `resume`.
+  private func effectiveState(_ state: AgentProcessState, for pid: AgentPID)
+    -> AgentProcessState
+  {
+    state == .running && paused.contains(pid) ? .paused : state
   }
 
   private func publish(_ event: AgentSupervisorEvent) {
@@ -401,6 +462,7 @@ public actor AgentSupervisor {
     for process in ordered.prefix(removable.count - finishedRetention) {
       entries[process.pid] = nil
       inboxes[process.pid] = nil
+      paused.remove(process.pid)
     }
   }
 }

@@ -39,12 +39,16 @@ public struct AgentPID: RawRepresentable, Hashable, Codable, Sendable, Comparabl
 /// Where one agent process is in its life. `blocked` covers a run that stopped
 /// making progress for a reason the host should show, such as a network error
 /// that has not yet ended the run; the reason travels in `AgentAttention`.
+/// `paused` is a run a person held with `AgentSupervisor.pause`: it finishes
+/// the model call or tool it is in, then waits at its next turn boundary
+/// until `resume`, keeping its transcript, its children, and its inbox.
 public enum AgentProcessState: String, Codable, Equatable, Sendable {
   case starting
   case running
   case waitingForApproval
   case waitingForInput
   case blocked
+  case paused
   case completed
   case failed
   case cancelled
@@ -59,7 +63,7 @@ public enum AgentProcessState: String, Codable, Equatable, Sendable {
   /// True while the process cannot progress without somebody acting on it.
   public var isWaiting: Bool {
     switch self {
-    case .waitingForApproval, .waitingForInput, .blocked: true
+    case .waitingForApproval, .waitingForInput, .blocked, .paused: true
     default: false
     }
   }
@@ -72,6 +76,7 @@ public enum AgentProcessState: String, Codable, Equatable, Sendable {
     case .waitingForApproval: "approve?"
     case .waitingForInput: "input?"
     case .blocked: "blocked"
+    case .paused: "paused"
     case .completed: "done"
     case .failed: "failed"
     case .cancelled: "killed"

@@ -364,7 +364,11 @@ line adds several at once), and `todo_done` ticks one off by its number or a
 title fragment. The list persists across chats, and every call reads the file
 afresh, so editing it by hand is fine. The tools run without asking for
 approval; they are part of the default agent's tool set, and `/tools enable
-todo` adds them to another.
+todo` adds them to another. Naming `todo` (or `chats`) in an agent's
+`toolGroupNames` is enough: the group is expanded into tool names at startup
+like a plugin group, and a saved chat adopts its agent's configured tool set
+when it is opened, so a chat started before a group was enabled sees the new
+tools too.
 
 ```
 /todo                      show the list, numbered
@@ -386,8 +390,11 @@ deleting it. `/agents` lists them; `/agents describe ID TEXT` and
 its Agents tab.
 
 A running instance of a definition is a process with a **pid**. `/agents tree`
-draws them, `/agents log PID` prints one agent's own transcript, and
-`/agents kill PID` stops it and everything under it. Any agent that is allowed
+draws them, `/agents log PID` prints one agent's own transcript,
+`/agents stop PID` pauses it and everything under it at their next step, and
+`/agents continue PID` lets them go on; messages queued for a paused agent are
+read when it continues. `/agents kill PID` ends it and everything under it.
+Any agent that is allowed
 subagents can start more, so the result is a tree, bounded by
 `limits.maxSubagentDepth` and `limits.maxSubagents` across the whole tree.
 A chat is one process for its whole life, so a child started in the background
@@ -453,13 +460,18 @@ With the default Files workspace (no explicit `filesRoot`, or `filesRoot: "."`),
 can use `files_chdir` with the same behavior. The default workspace resolves its
 root on each tool call, keeping an installed `pmai` binary aligned with the
 directory from which it was launched. An explicit `filesRoot` remains fixed and
-does not expose `files_chdir`.
+does not expose `files_chdir`. Paths are relative to that directory, and an
+absolute path is accepted as long as it lies inside it, so a model can reuse a
+path a shell command printed; a path error names the directory so the model can
+correct itself.
 The `run` group executes code on this computer with the privileges of the
 `pmai` process: `run_system` passes one command line to `sh -c`, while
 `run_sh`, `run_python`, and `run_js` save a script to a temporary file and run
 it with the configured shell, Python, or Node.js interpreter (`runShell`,
 `runPython`, `runNode`; names are looked up in `PATH`, and leading arguments
-such as `node --no-warnings` are honoured). Every call may pass `args`, `stdin`,
+such as `node --no-warnings` are honoured). `run_system` and `run_sh` take the
+text in `command` or `script` interchangeably, since models mix the two up.
+Every call may pass `args`, `stdin`,
 `cwd`, and `timeout_seconds`; stdout and stderr are captured with a 100 KB cap
 per stream, the process is killed after the timeout (`runTimeoutSeconds`,
 default 60), and `Ctrl+C` terminates it. All four tools are marked dangerous,

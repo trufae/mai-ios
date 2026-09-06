@@ -311,16 +311,28 @@ enum ToolSchemaValidator {
     }
     if let object = value.objectValue {
       let required = schema["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
+      let properties = schema["properties"]?.objectValue ?? [:]
+      // Naming what arrived and what the tool takes lets a model fix the
+      // call on its next try instead of guessing at field names.
+      let accepted = properties.keys.sorted().map { required.contains($0) ? "\($0) (required)" : $0 }
+      let received = object.keys.sorted()
+      let shape =
+        path == "arguments"
+        ? (received.isEmpty ? ". No fields were given" : ". Received: \(received.joined(separator: ", "))")
+          + (accepted.isEmpty ? "" : ". Accepted fields: \(accepted.joined(separator: ", "))")
+        : ""
       let missing = required.filter { object[$0] == nil }
       if !missing.isEmpty {
         return
           "missing required field\(missing.count == 1 ? "" : "s"): \(missing.joined(separator: ", "))"
+          + shape
       }
-      let properties = schema["properties"]?.objectValue ?? [:]
       if schema["additionalProperties"]?.boolValue == false {
         let unknown = object.keys.filter { properties[$0] == nil }.sorted()
         if !unknown.isEmpty {
-          return "unknown field\(unknown.count == 1 ? "" : "s"): \(unknown.joined(separator: ", "))"
+          return
+            "unknown field\(unknown.count == 1 ? "" : "s"): \(unknown.joined(separator: ", "))"
+            + shape
         }
       }
       for (name, propertySchema) in properties {

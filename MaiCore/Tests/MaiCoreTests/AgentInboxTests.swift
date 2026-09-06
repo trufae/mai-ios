@@ -238,6 +238,133 @@ func backgroundChildEventsReachTheHost() async throws {
 
 // MARK: - Fixtures
 
+// A person can hold a running process and let it go on later. The run ends
+// the model call or tool it is in, then waits at its next step; what was
+// queued meanwhile reaches it when it continues.
+
+@Test("A paused run ends the step it is in, waits, and reads its inbox when it continues")
+func pausedRunWaitsAtTheNextStep() async throws {
+  let runtime = AgentRuntime()
+  let supervisor = runtime.supervisor
+  let pid = await runtime.allocateProcess(agentID: "main")
+  let provider = InboxScriptedProvider(
+    responses: [
+      ProviderResponse(
+        message: AgentMessage(
+          role: .assistant,
+          content: [
+            .toolCall(
+              ToolCall(id: "call-1", name: "echo", arguments: .object(["text": .string("a")])))
+          ]),
+        stopReason: .toolCall),
+      ProviderResponse(message: .assistant("Done, with the note."), stopReason: .stop),
+    ],
+    onRequest: { index in
+      // The person pauses while the model is still answering the first turn.
+      if index == 0 { await supervisor.pause(pid) }
+    })
+  try await runtime.register(provider)
+  let echoes = InboxCounter()
+  try await runtime.register(
+    tool: ClosureTool(
+      definition: ToolDefinition(
+        name: "echo",
+        description: "Echo",
+        inputSchema: inboxObjectSchema(required: ["text"]),
+        annotations: ToolAnnotations(approval: .automatic))
+    ) { arguments, _ in
+      await echoes.increment()
+      return ToolOutput(text: arguments.objectValue?["text"]?.stringValue ?? "")
+    })
+
+  let run = Task {
+    try await runtime.run(
+      AgentRequest(
+        provider: "inbox-scripted",
+        model: "fixture",
+        messages: [.user("echo a")],
+        toolNames: ["echo"]),
+      process: pid)
+  }
+
+  // The model call it was in completes; the tool it asked for waits.
+  try await inboxWaitUntil {
+    await supervisor.info(pid).map { $0.state == .paused && $0.activity.isEmpty } ?? false
+  }
+  #expect(await supervisor.info(pid)?.modelTurns == 1)
+  #expect(await provider.requests.count == 1)
+  #expect(await echoes.value == 0)
+  try await Task.sleep(for: .milliseconds(250))
+  #expect(await echoes.value == 0)
+  #expect(await supervisor.info(pid)?.state == .paused)
+
+  await supervisor.post(.user("also note b"), to: pid)
+  #expect(await supervisor.info(pid)?.queuedMessages == 1)
+  #expect(await supervisor.resume(pid) == [pid])
+
+  let result = try await run.value
+  #expect(result.response.text == "Done, with the note.")
+  #expect(result.modelTurns == 2)
+  #expect(await echoes.value == 1)
+  #expect(result.transcript.map(\.role) == [.user, .assistant, .tool, .user, .assistant])
+  #expect(result.transcript[3].text == "also note b")
+  #expect(await supervisor.info(pid)?.state == .completed)
+  #expect(await supervisor.isPaused(pid) == false)
+}
+
+@Test("A paused run that is cancelled ends where it waits")
+func cancelledWhilePausedRunEnds() async throws {
+  let runtime = AgentRuntime()
+  let supervisor = runtime.supervisor
+  let pid = await runtime.allocateProcess(agentID: "main")
+  let provider = InboxScriptedProvider(
+    responses: [
+      ProviderResponse(message: .assistant("First."), stopReason: .stop),
+      ProviderResponse(message: .assistant("Never asked for."), stopReason: .stop),
+    ],
+    onRequest: { index in
+      if index == 0 {
+        await supervisor.pause(pid)
+        // A follow-up keeps the run going for a second turn, which is where it parks.
+        await supervisor.post(.user("more"), to: pid)
+      }
+    })
+  try await runtime.register(provider)
+
+  let run = Task {
+    try await runtime.run(
+      AgentRequest(provider: "inbox-scripted", model: "fixture", messages: [.user("start")]),
+      process: pid)
+  }
+  try await inboxWaitUntil {
+    await supervisor.info(pid).map { $0.state == .paused && $0.activity.isEmpty } ?? false
+  }
+  #expect(await provider.requests.count == 1)
+
+  run.cancel()
+  await #expect(throws: CancellationError.self) { try await run.value }
+  #expect(await supervisor.info(pid)?.state == .cancelled)
+  #expect(await supervisor.isPaused(pid) == false)
+  #expect(await provider.requests.count == 1)
+}
+
+private actor InboxCounter {
+  private(set) var value = 0
+  func increment() { value += 1 }
+}
+
+private func inboxWaitUntil(
+  timeout: Duration = .seconds(5),
+  _ condition: @Sendable () async -> Bool
+) async throws {
+  let clock = ContinuousClock()
+  let deadline = clock.now + timeout
+  while await !condition() {
+    guard clock.now < deadline else { throw InboxTestError.timedOut }
+    try await Task.sleep(for: .milliseconds(10))
+  }
+}
+
 private actor InboxScriptedProvider: ChatProvider {
   nonisolated let descriptor = ProviderDescriptor(
     id: "inbox-scripted",
@@ -319,6 +446,7 @@ private actor InboxEventRecorder {
 
 private enum InboxTestError: Error {
   case missingResponse
+  case timedOut
 }
 
 private func inboxObjectSchema(required: [String]) -> JSONValue {

@@ -821,6 +821,7 @@ struct MaiCLI {
         configuration: &configuration,
         configurationPath: configurationPath,
         plugins: plugins,
+        runtime: runtime,
         environment: environment)
       let ocrProvider = await configuredOCRProvider(
         plugins: plugins,
@@ -1029,6 +1030,7 @@ struct MaiCLI {
     configuration: inout MaiConfiguration?,
     configurationPath: String,
     plugins: PluginRegistry,
+    runtime: AgentRuntime,
     environment: [String: String]
   ) async throws {
     guard var draft = configuration else { return }
@@ -1040,6 +1042,14 @@ struct MaiCLI {
       {
         toolsByGroup[group.id, default: []].formUnion(group.toolNames)
       }
+    }
+    // Tools pmai registers itself — todo, chats — belong to no plugin, so
+    // their groups are inferred the way /tools lists them; otherwise a group
+    // named in the configuration would show as enabled yet offer nothing.
+    let grouped = Set(toolsByGroup.values.flatMap { $0 })
+    let hostTools = await runtime.availableTools().filter { !grouped.contains($0.name) }
+    for group in ToolGroupDefinition.inferred(from: hostTools) {
+      toolsByGroup[group.id, default: []].formUnion(group.toolNames)
     }
     var changed = false
     for index in draft.agents.indices {
@@ -1425,7 +1435,10 @@ struct MaiCLI {
       }
       let children = await runtime.supervisor.liveProcesses().filter { $0.depth > 0 }
       if !children.isEmpty {
-        facts.append("\(children.count) agent\(children.count == 1 ? "" : "s")")
+        let paused = children.filter { $0.state == .paused }.count
+        facts.append(
+          "\(children.count) agent\(children.count == 1 ? "" : "s")"
+            + (paused > 0 ? " (\(paused) paused)" : ""))
       }
       let queued = await runtime.supervisor.queuedMessages().count
       if queued > 0 { facts.append("\(queued) queued") }
@@ -1575,8 +1588,12 @@ struct MaiCLI {
         }
         await runtime.supervisor.post(.user(text), to: pid)
         let waiting = await runtime.supervisor.queuedMessages(for: pid).count
+        let when =
+          await runtime.supervisor.isPaused(pid)
+          ? "it is paused, so /agents continue \(pid.rawValue) delivers it"
+          : "delivered at its next model turn"
         await terminal.note(
-          "queued for agent#\(pid.rawValue) (\(info.agentID)) (\(waiting) waiting): delivered at its next model turn"
+          "queued for agent#\(pid.rawValue) (\(info.agentID)) (\(waiting) waiting): \(when)"
         )
       }
       await refreshStatus()
@@ -1729,7 +1746,9 @@ struct MaiCLI {
             }
             break events
           }
-          if loop.activeTurn != nil, !commandsAllowedDuringTurn.contains(name) {
+          if loop.activeTurn != nil, !commandsAllowedDuringTurn.contains(name),
+            !(name == "/agent" && Self.isProcessCommand(argument))
+          {
             await terminal.note(
               "\(name) waits for the running turn; Ctrl+C cancels it. Messages typed now are queued."
             )
@@ -3567,43 +3586,6 @@ struct MaiCLI {
         }
       }
 
-    case "tree", "ps":
-      let lines = await agentTreeLines(runtime: runtime)
-      await terminal.line(lines.isEmpty ? "No agents are running." : lines.joined(separator: "\n"))
-
-    case "log":
-      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
-        await terminal.line("Usage: /agents log PID")
-        return
-      }
-      let messages = await runtime.supervisor.transcript(pid)
-      guard !messages.isEmpty else {
-        let known = await runtime.supervisor.info(pid) != nil
-        await terminal.line(
-          known ? "\(pid) has not produced a transcript yet." : "No agent \(pid).")
-        return
-      }
-      var lines: [String] = []
-      for (index, message) in messages.enumerated() {
-        lines.append("## [\(index + 1)] \(message.role.rawValue.capitalized)")
-        lines.append(message.content.map { renderFullContent($0) }.joined(separator: "\n"))
-      }
-      await terminal.line(lines.joined(separator: "\n"))
-
-    case "kill", "stop":
-      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
-        await terminal.line("Usage: /agents kill PID [REASON]")
-        return
-      }
-      guard await runtime.supervisor.info(pid) != nil else {
-        await terminal.line("No agent \(pid).")
-        return
-      }
-      let reason = fields.count > 2 ? fields[2] : "Stopped from the REPL"
-      let stopped = await runtime.supervisor.stop(pid, reason: reason)
-      await terminal.line(
-        "Stopped \(stopped.map(\.description).joined(separator: ", ")).")
-
     case "enable", "disable":
       guard fields.count >= 2 else {
         await terminal.line("Usage: /agents \(action) ID")
@@ -3644,8 +3626,126 @@ struct MaiCLI {
         terminal: terminal)
 
     default:
-      await terminal.line(agentsHelp)
+      if await !handleProcessCommand(argument, runtime: runtime, terminal: terminal) {
+        await terminal.line(agentsHelp)
+      }
     }
+  }
+
+  /// The `/agents` subcommands that act on a running process rather than on
+  /// a definition; `/agent` accepts them too, and they stay usable while a
+  /// turn runs. `focus` is not here because it lives in the REPL loop's state.
+  private static let processActions: Set<String> = [
+    "tree", "ps", "log", "kill", "stop", "pause", "suspend", "continue", "cont", "resume",
+  ]
+
+  static func isProcessCommand(_ argument: String) -> Bool {
+    let action = argument.split(maxSplits: 1, whereSeparator: \Character.isWhitespace).first
+    return action.map { processActions.contains($0.lowercased()) } ?? false
+  }
+
+  /// Runs one process subcommand. Answers false when the argument is not one,
+  /// so the caller can fall back to its own handling.
+  private static func handleProcessCommand(
+    _ argument: String,
+    runtime: AgentRuntime,
+    terminal: TerminalWriter
+  ) async -> Bool {
+    let fields = argument.split(maxSplits: 2, whereSeparator: \Character.isWhitespace).map(
+      String.init)
+    let action = fields.first?.lowercased() ?? ""
+    guard processActions.contains(action) else { return false }
+
+    switch action {
+    case "tree", "ps":
+      let lines = await agentTreeLines(runtime: runtime)
+      await terminal.line(lines.isEmpty ? "No agents are running." : lines.joined(separator: "\n"))
+
+    case "log":
+      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents log PID")
+        return true
+      }
+      let messages = await runtime.supervisor.transcript(pid)
+      guard !messages.isEmpty else {
+        let known = await runtime.supervisor.info(pid) != nil
+        await terminal.line(
+          known ? "\(pid) has not produced a transcript yet." : "No agent \(pid).")
+        return true
+      }
+      var lines: [String] = []
+      for (index, message) in messages.enumerated() {
+        lines.append("## [\(index + 1)] \(message.role.rawValue.capitalized)")
+        lines.append(message.content.map { renderFullContent($0) }.joined(separator: "\n"))
+      }
+      await terminal.line(lines.joined(separator: "\n"))
+
+    case "kill":
+      guard fields.count >= 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents kill PID [REASON]")
+        return true
+      }
+      guard await runtime.supervisor.info(pid) != nil else {
+        await terminal.line("No agent \(pid).")
+        return true
+      }
+      let reason = fields.count > 2 ? fields[2] : "Stopped from the REPL"
+      let stopped = await runtime.supervisor.stop(pid, reason: reason)
+      await terminal.line(
+        "Stopped \(stopped.map(\.description).joined(separator: ", ")).")
+
+    case "stop", "pause", "suspend":
+      guard fields.count == 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents stop PID")
+        return true
+      }
+      guard let info = await runtime.supervisor.info(pid) else {
+        await terminal.line("No agent \(pid).")
+        return true
+      }
+      guard info.depth > 0 else {
+        await terminal.line("\(pid) is this chat; Ctrl+C cancels its turn.")
+        return true
+      }
+      guard !info.state.isTerminal else {
+        await terminal.line(
+          "\(pid) (\(info.agentID)) has finished; /agents log \(pid.rawValue) shows what it did.")
+        return true
+      }
+      let held = await runtime.supervisor.pause(pid)
+      guard !held.isEmpty else {
+        await terminal.line(
+          "\(pid) (\(info.agentID)) is already paused; /agents continue \(pid.rawValue) lets it go on."
+        )
+        return true
+      }
+      await terminal.line(
+        "Paused \(held.map(\.description).joined(separator: ", ")): it finishes the step it is in, then waits. Messages queued meanwhile are read when /agents continue \(pid.rawValue) lets it go on."
+      )
+
+    case "continue", "cont", "resume":
+      guard fields.count == 2, let pid = AgentPID(text: fields[1]) else {
+        await terminal.line("Usage: /agents continue PID")
+        return true
+      }
+      guard let info = await runtime.supervisor.info(pid) else {
+        await terminal.line("No agent \(pid).")
+        return true
+      }
+      let released = await runtime.supervisor.resume(pid)
+      guard !released.isEmpty else {
+        await terminal.line(
+          info.state.isTerminal
+            ? "\(pid) (\(info.agentID)) has finished; /agents log \(pid.rawValue) shows what it did."
+            : "\(pid) (\(info.agentID)) is not paused.")
+        return true
+      }
+      await terminal.line("Continued \(released.map(\.description).joined(separator: ", ")).")
+
+    default:
+      return false
+    }
+    return true
   }
 
   private static func listAgentDefinitions(
@@ -3894,6 +3994,10 @@ struct MaiCLI {
         terminal: terminal)
       await terminal.line(
         "Usage: /agent [use] ID | /agent add NAME PROVIDER BASE_URL MODEL SYSTEM_PROMPT")
+      return
+    }
+
+    if await handleProcessCommand(argument, runtime: runtime, terminal: terminal) {
       return
     }
 
@@ -5900,6 +6004,14 @@ struct MaiCLI {
     chat.primaryAgent.toolCallingStrategy = configured.toolCallingStrategy
     chat.primaryAgent.instructions = configured.instructions
     chat.primaryAgent.systemPrompt = configured.systemPrompt
+    // The chat keeps a copy of its agent, and every tool change made from the
+    // REPL is saved into the configuration, so the configuration is the truth:
+    // a chat opened after a group was enabled must see the new tools too.
+    chat.primaryAgent.toolNames = configured.toolNames
+    chat.primaryAgent.toolGroupNames = configured.toolGroupNames
+    chat.primaryAgent.subagentNames = configured.subagentNames
+    chat.primaryAgent.toolDelegation = configured.toolDelegation
+    chat.primaryAgent.useToolProxy = configured.useToolProxy
     guard previousInstructions != configured.instructions else { return }
     var transcript = AgentTranscript(messages: chat.messages)
     if let index = transcript.messages.firstIndex(where: {
@@ -6469,7 +6581,9 @@ struct MaiCLI {
       /agents acp [list]         List external ACP agents and what is installed
       /agents acp add NAME [CMD ARG ...]  Register an ACP agent as a usable agent
       /agents log PID            Print a running or finished agent's own transcript
-      /agents kill PID [REASON]  Stop an agent and everything it started
+      /agents stop PID           Pause an agent and everything it started at their next step
+      /agents continue PID       Let a paused agent go on; queued messages reach it then
+      /agents kill PID [REASON]  End an agent and everything it started
       /agents focus PID|main     Send what you type to one running agent, or back to the chat
 
     While agents run, what you type is queued for them and read at their next

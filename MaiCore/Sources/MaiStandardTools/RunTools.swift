@@ -121,10 +121,10 @@ public struct MaiRunTool: AgentTool {
       var scriptURL: URL?
       switch operation {
       case .system:
-        let command = try Self.requiredText(arguments, key: "command")
+        let command = try Self.requiredText(arguments, key: "command", alias: "script")
         extraArguments = ["-c", command]
       case .shell, .python, .javascript:
-        let script = try Self.requiredText(arguments, key: "script")
+        let script = try Self.requiredText(arguments, key: "script", alias: "command")
         let url = try Self.writeScript(script, extension: operation.scriptExtension)
         scriptURL = url
         extraArguments = [url.path]
@@ -209,11 +209,21 @@ public struct MaiRunTool: AgentTool {
       return url
     }
 
-    private static func requiredText(_ arguments: [String: JSONValue], key: String) throws -> String {
-      guard let value = arguments[key]?.stringValue,
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      else { throw MaiRunToolError.missingArgument(key) }
-      return value
+    /// The text to run, under its own name or the alias models reach for:
+    /// `command` and `script` mean the same thing to a shell.
+    private static func requiredText(
+      _ arguments: [String: JSONValue],
+      key: String,
+      alias: String? = nil
+    ) throws -> String {
+      for name in [key, alias].compactMap({ $0 }) {
+        if let value = arguments[name]?.stringValue,
+          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+          return value
+        }
+      }
+      throw MaiRunToolError.missingArgument(key)
     }
   #endif
 
@@ -227,16 +237,18 @@ public struct MaiRunTool: AgentTool {
     switch operation {
     case .system:
       description =
-        "Run one shell command line on this computer with '\(configuration.shell) -c' and return its stdout, stderr, and exit code."
+        "Run one shell command line on this computer with '\(configuration.shell) -c' and return its stdout, stderr, and exit code. Put the command line in 'command'."
       properties["command"] = stringProperty(
         "Shell command line. Pipes, globs, redirections, and && chains are allowed.")
-      required = ["command"]
+      properties["script"] = stringProperty("Accepted as an alias of command.")
+      required = []
     case .shell:
       description =
-        "Run a multi-line shell script on this computer with '\(configuration.shell)' and return its stdout, stderr, and exit code."
+        "Run a shell command line or a multi-line shell script on this computer with '\(configuration.shell)' and return its stdout, stderr, and exit code. Put the text in 'script'; it runs from the current directory unless cwd is set."
       properties["script"] = stringProperty(
-        "Shell script source. It is saved to a temporary file and run as '\(configuration.shell) FILE ARGS'.")
-      required = ["script"]
+        "Shell command line or script source, one or more lines. It is saved to a temporary file and run as '\(configuration.shell) FILE ARGS'.")
+      properties["command"] = stringProperty("Accepted as an alias of script.")
+      required = []
     case .python:
       description =
         "Run a Python script on this computer with '\(configuration.python)' and return its stdout, stderr, and exit code."

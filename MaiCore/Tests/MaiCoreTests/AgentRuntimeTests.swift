@@ -1218,6 +1218,62 @@ func agentSupervisorTree() async throws {
   #expect(tree.info(root)?.state == .starting)
 }
 
+@Test("Pausing holds a subtree, keeps a waiting process visible, and ends with the process")
+func agentSupervisorPauseAndResume() async throws {
+  let supervisor = AgentSupervisor()
+  let root = await supervisor.register(
+    runID: UUID(), parent: nil, agentID: "main", task: "top", depth: 0)
+  let child = await supervisor.register(
+    runID: UUID(), parent: root, agentID: "coder", task: "write it", depth: 1)
+  let grandchild = await supervisor.register(
+    runID: UUID(), parent: child, agentID: "worker", task: "grep", depth: 2)
+  let finished = await supervisor.register(
+    runID: UUID(), parent: root, agentID: "coder", task: "done already", depth: 1)
+  await supervisor.fail(finished, state: .failed, message: "gave up", announce: false)
+  await supervisor.note(child, state: .running, activity: "thinking")
+
+  // Holding a node takes everything under it, and nothing beside it.
+  #expect(await supervisor.pause(child) == [child, grandchild])
+  #expect(await supervisor.isPaused(child))
+  #expect(await supervisor.isPaused(grandchild))
+  #expect(await supervisor.info(child)?.state == .paused)
+  #expect(await supervisor.info(grandchild)?.state == .paused)
+  #expect(await supervisor.info(root)?.state == .starting)
+  #expect(await supervisor.pause(child).isEmpty)
+  #expect(await supervisor.pause(finished).isEmpty)
+
+  // The run reports progress until it reaches its next step; that does not
+  // lift the hold.
+  await supervisor.note(child, state: .running, activity: "read_file")
+  #expect(await supervisor.info(child)?.state == .paused)
+  #expect(await supervisor.info(child)?.activity == "read_file")
+
+  // A question the run asks meanwhile shows, and the hold shows again once
+  // it is answered.
+  let approval = ApprovalRequest(
+    run: AgentEventContext(runID: UUID(), parentRunID: nil, agentID: "worker", depth: 2),
+    tool: ToolDefinition(name: "write_file", description: "Write"),
+    call: ToolCall(id: "call-1", name: "write_file", arguments: .object([:])))
+  await supervisor.raise(.approval(approval), for: grandchild)
+  #expect(await supervisor.info(grandchild)?.state == .waitingForApproval)
+  await supervisor.clearAttention(for: grandchild)
+  #expect(await supervisor.info(grandchild)?.state == .paused)
+
+  // Letting the parent go releases the subtree.
+  #expect(await supervisor.resume(child) == [child, grandchild])
+  #expect(await supervisor.info(child)?.state == .running)
+  #expect(await supervisor.info(grandchild)?.state == .running)
+  #expect(await supervisor.isPaused(grandchild) == false)
+  #expect(await supervisor.resume(child).isEmpty)
+
+  // Killing a held process ends the hold with it.
+  #expect(await supervisor.pause(grandchild) == [grandchild])
+  #expect(await supervisor.stop(grandchild, reason: "gone") == [grandchild])
+  #expect(await supervisor.isPaused(grandchild) == false)
+  #expect(await supervisor.info(grandchild)?.state == .cancelled)
+  #expect(await supervisor.info(child)?.state == .running)
+}
+
 @Test("Pids parse the way people and models write them")
 func agentPIDParsing() {
   #expect(AgentPID(text: "4") == AgentPID(4))

@@ -133,6 +133,12 @@ public struct MaiFileWorkspaceTool: AgentTool {
       }
     } catch is CancellationError {
       throw CancellationError()
+    } catch let error as MaiFileWorkspaceError {
+      let root =
+        configuration.followsProcessWorkingDirectory
+        ? FileManager.default.currentDirectoryPath : configuration.rootURL.path
+      return ToolOutput(
+        text: "Error: \(error.localizedDescription)\(error.pathHint(root: root))", isError: true)
     } catch {
       return ToolOutput(text: "Error: \(error.localizedDescription)", isError: true)
     }
@@ -145,7 +151,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
     let path = ToolParameterDef(
       name: "path",
       type: "string",
-      description: "Path relative to the configured workspace '\(workspaceName)'.",
+      description:
+        "File path relative to the current directory, or an absolute path inside the workspace.",
       required: true)
     switch operation {
     case .list:
@@ -156,7 +163,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
           ToolParameterDef(
             name: "path",
             type: "string",
-            description: "Relative folder path. Omit for the workspace root.",
+            description:
+              "Folder to list, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
             required: false)
         ],
         annotations: ToolAnnotations(
@@ -174,7 +182,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
           ToolParameterDef(
             name: "path",
             type: "string",
-            description: "Relative folder to search. Omit for the workspace root.",
+            description:
+              "Folder to search, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
             required: false),
           ToolParameterDef(
             name: "limit",
@@ -197,7 +206,8 @@ public struct MaiFileWorkspaceTool: AgentTool {
           ToolParameterDef(
             name: "path",
             type: "string",
-            description: "Relative file or folder to search. Omit for the workspace root.",
+            description:
+              "File or folder to search, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
             required: false),
           ToolParameterDef(
             name: "regex",
@@ -1192,11 +1202,19 @@ private struct MaiFileWorkspace: Sendable {
     mustExist: Bool
   ) throws -> URL {
     let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    var candidate: URL
     if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
-      throw MaiFileWorkspaceError.outsideWorkspace(rawPath)
+      // An absolute path is fine as long as it points inside the workspace:
+      // models often repeat the directory a shell command just printed.
+      candidate = URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath)
+        .standardizedFileURL
+      if !isInside(candidate) {
+        candidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+      }
+    } else {
+      candidate = rootURL.appendingPathComponent(trimmed.isEmpty ? "." : trimmed)
+        .standardizedFileURL
     }
-    let candidate = rootURL.appendingPathComponent(trimmed.isEmpty ? "." : trimmed)
-      .standardizedFileURL
     guard isInside(candidate) else { throw MaiFileWorkspaceError.outsideWorkspace(rawPath) }
     guard allowRoot || candidate.path != rootURL.path else {
       throw MaiFileWorkspaceError.rootNotAllowed
@@ -1427,8 +1445,8 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .outsideWorkspace(let path): "Path '\(path)' is outside the configured workspace."
     case .rootNotAllowed: "This operation cannot target the workspace root."
     case .notFound(let path): "'\(path)' does not exist."
-    case .notFile(let path): "'\(path)' is not a file."
-    case .notDirectory(let path): "'\(path)' is not a directory."
+    case .notFile(let path): "'\(path)' is not a file; files_list lists a folder."
+    case .notDirectory(let path): "'\(path)' is not a folder; files_read reads a file."
     case .binary(let path): "'\(path)' appears to be binary; text files only."
     case .invalidUTF8(let path): "'\(path)' is not valid UTF-8 text."
     case .alreadyExists(let path): "'\(path)' already exists."
@@ -1457,6 +1475,19 @@ private enum MaiFileWorkspaceError: LocalizedError {
       "Function '\(name)' changed since it was read. Call files_get_function again and use revision '\(revision)'."
     case .invalidFunctionBody(let name):
       "The replacement body changes the structural bounds of '\(name)'; check delimiters and indentation."
+    }
+  }
+}
+
+extension MaiFileWorkspaceError {
+  /// Where paths are resolved from, for the errors a wrong path produces, so
+  /// a model can correct itself instead of guessing.
+  func pathHint(root: String) -> String {
+    switch self {
+    case .outsideWorkspace, .notFound, .notDirectory, .notFile:
+      " The workspace is \(root): give paths relative to it, or absolute paths inside it; files_chdir moves it."
+    default:
+      ""
     }
   }
 }
