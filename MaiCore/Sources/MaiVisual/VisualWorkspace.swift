@@ -201,7 +201,7 @@ public final class VisualWorkspace {
     agents = await runtime.availableAgents()
     await refreshAgentTree()
     await refreshUsageStats()
-    var groups: [ToolGroupDefinition] = []
+    var groups: [ToolGroupDefinition] = [AgentRuntime.agentToolGroup]
     for source in configuration.toolSources where source.enabled {
       do {
         groups.append(

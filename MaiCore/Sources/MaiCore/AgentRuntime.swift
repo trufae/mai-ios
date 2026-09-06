@@ -8,6 +8,15 @@ public actor AgentRuntime {
   public static let agentStatusToolName = "agent_status"
   public static let agentResultToolName = "agent_result"
   public static let agentStopToolName = "agent_stop"
+  public static let agentToolNames: Set<String> = [
+    agentStartToolName, agentStatusToolName, agentResultToolName, agentStopToolName,
+  ]
+  public static let agentToolGroup = ToolGroupDefinition(
+    id: "agents",
+    sourceID: "runtime",
+    displayName: "Agents",
+    description: "Start, inspect, collect, and stop child agents.",
+    toolNames: agentToolNames)
   /// Earlier spellings of `agent_start`. They are still executed so existing
   /// configurations and fine-tuned providers keep working, but they are no
   /// longer offered: six near-identical tools only confuse a model.
@@ -1099,7 +1108,17 @@ public actor AgentRuntime {
     for name in concreteNames.sorted() {
       if let tool = tools[name] { definitions.append(tool.definition) }
     }
-    if request.limits.maxSubagents > 0, delegating || !offeredAgents.isEmpty {
+    // Raw AgentRequest callers predate tool groups, so nil preserves their
+    // behavior. Hosts pass the profile's groups and make this a real per-agent
+    // permission; accepting the full name set also honors hand-written files.
+    let agentToolsEnabled =
+      request.toolGroupNames.map {
+        $0.contains(Self.agentToolGroup.id)
+          || Self.agentToolNames.isSubset(of: request.toolNames)
+      } ?? true
+    if agentToolsEnabled, request.limits.maxSubagents > 0,
+      delegating || !offeredAgents.isEmpty
+    {
       definitions.append(
         contentsOf: agentToolDefinitions(allowedAgentNames: offeredAgents, delegating: delegating))
     }
@@ -1271,6 +1290,7 @@ public actor AgentRuntime {
       model: definition.model,
       messages: transcript,
       toolNames: definition.toolNames,
+      toolGroupNames: definition.toolGroupNames,
       subagentNames: definition.subagentNames,
       toolChoice: definition.toolChoice,
       responseFormat: definition.responseFormat,

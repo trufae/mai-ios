@@ -140,6 +140,7 @@ public final class VisualConversation: Identifiable {
       model: profile.model,
       messages: transcript.messages,
       toolNames: profile.toolNames,
+      toolGroupNames: profile.toolGroupNames,
       subagentNames: profile.subagentNames,
       toolChoice: profile.toolChoice,
       responseFormat: profile.responseFormat,

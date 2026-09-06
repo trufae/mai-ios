@@ -852,6 +852,10 @@ public struct AgentRequest: Sendable {
   public var model: String
   public var messages: [AgentMessage]
   public var toolNames: Set<String>
+  /// Nil keeps source compatibility for callers that construct requests
+  /// directly. Hosts set this from the agent profile so runtime-native tool
+  /// groups can enforce the same permissions as registered tools.
+  public var toolGroupNames: Set<String>?
   public var subagentNames: Set<String>
   public var toolChoice: ToolChoice
   public var responseFormat: ResponseFormat
@@ -868,6 +872,7 @@ public struct AgentRequest: Sendable {
     model: String = "",
     messages: [AgentMessage],
     toolNames: Set<String> = [],
+    toolGroupNames: Set<String>? = nil,
     subagentNames: Set<String> = [],
     toolChoice: ToolChoice = .automatic,
     responseFormat: ResponseFormat = .text,
@@ -883,6 +888,7 @@ public struct AgentRequest: Sendable {
     self.model = model
     self.messages = messages
     self.toolNames = toolNames
+    self.toolGroupNames = toolGroupNames
     self.subagentNames = subagentNames
     self.toolChoice = toolChoice
     self.responseFormat = responseFormat

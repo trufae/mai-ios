@@ -916,6 +916,8 @@ func subagentRun() async throws {
       provider: "scripted",
       model: "fixture",
       messages: [.user("delegate")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(
         maxModelTurns: 4,
@@ -958,6 +960,8 @@ func launchedSubagentRun() async throws {
       provider: "launched-subagent",
       model: "fixture",
       messages: [.user("delegate asynchronously")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(
         maxModelTurns: 4,
@@ -982,6 +986,8 @@ func launchedSubagentRun() async throws {
       provider: "launched-subagent",
       model: "fixture",
       messages: [.user("launch again")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(
         maxModelTurns: 4,
@@ -999,6 +1005,8 @@ func launchedSubagentRun() async throws {
       provider: "launched-subagent",
       model: "fixture",
       messages: [.user("collect \(id)")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(
         maxModelTurns: 5,
@@ -1036,6 +1044,49 @@ func launchedSubagentRun() async throws {
       .contains("Find this in the background") == true)
 }
 
+@Test("Agent tools have one permission group")
+func agentToolGroup() {
+  #expect(AgentRuntime.agentToolGroup.id == "agents")
+  #expect(AgentRuntime.agentToolGroup.sourceID == "runtime")
+  #expect(
+    AgentRuntime.agentToolGroup.toolNames == [
+      AgentRuntime.agentStartToolName,
+      AgentRuntime.agentStatusToolName,
+      AgentRuntime.agentResultToolName,
+      AgentRuntime.agentStopToolName,
+    ])
+  #expect(!AgentRuntime.agentToolGroup.toolNames.contains(AgentRuntime.subagentToolName))
+  #expect(!AgentRuntime.agentToolGroup.toolNames.contains(AgentRuntime.agentLaunchToolName))
+}
+
+@Test("The agents tool group controls subagent access per profile")
+func agentToolGroupPermission() async throws {
+  let provider = ScriptedProvider(responses: [
+    ProviderResponse(message: .assistant("No delegation"), stopReason: .stop)
+  ])
+  let runtime = AgentRuntime()
+  try await runtime.register(provider)
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "researcher",
+      instructions: "Research.",
+      provider: "scripted",
+      model: "fixture"))
+
+  _ = try await runtime.run(
+    AgentRequest(
+      provider: "scripted",
+      model: "fixture",
+      messages: [.user("Do not delegate")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [],
+      subagentNames: ["researcher"],
+      limits: AgentRunLimits(maxSubagents: 1)))
+
+  let names = Set(try #require(await provider.requests.first).tools.map(\.name))
+  #expect(AgentRuntime.agentToolNames.isDisjoint(with: names))
+}
+
 @Test("Subagents are disabled by default")
 func subagentsDisabledByDefault() async throws {
   #expect(AgentRunLimits().maxSubagents == 0)
@@ -1056,6 +1107,8 @@ func subagentsDisabledByDefault() async throws {
       provider: "scripted",
       model: "fixture",
       messages: [.user("Do not delegate")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"]))
 
   let names = Set(try #require(await provider.requests.first).tools.map(\.name))
@@ -1100,6 +1153,7 @@ func toolDelegationKeepsTheAgentsOwnTools() async throws {
       model: "fixture",
       messages: [.user("what is in Parser.swift?")],
       toolNames: ["read_file"],
+      toolGroupNames: [],
       limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4, maxSubagents: 2),
       toolDelegation: .subagent))
 
@@ -1132,7 +1186,8 @@ func toolDelegationRunsToolsInAChild() async throws {
       provider: "delegating",
       model: "fixture",
       messages: [.user("what is in Parser.swift?")],
-      toolNames: ["read_file"],
+      toolNames: AgentRuntime.agentToolNames.union(["read_file"]),
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4, maxSubagents: 2),
       toolDelegation: .subagent))
 
@@ -1211,6 +1266,8 @@ func disabledAgentsAreNotOffered() async throws {
       provider: "scripted",
       model: "fixture",
       messages: [.user("delegate")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher", "parked"],
       limits: AgentRunLimits(maxSubagents: 1)))
 

@@ -111,9 +111,10 @@ implicitly.
 - **`inline`** (default, and what MaiCore has always done) — the agent sees its
   configured tools and calls them in its own transcript.
 - **`subagent`** — the agent keeps its concrete tools and is offered the
-  `agent_*` family as well. It can run a small call itself and send bulky work
-  one level down, to a child that is discarded afterwards. Which tools an agent
-  has is always its definition's list, whatever its depth in the tree.
+  `agent_*` family as well when its `agents` tool group is enabled. It can run a
+  small call itself and send bulky work one level down, to a child that is
+  discarded afterwards. Which tools an agent has is always its definition's
+  list, whatever its depth in the tree.
 
 The switch is off by default. Turning it on changes how the main agent thinks
 about its work, costs an extra model round-trip per delegated task, and is worth
@@ -149,8 +150,11 @@ Omitting the parameter falls back to the derived worker.
 
 ## The tool family
 
-All four are native, reserved names, and only offered when the run's
-`limits.maxSubagents` is greater than zero.
+All four are native, reserved names in the `agents` tool group. They are only
+offered when that group is enabled for the running agent and its
+`limits.maxSubagents` is greater than zero. `/tools enable agents` and `/tools
+disable agents` change that permission on the current agent; `/agent tools ID
++agents` and `-agents` change another saved agent.
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -246,6 +250,7 @@ forwards only depth-0 events to the editor.
 /queue pop [PID]              drop the newest queued message
 /queue flush [PID]            drop them all
 /set ui.subagents LEVEL       all | tools | stats | none
+/tools enable|disable agents  allow or deny this agent the agent_* tool family
 /set delegation off|subagent      whether this agent may hand tool work to a child
 /set limits.maxSubagents N        concurrent children (0 disables the family)
 /set limits.maxSubagentDepth N    how deep the tree may go

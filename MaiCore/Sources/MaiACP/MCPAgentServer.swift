@@ -90,6 +90,7 @@ public actor MCPAgentServer {
       model: agent.model,
       messages: messages,
       toolNames: agent.toolNames,
+      toolGroupNames: agent.toolGroupNames,
       subagentNames: agent.subagentNames,
       options: agent.options,
       limits: agent.limits,

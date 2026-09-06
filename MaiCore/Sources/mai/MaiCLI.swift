@@ -1043,7 +1043,9 @@ struct MaiCLI {
     environment: [String: String]
   ) async throws {
     guard var draft = configuration else { return }
-    var toolsByGroup: [String: Set<String>] = [:]
+    var toolsByGroup: [String: Set<String>] = [
+      AgentRuntime.agentToolGroup.id: AgentRuntime.agentToolGroup.toolNames
+    ]
     for source in draft.toolSources where source.enabled {
       for group in try await plugins.toolGroups(
         kind: source.kind,
@@ -1537,6 +1539,7 @@ struct MaiCLI {
         model: profile.model,
         messages: session.history.messages,
         toolNames: profile.toolNames,
+        toolGroupNames: profile.toolGroupNames,
         subagentNames: profile.subagentNames,
         toolChoice: profile.toolChoice,
         responseFormat: profile.responseFormat,
@@ -2015,6 +2018,7 @@ struct MaiCLI {
         model: profile.model,
         messages: session.history.messages,
         toolNames: profile.toolNames,
+        toolGroupNames: profile.toolGroupNames,
         subagentNames: profile.subagentNames,
         toolChoice: profile.toolChoice,
         responseFormat: profile.responseFormat,
@@ -4838,10 +4842,6 @@ struct MaiCLI {
           "\(enabled) \(group.id) — \(group.displayName) [\(group.toolNames.count) tool\(group.toolNames.count == 1 ? "" : "s")]"
         )
       }
-      if !session.profile.subagentNames.isEmpty {
-        await terminal.line(
-          "* subagents — \(session.profile.subagentNames.sorted().joined(separator: ", "))")
-      }
       await terminal.line("Use /tools show GROUP to inspect tool names and settings.")
       return
     }
@@ -4930,7 +4930,7 @@ struct MaiCLI {
     plugins: PluginRegistry,
     configuration: MaiConfiguration?
   ) async throws -> [ToolGroupDefinition] {
-    var groups: [ToolGroupDefinition] = []
+    var groups: [ToolGroupDefinition] = [AgentRuntime.agentToolGroup]
     for source in configuration?.toolSources.filter(\.enabled) ?? [] {
       groups.append(
         contentsOf: try await plugins.toolGroups(

@@ -228,7 +228,8 @@ func memoryReachesTopLevelRunsOnly() async throws {
       provider: "memory-fixture",
       model: "fixture",
       messages: [.system("Be terse."), .user("read it")],
-      toolNames: ["read_file"],
+      toolNames: AgentRuntime.agentToolNames.union(["read_file"]),
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4, maxSubagents: 1),
       toolDelegation: .subagent))
 

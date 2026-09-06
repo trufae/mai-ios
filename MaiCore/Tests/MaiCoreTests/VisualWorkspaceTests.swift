@@ -250,8 +250,15 @@ func workspaceConfiguresToolGroups() async throws {
     approvals: VisualApprovalHandler())
   await workspace.refreshRegistries()
 
+  let agents = try #require(workspace.toolGroups.first { $0.id == "agents" })
+  #expect(agents.toolNames == AgentRuntime.agentToolNames)
+  #expect(!workspace.isToolGroupEnabled(agents, for: try #require(workspace.focusedConversation)))
+
   let github = try #require(workspace.toolGroups.first { $0.id == "github" })
   let conversation = try #require(workspace.focusedConversation)
+  workspace.setToolGroup(agents, allowed: true, for: conversation)
+  #expect(conversation.profile.toolGroupNames.contains("agents"))
+  #expect(AgentRuntime.agentToolNames.isSubset(of: conversation.profile.toolNames))
   workspace.setToolGroup(github, allowed: true, for: conversation)
   #expect(conversation.profile.toolGroupNames.contains("github"))
   #expect(Set(MaiGitHubTool.toolNames).isSubset(of: conversation.profile.toolNames))
@@ -265,6 +272,7 @@ func workspaceConfiguresToolGroups() async throws {
     isStdoutTTY: false)
   #expect(rendered.contains("GitHub (12)"))
   #expect(rendered.contains("Mastodon (1)"))
+  #expect(rendered.contains("Agents (4)"))
   #expect(rendered.contains("Allow posting and replying"))
 
   var options = workspace.configuredToolGroupOptions(mastodon)
@@ -278,6 +286,7 @@ func workspaceConfiguresToolGroups() async throws {
   #expect(persistedSource.options["mastodonInstance"] == .string("social.example"))
   #expect(persistedSource.options["mastodonAPIKeyEnvironment"] == .string("SOCIAL_TOKEN"))
   #expect(persistedSource.options["mastodonWriteEnabled"] == .bool(true))
+  #expect(persisted.agents.first?.toolGroupNames.contains("agents") == true)
   #expect(persisted.agents.first?.toolGroupNames.contains("github") == true)
 }
 

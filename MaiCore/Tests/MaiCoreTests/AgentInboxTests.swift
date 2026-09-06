@@ -197,6 +197,8 @@ func backgroundChildEventsReachTheHost() async throws {
       provider: "background-child",
       model: "fixture",
       messages: [.user("delegate")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
       subagentNames: ["researcher"],
       limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 2, maxSubagents: 1, maxSubagentDepth: 1))
   ) { event in

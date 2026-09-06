@@ -319,7 +319,9 @@ Visual mode renders the same descriptors as checkboxes and typed fields. Group
 selections live on each `AgentDefinition`, while source credentials and options
 live on `ConfiguredToolSource`, so every host uses the same configuration and
 plugin API. Older native plugins without group metadata are grouped by their
-tool-name prefix.
+tool-name prefix. MaiCore's runtime-native `agent_start`, `agent_status`,
+`agent_result`, and `agent_stop` tools appear together in the `agents` group;
+enable or disable that group independently on each agent.
 
 MCP tool names are namespaced as `<toolNamePrefix>::<remoteName>`, or
 `<server-id>::<remoteName>` when no prefix is configured. Connecting an enabled
@@ -457,9 +459,10 @@ model is answering. Hosts pre-register a chat's process with
 first turn, and read a child's events (tagged with the child's pid, background
 or not) to show its work.
 
-Subagents are disabled by default: set an agent's `limits.maxSubagents` above
-zero. `agent_start` takes a three-part brief — `context`, `task`, and `output` —
-plus an optional `agent`, and waits for the answer unless `wait` is false.
+Subagents are disabled by default: enable the `agents` tool group and set the
+agent's `limits.maxSubagents` above zero. `agent_start` takes a three-part brief
+— `context`, `task`, and `output` — plus an optional `agent`, and waits for the
+answer unless `wait` is false.
 `agent_status` lists the caller's children without waiting, `agent_result`
 collects a background answer, and `agent_stop` kills a subtree. A caller may
 only address pids inside its own subtree. The retired `spawn_agent` and
@@ -468,7 +471,7 @@ only address pids inside its own subtree. The retired `spawn_agent` and
 What an agent may call is always its definition's tool list, wherever it sits
 in the tree. `toolDelegation` decides whether it may also hand work to a child.
 `inline` is the default: the agent runs every call itself. `subagent` keeps the
-agent's own tools and adds the `agent_*` family, so bulky work can go one level
+agent's own tools and lets the enabled `agents` group send bulky work one level
 down to a child whose transcript is discarded — the chat grows by one answer
 instead of by a call and a result for every step, while small calls still run
 in place. `/set delegation off|subagent` toggles it and persists it on the

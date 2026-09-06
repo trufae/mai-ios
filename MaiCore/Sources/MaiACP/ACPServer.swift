@@ -114,6 +114,7 @@ public actor ACPServer {
       model: agent.model,
       messages: sessions[id]!.transcript,
       toolNames: agent.toolNames,
+      toolGroupNames: agent.toolGroupNames,
       subagentNames: agent.subagentNames,
       toolChoice: agent.toolChoice,
       responseFormat: agent.responseFormat,
