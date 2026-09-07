@@ -177,12 +177,14 @@ private enum CLIError: LocalizedError {
   case invalidImage(String)
   case stdinServesProtocol
   case stdinWithoutTerminal
+  case apiKeySourcesConflict
 
   var errorDescription: String? {
     switch self {
     case .noProject: "No project is open."
     case .stdinServesProtocol:
       "--stdin cannot be combined with --acp or --mcp: they own standard input."
+    case .apiKeySourcesConflict: "Set PMAI_API_KEY or PMAI_API_KEY_FILE, not both."
     case .stdinWithoutTerminal:
       "--stdin was read, but there is no terminal for the REPL; give the message on the command line."
     case .invalidURL(let value): "Invalid URL: \(value)"
@@ -244,7 +246,15 @@ private func environmentValue(
 
 /// Unlike the other ad-hoc settings, an explicitly exported empty API key is
 /// meaningful: it suppresses lower-priority aliases and configured secrets.
-private func environmentAPIKey(in environment: [String: String]) -> String? {
+/// `PMAI_API_KEY_FILE` names a file holding the key instead, so the secret
+/// itself never sits in the environment; it excludes `PMAI_API_KEY`.
+private func environmentAPIKey(in environment: [String: String]) throws -> String? {
+  let keyFile =
+    environment["PMAI_API_KEY_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !keyFile.isEmpty {
+    guard environment["PMAI_API_KEY"] == nil else { throw CLIError.apiKeySourcesConflict }
+    return try ConfiguredProvider.apiKey(fromFile: keyFile)
+  }
   for name in ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"] {
     if let value = environment[name] { return value }
   }
@@ -1274,8 +1284,7 @@ struct MaiCLI {
       baseURLOverride = nil
     }
     let apiKeyOverride =
-      options.apiKeyOverride
-      ?? environmentAPIKey(in: environment)
+      try options.apiKeyOverride ?? environmentAPIKey(in: environment)
 
     if let configuration {
       let selectedAgentID =
@@ -1295,6 +1304,7 @@ struct MaiCLI {
           if let apiKeyOverride {
             provider.apiKey = apiKeyOverride
             provider.apiKeyEnvironment = nil
+            provider.apiKeyFile = nil
           }
         }
         providerBaseURLs[provider.id] = provider.baseURL
@@ -1337,6 +1347,9 @@ struct MaiCLI {
     draft.apiKey = nil
     draft.apiKeyEnvironment = environmentName(
       ["PMAI_API_KEY", "MAI_API_KEY", "OPENAI_API_KEY"], in: environment)
+    draft.apiKeyFile = environment["PMAI_API_KEY_FILE"].flatMap {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+    }
     return RuntimeSetup(
       catalogs: [],
       implicitProviders: [hello, draft],
@@ -8547,6 +8560,11 @@ struct MaiCLI {
 
       Config discovery:
         --config, PMAI_CONFIG, ./pmai.json, ~/.config/pmai/config.json
+
+      Ad-hoc provider (overrides the selected agent's):
+        PMAI_PROVIDER, PMAI_MODEL, PMAI_BASE_URL, and PMAI_API_KEY, or
+        PMAI_API_KEY_FILE naming a file that holds the key, so the secret
+        never sits in the environment
 
       Persistent REPL state:
         Chats belong to the project rooted at the current directory and are

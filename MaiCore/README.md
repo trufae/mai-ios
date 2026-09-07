@@ -19,7 +19,10 @@ make repl
 ad-hoc provider variable is already present in the calling shell. The ad-hoc
 provider settings are `PMAI_PROVIDER`, `PMAI_MODEL`, `PMAI_BASE_URL`, and
 `PMAI_API_KEY`; the older `MAI_*` and `OPENAI_*` names remain supported for
-compatibility. These variables override the selected agent's provider for the
+compatibility. `PMAI_API_KEY_FILE` names a file holding the key instead, read
+at startup with its trailing newline dropped, so the secret never sits in the
+environment where every child process could read it; it cannot be combined
+with `PMAI_API_KEY`. These variables override the selected agent's provider for the
 current process. `/baseurl` shows the effective URL and also identifies a
 different persisted URL when one is being overridden. Export `PMAI_API_KEY=`
 to explicitly send no API key and suppress configured or legacy API-key
@@ -183,7 +186,8 @@ settings remain host-owned and are translated into `ProviderRequest`,
 Configuration is discovered in this order: `--config`, `PMAI_CONFIG`,
 `./pmai.json`, and `~/.config/pmai/config.json`. Secrets should normally use
 `apiKeyEnvironment`, `bearerTokenEnvironment`, or `headerEnvironment` instead
-of being stored directly in JSON.
+of being stored directly in JSON; a provider's `apiKeyFile` names a file
+holding the key, read whenever the provider is built.
 
 Chats belong to a project, the directory pmai was started in, mirroring the
 chat folders PocketMai keeps with a name, a tint, and a working folder. The

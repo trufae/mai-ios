@@ -34,7 +34,7 @@ public struct OpenAIConfiguredProviderFactory: ConfiguredProviderFactory {
         id: ProviderID(configuration.id),
         displayName: configuration.displayName ?? "OpenAI-compatible",
         baseURL: baseURL,
-        apiKey: configuration.resolvedAPIKey(environment: environment),
+        apiKey: try configuration.resolvedAPIKey(environment: environment),
         additionalHeaders: try configuration.resolvedHeaders(environment: environment),
         requestTimeout: configuration.timeout ?? 600))
   }

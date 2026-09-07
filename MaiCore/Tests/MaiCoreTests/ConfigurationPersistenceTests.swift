@@ -165,3 +165,40 @@ func yoloApprovalPersists() throws {
   #expect(legacy.approvals.confirm == .allow)
   #expect(!legacy.approvals.yolo)
 }
+
+@Test(
+  "A provider's API key comes from its environment variable, else its key file, else the literal")
+func providerAPIKeyFile() throws {
+  let files = FileManager.default
+  let keyFile = files.temporaryDirectory.appendingPathComponent("key-\(UUID().uuidString).txt")
+  defer { try? files.removeItem(at: keyFile) }
+  try "  sk-from-file\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+  let provider = ConfiguredProvider(
+    id: "remote", kind: .openAICompatible, apiKey: "literal",
+    apiKeyEnvironment: "TEST_KEY", apiKeyFile: keyFile.path)
+  #expect(try provider.resolvedAPIKey(environment: ["TEST_KEY": "from-env"]) == "from-env")
+  #expect(try provider.resolvedAPIKey(environment: ["TEST_KEY": ""]) == nil)
+  #expect(try provider.resolvedAPIKey(environment: [:]) == "sk-from-file")
+
+  var fileOnly = provider
+  fileOnly.apiKeyEnvironment = nil
+  #expect(try fileOnly.resolvedAPIKey(environment: ["TEST_KEY": "ignored"]) == "sk-from-file")
+
+  var literalOnly = provider
+  literalOnly.apiKeyEnvironment = nil
+  literalOnly.apiKeyFile = nil
+  #expect(try literalOnly.resolvedAPIKey(environment: [:]) == "literal")
+
+  var missing = fileOnly
+  missing.apiKeyFile = keyFile.path + ".missing"
+  #expect(throws: MaiConfigurationError.unreadableAPIKeyFile(keyFile.path + ".missing")) {
+    try missing.resolvedAPIKey(environment: [:])
+  }
+
+  // The file path survives a round trip through the configuration file.
+  let data = try JSONEncoder().encode(fileOnly)
+  let decoded = try JSONDecoder().decode(ConfiguredProvider.self, from: data)
+  #expect(decoded.apiKeyFile == keyFile.path)
+  #expect(decoded == fileOnly)
+}

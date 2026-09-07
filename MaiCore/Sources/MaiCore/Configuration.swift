@@ -32,6 +32,9 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
   public var baseURL: URL?
   public var apiKey: String?
   public var apiKeyEnvironment: String?
+  /// A file holding the key, for secrets mounted on disk rather than exported
+  /// into the environment; read at every use, with surrounding whitespace dropped.
+  public var apiKeyFile: String?
   public var headers: [String: String]
   public var headerEnvironment: [String: String]
   public var timeout: TimeInterval?
@@ -45,6 +48,7 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
     baseURL: URL? = nil,
     apiKey: String? = nil,
     apiKeyEnvironment: String? = nil,
+    apiKeyFile: String? = nil,
     headers: [String: String] = [:],
     headerEnvironment: [String: String] = [:],
     timeout: TimeInterval? = nil,
@@ -56,6 +60,7 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
     self.baseURL = baseURL
     self.apiKey = apiKey
     self.apiKeyEnvironment = apiKeyEnvironment
+    self.apiKeyFile = apiKeyFile
     self.headers = headers
     self.headerEnvironment = headerEnvironment
     self.timeout = timeout
@@ -63,8 +68,8 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, kind, displayName, baseURL, apiKey, apiKeyEnvironment, headers, headerEnvironment,
-      timeout
+    case id, kind, displayName, baseURL, apiKey, apiKeyEnvironment, apiKeyFile, headers,
+      headerEnvironment, timeout
     case options
   }
 
@@ -77,6 +82,7 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
       baseURL: try container.decodeIfPresent(URL.self, forKey: .baseURL),
       apiKey: try container.decodeIfPresent(String.self, forKey: .apiKey),
       apiKeyEnvironment: try container.decodeIfPresent(String.self, forKey: .apiKeyEnvironment),
+      apiKeyFile: try container.decodeIfPresent(String.self, forKey: .apiKeyFile),
       headers: try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:],
       headerEnvironment: try container.decodeIfPresent(
         [String: String].self,
@@ -96,10 +102,28 @@ public struct ConfiguredProvider: Codable, Equatable, Identifiable, Sendable {
     return resolved
   }
 
-  public func resolvedAPIKey(environment: [String: String]) -> String? {
-    guard let apiKeyEnvironment, !apiKeyEnvironment.isEmpty else { return apiKey }
-    guard let value = environment[apiKeyEnvironment] else { return apiKey }
-    return value.isEmpty ? nil : value
+  /// The key to send: the environment variable when it is set (empty means
+  /// none), else the file when one is named, else the literal.
+  public func resolvedAPIKey(environment: [String: String]) throws -> String? {
+    if let apiKeyEnvironment, !apiKeyEnvironment.isEmpty, let value = environment[apiKeyEnvironment]
+    {
+      return value.isEmpty ? nil : value
+    }
+    if let apiKeyFile, !apiKeyFile.trimmingCharacters(in: .whitespaces).isEmpty {
+      let value = try Self.apiKey(fromFile: apiKeyFile)
+      return value.isEmpty ? nil : value
+    }
+    return apiKey
+  }
+
+  /// The contents of a key file, trimmed: a trailing newline is the norm.
+  public static func apiKey(fromFile path: String) throws -> String {
+    let expanded = NSString(string: path.trimmingCharacters(in: .whitespacesAndNewlines))
+      .expandingTildeInPath
+    guard let text = try? String(contentsOfFile: expanded, encoding: .utf8) else {
+      throw MaiConfigurationError.unreadableAPIKeyFile(expanded)
+    }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 }
 
@@ -845,6 +869,7 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
   case unknownAgent(String)
   case unknownTool(agent: String, tool: String)
   case missingEnvironmentVariable(String)
+  case unreadableAPIKeyFile(String)
   case missingPromptPlaceholder(prompt: String, placeholder: String)
   case unknownPrompt(String)
 
@@ -870,6 +895,8 @@ public enum MaiConfigurationError: LocalizedError, Equatable, Sendable {
       "Configuration references unknown agent '\(id)'."
     case .unknownTool(let agent, let tool):
       "Agent '\(agent)' references unknown tool '\(tool)'."
+    case .unreadableAPIKeyFile(let path):
+      "API key file '\(path)' cannot be read."
     case .missingEnvironmentVariable(let name):
       "Required environment variable '\(name)' is not set."
     case .missingPromptPlaceholder(let prompt, let placeholder):

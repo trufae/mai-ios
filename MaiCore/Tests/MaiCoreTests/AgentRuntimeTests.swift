@@ -1591,17 +1591,18 @@ func configurationLoading() async throws {
 }
 
 @Test("An explicitly empty provider environment secret suppresses its fallback key")
-func emptyProviderEnvironmentSecret() {
+func emptyProviderEnvironmentSecret() throws {
   let provider = ConfiguredProvider(
     id: "remote",
     kind: .openAICompatible,
     apiKey: "configured-fallback",
     apiKeyEnvironment: "TEST_API_KEY")
 
-  #expect(provider.resolvedAPIKey(environment: [:]) == "configured-fallback")
-  #expect(provider.resolvedAPIKey(environment: ["TEST_API_KEY": "shell-secret"]) == "shell-secret")
+  #expect(try provider.resolvedAPIKey(environment: [:]) == "configured-fallback")
   #expect(
-    provider.resolvedAPIKey(environment: ["TEST_API_KEY": ""]) == nil)
+    try provider.resolvedAPIKey(environment: ["TEST_API_KEY": "shell-secret"]) == "shell-secret")
+  #expect(
+    try provider.resolvedAPIKey(environment: ["TEST_API_KEY": ""]) == nil)
 }
 
 @Test("Configuration accepts host-defined provider kinds and factories")
