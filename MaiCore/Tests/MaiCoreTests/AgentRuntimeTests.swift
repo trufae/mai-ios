@@ -2169,3 +2169,99 @@ func toolCallBudgetExhaustion() async throws {
   #expect(requests[1].tools.isEmpty)
   #expect(requests[1].messages.contains { $0.text == AgentRuntime.toolBudgetExhaustedPrompt })
 }
+
+@Test("agent_status reads a child's transcript by pid, and a name passed as a pid is explained")
+func agentStatusLogReadsChildTranscript() async throws {
+  let provider = ChildLogProvider()
+  let runtime = AgentRuntime(approvalHandler: AllowAllApprovals())
+  try await runtime.register(provider)
+  try await runtime.register(
+    agent: AgentDefinition(
+      id: "researcher",
+      instructions: "Research carefully.",
+      provider: "child-log",
+      model: "fixture"))
+
+  let result = try await runtime.run(
+    AgentRequest(
+      provider: "child-log",
+      model: "fixture",
+      messages: [.user("find the parser")],
+      toolNames: AgentRuntime.agentToolNames,
+      toolGroupNames: [AgentRuntime.agentToolGroup.id],
+      subagentNames: ["researcher"],
+      limits: AgentRunLimits(
+        maxModelTurns: 6,
+        maxToolCalls: 4,
+        maxSubagents: 1,
+        maxSubagentDepth: 1)))
+
+  let results = result.transcript.flatMap(\.toolResults)
+  #expect(results.count == 3)
+  #expect(!results[0].isError)
+  let pid = try #require(results[0].structuredContent?.objectValue?["pid"]?.stringValue)
+
+  let log = results[1]
+  #expect(!log.isError)
+  #expect(log.text.hasPrefix("#\(pid) researcher"))
+  #expect(log.text.contains("Transcript of #\(pid)"))
+  #expect(log.text.contains("Child answer: the parser is in Parser.swift."))
+  let transcript = try #require(log.structuredContent?.objectValue?["transcript"]?.arrayValue)
+  #expect(!transcript.isEmpty && transcript.count <= 3)
+  #expect(transcript.last?.objectValue?["role"] == .string("assistant"))
+
+  let named = results[2]
+  #expect(named.isError)
+  #expect(named.text.contains("'researcher' is not a pid"))
+  #expect(named.text.contains("#2 main.worker"))
+  #expect(result.response.text == "done")
+}
+
+private actor ChildLogProvider: ChatProvider {
+  nonisolated let descriptor = ProviderDescriptor(
+    id: "child-log",
+    displayName: "Child log fixture",
+    capabilities: [.nativeToolCalling])
+
+  func complete(
+    _ request: ProviderRequest,
+    emit: @escaping ProviderEventHandler
+  ) async throws -> ProviderResponse {
+    let isWorker = !request.tools.contains { $0.name == AgentRuntime.agentStartToolName }
+    if isWorker {
+      return ProviderResponse(
+        message: .assistant("Child answer: the parser is in Parser.swift."), stopReason: .stop)
+    }
+    let results = request.messages.flatMap(\.toolResults)
+    switch results.count {
+    case 0:
+      return call(
+        "start-1", AgentRuntime.agentStartToolName,
+        [
+          "agent": .string("researcher"),
+          "context": .string("The user wants the parser."),
+          "task": .string("Find the parser."),
+          "output": .string("One line."),
+        ])
+    case 1:
+      let pid = results[0].structuredContent?.objectValue?["pid"]?.stringValue ?? "0"
+      return call(
+        "status-1", AgentRuntime.agentStatusToolName,
+        ["pid": .string(pid), "log": .integer(3)])
+    case 2:
+      return call("status-2", AgentRuntime.agentStatusToolName, ["pid": .string("researcher")])
+    default:
+      return ProviderResponse(message: .assistant("done"), stopReason: .stop)
+    }
+  }
+
+  private func call(_ id: String, _ name: String, _ arguments: [String: JSONValue])
+    -> ProviderResponse
+  {
+    ProviderResponse(
+      message: AgentMessage(
+        role: .assistant,
+        content: [.toolCall(ToolCall(id: id, name: name, arguments: .object(arguments)))]),
+      stopReason: .toolCall)
+  }
+}

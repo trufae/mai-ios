@@ -158,13 +158,14 @@ public struct MaiFileWorkspaceTool: AgentTool {
     case .list:
       return ToolDefinition(
         name: operation.rawValue,
-        description: "List a folder in the configured workspace '\(workspaceName)'.",
+        description:
+          "List a folder in the configured workspace '\(workspaceName)'. The last path component may be a pattern such as src/*.c to list only matching entries.",
         parameters: [
           ToolParameterDef(
             name: "path",
             type: "string",
             description:
-              "Folder to list, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
+              "Folder to list, relative to the current directory or absolute inside the workspace, optionally ending in a name pattern (*.swift, src/*.c). Omit for the current directory.",
             required: false)
         ],
         annotations: ToolAnnotations(
@@ -173,12 +174,13 @@ public struct MaiFileWorkspaceTool: AgentTool {
       return ToolDefinition(
         name: operation.rawValue,
         description:
-          "Find files and folders by an approximate name in '\(workspaceName)'. By default this searches project source using Git or Mercurial ignore rules when available, and otherwise skips hidden, dependency, build, and cache directories.",
+          "Find files and folders by an approximate name or a glob pattern in '\(workspaceName)'. By default this searches project source using Git or Mercurial ignore rules when available, and otherwise skips hidden, dependency, build, and cache directories.",
         parameters: [
           ToolParameterDef(
             name: "query",
             type: "string",
-            description: "Exact, partial, or fuzzy file name or relative path.",
+            description:
+              "Exact, partial, or fuzzy file name or relative path, or a glob: *.swift matches names at any depth, src/*.c only files directly in src, src/**/*.c files anywhere below it; ? is one character, [ab] a set, {a,b} alternatives.",
             required: true),
           ToolParameterDef(
             name: "path",
@@ -221,7 +223,13 @@ public struct MaiFileWorkspaceTool: AgentTool {
             name: "path",
             type: "string",
             description:
-              "File or folder to search, relative to the current directory or absolute inside the workspace. Omit for the current directory.",
+              "File or folder to search, relative to the current directory or absolute inside the workspace; a pattern such as src/*.c searches the matching files. Omit for the current directory.",
+            required: false),
+          ToolParameterDef(
+            name: "glob",
+            type: "string",
+            description:
+              "Only search files whose name or relative path matches this pattern, for example *.swift or src/**/*.c.",
             required: false),
           ToolParameterDef(
             name: "regex",
@@ -565,7 +573,18 @@ private struct MaiFileWorkspace: Sendable {
   }
 
   func list(_ arguments: [String: JSONValue]) throws -> ToolOutput {
-    let rawPath = arguments["path"]?.stringValue ?? ""
+    var rawPath = arguments["path"]?.stringValue ?? ""
+    var glob: MaiGlob?
+    if let split = MaiGlob.splitPath(rawPath) {
+      guard !split.pattern.contains("/") else {
+        throw MaiFileWorkspaceError.invalidGlob(
+          "'\(split.pattern)' spans folders; files_list takes a pattern for the last component only, files_find searches deeper."
+        )
+      }
+      let pattern = try requiredGlob(split.pattern)
+      rawPath = split.directory
+      glob = pattern
+    }
     let directory = try resolve(rawPath, allowRoot: true, mustExist: true)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
@@ -582,6 +601,7 @@ private struct MaiFileWorkspace: Sendable {
       directory.path != rootURL.path
         || !configuration.hiddenRootEntryNames.contains($0.lastPathComponent)
     }
+    .filter { glob?.matches($0.lastPathComponent) ?? true }
     .sorted {
       $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
     }
@@ -602,18 +622,22 @@ private struct MaiFileWorkspace: Sendable {
       let suffix = values?.isDirectory == true ? "/" : " (\(values?.fileSize ?? 0) bytes)"
       return relativePath(entry) + suffix
     }
-    if lines.isEmpty { lines = ["(no files)"] }
+    if lines.isEmpty {
+      lines = [glob.map { "(no entries match '\($0.pattern)')" } ?? "(no files)"]
+    }
     if entries.count > visible.count {
       lines.append("Truncated: showing \(visible.count) of \(entries.count) entries.")
     }
+    var structured: [String: JSONValue] = [
+      "workspace": .string(configuration.displayName),
+      "path": .string(displayPath(rawPath)),
+      "entries": .array(rows),
+      "truncated": .bool(entries.count > visible.count),
+    ]
+    if let glob { structured["pattern"] = .string(glob.pattern) }
     return ToolOutput(
       content: [.text(lines.joined(separator: "\n"))],
-      structuredContent: .object([
-        "workspace": .string(configuration.displayName),
-        "path": .string(displayPath(rawPath)),
-        "entries": .array(rows),
-        "truncated": .bool(entries.count > visible.count),
-      ]))
+      structuredContent: .object(structured))
   }
 
   func find(_ arguments: [String: JSONValue]) async throws -> ToolOutput {
@@ -621,6 +645,8 @@ private struct MaiFileWorkspace: Sendable {
     let rawPath = arguments["path"]?.stringValue ?? ""
     let directory = try resolve(rawPath, allowRoot: true, mustExist: true)
     try requireDirectory(directory, displayPath: displayPath(rawPath))
+    let glob = try globPattern(query)
+    let base = relativePath(directory)
     let limit = boundedLimit(arguments["limit"]?.intValue, default: 100)
     let depth = try searchDepth(arguments)
     let includeIgnored = arguments["include_ignored"]?.coercedBoolValue == true
@@ -636,7 +662,16 @@ private struct MaiFileWorkspace: Sendable {
         return false
       }
       let relative = relativePath(url)
-      guard let score = fuzzyScore(relative, query: query) else { return true }
+      let score: Int
+      if let glob {
+        guard glob.matches(relative) || glob.matches(Self.path(relative, below: base)) else {
+          return true
+        }
+        score = 0
+      } else {
+        guard let fuzzy = fuzzyScore(relative, query: query) else { return true }
+        score = fuzzy
+      }
       let kind = values.isDirectory == true ? "directory" : "file"
       matches.append((url, score, kind))
       return true
@@ -674,11 +709,15 @@ private struct MaiFileWorkspace: Sendable {
         "score": .integer(match.score),
       ])
     }
-    let text =
+    var text =
       selected.isEmpty
       ? "No files matched '\(query)'."
       : selected.map { relativePath($0.url) + ($0.kind == "directory" ? "/" : "") }
         .joined(separator: "\n")
+    if selected.isEmpty, let glob, glob.matchesPath, !glob.pattern.contains("**") {
+      text +=
+        " A pattern with a slash must match the whole relative path below \(base == "." ? "the search folder" : base); **/ matches any depth, as in **/*.c."
+    }
     return ToolOutput(
       content: [.text(text)],
       structuredContent: .object([
@@ -690,10 +729,40 @@ private struct MaiFileWorkspace: Sendable {
       ]))
   }
 
+  /// A glob for a query holding metacharacters; nil for a plain name.
+  private func globPattern(_ text: String) throws -> MaiGlob? {
+    MaiGlob.isPattern(text) ? try requiredGlob(text) : nil
+  }
+
+  private func requiredGlob(_ text: String, anchored: Bool = false) throws -> MaiGlob {
+    guard let glob = MaiGlob(text, anchored: anchored) else {
+      throw MaiFileWorkspaceError.invalidGlob("'\(text)' cannot be used as a pattern.")
+    }
+    return glob
+  }
+
+  /// A workspace-relative path as seen from a folder inside the workspace,
+  /// so a pattern given for a search folder applies below that folder.
+  private static func path(_ relative: String, below base: String) -> String {
+    guard base != ".", relative.hasPrefix(base + "/") else { return relative }
+    return String(relative.dropFirst(base.count + 1))
+  }
+
   func grep(_ arguments: [String: JSONValue]) async throws -> ToolOutput {
     let query = try requiredText(arguments, key: "query")
-    let rawPath = arguments["path"]?.stringValue ?? ""
+    var rawPath = arguments["path"]?.stringValue ?? ""
+    var globs: [MaiGlob] = []
+    if let split = MaiGlob.splitPath(rawPath) {
+      rawPath = split.directory
+      globs.append(try requiredGlob(split.pattern, anchored: true))
+    }
+    if let pattern = arguments["glob"]?.stringValue?.trimmingCharacters(
+      in: .whitespacesAndNewlines), !pattern.isEmpty
+    {
+      globs.append(try requiredGlob(pattern))
+    }
     let target = try resolve(rawPath, allowRoot: true, mustExist: true)
+    let base = relativePath(target)
     let limit = boundedLimit(arguments["limit"]?.intValue, default: 100)
     let depth = try searchDepth(arguments)
     let includeIgnored = arguments["include_ignored"]?.coercedBoolValue == true
@@ -722,6 +791,11 @@ private struct MaiFileWorkspace: Sendable {
         return false
       }
       guard values.isRegularFile == true, values.isSymbolicLink != true else { return true }
+      if !globs.isEmpty {
+        let relative = relativePath(url)
+        let below = Self.path(relative, below: base)
+        guard globs.allSatisfy({ $0.matches(relative) || $0.matches(below) }) else { return true }
+      }
       scannedFiles += 1
       guard (values.fileSize ?? 0) <= 5_000_000,
         let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
@@ -787,15 +861,19 @@ private struct MaiFileWorkspace: Sendable {
     } else {
       _ = try scanFile(target, targetValues)
     }
-    return ToolOutput(
-      content: [.text(rendered.isEmpty ? "No matching lines." : rendered.joined(separator: "\n"))],
-      structuredContent: .object([
-        "query": .string(query),
-        "matches": .array(rows),
-        "scannedFiles": .integer(scannedFiles),
-        "searchMethod": .string(searchMethod),
-        "truncated": .bool(hitLimit),
-      ]))
+    var structured: [String: JSONValue] = [
+      "query": .string(query),
+      "matches": .array(rows),
+      "scannedFiles": .integer(scannedFiles),
+      "searchMethod": .string(searchMethod),
+      "truncated": .bool(hitLimit),
+    ]
+    if !globs.isEmpty { structured["glob"] = .array(globs.map { .string($0.pattern) }) }
+    var text = rendered.isEmpty ? "No matching lines." : rendered.joined(separator: "\n")
+    if rendered.isEmpty, scannedFiles == 0, !globs.isEmpty {
+      text += " No file matched \(globs.map { "'\($0.pattern)'" }.joined(separator: " and "))."
+    }
+    return ToolOutput(content: [.text(text)], structuredContent: .object(structured))
   }
 
   func read(_ arguments: [String: JSONValue]) throws -> ToolOutput {
@@ -1693,6 +1771,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
   case lineOutOfRange(Int, Int)
   case writeDisabled
   case invalidPattern(String)
+  case invalidGlob(String)
   case invalidSearchDepth
   case invalidMatchCount
   case emptyPatchMatch
@@ -1726,6 +1805,7 @@ private enum MaiFileWorkspaceError: LocalizedError {
     case .lineOutOfRange(let line, let count): "Line \(line) is outside this file's \(count) lines."
     case .writeDisabled: "File changes are disabled for this tool source."
     case .invalidPattern(let detail): "Invalid regular expression: \(detail)"
+    case .invalidGlob(let message): "Invalid pattern: \(message)"
     case .invalidSearchDepth: "depth must be between 1 and 100."
     case .invalidMatchCount: "expected_matches must be between 1 and 100."
     case .emptyPatchMatch: "The regular expression must not match an empty range."

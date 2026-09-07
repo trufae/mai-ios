@@ -194,8 +194,8 @@ disable agents` change that permission on the current agent; `/agent tools ID
 | Tool | Arguments | Returns |
 |---|---|---|
 | `agent_start` | `agent?`, `context`, `task`, `output`, `wait?`, `tools?` | pid, plus the answer when `wait` |
-| `agent_status` | `pid?`, `tree?` | one process, or the caller's subtree |
-| `agent_result` | `pid`, `wait?` | final answer, usage, stop reason |
+| `agent_status` | `pid?`, `tree?`, `log?` | one process, or the caller's subtree; with `pid` and `log`, that agent's recent transcript |
+| `agent_result` | `pid`, `wait?` | final answer, usage, stop reason; a child that stopped without answering returns the end of its transcript |
 | `agent_stop` | `pid`, `reason?` | what was stopped |
 
 `wait` defaults to **true**: the parent blocks until the child answers. That is

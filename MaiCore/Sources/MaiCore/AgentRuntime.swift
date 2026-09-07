@@ -1077,31 +1077,110 @@ public actor AgentRuntime {
     }
     let rawPID = arguments["pid"]?.coercedStringValue ?? arguments["id"]?.coercedStringValue ?? ""
     let listed: [AgentProcessInfo]
+    var structured: [String: JSONValue] = [:]
+    var text: String
     if rawPID.isEmpty {
       let wholeTree = arguments["tree"]?.coercedBoolValue ?? false
       let descendants = Array(tree.subtree(of: callerPID).dropFirst())
       listed = wholeTree ? descendants : descendants.filter { $0.parent == callerPID }
+      text = listed.isEmpty ? "No child agents." : listed.map(\.summaryLine).joined(separator: "\n")
+      if !listed.isEmpty {
+        text += "\nThe number after # is the pid the agent_* tools take."
+      }
     } else {
-      guard let pid = AgentPID(text: rawPID), tree.isDescendant(pid, of: callerPID),
-        let info = tree.info(pid)
-      else {
-        return await fail(call, "agent \(rawPID) is not one of yours.", parent: parent, emit: emit)
+      let pid: AgentPID
+      switch childPID(rawPID, of: callerPID, in: tree) {
+      case .success(let found): pid = found
+      case .failure(let error): return await fail(call, error.message, parent: parent, emit: emit)
+      }
+      guard let info = tree.info(pid) else {
+        return await fail(call, "agent \(pid) is not one of yours.", parent: parent, emit: emit)
       }
       listed = [info]
+      text = info.summaryLine
+      if let count = logCount(arguments["log"]) {
+        let excerpt = await transcriptExcerpt(pid, last: count)
+        text += "\n" + excerpt.text
+        structured["transcript"] = excerpt.json
+      }
     }
-
-    let text =
-      listed.isEmpty
-      ? "No child agents." : listed.map(\.summaryLine).joined(separator: "\n")
+    structured["agents"] = .array(listed.map { processJSON($0) })
+    structured["count"] = .integer(listed.count)
     let result = ToolResult(
       callID: call.id,
       content: [.text(text)],
-      structuredContent: .object([
-        "agents": .array(listed.map { processJSON($0) }),
-        "count": .integer(listed.count),
-      ]))
+      structuredContent: .object(structured))
     await emit(.toolFinished(parent, result))
     return result
+  }
+
+  static let defaultLogMessages = 20
+  private static let maximumLogMessages = 200
+  private static let logMessageLength = 2000
+
+  /// How many transcript messages a `log` argument asks for; nil for none.
+  private func logCount(_ value: JSONValue?) -> Int? {
+    guard let value else { return nil }
+    if let number = value.coercedNumberValue, number >= 1 {
+      return min(Int(number), Self.maximumLogMessages)
+    }
+    return value.coercedBoolValue == true ? Self.defaultLogMessages : nil
+  }
+
+  /// The end of an agent's transcript, numbered as the whole of it is, in the
+  /// pasteable form hosts print; long messages are clipped.
+  private func transcriptExcerpt(_ pid: AgentPID, last count: Int) async -> (
+    text: String, json: JSONValue
+  ) {
+    let messages = await supervisor.transcript(pid)
+    guard !messages.isEmpty else {
+      return ("Transcript of \(pid): nothing yet.", .array([]))
+    }
+    let start = max(0, messages.count - count)
+    var lines = [
+      messages.count > count
+        ? "Transcript of \(pid), last \(count) of \(messages.count) messages:"
+        : "Transcript of \(pid), \(messages.count) message\(messages.count == 1 ? "" : "s"):"
+    ]
+    var rows: [JSONValue] = []
+    for (offset, message) in messages[start...].enumerated() {
+      let index = start + offset + 1
+      var rendered = TranscriptCopy.render(message)
+      if rendered.count > Self.logMessageLength {
+        rendered = String(rendered.prefix(Self.logMessageLength)) + "…"
+      }
+      lines.append("[\(index)] \(message.role.rawValue): \(rendered)")
+      rows.append(
+        .object([
+          "index": .integer(index), "role": .string(message.role.rawValue),
+          "text": .string(rendered),
+        ]))
+    }
+    return (lines.joined(separator: "\n"), .array(rows))
+  }
+
+  private struct ChildLookupError: Error {
+    let message: String
+  }
+
+  /// The child a tool call names. A name such as `main.worker` is explained
+  /// rather than rejected, since that is what a model tends to pass.
+  private func childPID(
+    _ rawPID: String,
+    of callerPID: AgentPID?,
+    in tree: AgentProcessTree
+  ) -> Result<AgentPID, ChildLookupError> {
+    guard let pid = AgentPID(text: rawPID) else {
+      return .failure(
+        ChildLookupError(
+          message:
+            "'\(rawPID)' is not a pid. Pass the number \(Self.agentStatusToolName) shows after # (2 for '#2 main.worker'); agent names are not identifiers."
+        ))
+    }
+    guard let callerPID, tree.isDescendant(pid, of: callerPID) else {
+      return .failure(ChildLookupError(message: "agent \(pid) is not one of yours."))
+    }
+    return .success(pid)
   }
 
   private func collectAgentResult(
@@ -1111,10 +1190,10 @@ public actor AgentRuntime {
   ) async -> ToolResult {
     let arguments = call.arguments.objectValue ?? [:]
     let rawPID = arguments["pid"]?.coercedStringValue ?? arguments["id"]?.coercedStringValue ?? ""
-    guard let callerPID = parent.pid, let pid = AgentPID(text: rawPID),
-      await supervisor.tree().isDescendant(pid, of: callerPID)
-    else {
-      return await fail(call, "agent \(rawPID) is not one of yours.", parent: parent, emit: emit)
+    let pid: AgentPID
+    switch childPID(rawPID, of: parent.pid, in: await supervisor.tree()) {
+    case .success(let found): pid = found
+    case .failure(let error): return await fail(call, error.message, parent: parent, emit: emit)
     }
     let wait = arguments["wait"]?.coercedBoolValue ?? true
 
@@ -1127,8 +1206,13 @@ public actor AgentRuntime {
     guard let handle = await supervisor.handle(pid) else {
       let info = await supervisor.info(pid)
       let reason = info?.failure ?? "it produced no result"
-      return await fail(
-        call, "agent \(pid) is not available: \(reason).", parent: parent, emit: emit)
+      var message = "agent \(pid) is not available: \(reason)."
+      if !(await supervisor.transcript(pid)).isEmpty {
+        let excerpt = await transcriptExcerpt(pid, last: 6)
+        message += "\n" + excerpt.text
+        message += "\n\(Self.agentStatusToolName) with pid \(pid.rawValue) and log reads more."
+      }
+      return await fail(call, message, parent: parent, emit: emit)
     }
     guard wait else {
       let info = await supervisor.info(pid)
@@ -1165,10 +1249,10 @@ public actor AgentRuntime {
     let arguments = call.arguments.objectValue ?? [:]
     let rawPID = arguments["pid"]?.coercedStringValue ?? arguments["id"]?.coercedStringValue ?? ""
     let reason = arguments["reason"]?.stringValue ?? "Stopped by \(parent.agentID)"
-    guard let callerPID = parent.pid, let pid = AgentPID(text: rawPID),
-      await supervisor.tree().isDescendant(pid, of: callerPID)
-    else {
-      return await fail(call, "agent \(rawPID) is not one of yours.", parent: parent, emit: emit)
+    let pid: AgentPID
+    switch childPID(rawPID, of: parent.pid, in: await supervisor.tree()) {
+    case .success(let found): pid = found
+    case .failure(let error): return await fail(call, error.message, parent: parent, emit: emit)
     }
     let stopped = await supervisor.stop(pid, reason: reason)
     let result = ToolResult(
@@ -1490,18 +1574,25 @@ public actor AgentRuntime {
       ToolDefinition(
         name: Self.agentStatusToolName,
         description:
-          "List your child agents and what they are doing, without waiting. Omit pid for your direct children; pass tree for the whole subtree.",
+          "List your child agents and what they are doing, without waiting: one line per agent, its pid first (#2) and its name after. Omit pid for your direct children; pass tree for the whole subtree. With pid and log, read that agent's own transcript, which is where the work of a stopped or failed child is.",
         inputSchema: .object([
           "type": .string("object"),
           "properties": .object([
             "pid": .object([
               "type": .string("string"),
               "description": .string(
-                "A single agent's pid, as returned by \(Self.agentStartToolName)."),
+                "One agent's pid: the number after # in the listing (2 for '#2 main.worker'), as returned by \(Self.agentStartToolName). Names are not identifiers."
+              ),
             ]),
             "tree": .object([
               "type": .string("boolean"),
               "description": .string("Include grandchildren and deeper."),
+            ]),
+            "log": .object([
+              "type": .string("integer"),
+              "description": .string(
+                "With pid: also return that agent's transcript, the last N messages (1-200; true means \(Self.defaultLogMessages)), tool calls and results included."
+              ),
             ]),
           ]),
           "additionalProperties": .bool(false),
@@ -1515,13 +1606,15 @@ public actor AgentRuntime {
       ToolDefinition(
         name: Self.agentResultToolName,
         description:
-          "Take the answer from a child started with wait false. Waits for it to finish unless wait is false.",
+          "Take the answer from a child started with wait false, by its pid. Waits for it to finish unless wait is false. A child that stopped without answering returns the error and the end of its transcript instead; \(Self.agentStatusToolName) with log reads more of it.",
         inputSchema: .object([
           "type": .string("object"),
           "properties": .object([
             "pid": .object([
               "type": .string("string"),
-              "description": .string("The pid returned by \(Self.agentStartToolName)."),
+              "description": .string(
+                "The pid returned by \(Self.agentStartToolName), the number \(Self.agentStatusToolName) shows after # (2 for '#2 main.worker'). Names are not identifiers."
+              ),
             ]),
             "wait": .object([
               "type": .string("boolean"),
@@ -1546,7 +1639,8 @@ public actor AgentRuntime {
           "properties": .object([
             "pid": .object([
               "type": .string("string"),
-              "description": .string("The pid to stop."),
+              "description": .string(
+                "The pid to stop: the number \(Self.agentStatusToolName) shows after #."),
             ]),
             "reason": .object([
               "type": .string("string"),

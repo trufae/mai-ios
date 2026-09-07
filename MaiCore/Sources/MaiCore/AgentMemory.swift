@@ -383,7 +383,7 @@ public enum MaiMemoryTools {
       in: .whitespacesAndNewlines)
     return query.isEmpty
       ? "Error: chat is required (an ID from \(listName) or a title substring)."
-      : "Error: no chat matched '\(query)'. Use \(listName) to see the available chats."
+      : "Error: no chat matched '\(query)'. Use \(listName) to see the available chats. A child agent is not a chat: agent_status reads one by its pid."
   }
 
   private static func documentNames(of chat: MemoryChat) -> [String] {

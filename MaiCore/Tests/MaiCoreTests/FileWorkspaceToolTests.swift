@@ -559,3 +559,122 @@ func fileWorkspaceWriteRequiresOverwrite() async throws {
     write, ["path": .string("empty.txt"), "content": .string("now full")])
   #expect(!filledEmpty.isError)
 }
+
+@Test(
+  "Globs follow shell rules: * within a folder, ** across folders, classes, alternatives, smart case"
+)
+func globSemantics() throws {
+  let star = try #require(MaiGlob("*.c"))
+  #expect(star.matches("a.c") && star.matches("src/deep/a.c") && !star.matches("a.h"))
+  #expect(!star.matchesPath)
+  let path = try #require(MaiGlob("src/*.c"))
+  #expect(path.matchesPath)
+  #expect(path.matches("src/a.c") && !path.matches("src/sub/a.c") && !path.matches("a.c"))
+  let deep = try #require(MaiGlob("src/**/*.c"))
+  #expect(deep.matches("src/a.c") && deep.matches("src/x/y/a.c") && !deep.matches("lib/a.c"))
+  let any = try #require(MaiGlob("**/*.md"))
+  #expect(any.matches("README.md") && any.matches("docs/x/README.md"))
+  let below = try #require(MaiGlob("src/**"))
+  #expect(below.matches("src/a.c") && below.matches("src/x/a.c") && !below.matches("lib/a.c"))
+  let cls = try #require(MaiGlob("[!m]*.c"))
+  #expect(cls.matches("a.c") && !cls.matches("main.c"))
+  let alt = try #require(MaiGlob("*.{c,h}"))
+  #expect(alt.matches("a.h") && alt.matches("a.c") && !alt.matches("a.m"))
+  #expect(try #require(MaiGlob("?ain.c")).matches("main.c"))
+  #expect(try #require(MaiGlob("./*.c")).matches("./a.c"))
+  #expect(try #require(MaiGlob("*.c")).matches("A.C"))
+  #expect(!(try #require(MaiGlob("*.C")).matches("a.c")))
+  #expect(try #require(MaiGlob("a+b.c")).matches("a+b.c"))
+  #expect(MaiGlob.isPattern("src/*.c"))
+  #expect(!MaiGlob.isPattern("Parser.swift"))
+  #expect(MaiGlob.splitPath("src/lib/*.c")?.directory == "src/lib")
+  #expect(MaiGlob.splitPath("src/lib/*.c")?.pattern == "*.c")
+  #expect(MaiGlob.splitPath("src/**/x/*.c")?.pattern == "**/x/*.c")
+  #expect(MaiGlob.splitPath("*.c")?.directory == "")
+  #expect(MaiGlob.splitPath("plain/name") == nil)
+}
+
+@Test(
+  "Files tools take glob patterns: find by pattern, grep narrowed by glob or path, list by name pattern"
+)
+func fileToolsAcceptGlobs() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("mai-glob-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  for folder in ["src/sub", "docs"] {
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+  }
+  for path in ["a.c", "src/main.c", "src/util.h", "src/sub/deep.c"] {
+    try Data("needle\n".utf8).write(to: root.appendingPathComponent(path))
+  }
+  try Data("prose\n".utf8).write(to: root.appendingPathComponent("docs/README.md"))
+
+  let tools = MaiFileWorkspaceTool.makeTools(
+    configuration: MaiFileWorkspaceConfiguration(rootURL: root))
+  let find = tool(tools, .find)
+  let grep = tool(tools, .grep)
+  let list = tool(tools, .list)
+  #expect(grep.definition.parameters.contains { $0.name == "glob" })
+  func paths(_ output: ToolOutput) -> [String] {
+    output.structuredContent?.objectValue?["matches"]?.arrayValue?.compactMap {
+      $0.objectValue?["path"]?.stringValue
+    } ?? []
+  }
+
+  #expect(
+    paths(try await call(find, ["query": .string("*.c")])) == [
+      "a.c", "src/main.c", "src/sub/deep.c",
+    ])
+  #expect(paths(try await call(find, ["query": .string("src/*.c")])) == ["src/main.c"])
+  #expect(
+    paths(try await call(find, ["query": .string("src/**/*.c")])) == [
+      "src/main.c", "src/sub/deep.c",
+    ])
+  #expect(
+    Set(paths(try await call(find, ["query": .string("*.{c,h}")])))
+      == ["a.c", "src/main.c", "src/util.h", "src/sub/deep.c"])
+  #expect(paths(try await call(find, ["query": .string("?ain.c")])) == ["src/main.c"])
+  #expect(
+    paths(try await call(find, ["query": .string("*.c"), "path": .string("src")]))
+      == ["src/main.c", "src/sub/deep.c"])
+  // A pattern with a slash applies below the search folder, or from the root.
+  #expect(
+    paths(try await call(find, ["query": .string("sub/*.c"), "path": .string("src")]))
+      == ["src/sub/deep.c"])
+  #expect(
+    paths(try await call(find, ["query": .string("src/sub/*.c"), "path": .string("src")]))
+      == ["src/sub/deep.c"])
+  let none = try await call(find, ["query": .string("docs/*.c")])
+  #expect(none.text.hasPrefix("No files matched 'docs/*.c'."))
+  #expect(none.text.contains("**/"))
+  // Plain names still match fuzzily.
+  #expect(paths(try await call(find, ["query": .string("deep")])).first == "src/sub/deep.c")
+
+  #expect(
+    paths(try await call(grep, ["query": .string("needle"), "glob": .string("*.h")])) == [
+      "src/util.h"
+    ])
+  #expect(
+    paths(try await call(grep, ["query": .string("needle"), "path": .string("src/*.c")]))
+      == ["src/main.c"])
+  #expect(
+    Set(paths(try await call(grep, ["query": .string("needle"), "glob": .string("src/**/*.c")])))
+      == ["src/main.c", "src/sub/deep.c"])
+  let grepNone = try await call(grep, ["query": .string("needle"), "glob": .string("*.rs")])
+  #expect(grepNone.text.contains("No file matched '*.rs'"))
+  #expect(grepNone.structuredContent?.objectValue?["glob"] == .array([.string("*.rs")]))
+
+  let listed = try await call(list, ["path": .string("src/*.c")])
+  let entries = listed.structuredContent?.objectValue?["entries"]?.arrayValue?.compactMap {
+    $0.objectValue?["path"]?.stringValue
+  }
+  #expect(entries == ["src/main.c"])
+  #expect(listed.structuredContent?.objectValue?["pattern"] == .string("*.c"))
+  let empty = try await call(list, ["path": .string("docs/*.c")])
+  #expect(empty.text == "(no entries match '*.c')")
+  let deepList = try await call(list, ["path": .string("src/**/*.c")])
+  #expect(deepList.isError)
+  #expect(deepList.text.hasPrefix("Error: Invalid pattern: '**/*.c' spans folders"))
+  #expect(deepList.text.contains("files_find"))
+}

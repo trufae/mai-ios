@@ -1583,7 +1583,10 @@ struct MaiCLI {
         let who = waiting.request.run.pid.map { "#\($0.rawValue) " } ?? ""
         return "approve \(who)\(waiting.request.tool.name)? [y/a/n/e/c] "
       }
-      if case .agent(let pid) = loop.focus { return "agent#\(pid.rawValue)> " }
+      // The prompt names the process a line goes to: a focused child, or the
+      // chat's own once it has run, so its pid is at hand for /agents commands.
+      if case .agent(let pid) = loop.focus { return "pmai#\(pid.rawValue)> " }
+      if let pid = chatProcessIDs[session.id] { return "pmai#\(pid.rawValue)> " }
       return "pmai> "
     }
 
